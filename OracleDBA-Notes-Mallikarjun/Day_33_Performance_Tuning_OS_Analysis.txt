@@ -1,0 +1,837 @@
+1. Select - AWR
+
+2. MDL - locks 
+Deadloack 
+
+1. commit/rollback 
+2. kill 
+
+
+user1:
+=======
+UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;
+
+RX - 100
+TM - employees
+
+user2:
+======
+UPDATE employees
+SET salary=salary*1.1
+WHERE employee_id=100;
+
+RX
+TM
+
+user3:
+======
+DDL - employees
+
+TM
+
+user4:
+======
+UPDATE employees
+SET salary=salary+2
+WHERE employee_id=101;
+
+RX - 101
+TM - employees
+
+
+
+select SID, SERIAL#, USERNAME
+from V$SESSION where SID in
+(select BLOCKING_SESSION from V$SESSION)
+
+alter system kill session '52,11147' immediate;
+
+
+
+
+user1:
+======
+UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;
+
+user2:
+======
+UPDATE employees
+SET salary=salary+2
+WHERE employee_id=101;
+
+
+user1:
+======
+UPDATE employees
+SET salary=salary+1
+WHERE employee_id=101;
+
+
+user2:
+======
+UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;
+
+
+
+Select - 
+select * from employees where employee_id=100;
+
+1. OS - Analysis:
+top 
+vmstat 
+iostat
+free -g 
+
+sar 
+os watcher 
+exawatcher 
+nagios 
+
+2. DB Issue - AWR - Analysis:
+
+- SQLID, SQL Statement  
+SQLID - execution 
+SQL Statement  - What all tables involved 
+
+Patching 
+table stats 
+schema stats 
+table move 
+table shrik 
+Gather stats on fixed/Dictionary 
+execution 
+
+SQL profiling 
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Tue May 30 10:15:42 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 09:51:30 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 11:08:22 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;
+  2    3
+1 row updated.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:04:45 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 09:57:56 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;  2    3
+
+1 row updated.
+
+SQL> commit;
+
+Commit complete.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:15:06 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:05:01 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;  2    3
+
+1 row updated.
+
+SQL> UPDATE employees
+SET salary=salary+1
+WHERE employee_id=101;  2    3
+
+
+SET salary=salary+1
+           *
+ERROR at line 2:
+ORA-00060: deadlock detected while waiting for resource
+
+
+SQL> SQL> SQL>
+SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:24:10 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:15:10 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from employees where employee_id=100;
+
+EMPLOYEE_ID FIRST_NAME           LAST_NAME
+----------- -------------------- -------------------------
+EMAIL                     PHONE_NUMBER         HIRE_DATE JOB_ID         SALARY
+------------------------- -------------------- --------- ---------- ----------
+COMMISSION_PCT MANAGER_ID DEPARTMENT_ID
+-------------- ---------- -------------
+        100 Steven               King
+SKING                     515.123.4567         17-JUN-03 AD_PRES       29043.1
+                                     90
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ top
+top - 10:40:17 up 35 days, 10:30,  8 users,  load average: 0.20, 0.07, 0.01
+Tasks: 464 total,   1 running, 369 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.8 us,  1.0 sy,  0.0 ni, 97.5 id,  0.2 wa,  0.3 hi,  0.2 si,  0.0 st
+KiB Mem : 11973452 total,  2387452 free,  2408512 used,  7177488 buff/cache
+KiB Swap: 15728636 total, 14795112 free,   933524 used.  5317456 avail Mem
+
+  PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND
+ 3339 oracle    20   0  789860  15916   3928 S   0.7  0.1 104:48.06 gsd-color
+21637 oracle    -2   0 4072636  62400  59296 S   0.7  0.5  49:31.74 ora_vktm_devdb
+  940 avahi     20   0   62376   2112   1752 S   0.3  0.0  44:47.82 avahi-daemon
+  948 root      20   0  372656   5908   5152 S   0.3  0.0  38:56.27 vmtoolsd
+ 1019 root      20   0  117280   2132   1636 S   0.3  0.0   1:54.79 ksmtuned
+ 9698 root      20   0  787840  15992   4244 S   0.3  0.1  63:39.60 gsd-color
+21765 oracle    20   0 4094280 153424 143960 S   0.3  1.3   5:48.37 ora_cjq0_devdb
+26884 oracle    20   0 4074728 174284 168852 S   0.3  1.5   0:02.94 ora_m005_devdb
+29048 oracle    20   0 4087268 361184 346560 S   0.3  3.0   0:01.67 ora_m004_devdb
+30136 oracle    20   0  163860   4760   3700 R   0.3  0.0   0:00.04 top
+31678 oracle    20   0 5826300 369208     84 S   0.3  3.1  14:21.18 java
+    1 root      20   0  225172   8028   5888 S   0.0  0.1   7:49.39 systemd
+    2 root      20   0       0      0      0 S   0.0  0.0   0:01.35 kthreadd
+    3 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_gp
+    4 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_par_gp
+    6 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/0:0H-kb
+    8 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 mm_percpu_wq
+    9 root      20   0       0      0      0 S   0.0  0.0   0:09.11 ksoftirqd/0
+   10 root      20   0       0      0      0 I   0.0  0.0   3:37.32 rcu_sched
+   11 root      rt   0       0      0      0 S   0.0  0.0   0:02.61 migration/0
+   13 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/0
+   14 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/1
+   15 root      rt   0       0      0      0 S   0.0  0.0   0:01.76 migration/1
+   16 root      20   0       0      0      0 S   0.0  0.0   0:13.39 ksoftirqd/1
+   18 root       0 -20       0      0      0 I   0.0  0.0   3:56.32 kworker/1:0H-xf
+   19 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/1:1H
+   22 root      20   0       0      0      0 S   0.0  0.0   0:00.00 kdevtmpfs
+   23 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 netns
+   24 root      20   0       0      0      0 S   0.0  0.0   0:00.48 kauditd
+   25 root      20   0       0      0      0 S   0.0  0.0   0:04.71 khungtaskd
+   26 root      20   0       0      0      0 S   0.0  0.0   0:00.00 oom_reaper
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   21690     1  0 May26 ?        00:00:06 ora_smon_DEVDB
+oracle   30403 26642  0 10:44 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   21690     1  0 May26 ?        00:00:06 ora_smon_DEVDB
+oracle   30444 26642  0 10:45 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ top
+top - 10:50:09 up 35 days, 10:40,  8 users,  load average: 0.00, 0.02, 0.00
+Tasks: 465 total,   2 running, 370 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.7 us,  0.5 sy,  0.0 ni, 98.3 id,  0.0 wa,  0.3 hi,  0.2 si,  0.0 st
+KiB Mem : 11973452 total,  2443584 free,  2412872 used,  7116996 buff/cache
+KiB Swap: 15728636 total, 14795112 free,   933524 used.  5313092 avail Mem
+
+  PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND
+21637 oracle    -2   0 4072636  62400  59296 S   0.7  0.5  49:35.67 ora_vktm_devdb
+  948 root      20   0  372656   5908   5152 S   0.3  0.0  38:56.70 vmtoolsd
+ 3339 oracle    20   0  789860  15920   3928 S   0.3  0.1 104:50.36 gsd-color
+ 9698 root      20   0  787840  15992   4244 S   0.3  0.1  63:41.40 gsd-color
+22690 oracle    20   0 4073680 162092 158260 S   0.3  1.4   0:09.30 ora_w007_devdb
+24984 root      20   0  165660  10384   8852 S   0.3  0.1   0:00.17 sshd
+30447 oracle    20   0  163860   4748   3688 R   0.3  0.0   0:00.99 top
+    1 root      20   0  225172   8028   5888 S   0.0  0.1   7:49.47 systemd
+    2 root      20   0       0      0      0 S   0.0  0.0   0:01.35 kthreadd
+    3 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_gp
+    4 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_par_gp
+    6 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/0:0H-kb
+    8 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 mm_percpu_wq
+    9 root      20   0       0      0      0 S   0.0  0.0   0:09.12 ksoftirqd/0
+   10 root      20   0       0      0      0 R   0.0  0.0   3:37.37 rcu_sched
+   11 root      rt   0       0      0      0 S   0.0  0.0   0:02.61 migration/0
+   13 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/0
+   14 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/1
+   15 root      rt   0       0      0      0 S   0.0  0.0   0:01.76 migration/1
+   16 root      20   0       0      0      0 S   0.0  0.0   0:13.40 ksoftirqd/1
+   18 root       0 -20       0      0      0 I   0.0  0.0   3:56.34 kworker/1:0H-xf
+   19 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/1:1H
+   22 root      20   0       0      0      0 S   0.0  0.0   0:00.00 kdevtmpfs
+   23 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 netns
+   24 root      20   0       0      0      0 S   0.0  0.0   0:00.48 kauditd
+   25 root      20   0       0      0      0 S   0.0  0.0   0:04.71 khungtaskd
+   26 root      20   0       0      0      0 S   0.0  0.0   0:00.00 oom_reaper
+   27 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 writeback
+   28 root      20   0       0      0      0 S   0.0  0.0   0:01.17 kcompactd0
+   29 root      25   5       0      0      0 S   0.0  0.0   0:00.00 ksmd
+   84 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kintegrityd
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ vmstat
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+ 2  0 933524 2453812      0 7107880    0    0    44    68    4    6  1  1 98  0  0
+[oracle@oraclelab1 ~]$ free -g
+              total        used        free      shared  buff/cache   available
+Mem:             11           2           2           3           6           5
+Swap:            14           0          14
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.83       134.55  268994274  412086912
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.75       134.05  268756946  410555063
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             5.7G     0  5.7G   0% /dev
+tmpfs                5.8G   35M  5.7G   1% /dev/shm
+tmpfs                5.8G  699M  5.1G  12% /run
+tmpfs                5.8G     0  5.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   84G   80G  4.0G  96% /
+/dev/sda1           1014M  233M  782M  23% /boot
+tmpfs                1.2G   56K  1.2G   1% /run/user/0
+tmpfs                1.2G   56K  1.2G   1% /run/user/54321
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.83       134.54  268994398  412087523
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.75       134.04  268757070  410555674
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.83       134.54  268994398  412087581
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.75       134.04  268757070  410555732
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.82       134.55  268994402  412124461
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.74       134.05  268757074  410592612
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.82       134.55  268994402  412124461
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.74       134.05  268757074  410592612
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.82       134.55  268994402  412124461
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.74       134.05  268757074  410592612
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ iostat
+Linux 5.4.17-2102.201.3.el7uek.x86_64 (oraclelab1.localdomain.com)      05/31/2023      _x86_64_        (2 CPU)
+
+avg-cpu:  %user   %nice %system %iowait  %steal   %idle
+           1.11    0.02    1.03    0.10    0.00   97.74
+
+Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn
+sda               4.93        87.82       134.55  268994402  412124493
+scd0              0.00         0.00         0.00       1054          0
+dm-0              4.91        87.74       134.05  268757074  410592644
+dm-1              0.14         0.07         0.50     202032    1529468
+
+[oracle@oraclelab1 ~]$ vmstats
+bash: vmstats: command not found...
+Similar command is: 'vmstat'
+[oracle@oraclelab1 ~]$ vmstat
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+ 1  0 933524 2475068      0 7084528    0    0    44    68    4    6  1  1 98  0  0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ free -g
+              total        used        free      shared  buff/cache   available
+Mem:             11           2           2           3           6           5
+Swap:            14           0          14
+[oracle@oraclelab1 ~]$ top
+top - 11:00:45 up 35 days, 10:51,  8 users,  load average: 0.00, 0.00, 0.00
+Tasks: 463 total,   1 running, 369 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.8 us,  0.3 sy,  0.0 ni, 98.5 id,  0.2 wa,  0.2 hi,  0.0 si,  0.0 st
+KiB Mem : 11973452 total,  2499668 free,  2405980 used,  7067804 buff/cache
+KiB Swap: 15728636 total, 14795112 free,   933524 used.  5319984 avail Mem
+
+  PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND
+21637 oracle    -2   0 4072636  62400  59296 S   0.7  0.5  49:40.05 ora_vktm_devdb
+31381 oracle    20   0  163860   4844   3788 R   0.7  0.0   0:00.07 top
+ 3339 oracle    20   0  789860  15924   3928 S   0.3  0.1 104:52.87 gsd-color
+ 3512 oracle    20   0  536148   9380   4404 S   0.3  0.1  84:55.72 vmtoolsd
+ 9698 root      20   0  787840  15992   4244 S   0.3  0.1  63:43.33 gsd-color
+21708 oracle    20   0 4072632  62684  59572 S   0.3  0.5   0:09.41 ora_pxmn_devdb
+24984 root      20   0  165660  10384   8852 S   0.3  0.1   0:00.20 sshd
+29655 oracle    20   0 4073700 165880 162204 S   0.3  1.4   0:01.62 ora_m000_devdb
+    1 root      20   0  225172   8028   5888 S   0.0  0.1   7:49.57 systemd
+    2 root      20   0       0      0      0 S   0.0  0.0   0:01.35 kthreadd
+    3 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_gp
+    4 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 rcu_par_gp
+    6 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/0:0H-kb
+    8 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 mm_percpu_wq
+    9 root      20   0       0      0      0 S   0.0  0.0   0:09.12 ksoftirqd/0
+   10 root      20   0       0      0      0 I   0.0  0.0   3:37.42 rcu_sched
+   11 root      rt   0       0      0      0 S   0.0  0.0   0:02.61 migration/0
+   13 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/0
+   14 root      20   0       0      0      0 S   0.0  0.0   0:00.00 cpuhp/1
+   15 root      rt   0       0      0      0 S   0.0  0.0   0:01.76 migration/1
+   16 root      20   0       0      0      0 S   0.0  0.0   0:13.40 ksoftirqd/1
+   18 root       0 -20       0      0      0 I   0.0  0.0   3:56.39 kworker/1:0H-kb
+   19 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 kworker/1:1H
+   22 root      20   0       0      0      0 S   0.0  0.0   0:00.00 kdevtmpfs
+   23 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 netns
+   24 root      20   0       0      0      0 S   0.0  0.0   0:00.48 kauditd
+   25 root      20   0       0      0      0 S   0.0  0.0   0:04.71 khungtaskd
+   26 root      20   0       0      0      0 S   0.0  0.0   0:00.00 oom_reaper
+   27 root       0 -20       0      0      0 I   0.0  0.0   0:00.00 writeback
+   28 root      20   0       0      0      0 S   0.0  0.0   0:01.17 kcompactd0
+   29 root      25   5       0      0      0 S   0.0  0.0   0:00.00 ksmd
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Wed May 31 09:51:21 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 09:52:04 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 09:51:30 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary*1.1
+WHERE employee_id=100;  2    3
+
+
+
+
+
+
+1 row updated.
+
+SQL> SQL> SQL> SQL> SQL> SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:05:01 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:04:46 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary*1.1
+WHERE employee_id=100;  2    3
+
+
+
+
+
+1 row updated.
+
+SQL> SQL> SQL> SQL> SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:15:10 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:15:06 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary+2
+WHERE employee_id=101;  2    3
+
+1 row updated.
+
+SQL> UPDATE employees
+SET salary=salary+1
+WHERE employee_id=100;  2    3
+
+
+1 row updated.
+
+SQL> SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:24:48 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:24:10 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from employees where employee_id=100;
+
+EMPLOYEE_ID FIRST_NAME           LAST_NAME
+----------- -------------------- -------------------------
+EMAIL                     PHONE_NUMBER         HIRE_DATE JOB_ID         SALARY
+------------------------- -------------------- --------- ---------- ----------
+COMMISSION_PCT MANAGER_ID DEPARTMENT_ID
+-------------- ---------- -------------
+        100 Steven               King
+SKING                     515.123.4567         17-JUN-03 AD_PRES       29043.1
+                                     90
+
+
+SQL>
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+[oracle@oraclelab1 ~]$ clear
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 09:57:56 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 09:52:04 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> UPDATE employees
+SET salary=salary+2
+WHERE employee_id=101;  2    3
+
+1 row updated.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:25:00 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Wed May 31 2023 10:24:48 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from employees where employee_id=100;
+
+EMPLOYEE_ID FIRST_NAME           LAST_NAME
+----------- -------------------- -------------------------
+EMAIL                     PHONE_NUMBER         HIRE_DATE JOB_ID         SALARY
+------------------------- -------------------- --------- ---------- ----------
+COMMISSION_PCT MANAGER_ID DEPARTMENT_ID
+-------------- ---------- -------------
+        100 Steven               King
+SKING                     515.123.4567         17-JUN-03 AD_PRES       29043.1
+                                     90
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Wed May 31 09:57:44 IST 2023 on pts/4
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDb
+ORACLE_HOME = [/home/oracle] ? ^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDb] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 31 10:02:29 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select SID, SERIAL#, USERNAME
+from V$SESSION where SID in
+(select BLOCKING_SESSION from V$SESSION)  2    3  ;
+
+       SID    SERIAL#
+---------- ----------
+USERNAME
+--------------------------------------------------------------------------------
+        52      11147
+HR
+
+
+SQL> alter system kill session '52,11147' immediate;
+
+System altered.
+
+SQL> select SID, SERIAL#, USERNAME
+from V$SESSION where SID in
+(select BLOCKING_SESSION from V$SESSION)  2    3  ;
+
+       SID    SERIAL#
+---------- ----------
+USERNAME
+--------------------------------------------------------------------------------
+        39      24016
+HR
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ locate alert_DEVDB.log
+/u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+[oracle@oraclelab1 ~]$ tail -f /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+Clearing Resource Manager plan via parameter
+2023-05-31T10:04:30.485641+05:30
+Process termination requested for pid 26704 [source = rdbms], [info = 2] [request issued by pid: 27815, uid: 54321]
+2023-05-31T10:04:30.535745+05:30
+KILL SESSION for sid=(52, 11147):
+  Reason = alter system kill session
+  Mode = KILL HARD SAFE -/-/-
+  Requestor = USER (orapid = 58, ospid = 27815, inst = 1)
+  Owner = Process: USER (orapid = 52, ospid = 26704)
+  Result = ORA-0
+2023-05-31T10:16:40.832224+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_ora_28598.trc:
+2023-05-31T10:16:41.093130+05:30
+ORA-00060: Deadlock detected. See Note 60.1 at My Oracle Support for Troubleshooting ORA-60 Errors. More info in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_ora_28598.trc.
+^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ more /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_ora_28598.trc
+Trace file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_ora_28598.trc
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+Build label:    RDBMS_19.17.0.0.0DBRU_LINUX.X64_220924
+ORACLE_HOME:    /u01/app/oracle/product/19.0.0.0/dbhome_1
+System name:    Linux
+Node name:      oraclelab1.localdomain.com
+Release:        5.4.17-2102.201.3.el7uek.x86_64
+Version:        #2 SMP Fri Apr 23 09:05:55 PDT 2021
+Machine:        x86_64
+Instance name: DEVDB
+Redo thread mounted by this instance: 1
+Oracle process number: 52
+Unix process pid: 28598, image: oracle@oraclelab1.localdomain.com (TNS V1-V3)
+
+
+*** 2023-05-31T10:16:40.831573+05:30
+*** SESSION ID:(43.24656) 2023-05-31T10:16:40.831622+05:30
+*** CLIENT ID:() 2023-05-31T10:16:40.831629+05:30
+*** SERVICE NAME:(SYS$USERS) 2023-05-31T10:16:40.831635+05:30
+*** MODULE NAME:(SQL*Plus) 2023-05-31T10:16:40.831642+05:30
+*** ACTION NAME:() 2023-05-31T10:16:40.831648+05:30
+*** CLIENT DRIVER:(SQL*PLUS) 2023-05-31T10:16:40.831652+05:30
+
+2023-05-31 10:16:40.830*:ksq.c@13204:ksqdld_hdr_dump():
+DEADLOCK DETECTED ( ORA-00060 )
+See Note 60.1 at My Oracle Support for Troubleshooting ORA-60 Errors
+
+[Transaction Deadlock]
+
+The following deadlock is not an ORACLE error. It is a
+deadlock due to user error in the design of an application
+or from issuing incorrect ad-hoc SQL. The following
+information may aid in determining the deadlock:
+
+Deadlock graph:
+                                          ------------Blocker(s)-----------  ------------Waiter(s)------------
+Resource Name                             process session holds waits serial  process session holds waits serial
+TX-00050003-00000B0D-00000000-00000000         52      43     X        24656      57     241           X  24083
+TX-00010001-000008DD-00000000-00000000         57     241     X        24083      52      43           X  24656
+
+----- Information for waiting sessions -----
+Session 43:
+Holds resource TX-00050003-00000B0D-00000000-00000000 acquired 79 seconds ago.
+  sid: 43 ser: 24656 audsid: 230692 user: 110/HR
+    flags: (0x41) USR/- flags2: (0x40009) -/-/INC
+    flags_idl: (0x1) status: BSY/-/-/- kill: -/-/-/-
+  pid: 52 O/S info: user: oracle, term: UNKNOWN, ospid: 28598
+    image: oracle@oraclelab1.localdomain.com (TNS V1-V3)
+  client details:
+    O/S info: user: oracle, term: pts/2, ospid: 28597
+    machine: oraclelab1.localdomain.com program: sqlplus@oraclelab1.localdomain.com (TNS V1-V3)
+    application name: SQL*Plus, hash value=3669949024
+  current SQL:
+  UPDATE employees
+SET salary=salary+1
+WHERE employee_id=101
+
+Session 241:
+Holds resource TX-00010001-000008DD-00000000-00000000 acquired 63 seconds ago.
+  sid: 241 ser: 24083 audsid: 230693 user: 110/HR
+    flags: (0x41) USR/- flags2: (0x40009) -/-/INC
+    flags_idl: (0x1) status: BSY/-/-/- kill: -/-/-/-
+  pid: 57 O/S info: user: oracle, term: UNKNOWN, ospid: 28602
+[oracle@oraclelab1 ~]$
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+

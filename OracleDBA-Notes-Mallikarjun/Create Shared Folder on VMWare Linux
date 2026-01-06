@@ -1,0 +1,53 @@
+Here’s a ready-to-run script for Oracle Linux / RHEL / CentOS VMs in VMware Workstation that will:
+
+1) Install open-vm-tools and desktop components.
+2) Enable and start the VMware Tools service.
+3) Create a mount point for shared folders (/mnt/hgfs).
+4) Mount all shared folders automatically.
+
+Oracle Linux / RHEL Script for VMware Shared Folders:
+
+#!/bin/bash
+# Script to install open-vm-tools and mount VMware shared folders
+
+# 1. Update system
+sudo yum update -y
+
+# 2. Install open-vm-tools and desktop tools
+sudo yum install -y open-vm-tools open-vm-tools-desktop fuse
+
+# 3. Enable and start vmtoolsd service
+sudo systemctl enable vmtoolsd
+sudo systemctl start vmtoolsd
+
+# 4. Create mount point for shared folders
+sudo mkdir -p /mnt/hgfs
+
+# 5. Mount VMware Shared Folders
+sudo vmhgfs-fuse .host:/ /mnt/hgfs -o allow_other
+
+# 6. Add to fstab for auto-mount at boot
+FSTAB_LINE=".host:/ /mnt/hgfs fuse.vmhgfs-fuse allow_other 0 0"
+grep -qxF "$FSTAB_LINE" /etc/fstab || echo "$FSTAB_LINE" | sudo tee -a /etc/fstab
+
+echo "✅ open-vm-tools installed and shared folders mounted at /mnt/hgfs"
+echo "You can access your Windows shared folders now."
+
+**************************************************************************
+Usage Instructions: 
+
+1) Save the script as setup_vmware_shared.sh on your Linux VM.
+2) Make it executable:
+   chmod +x setup_vmware_shared.sh
+
+3) Run the script:
+   sudo ./setup_vmware_shared.sh
+
+4) Reboot the VM:
+sudo reboot
+
+After reboot, your Windows shared folders will be available at:
+/mnt/hgfs/
+
+You can now copy files using:
+cp /mnt/hgfs/shared_folder_name/file.txt /home/oracle/

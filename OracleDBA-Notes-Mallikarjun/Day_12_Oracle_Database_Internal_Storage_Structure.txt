@@ -1,0 +1,435 @@
+DML Tx:
+
+Insert, Update, Delete 
+
+
+Row migration - PCT free 
+Table frangamentation - Table Move / Table shrink / Export & Import 
+
+
+Row Chaining:
+=============
+Block - 8k 
+
+Row piece > 8K (12K)
+
+create tablespace TEST1 datafile '' size 20GB blocksize 16K;
+
+OMF:
+show parameter DB_CREATE_FILE_DEST
+show parameter db_recovery
+
+create tablespace TEST4;
+
+create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test5.dbf' SIZE 1M;
+
+Manual:
+CREATE TABLESPACE TEST5 DATAFILE '/u01/app/oracle/oradata/DEVDB/datafile/test5.dbf' SIZE 1M;
+
+
+
+TS full?
+- autoexed on 
+- add new datafile 
+
+Bigfiles TS:
+
+
+Drop TS:
+
+drop tablespace TEST1;
+drop tablespace TEST2 including contents and datafiles;
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon Apr 24 10:58:47 IST 2023 on pts/3
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    2047  2001  0 10:45 pts/1    00:00:00 grep --color=auto smon
+oracle   22343     1  0 Apr14 ?        00:00:24 ora_smon_DB1
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DB1
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue Apr 25 10:45:14 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> create user mallik identified by mallik;
+
+User created.
+
+SQL> grant DBA mallik;
+grant DBA mallik
+      *
+ERROR at line 1:
+ORA-00990: missing or invalid privilege
+
+
+SQL> grant dba to mallik;
+
+Grant succeeded.
+
+SQL> select USERNAME, DEFAULT_TABLESPACE, TEMPORARY_TABLESPACE from dba_users where username='MALLIK';
+
+USERNAME
+--------------------------------------------------------------------------------
+DEFAULT_TABLESPACE             TEMPORARY_TABLESPACE
+------------------------------ ------------------------------
+MALLIK
+USERS                          TEMP
+
+
+SQL> select TABLESPACE_NAME from dba_tablespaces;
+
+TABLESPACE_NAME
+------------------------------
+SYSTEM
+SYSAUX
+UNDOTBS1
+TEMP
+USERS
+TEST1
+TEST2
+TEST3
+
+8 rows selected.
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+/u01/app/oracle/oradata/DB1/datafile/user_2.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+/u01/app/oracle/oradata/DB1/datafile/test2.dbf
+/u01/app/oracle/oradata/DB1/datafile/test3.dbf
+
+8 rows selected.
+
+SQL> col tablespace_name format a16;
+col file_name format a50;
+SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024
+FROM DBA_DATA_FILES;SQL> SQL>   2
+
+TABLESPACE_NAME  FILE_NAME
+---------------- --------------------------------------------------
+BYTES/1024/1024
+---------------
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_
+                 l0ynndm0_.dbf
+            950
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_
+                 l0ynohps_.dbf
+            910
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs
+
+TABLESPACE_NAME  FILE_NAME
+---------------- --------------------------------------------------
+BYTES/1024/1024
+---------------
+                 1_l0ynp8ts_.dbf
+           1035
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l
+                 0ynp9yw_.dbf
+              5
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf
+            200
+
+TABLESPACE_NAME  FILE_NAME
+---------------- --------------------------------------------------
+BYTES/1024/1024
+---------------
+
+TEST1            /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l
+                 4d4bbbh_.dbf
+            100
+
+TEST2            /u01/app/oracle/oradata/DB1/datafile/test2.dbf
+             10
+
+TEST3            /u01/app/oracle/oradata/DB1/datafile/test3.dbf
+
+TABLESPACE_NAME  FILE_NAME
+---------------- --------------------------------------------------
+BYTES/1024/1024
+---------------
+          33792
+
+
+8 rows selected.
+
+SQL> set pages 1000 lines 1000
+SQL> col tablespace_name format a16;
+col file_name format a50;
+SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024
+FROM DBA_DATA_FILES;SQL> SQL>   2
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024
+---------------- -------------------------------------------------- ---------------
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910
+                 l0ynohps_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035
+                 1_l0ynp8ts_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5
+                 0ynp9yw_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                200
+TEST1            /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l             100
+                 4d4bbbh_.dbf
+
+TEST2            /u01/app/oracle/oradata/DB1/datafile/test2.dbf                  10
+TEST3            /u01/app/oracle/oradata/DB1/datafile/test3.dbf               33792
+
+8 rows selected.
+
+SQL>
+SQL> show parameter DB_CREATE_FILE_DEST
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_create_file_dest                  string      /u01/app/oracle/oradata
+SQL> show parameter db_recovery
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_recovery_file_dest                string      /u01/app/oracle/fast_recovery_
+                                                 area/DB1
+db_recovery_file_dest_size           big integer 15G
+SQL>
+SQL> ALTER SYSTEM SET DB_CREATE_FILE_DEST = '' scope=both sid='*';
+
+System altered.
+
+SQL> show parameter DB_CREATE_FILE_DEST
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_create_file_dest                  string
+SQL> create tablesape TEST4;
+create tablesape TEST4
+       *
+ERROR at line 1:
+ORA-00901: invalid CREATE command
+
+
+SQL> create tablespace TEST4;
+create tablespace TEST4
+                      *
+ERROR at line 1:
+ORA-02199: missing DATAFILE/TEMPFILE clause
+
+
+SQL> create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DEVDB/datafile/test5.dbf';
+create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DEVDB/datafile/test5.dbf'
+*
+ERROR at line 1:
+ORA-01119: error in creating database file '/u01/app/oracle/oradata/DEVDB/datafile/test5.dbf'
+ORA-17610: file '/u01/app/oracle/oradata/DEVDB/datafile/test5.dbf' does not exist and no size specified
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ls -l /u01/app/oracle/oradata/DEVDB/datafile/test5.dbf
+ls: cannot access /u01/app/oracle/oradata/DEVDB/datafile/test5.dbf: No such file or directory
+[oracle@oraclelab1 ~]$ ls -l /u01/app/oracle/oradata/DEVDB/datafile/
+ls: cannot access /u01/app/oracle/oradata/DEVDB/datafile/: No such file or directory
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue Apr 25 10:54:29 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test5.dbf';
+create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test5.dbf'
+*
+ERROR at line 1:
+ORA-01119: error in creating database file
+'/u01/app/oracle/oradata/DB1/datafile/test5.dbf'
+ORA-17610: file '/u01/app/oracle/oradata/DB1/datafile/test5.dbf' does not exist
+and no size specified
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+
+
+SQL> create tablespace TEST4 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test5.dbf' SIZE 1M;
+
+Tablespace created.
+
+SQL> ALTER SYSTEM SET DB_CREATE_FILE_DEST = '/u01/app/oracle/oradata' scope=both sid='*';
+
+System altered.
+
+SQL> create tablesape TEST5;
+create tablesape TEST5
+       *
+ERROR at line 1:
+ORA-00901: invalid CREATE command
+
+
+SQL> create tablespace TEST5;
+
+Tablespace created.
+
+SQL> !ls -l /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+-rw-r-----. 1 oracle oinstall 104865792 Apr 25 04:36 /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ls -l /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+-rw-r-----. 1 oracle oinstall 104865792 Apr 25 04:36 /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue Apr 25 11:03:09 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> !ls -l /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+-rw-r-----. 1 oracle oinstall 104865792 Apr 25 04:36 /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+
+SQL> drop tablespace TEST1;
+drop tablespace TEST1
+*
+ERROR at line 1:
+ORA-38881: Cannot drop tablespace TEST1 on primary database due to guaranteed
+restore points.
+
+
+SQL> desc select * from v$restore_point^C
+
+SQL>
+SQL> select * from v$restore_point;
+
+       SCN DATABASE_INCARNATION# GUA STORAGE_SIZE
+---------- --------------------- --- ------------
+TIME
+---------------------------------------------------------------------------
+RESTORE_POINT_TIME                                                          PRE
+--------------------------------------------------------------------------- ---
+NAME
+--------------------------------------------------------------------------------
+PDB CLE PDB_INCARNATION# REP     CON_ID
+--- --- ---------------- --- ----------
+   1448016                     2 YES   1048576000
+14-MAR-23 10.06.15.000000000 AM
+                                                                            YES
+
+       SCN DATABASE_INCARNATION# GUA STORAGE_SIZE
+---------- --------------------- --- ------------
+TIME
+---------------------------------------------------------------------------
+RESTORE_POINT_TIME                                                          PRE
+--------------------------------------------------------------------------- ---
+NAME
+--------------------------------------------------------------------------------
+PDB CLE PDB_INCARNATION# REP     CON_ID
+--- --- ---------------- --- ----------
+BEFORE_UPGRADE
+NO  NO                 0 NO           0
+
+
+SQL> drop restore point BEFORE_UPGRADE;
+
+Restore point dropped.
+
+SQL> select * from v$restore_point;
+
+no rows selected
+
+SQL> drop tablespace TEST1;
+
+Tablespace dropped.
+
+SQL> !ls -l /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+ls: cannot access /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf: No such file or directory
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ls -ltr /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf
+ls: cannot access /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf: No such file or directory
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd /u01/app/oracle/oradata/DB1/datafile/
+[oracle@oraclelab1 datafile]$ ls -ltrh
+total 37G
+-rw-r-----. 1 oracle oinstall 132M Apr 24 22:00 o1_mf_temp_l0ynqv0d_.tmp
+-rw-r-----. 1 oracle oinstall 201M Apr 25 04:36 user_2.dbf
+-rw-r-----. 1 oracle oinstall 5.1M Apr 25 04:36 o1_mf_users_l0ynp9yw_.dbf
+-rw-r-----. 1 oracle oinstall  34G Apr 25 04:36 test3.dbf
+-rw-r-----. 1 oracle oinstall  11M Apr 25 04:36 test2.dbf
+-rw-r-----. 1 oracle oinstall 1.1G Apr 25 10:59 o1_mf_undotbs1_l0ynp8ts_.dbf
+-rw-r-----. 1 oracle oinstall 1.1M Apr 25 11:00 test5.dbf
+-rw-r-----. 1 oracle oinstall 951M Apr 25 11:00 o1_mf_system_l0ynndm0_.dbf
+-rw-r-----. 1 oracle oinstall 911M Apr 25 11:01 o1_mf_sysaux_l0ynohps_.dbf
+-rw-r-----. 1 oracle oinstall 101M Apr 25 11:02 o1_mf_test5_l4gs5hxs_.dbf
+[oracle@oraclelab1 datafile]$ ls -ltr o1_mf_test1_l4d4bbbh_.dbf
+ls: cannot access o1_mf_test1_l4d4bbbh_.dbf: No such file or directory
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue Apr 25 11:07:22 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> drop tablespace TEST2 including contents and datafiles;
+
+Tablespace dropped.
+
+SQL>
+SQL>
+SQL>
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+

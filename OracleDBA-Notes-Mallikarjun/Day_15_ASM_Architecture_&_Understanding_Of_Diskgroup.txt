@@ -1,0 +1,280 @@
+1. ASM Architecture 
+2. Multitenat (CDP & PDB) Architecture 
+
+
+oraclelab1 - DEVDB - File system 
+oraclelab2 - +ASM & TESTDB - ASM Storage 
+
+1. storage 
+2. Highe speed 
+3. auto restart 
+4. Mirroring & striping (Fail group)
+5. ACFS 
+6. OMF
+
+create tablespace TEST1;
+
+
+/oradata - 5G 
+/arch - 4G
+/reco
+/fra
+
+
+
+Instance = memory + BG process 
+
+Database = Datafile (storage file)
+
+Database server = Instance + Database 
+
+
+FAIL Group:
+===========
+
+
+mirroing 
+
+striping 
+course grain 
+fine grain - CF 
+
+
+
+
+DG:
+Mirroing - FG (N & H)
+Striping -  
+Rebalacing - 1 child process (RBAL & ARBn) - asm_power_limit 
+
+AU: 4MB 
+DATA
+
+20G
+DATA - 1 disk (2 disk normal) (3 disk high)
+	20G/4AU	40G/4AU		60G/4AU
+	5119	10238/2		15357/3
+	5119	5119		5119
+system	256	256+(256)	256+(256+256)---- ASM Extents 
+1G 
+
+user	512	512+(512)	512+(512+512)---- ASM Extents 
+2G	256	256+(256)	256+(256+256)
+1G
+
+
+[root@oraclelab2 ~]# clear
+[root@oraclelab2 ~]# df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             5.8G     0  5.8G   0% /dev
+tmpfs                5.8G  637M  5.2G  11% /dev/shm
+tmpfs                5.8G  9.7M  5.8G   1% /run
+tmpfs                5.8G     0  5.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   84G   50G   35G  60% /
+/dev/sda1            997M  341M  657M  35% /boot
+tmpfs                1.2G   44K  1.2G   1% /run/user/54321
+tmpfs                1.2G     0  1.2G   0% /run/user/0
+[root@oraclelab2 ~]# su - oracle
+Last login: Mon May  1 09:23:33 IST 2023 on pts/0
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? +ASM
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16860                0           16860              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8300                0            8300              0             N  RECO/
+ASMCMD [+] > exit
+[oracle@oraclelab2 ~]$ cd /oradata
+-bash: cd: /oradata: No such file or directory
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    1192   714  0 09:58 pts/0    00:00:00 grep --color=auto smon
+oracle   13958     1  0 Apr26 ?        00:00:07 asm_smon_+ASM
+oracle   21256     1  0 Apr26 ?        00:00:06 ora_smon_TESTDB
+[oracle@oraclelab2 ~]$ ps -ef|grep TESTDB
+oracle     932     1  0 09:55 ?        00:00:00 ora_m000_TESTDB
+oracle    1450   714  0 10:02 pts/0    00:00:00 grep --color=auto TESTDB
+oracle    8417     1  0 03:30 ?        00:00:15 ora_m001_TESTDB
+oracle   21191     1  0 Apr26 ?        00:00:29 ora_pmon_TESTDB
+oracle   21195     1  0 Apr26 ?        00:00:10 ora_clmn_TESTDB
+oracle   21199     1  0 Apr26 ?        00:00:43 ora_psp0_TESTDB
+oracle   21203     1  0 Apr26 ?        00:54:20 ora_vktm_TESTDB
+oracle   21210     1  0 Apr26 ?        00:00:19 ora_gen0_TESTDB
+oracle   21214     1  0 Apr26 ?        00:00:09 ora_mman_TESTDB
+oracle   21220     1  0 Apr26 ?        00:01:21 ora_gen1_TESTDB
+oracle   21223     1  0 Apr26 ?        00:00:15 ora_diag_TESTDB
+oracle   21225     1  0 Apr26 ?        00:00:09 ora_ofsd_TESTDB
+oracle   21228     1  0 Apr26 ?        00:01:59 ora_dbrm_TESTDB
+oracle   21232     1  0 Apr26 ?        00:06:16 ora_vkrm_TESTDB
+oracle   21234     1  0 Apr26 ?        00:00:17 ora_svcb_TESTDB
+oracle   21236     1  0 Apr26 ?        00:00:59 ora_pman_TESTDB
+oracle   21240     1  0 Apr26 ?        00:04:24 ora_dia0_TESTDB
+oracle   21242     1  0 Apr26 ?        00:00:21 ora_dbw0_TESTDB
+oracle   21246     1  0 Apr26 ?        00:00:13 ora_lgwr_TESTDB
+oracle   21250     1  0 Apr26 ?        00:01:56 ora_ckpt_TESTDB
+oracle   21254     1  0 Apr26 ?        00:00:09 ora_lg00_TESTDB
+oracle   21256     1  0 Apr26 ?        00:00:06 ora_smon_TESTDB
+oracle   21261     1  0 Apr26 ?        00:00:04 ora_lg01_TESTDB
+oracle   21263     1  0 Apr26 ?        00:00:42 ora_smco_TESTDB
+oracle   21265     1  0 Apr26 ?        00:00:02 ora_reco_TESTDB
+oracle   21267     1  0 Apr26 ?        00:00:09 ora_w000_TESTDB
+oracle   21269     1  0 Apr26 ?        00:00:12 ora_lreg_TESTDB
+oracle   21273     1  0 Apr26 ?        00:00:09 ora_w001_TESTDB
+oracle   21275     1  0 Apr26 ?        00:00:07 ora_pxmn_TESTDB
+oracle   21277     1  0 Apr26 ?        00:00:12 ora_rbal_TESTDB
+oracle   21281     1  0 Apr26 ?        00:00:07 ora_asmb_TESTDB
+oracle   21285     1  0 Apr26 ?        00:06:20 ora_fenc_TESTDB
+oracle   21291     1  0 Apr26 ?        00:01:35 ora_mmon_TESTDB
+oracle   21293     1  0 Apr26 ?        00:02:17 ora_mmnl_TESTDB
+oracle   21295     1  0 Apr26 ?        00:00:05 ora_d000_TESTDB
+oracle   21297     1  0 Apr26 ?        00:00:04 ora_s000_TESTDB
+oracle   21299     1  0 Apr26 ?        00:00:05 ora_tmon_TESTDB
+oracle   21303     1  0 Apr26 ?        00:00:12 ora_mark_TESTDB
+oracle   21328     1  0 Apr26 ?        00:00:11 ora_p000_TESTDB
+oracle   21330     1  0 Apr26 ?        00:00:11 ora_p001_TESTDB
+oracle   21332     1  0 Apr26 ?        00:00:05 ora_tt00_TESTDB
+oracle   21334     1  0 Apr26 ?        00:00:04 ora_arc0_TESTDB
+oracle   21336     1  0 Apr26 ?        00:00:03 ora_tt01_TESTDB
+oracle   21338     1  0 Apr26 ?        00:00:02 ora_arc1_TESTDB
+oracle   21340     1  0 Apr26 ?        00:00:02 ora_arc2_TESTDB
+oracle   21342     1  0 Apr26 ?        00:00:02 ora_arc3_TESTDB
+oracle   21344     1  0 Apr26 ?        00:00:13 ora_tt02_TESTDB
+oracle   21351     1  0 Apr26 ?        00:00:02 ora_aqpc_TESTDB
+oracle   21355     1  0 Apr26 ?        00:00:10 ora_p002_TESTDB
+oracle   21357     1  0 Apr26 ?        00:00:10 ora_p003_TESTDB
+oracle   21360     1  0 Apr26 ?        00:06:19 ora_cjq0_TESTDB
+oracle   21367     1  0 Apr26 ?        00:00:00 oracleTESTDB (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+oracle   21477     1  0 Apr26 ?        00:00:09 ora_w002_TESTDB
+oracle   21550     1  0 Apr26 ?        00:00:09 ora_w003_TESTDB
+oracle   21595     1  0 Apr26 ?        00:00:09 ora_w004_TESTDB
+oracle   21599     1  0 Apr26 ?        00:00:03 ora_qm02_TESTDB
+oracle   21603     1  0 Apr26 ?        00:00:05 ora_q002_TESTDB
+oracle   21605     1  0 Apr26 ?        00:00:03 ora_q003_TESTDB
+oracle   21608     1  0 Apr26 ?        00:00:09 ora_w005_TESTDB
+oracle   21678     1  0 Apr26 ?        00:00:08 ora_cl00_TESTDB
+oracle   22223     1  0 Apr26 ?        00:00:09 ora_w006_TESTDB
+oracle   22227     1  0 Apr26 ?        00:00:09 ora_w007_TESTDB
+oracle   24131     1  0 07:35 ?        00:00:06 ora_m004_TESTDB
+oracle   30164     1  0 09:10 ?        00:00:02 ora_m002_TESTDB
+oracle   30915     1  0 09:22 ?        00:00:01 ora_m003_TESTDB
+[oracle@oraclelab2 ~]$ ps -ef|grep +ASM
+oracle    1414     1  0 10:01 ?        00:00:00 oracle+ASM_mmnl_testdb (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+oracle    1474   714  0 10:02 pts/0    00:00:00 grep --color=auto +ASM
+oracle   13925     1  0 Apr26 ?        00:00:25 asm_pmon_+ASM
+oracle   13927     1  0 Apr26 ?        00:00:09 asm_clmn_+ASM
+oracle   13929     1  0 Apr26 ?        00:00:46 asm_psp0_+ASM
+oracle   13932     1  0 Apr26 ?        00:56:34 asm_vktm_+ASM
+oracle   13936     1  0 Apr26 ?        00:00:22 asm_gen0_+ASM
+oracle   13938     1  0 Apr26 ?        00:00:08 asm_mman_+ASM
+oracle   13942     1  0 Apr26 ?        00:00:25 asm_gen1_+ASM
+oracle   13945     1  0 Apr26 ?        00:00:16 asm_diag_+ASM
+oracle   13947     1  0 Apr26 ?        00:01:01 asm_pman_+ASM
+oracle   13949     1  0 Apr26 ?        00:03:12 asm_dia0_+ASM
+oracle   13952     1  0 Apr26 ?        00:00:09 asm_dbw0_+ASM
+oracle   13954     1  0 Apr26 ?        00:00:11 asm_lgwr_+ASM
+oracle   13956     1  0 Apr26 ?        00:00:20 asm_ckpt_+ASM
+oracle   13958     1  0 Apr26 ?        00:00:07 asm_smon_+ASM
+oracle   13960     1  0 Apr26 ?        00:00:10 asm_lreg_+ASM
+oracle   13962     1  0 Apr26 ?        00:00:07 asm_pxmn_+ASM
+oracle   13964     1  0 Apr26 ?        00:00:50 asm_rbal_+ASM
+oracle   13966     1  0 Apr26 ?        00:01:39 asm_gmon_+ASM
+oracle   13968     1  0 Apr26 ?        00:00:31 asm_mmon_+ASM
+oracle   13970     1  0 Apr26 ?        00:01:37 asm_mmnl_+ASM
+oracle   13995     1  0 Apr26 ?        00:00:01 oracle+ASM (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+oracle   15124     1  0 Apr26 ?        00:00:00 oracle+ASM (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+oracle   21064     1  0 Apr26 ?        00:00:07 asm_asmb_+ASM
+oracle   21066     1  0 Apr26 ?        00:00:20 oracle+ASM_asmb_+asm (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+oracle   21290     1  0 Apr26 ?        00:00:19 oracle+ASM_asmb_testdb (DESCRIPTION=(LOCAL=YES)(ADDRESS=(PROTOCOL=beq)))
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16860                0           16860              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8300                0            8300              0             N  RECO/
+ASMCMD [+] > exit
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ sqlplus / as sysasm
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 1 10:12:43 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show parameter power
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+asm_power_limit                      integer     1
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] >
+ASMCMD [+] >
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16860                0           16860              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8300                0            8300              0             N  RECO/
+ASMCMD [+] > cd DATA/
+ASMCMD [+DATA] > ls -l
+Type  Redund  Striped  Time  Sys  Name
+                             N    TESTDB/
+ASMCMD [+DATA] > cd TESTDB/
+ASMCMD [+DATA/TESTDB] > ls -l
+Type  Redund  Striped  Time  Sys  Name
+                             Y    CONTROLFILE/
+                             Y    DATAFILE/
+                             Y    ONLINELOG/
+                             Y    PARAMETERFILE/
+                             Y    TEMPFILE/
+ASMCMD [+DATA/TESTDB] > cd DATAFILE/
+ASMCMD [+DATA/TESTDB/DATAFILE] > ls -l
+Type      Redund  Striped  Time             Sys  Name
+DATAFILE  UNPROT  COARSE   APR 26 10:00:00  Y    SYSAUX.257.1135131001
+DATAFILE  UNPROT  COARSE   APR 26 10:00:00  Y    SYSTEM.256.1135130965
+DATAFILE  UNPROT  COARSE   APR 26 10:00:00  Y    UNDOTBS1.258.1135131025
+DATAFILE  UNPROT  COARSE   APR 26 10:00:00  Y    USERS.259.1135131027
+ASMCMD [+DATA/TESTDB/DATAFILE] > cd ../CONTROLFILE/
+ASMCMD [+DATA/TESTDB/CONTROLFILE] > ls -l
+Type         Redund  Striped  Time             Sys  Name
+CONTROLFILE  UNPROT  FINE     APR 26 10:00:00  Y    Current.260.1135131073
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16860                0           16860              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8300                0            8300              0             N  RECO/
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] >
+ASMCMD [+DATA/TESTDB/CONTROLFILE] > exit
+df -[oracle@oraclelab2 ~]$ df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             5.8G     0  5.8G   0% /dev
+tmpfs                5.8G  637M  5.2G  11% /dev/shm
+tmpfs                5.8G  9.7M  5.8G   1% /run
+tmpfs                5.8G     0  5.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   84G   50G   35G  60% /
+/dev/sda1            997M  341M  657M  35% /boot
+tmpfs                1.2G   44K  1.2G   1% /run/user/54321
+tmpfs                1.2G     0  1.2G   0% /run/user/0
+[oracle@oraclelab2 ~]$
+
+

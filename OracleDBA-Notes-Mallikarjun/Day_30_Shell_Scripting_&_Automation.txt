@@ -1,0 +1,1675 @@
+[oracle@oraclelab1 script]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$ sh test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$
+
+[oracle@oraclelab1 tmp]$ sh /home/oracle/script/test1.sh
+Hello Mallik
+[oracle@oraclelab1 tmp]$
+
+[oracle@oraclelab1 script]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$ ./test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$
+
+[oracle@oraclelab1 tmp]$ /home/oracle/script/test1.sh
+Hello Mallik
+[oracle@oraclelab1 tmp]$
+
+
+/home/oracle/script/test*.sh
+
+
+
+if tnsping DEVDB > /dev/null;
+then
+  echo Listener running
+else
+  echo Listener not running
+  echo "Alert DEVDB listener is Down, Please restart it" | mailx -s "DEVDB listener on `hostname` is down" mallikarjun@gmail.com
+fi
+
+
+every 1 hours 
+/home/oracle/script/listener.sh
+
+1 - minute (0 to 59)
+2 - hours (0 to 23)
+3 - Day (1 to 31)
+4 - month (1 to 12 / JAN to DEC)
+5 - Day (0 to 6 / SUN to SAT)
+
+every 1 hours 
+1 * * * * sh /home/oracle/script/listener.sh
+
+every 1 minute 
+* * * * * sh /home/oracle/script/listener.sh
+
+every 1 minute 
+* 6-18 * * * sh /home/oracle/script/listener.sh
+
+every sunday 10PM 
+1 22 * * SUN sh /home/oracle/level_0.sh
+1 22 * * 0 sh /home/oracle/level_0.sh
+
+
+except sunday 10PM
+1 22 * * 1-6 sh /home/oracle/level_1.sh
+1 22 * * MON-SAT sh /home/oracle/level_1.sh
+
+1 22 * * MON,THU,SAT sh /home/oracle/level_1.sh
+
+mailx 
+sendmail 
+SMTP 
+
+
+[oracle@oraclelab1 script]$ clear
+[oracle@oraclelab1 script]$ ps -ef|grep smon
+oracle   21690     1  0 09:35 ?        00:00:00 ora_smon_DEVDB
+oracle   22080 21467  0 09:36 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 script]$ . oraenv
+ORACLE_SID = [DEVDB] ? DEVDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 script]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 26 09:37:22 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select instance_name, status from v$instance;
+
+INSTANCE_NAME    STATUS
+---------------- ------------
+DEVDB            OPEN
+
+SQL> select name, open_mode from v$database;
+
+NAME      OPEN_MODE
+--------- --------------------
+DEVDB     READ WRITE
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 script]$ df -h /
+Filesystem           Size  Used Avail Use% Mounted on
+/dev/mapper/ol-root   84G   78G  6.0G  93% /
+[oracle@oraclelab1 script]$ df -h
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             5.7G     0  5.7G   0% /dev
+tmpfs                5.8G   35M  5.7G   1% /dev/shm
+tmpfs                5.8G  691M  5.1G  12% /run
+tmpfs                5.8G     0  5.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   84G   78G  6.0G  93% /
+/dev/sda1           1014M  233M  782M  23% /boot
+tmpfs                1.2G   52K  1.2G   1% /run/user/0
+tmpfs                1.2G   52K  1.2G   1% /run/user/54321
+[oracle@oraclelab1 script]$ ls -l
+total 8
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+[oracle@oraclelab1 script]$ cd /tmp/
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$ ps -ef|grep tns
+root        23     2  0 Apr26 ?        00:00:00 [netns]
+oracle   22337 21467  0 09:40 pts/2    00:00:00 grep --color=auto tns
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$
+[oracle@oraclelab1 tmp]$ cd
+[oracle@oraclelab1 ~]$ cd script/
+[oracle@oraclelab1 script]$ vi test1.sh
+[oracle@oraclelab1 script]$ cat test1.sh
+#This is fisrt script
+echo "Hello Mallik"
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ echo "Hello Mallik"
+Hello Mallik
+[oracle@oraclelab1 script]$ sh test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$  echo "Hello Mallik"
+Hello Mallik
+[oracle@oraclelab1 script]$ pwd
+/home/oracle/script
+[oracle@oraclelab1 script]$ ll
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-rw-r--r--. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ sh test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$ sh test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$ cd
+[oracle@oraclelab1 ~]$ pwd
+/home/oracle
+[oracle@oraclelab1 ~]$ cd /tmp/
+[oracle@oraclelab1 tmp]$ sh /home/oracle/script/test1.sh
+Hello Mallik
+[oracle@oraclelab1 tmp]$ cd cd /home/oracle/script
+-bash: cd: cd: No such file or directory
+[oracle@oraclelab1 tmp]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$ ls -l
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-rw-r--r--. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ chmod 775 test1.sh
+[oracle@oraclelab1 script]$ ls -l
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-rwxrwxr-x. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ ./test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$ cd cd /home/oracle/script
+-bash: cd: cd: No such file or directory
+[oracle@oraclelab1 script]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$ ./test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$ cd
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd /tmp/
+[oracle@oraclelab1 tmp]$ /home/oracle/script/test1.sh
+Hello Mallik
+[oracle@oraclelab1 tmp]$ chmod ^C
+[oracle@oraclelab1 tmp]$ cd /home/oracle/script
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ l
+bash: l: command not found...
+[oracle@oraclelab1 script]$ ll
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-rwxrwxr-x. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ chmod 440 test1.sh
+[oracle@oraclelab1 script]$ ll
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-r--r-----. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ ./test1.sh
+-bash: ./test1.sh: Permission denied
+[oracle@oraclelab1 script]$ pwd
+/home/oracle/script
+[oracle@oraclelab1 script]$ /home/oracle/script/test1.sh
+-bash: /home/oracle/script/test1.sh: Permission denied
+[oracle@oraclelab1 script]$ sh test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$ sh /home/oracle/script/test1.sh
+Hello Mallik
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ ll
+total 12
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-r--r-----. 1 oracle oinstall  43 May 26 09:42 test1.sh
+[oracle@oraclelab1 script]$ vi test2.sh
+[oracle@oraclelab1 script]$ sh test2.sh
+What is your name?
+Mallik
+Hello, Mallik
+[oracle@oraclelab1 script]$ cat test2.sh
+echo "What is your name?"
+read PERSON
+echo "Hello, $PERSON"
+
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ cat test2.sh
+echo "What is your name?"
+read PERSON
+echo "Hello, $PERSON"
+
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test3.sh
+[oracle@oraclelab1 script]$ sh test3.sh
+Hello World
+123
+stringVar
+intVar
+[oracle@oraclelab1 script]$ cat test3.sh
+stringVar="Hello World"
+intVar="123"
+
+echo $stringVar
+echo $intVar
+
+echo stringVar
+echo intVar
+[oracle@oraclelab1 script]$ vi test4.sh
+[oracle@oraclelab1 script]$ sh test4.sh
+Total value: 12
+Total value: 4
+Total value: 32
+Total value: 2
+[oracle@oraclelab1 script]$ cat test4.sh
+a=8
+b=4
+
+val1=`expr $a + $b`
+echo "Total value: $val1"
+
+val2=`expr $a - $b`
+echo "Total value: $val2"
+
+val3=`expr $a \* $b`
+echo "Total value: $val3"
+
+val4=`expr $a / $b`
+echo "Total value: $val4"
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test5.sh
+[oracle@oraclelab1 script]$ cat test5.sh
+a=2
+b=6
+
+if [ $a -eq $b ]
+then
+    echo "a is equal to b"
+else
+    echo "a is not equal to b"
+fi
+[oracle@oraclelab1 script]$ sh test5.sh
+a is not equal to b
+[oracle@oraclelab1 script]$ vi test5.sh
+[oracle@oraclelab1 script]$ cat test5.sh
+a=2
+b=2
+
+if [ $a -eq $b ]
+then
+    echo "a is equal to b"
+else
+    echo "a is not equal to b"
+fi
+[oracle@oraclelab1 script]$ sh test5.sh
+a is equal to b
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test6.sh
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ cat test6.sh
+string1="Harry"
+string2="Potter"
+
+string3=$string1" "$string2 # string concatenation
+
+echo $string3       # print string3
+echo ${#string1}    # print length of string3
+echo ${#string2}    # print length of string3
+echo ${#string3}    # print length of string3
+echo ${string3:2:5} # print slice of string3
+
+[oracle@oraclelab1 script]$ sh test6.sh
+Harry Potter
+5
+6
+12
+rry P
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test7.sh
+[oracle@oraclelab1 script]$ cat test7.sh
+# declare an array
+array1=(1 2 3 4 5)
+array2=(aa bb cc dd ee)
+
+# get value of an array by index
+val1=${array1[2]}
+echo $val1
+
+val1=${array2[3]}
+echo $val1
+
+# get length of array
+length=${#array1[*]}
+echo $length
+[oracle@oraclelab1 script]$ sh test7.sh
+3
+dd
+5
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test8.sh
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ cat test8.sh
+for i in {1..5}
+do
+    echo $i
+done
+
+
+for i in 2 3 3 6 6 6
+do
+    echo $i
+done
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ sh test8.sh
+1
+2
+3
+4
+5
+2
+3
+3
+6
+6
+6
+[oracle@oraclelab1 script]$ pwd
+/home/oracle/script
+[oracle@oraclelab1 script]$ ls -ltrh
+total 40K
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-r--r-----. 1 oracle oinstall  43 May 26 09:42 test1.sh
+-rw-r--r--. 1 oracle oinstall  61 May 26 09:51 test2.sh
+-rw-r--r--. 1 oracle oinstall  95 May 26 09:54 test3.sh
+-rw-r--r--. 1 oracle oinstall 197 May 26 09:58 test4.sh
+-rw-r--r--. 1 oracle oinstall  97 May 26 10:02 test5.sh
+-rw-r--r--. 1 oracle oinstall 306 May 26 10:04 test6.sh
+-rw-r--r--. 1 oracle oinstall 212 May 26 10:08 test7.sh
+-rw-r--r--. 1 oracle oinstall  79 May 26 10:10 test8.sh
+[oracle@oraclelab1 script]$ vi test9.sh
+[oracle@oraclelab1 script]$ cat test9.sh
+for FILE in /home/oracle/script/test*.sh
+do
+        echo $FILE
+done
+[oracle@oraclelab1 script]$ sh test9.sh
+/home/oracle/script/test1.sh
+/home/oracle/script/test2.sh
+/home/oracle/script/test3.sh
+/home/oracle/script/test4.sh
+/home/oracle/script/test5.sh
+/home/oracle/script/test6.sh
+/home/oracle/script/test7.sh
+/home/oracle/script/test8.sh
+/home/oracle/script/test9.sh
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ vi test10.sh
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ sh test10.sh
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ sh test10.sh > /tmp/test10.log
+[oracle@oraclelab1 script]$ cat /tmp/test10.log
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$ sh test10.sh > /tmp/test10.log
+[oracle@oraclelab1 script]$ cat /tmp/test10.log
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$ sh test10.sh >> /tmp/test10.log
+[oracle@oraclelab1 script]$ cat /tmp/test10.log
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$ sh test10.sh >> /tmp/test10.log
+[oracle@oraclelab1 script]$ cat /tmp/test10.log
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$ sh test10.sh > /tmp/test10.log
+[oracle@oraclelab1 script]$ cat /tmp/test10.log
+1
+2
+3
+4
+5
+[oracle@oraclelab1 script]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:17:53
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+Used HOSTNAME adapter to resolve the alias
+Attempting to contact (DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=))(ADDRESS=(PROTOCOL=tcp)(HOST=64.91.248.15)(PORT=1521)))
+TNS-12541: TNS:no listener
+[oracle@oraclelab1 script]$ ps -ef|grep tns
+root        23     2  0 Apr26 ?        00:00:00 [netns]
+oracle   24757 21467  0 10:18 pts/2    00:00:00 grep --color=auto tns
+[oracle@oraclelab1 script]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:18:21
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+Used HOSTNAME adapter to resolve the alias
+Attempting to contact (DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=))(ADDRESS=(PROTOCOL=tcp)(HOST=64.91.248.15)(PORT=1521)))
+TNS-12541: TNS:no listener
+[oracle@oraclelab1 script]$ vi listener.sh
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ sh listener.sh
+Listener not running
+[oracle@oraclelab1 script]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 script]$ lsnrctl start LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:20:43
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Starting /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr: please wait...
+
+TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+System parameter file is /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Log messages written to /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 0 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:20:51
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 8 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:20:55
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 12 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:20:56
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 13 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:20:57
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 14 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 26 10:21:01 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> show parameter local
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+local_listener                       string      (DESCRIPTION=(ADDRESS_LIST=(AD
+                                                 DRESS=(PROTOCOL=TCP)(HOST=orac
+                                                 lelab1.localdomain.com)(PORT=1
+                                                 522))))
+parallel_force_local                 boolean     FALSE
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:13
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 30 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:16
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 33 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:17
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 34 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:25
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 42 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:26
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 0 min. 43 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 script]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:21:49
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 1 min. 6 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+Services Summary...
+Service "DEVDB" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+Service "DEVDBXDB" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+Service "MALLIK" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+The command completed successfully
+[oracle@oraclelab1 script]$ ls -ltrh
+total 52K
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-r--r-----. 1 oracle oinstall  43 May 26 09:42 test1.sh
+-rw-r--r--. 1 oracle oinstall  61 May 26 09:51 test2.sh
+-rw-r--r--. 1 oracle oinstall  95 May 26 09:54 test3.sh
+-rw-r--r--. 1 oracle oinstall 197 May 26 09:58 test4.sh
+-rw-r--r--. 1 oracle oinstall  97 May 26 10:02 test5.sh
+-rw-r--r--. 1 oracle oinstall 306 May 26 10:04 test6.sh
+-rw-r--r--. 1 oracle oinstall 212 May 26 10:08 test7.sh
+-rw-r--r--. 1 oracle oinstall  79 May 26 10:10 test8.sh
+-rw-r--r--. 1 oracle oinstall  62 May 26 10:12 test9.sh
+-rw-r--r--. 1 oracle oinstall  83 May 26 10:13 test10.sh
+-rw-r--r--. 1 oracle oinstall  95 May 26 10:20 listener.sh
+[oracle@oraclelab1 script]$ sh listener.sh
+Listener not running
+[oracle@oraclelab1 script]$ cat listener.sh
+if tnsping DEVDB > /dev/null;
+then
+  echo Listener running
+else
+  echo Listener not running
+fi
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:22:15
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+Used HOSTNAME adapter to resolve the alias
+Attempting to contact (DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=))(ADDRESS=(PROTOCOL=tcp)(HOST=64.91.248.15)(PORT=1521)))
+TNS-12541: TNS:no listener
+[oracle@oraclelab1 script]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 script]$ exit
+logout
+[root@oraclelab1 ~]# systemctl firewalld status
+Unknown operation 'firewalld'.
+[root@oraclelab1 ~]# systemctl status  firewalld
+● firewalld.service - firewalld - dynamic firewall daemon
+   Loaded: loaded (/usr/lib/systemd/system/firewalld.service; disabled; vendor preset: enabled)
+   Active: inactive (dead)
+     Docs: man:firewalld(1)
+[root@oraclelab1 ~]# systemctl restart^C
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# service anmed restart
+Redirecting to /bin/systemctl restart anmed.service
+Failed to restart anmed.service: Unit not found.
+[root@oraclelab1 ~]# service named restart
+Redirecting to /bin/systemctl restart named.service
+Failed to restart named.service: Unit not found.
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# cat /etc/hosts
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+10.38.4.180     oraclelab1.localdomain.com      oraclelab1
+10.38.4.179     oraclelab2.localdomain.com      oraclelab2
+
+[root@oraclelab1 ~]# ping oraclelab1.localdomain.com
+PING oraclelab1.localdomain.com (10.38.4.180) 56(84) bytes of data.
+64 bytes from oraclelab1.localdomain.com (10.38.4.180): icmp_seq=1 ttl=64 time=0.051 ms
+64 bytes from oraclelab1.localdomain.com (10.38.4.180): icmp_seq=2 ttl=64 time=0.074 ms
+^C
+--- oraclelab1.localdomain.com ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1012ms
+rtt min/avg/max/mdev = 0.051/0.062/0.074/0.013 ms
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# sqlplus / as sysdba
+bash: sqlplus: command not found...
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May 26 09:34:30 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 26 10:24:43 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> show parameter local
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+local_listener                       string      (DESCRIPTION=(ADDRESS_LIST=(AD
+                                                 DRESS=(PROTOCOL=TCP)(HOST=orac
+                                                 lelab1.localdomain.com)(PORT=1
+                                                 522))))
+parallel_force_local                 boolean     FALSE
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv^C
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 ~]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:25:12
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:20:43
+Uptime                    0 days 0 hr. 4 min. 29 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+Services Summary...
+Service "DEVDB" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+Service "DEVDBXDB" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+Service "MALLIK" has 1 instance(s).
+  Instance "DEVDB", status READY, has 1 handler(s) for this service...
+The command completed successfully
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ lsnrctl stop LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:25:23
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The command completed successfully
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora^C
+[oracle@oraclelab1 ~]$ lsnrctl start LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:26:27
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Starting /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr: please wait...
+
+TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+System parameter file is /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Log messages written to /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=10.38.4.180)(PORT=1522)))
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=10.38.4.180)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:26:27
+Uptime                    0 days 0 hr. 0 min. 0 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=10.38.4.180)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:26:36
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+Used HOSTNAME adapter to resolve the alias
+Attempting to contact (DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=))(ADDRESS=(PROTOCOL=tcp)(HOST=64.91.248.15)(PORT=1521)))
+TNS-12541: TNS:no listener
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ service network restart
+Restarting network (via systemctl):  ==== AUTHENTICATING FOR org.freedesktop.systemd1.manage                        -units ===
+Authentication is required to manage system services or units.
+Authenticating as: root
+Password:
+==== AUTHENTICATION FAILED ===
+Failed to restart network.service: Access denied
+See system logs and 'systemctl status network.service' for details.
+[FAILED]
+[oracle@oraclelab1 ~]$ exit
+logout
+[root@oraclelab1 ~]# service network restart
+Restarting network (via systemctl):                        [  OK  ]
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May 26 10:24:36 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:27:18
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+Used HOSTNAME adapter to resolve the alias
+Attempting to contact (DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=))(ADDRESS=(PROTOCOL=tcp)(HOS                        T=64.91.248.15)(PORT=1521)))
+TNS-12541: TNS:no listener
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cp /etc/^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cat t^C
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 10.38.4.180)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# tnsnames.ora Network Configuration File: /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# Generated by Oracle configuration tools.
+
+DEVDB3 =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = DEVDB)
+    )
+  )
+
+TEST =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = TEST)
+    )
+  )
+
+TESTDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab2.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = TESTDB)
+    )
+  )
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ vi ^C
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 10.38.4.180)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# tnsnames.ora Network Configuration File: /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# Generated by Oracle configuration tools.
+
+DEVDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = DEVDB)
+    )
+  )
+
+TEST =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = TEST)
+    )
+  )
+
+TESTDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab2.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = TESTDB)
+    )
+  )
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:28:58
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+
+Used TNSNAMES adapter to resolve the alias
+Attempting to contact (DESCRIPTION = (ADDRESS_LIST = (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))) (CONNECT_DATA = (SERVICE_NAME = DEVDB)))
+OK (0 msec)
+[oracle@oraclelab1 ~]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 ~]$ lsnrctl stop LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:29:40
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The command completed successfully
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ lsnrctl start LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:29:47
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Starting /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr: please wait...
+
+TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+System parameter file is /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Log messages written to /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:29:47
+Uptime                    0 days 0 hr. 0 min. 0 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+LISTENER_DEVDB =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 ~]$ lsnrctl status LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:30:00
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER_DEVDB
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                26-MAY-2023 10:29:47
+Uptime                    0 days 0 hr. 0 min. 13 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.ora
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener_devdb/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 ~]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# tnsnames.ora Network Configuration File: /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/tnsnames.ora
+# Generated by Oracle configuration tools.
+
+DEVDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = DEVDB)
+    )
+  )
+
+TEST =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = TEST)
+    )
+  )
+
+TESTDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab2.localdomain.com)(PORT = 1522))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = TESTDB)
+    )
+  )
+
+[oracle@oraclelab1 ~]$ tnsping DEVDB
+
+TNS Ping Utility for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:30:17
+
+Copyright (c) 1997, 2022, Oracle.  All rights reserved.
+
+Used parameter files:
+/u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/sqlnet.ora
+
+
+Used TNSNAMES adapter to resolve the alias
+Attempting to contact (DESCRIPTION = (ADDRESS_LIST = (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1522))) (CONNECT_DATA = (SERVICE_NAME = DEVDB)))
+OK (0 msec)
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd script/
+[oracle@oraclelab1 script]$ ls -ltrh
+total 52K
+-rw-r--r--. 1 oracle oinstall 221 Mar 20 10:16 instance_status.sh
+-rw-r--r--. 1 oracle oinstall 159 Mar 20 10:20 listener_status.sh
+-r--r-----. 1 oracle oinstall  43 May 26 09:42 test1.sh
+-rw-r--r--. 1 oracle oinstall  61 May 26 09:51 test2.sh
+-rw-r--r--. 1 oracle oinstall  95 May 26 09:54 test3.sh
+-rw-r--r--. 1 oracle oinstall 197 May 26 09:58 test4.sh
+-rw-r--r--. 1 oracle oinstall  97 May 26 10:02 test5.sh
+-rw-r--r--. 1 oracle oinstall 306 May 26 10:04 test6.sh
+-rw-r--r--. 1 oracle oinstall 212 May 26 10:08 test7.sh
+-rw-r--r--. 1 oracle oinstall  79 May 26 10:10 test8.sh
+-rw-r--r--. 1 oracle oinstall  62 May 26 10:12 test9.sh
+-rw-r--r--. 1 oracle oinstall  83 May 26 10:13 test10.sh
+-rw-r--r--. 1 oracle oinstall  95 May 26 10:20 listener.sh
+[oracle@oraclelab1 script]$ sh listener.sh
+Listener running
+[oracle@oraclelab1 script]$ ps -ef|grep tns
+root        23     2  0 Apr26 ?        00:00:00 [netns]
+oracle   26211     1  0 10:29 ?        00:00:00 /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr LISTENER_DEVDB -inherit
+oracle   26297 25972  0 10:30 pts/2    00:00:00 grep --color=auto tns
+[oracle@oraclelab1 script]$ lsnrctl stop LISTENER_DEVDB
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 26-MAY-2023 10:30:50
+
+Copyright (c) 1991, 2022, Oracle.  All rights reserved.
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522)))
+The command completed successfully
+[oracle@oraclelab1 script]$ sh listener.sh
+Listener not running
+[oracle@oraclelab1 script]$ cat listener.sh
+if tnsping DEVDB > /dev/null;
+then
+  echo Listener running
+else
+  echo Listener not running
+fi
+[oracle@oraclelab1 script]$ mailx
+Heirloom Mail version 12.5 7/5/10.  Type ? for help.
+"/var/spool/mail/oracle": 49352 messages 49352 new
+>N  1 Mail Delivery System  Tue Aug  9 10:05  73/2733  "Undelivered Mail Returned to Sender"
+ N  2 Mail Delivery System  Tue Aug  9 10:07  73/2717  "Undelivered Mail Returned to Sender"
+ N  3 (Cron Daemon)         Tue Aug  9 10:18  26/1002  "Cron <oracle@oraclelab1> /u01/script/listener.sh"
+ N  4 Mail Delivery System  Tue Aug  9 10:18  73/2717  "Undelivered Mail Returned to Sender"
+ N  5 (Cron Daemon)         Tue Aug  9 10:19  26/1002  "Cron <oracle@oraclelab1> /u01/script/listener.sh"
+ N  6 Mail Delivery System  Tue Aug  9 10:19  73/2733  "Undelivered Mail Returned to Sender"
+ N  7 (Cron Daemon)         Tue Aug  9 10:20  26/1004  "Cron <oracle@oraclelab1> /u01/script/listener.sh"
+ N  8 Mail Delivery System  Tue Aug  9 10:20  73/2717  "Undelivered Mail Returned to Sender"
+ N  9 (Cron Daemon)         Tue Aug  9 10:21  26/1002  "Cron <oracle@oraclelab1> /u01/script/listener.sh"
+ N 10 Mail Delivery System  Tue Aug  9 10:21  73/2719  "Undelivered Mail Returned to Sender"
+ N 11 Mail Delivery System  Tue Aug  9 10:49 1502/23889 "Undelivered Mail Returned to Sender"
+ N 12 Mail Delivery System  Tue Aug  9 10:57 157/6134  "Undelivered Mail Returned to Sender"
+ N 13 (Cron Daemon)         Thu Nov  3 10:44  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 14 (Cron Daemon)         Thu Nov  3 10:45  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 15 (Cron Daemon)         Thu Nov  3 10:46  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 16 (Cron Daemon)         Thu Nov  3 10:47  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 17 (Cron Daemon)         Thu Nov  3 10:48  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 18 (Cron Daemon)         Thu Nov  3 10:49  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 19 (Cron Daemon)         Thu Nov  3 10:50  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 20 (Cron Daemon)         Thu Nov  3 10:51  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 21 (Cron Daemon)         Thu Nov  3 10:52  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 22 (Cron Daemon)         Thu Nov  3 10:54  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 23 (Cron Daemon)         Thu Nov  3 10:55  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 24 (Cron Daemon)         Thu Nov  3 10:56  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 25 (Cron Daemon)         Thu Nov  3 10:57  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 26 (Cron Daemon)         Thu Nov  3 10:58  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 27 (Cron Daemon)         Thu Nov  3 10:59  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+ N 28 (Cron Daemon)         Thu Nov  3 11:00  26/1039  "Cron <oracle@oraclelab1> /home/oracle/script/listerner_st"
+& ^CInterrupt
+&
+Message  1:
+From MAILER-DAEMON  Tue Aug  9 10:05:00 2022
+Return-Path: <>
+X-Original-To: oracle@oraclelab1.localdomain.com
+Delivered-To: oracle@oraclelab1.localdomain.com
+Date: Tue,  9 Aug 2022 10:05:00 +0530 (IST)
+From: MAILER-DAEMON@oraclelab1.localdomain.com (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: oracle@oraclelab1.localdomain.com
+Auto-Submitted: auto-replied
+Content-Type: multipart/report; report-type=delivery-status;
+        boundary="19D38BA66EF.1660019700/oraclelab1.localdomain.com"
+Status: R
+
+Part 1:
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host oraclelab1.localdomain.com.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<malluramadurggmail.com@oraclelab1.localdomain.com> (expanded from
+    <malluramadurggmail.com>): unknown user: "malluramadurggmail.com"
+
+Interrupt
+&
+Message  2:
+From MAILER-DAEMON  Tue Aug  9 10:07:06 2022
+Return-Path: <>
+X-Original-To: oracle@oraclelab1.localdomain.com
+Delivered-To: oracle@oraclelab1.localdomain.com
+Date: Tue,  9 Aug 2022 10:07:06 +0530 (IST)
+From: MAILER-DAEMON@oraclelab1.localdomain.com (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: oracle@oraclelab1.localdomain.com
+Auto-Submitted: auto-replied
+Content-Type: multipart/report; report-type=delivery-status;
+        boundary="C8AA43868.1660019826/oraclelab1.localdomain.com"
+Status: R
+
+Part 1:
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host oraclelab1.localdomain.com.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<malluramadurggmail.com@oraclelab1.localdomain.com> (expanded from
+    <malluramadurggmail.com>): unknown user: "malluramadurggmail.com"
+
+&
+Message  3:
+From oracle@oraclelab1.localdomain.com  Tue Aug  9 10:18:01 2022
+Return-Path: <oracle@oraclelab1.localdomain.com>
+X-Original-To: oracle
+Delivered-To: oracle@oraclelab1.localdomain.com
+From: "(Cron Daemon)" <oracle@oraclelab1.localdomain.com>
+To: oracle@oraclelab1.localdomain.com
+Subject: Cron <oracle@oraclelab1> /u01/script/listener.sh
+Content-Type: text/plain; charset=UTF-8
+Auto-Submitted: auto-generated
+Precedence: bulk
+X-Cron-Env: <XDG_SESSION_ID=3631>
+X-Cron-Env: <XDG_RUNTIME_DIR=/run/user/54321>
+X-Cron-Env: <LANG=en_US.UTF-8>
+X-Cron-Env: <SHELL=/bin/sh>
+X-Cron-Env: <HOME=/home/oracle>
+X-Cron-Env: <PATH=/usr/bin:/bin>
+X-Cron-Env: <LOGNAME=oracle>
+X-Cron-Env: <USER=oracle>
+Date: Tue,  9 Aug 2022 10:18:01 +0530 (IST)
+Status: R
+
+/u01/script/listener.sh: line 1: tnsping: command not found
+Listener not running
+
+&
+Message  4:
+From MAILER-DAEMON  Tue Aug  9 10:18:01 2022
+Return-Path: <>
+X-Original-To: oracle@oraclelab1.localdomain.com
+Delivered-To: oracle@oraclelab1.localdomain.com
+Date: Tue,  9 Aug 2022 10:18:01 +0530 (IST)
+From: MAILER-DAEMON@oraclelab1.localdomain.com (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: oracle@oraclelab1.localdomain.com
+Auto-Submitted: auto-replied
+Content-Type: multipart/report; report-type=delivery-status;
+        boundary="B4D473868.1660020481/oraclelab1.localdomain.com"
+Status: R
+
+Part 1:
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host oraclelab1.localdomain.com.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<malluramadurggmail.com@oraclelab1.localdomain.com> (expanded from
+Interrupt
+&
+Message  5:
+From oracle@oraclelab1.localdomain.com  Tue Aug  9 10:19:01 2022
+Return-Path: <oracle@oraclelab1.localdomain.com>
+X-Original-To: oracle
+Delivered-To: oracle@oraclelab1.localdomain.com
+From: "(Cron Daemon)" <oracle@oraclelab1.localdomain.com>
+To: oracle@oraclelab1.localdomain.com
+Subject: Cron <oracle@oraclelab1> /u01/script/listener.sh
+Content-Type: text/plain; charset=UTF-8
+Auto-Submitted: auto-generated
+Precedence: bulk
+X-Cron-Env: <XDG_SESSION_ID=3632>
+X-Cron-Env: <XDG_RUNTIME_DIR=/run/user/54321>
+X-Cron-Env: <LANG=en_US.UTF-8>
+X-Cron-Env: <SHELL=/bin/sh>
+X-Cron-Env: <HOME=/home/oracle>
+X-Cron-Env: <PATH=/usr/bin:/bin>
+X-Cron-Env: <LOGNAME=oracle>
+X-Cron-Env: <USER=oracle>
+Date: Tue,  9 Aug 2022 10:19:01 +0530 (IST)
+Status: R
+
+/u01/script/listener.sh: line 1: tnsping: command not found
+Listener not running
+
+&
+Message  6:
+From MAILER-DAEMON  Tue Aug  9 10:19:01 2022
+Return-Path: <>
+X-Original-To: oracle@oraclelab1.localdomain.com
+Delivered-To: oracle@oraclelab1.localdomain.com
+Date: Tue,  9 Aug 2022 10:19:01 +0530 (IST)
+From: MAILER-DAEMON@oraclelab1.localdomain.com (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: oracle@oraclelab1.localdomain.com
+Auto-Submitted: auto-replied
+Content-Type: multipart/report; report-type=delivery-status;
+        boundary="C6250BA66EF.1660020541/oraclelab1.localdomain.com"
+Status: R
+
+Part 1:
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host oraclelab1.localdomain.com.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<malluramadurggmail.com@oraclelab1.localdomain.com> (expanded from
+    <malluramadurggmail.com>): unknown user: "malluramadurggmail.com"
+
+Part 2:
+Content-Description: Delivery report
+Content-Type: message/delivery-status
+Interrupt
+&
+Held 49352 messages in /var/spool/mail/oracle
+You have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ logout
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# which mailx
+/usr/bin/mailx
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May 26 10:27:16 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ cd script/
+[oracle@oraclelab1 script]$ vi listener.sh
+[oracle@oraclelab1 script]$ pwd
+/home/oracle/script
+[oracle@oraclelab1 script]$ crontab -l
+#0 22 * * SUN /home/oracle/rman_level_0.sh
+#0 22 * * MON-SAT /home/oracle/rman_level_1.sh
+
+#0 * * * * /home/oracle/script/listener_status.sh
+#*/30 * * * * /home/oracle/script/instance_status.sh
+[oracle@oraclelab1 script]$ crontab -e
+crontab: installing new crontab
+[oracle@oraclelab1 script]$
+[oracle@oraclelab1 script]$ cd
+[oracle@oraclelab1 ~]$ ls -ltrh
+total 2.8M
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Videos
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Templates
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Public
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Pictures
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Music
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Documents
+drwxr-xr-x. 2 oracle oinstall    6 Jul 11  2022 Desktop
+-rw-r--r--. 1 oracle oinstall  20K Jul 11  2022 db_19.3.0.0.rsp
+-rw-r-----. 1 oracle oinstall  26K Jul 11  2022 dbca_DEVDB.rsp
+-rw-r-----. 1 oracle oinstall  26K Jul 26  2022 dbca_DEVCDB.rsp
+-rw-r-----. 1 oracle oinstall  26K Jul 26  2022 dbca_TESTCDB.rsp
+-rwxrwxrwx. 1 oracle oinstall  737 Jul 28  2022 level0.sh
+-rw-r-----. 1 oracle oinstall  26K Aug  8  2022 dbca_DEV_12.2.0.1.rsp
+-rwxrwxrwx. 1 oracle oinstall  657 Aug  9  2022 level.sh
+-rw-r--r--. 1 oracle oinstall  26K Aug 16  2022 mallik_ash.hrml
+-rw-r--r--. 1 oracle oinstall 644K Aug 16  2022 mallik_CDB.html
+-rw-r--r--. 1 oracle oinstall  23K Aug 23  2022 db_12.2.0.1.rsp
+-rw-r--r--. 1 oracle oinstall   26 Oct  4  2022 mallik.sh
+-rwxrwxrwx. 1 oracle oinstall  737 Oct 19  2022 level1.sh
+-rw-r--r--. 1 oracle oinstall 582K Nov  8  2022 mallik_08_Nov_2022.html
+-rw-r--r--. 1 oracle oinstall  105 Dec  8 10:55 bash.sh
+-rw-r--r--. 1 oracle oinstall   81 Dec  8 10:59 query.sql
+drwxr-xr-x. 2 oracle oinstall    6 Dec 22 09:29 Downloads
+drwxr-xr-x. 3 oracle oinstall 4.0K Jan 11 11:31 Daily
+-rw-r--r--. 1 oracle oinstall 625K Jan 12 10:38 mallik_awr.html
+-rwxr-xr-x. 1 oracle oinstall  751 Feb 16 00:39 level_0.sh
+-rwxr-xr-x. 1 oracle oinstall  751 Feb 16 00:39 level_1.sh
+-rw-r--r--. 1 oracle oinstall  353 Feb 18 21:36 '
+-rwxr-xr-x. 1 oracle oinstall  869 Mar  7 11:32 rman_level_0.sh
+-rwxr-xr-x. 1 oracle oinstall  870 Mar  7 11:32 rman_level_1.sh
+-rw-r--r--. 1 oracle oinstall 642K Mar 23 10:56 mallik.html
+-rw-r--r--. 1 oracle oinstall  32K Mar 27 09:47 mallik_ash.html
+-rwxrwxrwx. 1 oracle oinstall  166 Apr 27 09:42 batch_sqlplus.sh
+-rw-r--r--. 1 oracle oinstall   94 Apr 27 09:47 mallik1.sh
+-rw-r--r--. 1 oracle oinstall   71 Apr 27 09:49 script.sql
+-rw-------. 1 oracle oinstall  17K Apr 27 09:51 nohup.out
+-rwxrwxrwx. 1 oracle oinstall  734 May 11 10:59 rman_DEVDB_level_0.sh
+-rwxrwxrwx. 1 oracle oinstall  752 May 11 11:06 rman_DEVDB_level_1.sh
+drwxrwxrwx. 2 root   root     4.0K May 26 10:33 script
+[oracle@oraclelab1 ~]$ pwd
+/home/oracle
+[oracle@oraclelab1 ~]$ crontab -l
+1 * * * * sh /home/oracle/script/listener.sh
+[oracle@oraclelab1 ~]$ crontab -e
+crontab: installing new crontab
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ crontab -l
+#listener monitor
+1 * * * * sh /home/oracle/script/listener.sh
+
+#RMAN level 0 on every sunday 10 PM
+1 22 * * SUN sh /home/oracle/level_0.sh
+
+#RMAN level 1 on from monday to saturday on 10 PM
+1 22 * * MON-SAT sh /home/oracle/level_1.sh
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep rman
+oracle   27685 26414  0 10:51 pts/2    00:00:00 grep --color=auto rman
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   21690     1  0 09:35 ?        00:00:00 ora_smon_DEVDB
+oracle   27767 26414  0 10:53 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ df -h /
+Filesystem           Size  Used Avail Use% Mounted on
+/dev/mapper/ol-root   84G   79G  5.8G  94% /
+[oracle@oraclelab1 ~]$ exit
+logout
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May 26 10:32:28 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ crontab  -l
+#listener monitor
+1 * * * * sh /home/oracle/script/listener.sh
+
+#RMAN level 0 on every sunday 10 PM
+1 22 * * SUN sh /home/oracle/level_0.sh
+
+#RMAN level 1 on from monday to saturday on 10 PM
+1 22 * * MON-SAT sh /home/oracle/level_1.sh
+[oracle@oraclelab1 ~]$ crontab  -e
+crontab: installing new crontab
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ exit
+logout
+[root@oraclelab1 ~]#
+Network error: Software caused connection abort
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+
+

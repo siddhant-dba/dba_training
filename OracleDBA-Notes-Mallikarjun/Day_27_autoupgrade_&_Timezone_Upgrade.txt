@@ -1,0 +1,3129 @@
+Manual / Silent:
+================
+1. SQL>
+2. Perl script 
+3. Shell script --- DEV
+
+
+GUI:
+====
+4. ./dbua --- fully automated --- TEST
+
+
+19c New Feature (Silent):
+=========================
+5. autoupgrade --- fully automated 
+
+support.oracle.com
+AutoUpgrade Tool (Doc ID 2485457.1)
+
+
+$ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -create_sample_file config
+$ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -config cdbdev_config.cfg -mode ANALYZE
+$ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -config DB3_config.cfg -mode DEPLOY
+
+
+
+$ORACLE_HOME/rdbms/admin/autoupgrade.jar
+/u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/autoupgrade.jar
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle    4680     1  0 May19 ?        00:00:03 ora_smon_DEV
+oracle   10167     1  0 May19 ?        00:00:03 ora_smon_TEST
+oracle   17745     1  0 May19 ?        00:00:03 ora_smon_UAT
+root     27723 27486  0 09:25 pts/2    00:00:00 grep --color=auto smon
+root     27725 27600  0 09:25 pts/3    00:00:00 grep --color=auto smon
+[root@oraclelab1 ~]# cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+DEV:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+UAT:/u01/app/oracle/product/12.2.0.1/dbhome_1:N
+TEST:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[root@oraclelab1 ~]# cd /u01/patches/
+[root@oraclelab1 patches]# ll
+total 2679084
+drwxr-xr-x. 2 oracle oinstall         23 Apr 26 00:17 19c-autoupg
+drwxr-x---. 8 oracle oinstall       4096 Oct 17  2022 34416665
+-rw-r--r--. 1 oracle oinstall    6473720 Apr 30 10:15 autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 2610825269 May 16 08:46 p34416665_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall  125734641 May 16 08:46 p6880880_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall     337583 Dec  4 08:55 preupgrade_19_cbuild_13_lf.zip
+[root@oraclelab1 patches]# ls -ltrh
+total 2.6G
+drwxr-x---. 8 oracle oinstall 4.0K Oct 17  2022 34416665
+-rw-r--r--. 1 oracle oinstall 330K Dec  4 08:55 preupgrade_19_cbuild_13_lf.zip
+drwxr-xr-x. 2 oracle oinstall   23 Apr 26 00:17 19c-autoupg
+-rw-r--r--. 1 oracle oinstall 6.2M Apr 30 10:15 autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 2.5G May 16 08:46 p34416665_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall 120M May 16 08:46 p6880880_190000_Linux-x86-64.zip
+[root@oraclelab1 patches]# su - oracle
+Last login: Fri May 19 11:01:49 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ export ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ mv $ORACLE_HOME/rdbms/admin/autoupgrade.jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar-bkp
+[oracle@oraclelab1 ~]$ cp /u01/patches/autoupgrade.jar /u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/
+[oracle@oraclelab1 ~]$ ls -ld /u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/
+drwxr-xr-x. 3 oracle oinstall 57344 May 22 09:39 /u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/
+[oracle@oraclelab1 ~]$ ls -ld /u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 6473720 May 22 09:39 /u01/app/oracle/product/19.0.0.0/dbhome_1/rdbms/admin/autoupgrade.jar
+[oracle@oraclelab1 ~]$ $ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -version
+build.version 23.1.230224
+build.date 2023/02/24 14:53:24 -0500
+build.hash a1e2990e
+build.hash_date 2023/02/24 14:44:39 -0500
+build.supported_target_versions 12.2,18,19,21
+build.type production
+build.label (HEAD, tag: v23.1, origin/stable_devel, stable_devel)
+
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    4680     1  0 May19 ?        00:00:03 ora_smon_DEV
+oracle   10167     1  0 May19 ?        00:00:03 ora_smon_TEST
+oracle   17745     1  0 May19 ?        00:00:03 ora_smon_UAT
+oracle   28967 28640  0 09:41 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? UAT
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=UAT
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/12.2.0.1/dbhome_1
+[oracle@oraclelab1 ~]$ cd /u01/19c-autoupg
+-bash: cd: /u01/19c-autoupg: No such file or directory
+[oracle@oraclelab1 ~]$ mkdir /u01/19c-autoupg
+[oracle@oraclelab1 ~]$ cd /u01/patches/
+[oracle@oraclelab1 patches]$ ll
+total 2679084
+drwxr-xr-x. 2 oracle oinstall         23 Apr 26 00:17 19c-autoupg
+drwxr-x---. 8 oracle oinstall       4096 Oct 17  2022 34416665
+-rw-r--r--. 1 oracle oinstall    6473720 Apr 30 10:15 autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 2610825269 May 16 08:46 p34416665_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall  125734641 May 16 08:46 p6880880_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall     337583 Dec  4 08:55 preupgrade_19_cbuild_13_lf.zip
+[oracle@oraclelab1 patches]$
+[oracle@oraclelab1 patches]$
+[oracle@oraclelab1 patches]$ cd 19c-autoupg
+[oracle@oraclelab1 19c-autoupg]$ ll
+total 0
+[oracle@oraclelab1 19c-autoupg]$ ls -ltrh
+total 0
+[oracle@oraclelab1 19c-autoupg]$ cd /u01/patches/19c-autoupg
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$ env |grep ORA
+ORACLE_SID=UAT
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/12.2.0.1/dbhome_1
+[oracle@oraclelab1 19c-autoupg]$ sqlplus / as sysdba
+
+SQL*Plus: Release 12.2.0.1.0 Production on Mon May 22 09:42:51 2023
+
+Copyright (c) 1982, 2016, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 12c Enterprise Edition Release 12.2.0.1.0 - 64bit Production
+
+SQL> exit
+Disconnected from Oracle Database 12c Enterprise Edition Release 12.2.0.1.0 - 64bit Production
+[oracle@oraclelab1 19c-autoupg]$ export ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$ env |grep ORA
+ORACLE_SID=UAT
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 19c-autoupg]$ export PATH=$PATH:$ORACLE_HOME/jdk/bin
+[oracle@oraclelab1 19c-autoupg]$ $ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -create_sample_file config
+Created sample configuration file /u01/patches/19c-autoupg/sample_config.cfg
+[oracle@oraclelab1 19c-autoupg]$ ls -ltrh
+total 8.0K
+-rw-r--r--. 1 oracle oinstall 5.8K May 22 09:43 sample_config.cfg
+[oracle@oraclelab1 19c-autoupg]$ mv sample_config.cfg UAT_config.cfg
+[oracle@oraclelab1 19c-autoupg]$ vi UAT_config.cfg
+[oracle@oraclelab1 19c-autoupg]$ pwd
+/u01/patches/19c-autoupg
+[oracle@oraclelab1 19c-autoupg]$ vi UAT_config.cfg
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$ cat UAT_config.cfg
+#
+# Sample config file for AutoUpgrade
+#
+# build version 23.1.230224
+# build date    2023/02/24 14:53:24 -0500
+#
+#
+# Global configurations
+#
+# This directory will include the following:
+#   (1) AutoUpgrade''s global directory
+#   (2) Any logs, not directly tied to a job
+#   (3) Config files
+#   (4) progress.json and status.json
+global.autoupg_log_dir=/u01/patches/19c-autoupg
+
+#
+# Database number 1 - Full DB/CDB upgrade
+#
+upg1.log_dir=/u01/patches/19c-autoupg/UAT             # Path of the log directory for the upgrade job
+upg1.sid=UAT                                              # ORACLE_SID of the source DB/CDB
+upg1.source_home=/u01/app/oracle/product/12.2.0.1/dbhome_1  # Path of the source ORACLE_HOME
+upg1.target_home=/u01/app/oracle/product/19.0.0.0/dbhome_1  # Path of the target ORACLE_HOME
+upg1.start_time=NOW                                       # Optional. [NOW | +XhYm (X hours, Y minutes after launch) | dd/mm/yyyy hh:mm:ss]
+upg1.upgrade_node=oraclelab1.localdomain.com                                # Optional. To find out the name of your node, run the hostname utility. Default is ''localhost''
+#upg1.run_utlrp=[yes|no]                                  # Optional. Whether or not to run utlrp after upgrade
+#upg1.timezone_upg=[yes|no]                               # Optional. Whether or not to run the timezone upgrade
+#upg1.target_version=[12.2|18|19|21]                      # Oracle version of the target ORACLE_HOME.  Only required when the target Oracle database version is 12.2
+
+#
+# Database number 2 - Unplug/Plug upgrade
+#
+#upg2.log_dir=/u01/app/oracle/cfgtoollogs/autoupgrade/cdb12
+#upg2.sid=cdb12
+#upg2.source_home=/u01/app/oracle/product/12.2.0/dbhome_1
+#upg2.target_cdb=cdb19
+#upg2.target_home=/u01/app/oracle/product/21/dbhome_1
+#upg2.pdbs=mypdb1,mypdb2                    # Comma delimited list of pdb names that will be upgraded and moved to the target CDB
+#upg2.target_pdb_name.mypdb1=altpdb1        # Optional. Name of the PDB to be created on the target CDB
+#upg2.target_pdb_copy_option.mypdb1=file_name_convert=('mypdb1', 'altpdb1')  # Optional. file_name_convert option used when creating the PDB on the target CDB
+#upg2.target_pdb_name.mypdb2=altpdb2
+#upg2.start_time=22/05/2023 10:43:34        # Optional. [NOW | +XhYm (X hours, Y minutes after launch) | dd/mm/yyyy hh:mm:ss]
+#upg2.upgrade_node=localhost                # Optional. To find out the name of your node, run the hostname utility. Default is ''localhost''
+#upg2.run_utlrp=[yes|no]                   # Optional. Whether or not to run utlrp after upgrade
+#upg2.timezone_upg=[yes|no]                # Optional. Whether or not to run the timezone upgrade
+#upg2.target_version=[12.2|18|19|21]       # Oracle version of the target ORACLE_HOME.  Only required when the target Oracle database version is 12.2
+
+#
+# Database number 3 - Noncdb to PDB upgrade
+#
+#upg3.log_dir=/u01/app/oracle/cfgtoollogs/autoupgrade/employee
+#upg3.sid=emp
+#upg3.source_home=/u01/app/oracle/product/11.2.0/dbhome_1
+#upg3.target_cdb=cdb21
+#upg3.target_home=/u01/app/oracle/product/19.8.0/dbhome_1
+#upg3.target_pdb_name=pdb12
+#upg3.target_pdb_copy_option=file_name_convert=('emp', 'emppdb')
+#upg3.start_time=+10m                  # Optional. 10 Minutes from now
+#upg3.upgrade_node=localhost           # Optional. To find out the name of your node, run the hostname utility. Default is ''localhost''
+#upg3.run_utlrp=[yes|no]              # Optional. Whether or not to run utlrp after upgrade
+#upg3.timezone_upg=[yes|no]           # Optional. Whether or not to run the timezone upgrade
+#upg3.target_version=[12.2|18|19|21]  # Oracle version of the target ORACLE_HOME.  Only required when the target Oracle database version is 12.2
+
+#
+# You can have as many databases as desired
+#
+# ----- Unplug/Plug Upgrade -----
+# To perform an Unplug/Plug operation that upgrades and moves one or more PDBs
+# from a source CDB into a target CDB, use the target_cdb and pdbs parameters.
+# The target_pdb_name and target_pdb_copy_option parameters can be used
+# to determine how each PDB is created on the target CDB.
+#
+# ----- NonCDB to PDB conversion -----
+# To upgrade and convert an existing NonCDB database into a PDB of a target CDB,
+# use the target_cdb parameter to specify the destination CDB.
+# The target_pdb_name and target_pdb_copy_option parameters can be used
+# to determine how each PDB is created on the target CDB.
+#
+# When neither of these options are used, a full upgrade of the source DB/CDB is performed.
+#
+
+#upgN.log_dir=<Path of the log directory for the upgrade job>
+#upgN.sid=<ORACLE_SID of the source DB/CDB>
+#upgN.source_home=<Path of the source ORACLE_HOME>
+#upgN.target_home=<Path of the target ORACLE_HOME>
+#upgN.target_version=<Oracle version of the target ORACLE_HOME.  Only required when the target Oracle database version is 12.2>
+#upgN.start_time=<Optional. [NOW | +XhYm (X hours, Y minutes after launch) | dd/mm/yyyy hh:mm:ss]>
+#upgN.upgrade_node=<Optional. To find out the name of your node, run the hostname utility. Default is ''localhost''>
+#upgN.run_utlrp=[yes|no]    # Optional. Whether or not to run utlrp after upgrade
+#upgN.timezone_upg=[yes|no] # Optional. Whether or not to run the timezone upgrade
+
+### Unplug/Plug parameters ###
+#upgN.target_cdb=<ORACLE_SID of the target CDB>
+#upgN.pdbs=<Comma delimited list of pdb names that will be upgraded and moved to the target CDB>
+#upgN.<pdb_name>.target_pdb_name=<Optional. Name of the PDB to be created on the target CDB>
+#upgN.<pdb_name>.target_pdb_copy_option=<Optional. file_name_convert option used when creating the PDB on the target CDB>
+
+### NonCDB to PDB parameters ###
+#upgN.target_cdb=<ORACLE_SID of the target CDB>
+#upgN.target_pdb_name=<Optional. Name of the PDB to be created on the target CDB>
+#upgN.target_pdb_copy_option=<Optional. file_name_convert option used when creating the PDB on the target CDB>
+
+[oracle@oraclelab1 19c-autoupg]$ $ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -config UAT_config.cfg -mode ANALYZE
+AutoUpgrade 23.1.230224 launched with default internal options
+Processing config file ...
++--------------------------------+
+| Starting AutoUpgrade execution |
++--------------------------------+
+1 Non-CDB(s) will be analyzed
+Type 'help' to list console commands
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|                     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+| 100|    UAT|PRECHECKS|EXECUTING|RUNNING|  09:48:29| 0s ago|Loading database information|
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+Total jobs 1
+
+upg> Job 100 completed
+------------------- Final Summary --------------------
+Number of databases            [ 1 ]
+
+Jobs finished                  [1]
+Jobs failed                    [0]
+
+Please check the summary report at:
+/u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.html
+/u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.log
+[oracle@oraclelab1 19c-autoupg]$ cat /u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.log
+==========================================
+          Autoupgrade Summary Report
+==========================================
+[Date]           Mon May 22 09:48:44 IST 2023
+[Number of Jobs] 1
+==========================================
+[Job ID] 100
+==========================================
+[DB Name]                UAT
+[Version Before Upgrade] 12.2.0.1.0
+[Version After Upgrade]  19.17.0.0.0
+------------------------------------------
+[Stage Name]    PRECHECKS
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:48:29
+[Duration]
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/100/prechecks
+[Detail]        /u01/patches/19c-autoupg/UAT/UAT/100/prechecks/uat_preupgrade.log
+                Check passed and no manual intervention needed
+------------------------------------------
+[oracle@oraclelab1 19c-autoupg]$ $ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -config DB3_config.cfg -mode DEPLOY
+An error occurred while attempting to read /u01/patches/19c-autoupg/DB3_config.cfg
+[oracle@oraclelab1 19c-autoupg]$ $ORACLE_HOME/jdk/bin/java -jar $ORACLE_HOME/rdbms/admin/autoupgrade.jar -config UAT_config.cfg -mode DEPLOY
+AutoUpgrade 23.1.230224 launched with default internal options
+Processing config file ...
++--------------------------------+
+| Starting AutoUpgrade execution |
++--------------------------------+
+1 Non-CDB(s) will be processed
+Type 'help' to list console commands
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|                     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+| 101|    UAT|PRECHECKS|EXECUTING|RUNNING|  09:49:56| 3s ago|Loading database information|
++----+-------+---------+---------+-------+----------+-------+----------------------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+-------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|MESSAGE|
++----+-------+---------+---------+-------+----------+-------+-------+
+| 101|    UAT|PREFIXUPS|EXECUTING|RUNNING|  09:49:56|50s ago|       |
++----+-------+---------+---------+-------+----------+-------+-------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|           MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------------+
+| 101|    UAT|PREFIXUPS|EXECUTING|RUNNING|  09:49:56| 0s ago|Refreshing DB info|
++----+-------+---------+---------+-------+----------+-------+------------------+
+Total jobs 1
+
+upg> lsj
++----+-------+-----+---------+-------+----------+-------+----------------------+
+|Job#|DB_NAME|STAGE|OPERATION| STATUS|START_TIME|UPDATED|               MESSAGE|
++----+-------+-----+---------+-------+----------+-------+----------------------+
+| 101|    UAT|DRAIN|EXECUTING|RUNNING|  09:49:56| 8s ago|Shutting down database|
++----+-------+-----+---------+-------+----------+-------+----------------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+-------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|MESSAGE|
++----+-------+---------+---------+-------+----------+-------+-------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56| 7s ago|Running|
++----+-------+---------+---------+-------+----------+-------+-------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+-----------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|    MESSAGE|
++----+-------+---------+---------+-------+----------+-------+-----------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|17s ago|0%Upgraded |
++----+-------+---------+---------+-------+----------+-------+-----------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|73s ago|56%Upgraded |
++----+-------+---------+---------+-------+----------+-------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|48s ago|79%Upgraded |
++----+-------+---------+---------+-------+----------+-------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|29s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+-------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|37s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+-------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+--------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME| UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+--------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|107s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+--------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+---------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|  UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+---------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|!138s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+---------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+---------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|  UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+---------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56|!165s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+---------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+---------+---------+-------+----------+-------+------------+
+|Job#|DB_NAME|    STAGE|OPERATION| STATUS|START_TIME|UPDATED|     MESSAGE|
++----+-------+---------+---------+-------+----------+-------+------------+
+| 101|    UAT|DBUPGRADE|EXECUTING|RUNNING|  09:49:56| 8s ago|88%Upgraded |
++----+-------+---------+---------+-------+----------+-------+------------+
+Total jobs 1
+
+upg> lsj
++----+-------+--------+---------+-------+----------+-------+-------------------+
+|Job#|DB_NAME|   STAGE|OPERATION| STATUS|START_TIME|UPDATED|            MESSAGE|
++----+-------+--------+---------+-------+----------+-------+-------------------+
+| 101|    UAT|DISPATCH|EXECUTING|RUNNING|  09:49:56| 2s ago|Restarting Database|
++----+-------+--------+---------+-------+----------+-------+-------------------+
+Total jobs 1
+
+upg>
+upg> lsj
++----+-------+----------+---------+-------+----------+-------+-------+
+|Job#|DB_NAME|     STAGE|OPERATION| STATUS|START_TIME|UPDATED|MESSAGE|
++----+-------+----------+---------+-------+----------+-------+-------+
+| 101|    UAT|POSTFIXUPS|EXECUTING|RUNNING|  09:49:56| 4s ago|       |
++----+-------+----------+---------+-------+----------+-------+-------+
+Total jobs 1
+
+upg> lsj
++----+-------+----------+---------+-------+----------+-------+-------+
+|Job#|DB_NAME|     STAGE|OPERATION| STATUS|START_TIME|UPDATED|MESSAGE|
++----+-------+----------+---------+-------+----------+-------+-------+
+| 101|    UAT|POSTFIXUPS|EXECUTING|RUNNING|  09:49:56|43s ago|       |
++----+-------+----------+---------+-------+----------+-------+-------+
+Total jobs 1
+
+upg> Job 101 completed
+------------------- Final Summary --------------------
+Number of databases            [ 1 ]
+
+Jobs finished                  [1]
+Jobs failed                    [0]
+Jobs restored                  [0]
+Jobs pending                   [0]
+
+---- Drop GRP at your convenience once you consider it is no longer needed ----
+Drop GRP from UAT: drop restore point AUTOUPGRADE_9212_UAT122010
+
+
+Please check the summary report at:
+/u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.html
+/u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.log
+[oracle@oraclelab1 19c-autoupg]$ cat /u01/patches/19c-autoupg/cfgtoollogs/upgrade/auto/status/status.log
+==========================================
+          Autoupgrade Summary Report
+==========================================
+[Date]           Mon May 22 10:35:07 IST 2023
+[Number of Jobs] 1
+==========================================
+[Job ID] 101
+==========================================
+[DB Name]                UAT
+[Version Before Upgrade] 12.2.0.1.0
+[Version After Upgrade]  19.17.0.0.0
+------------------------------------------
+[Stage Name]    GRP
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:49:57
+[Duration]      0:00:01
+[Detail]        Please drop the following GRPs after Autoupgrade completes:
+                 AUTOUPGRADE_9212_UAT122010
+------------------------------------------
+[Stage Name]    PREUPGRADE
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:49:58
+[Duration]      0:00:00
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/preupgrade
+------------------------------------------
+[Stage Name]    PRECHECKS
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:49:58
+[Duration]      0:00:18
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/prechecks
+[Detail]        /u01/patches/19c-autoupg/UAT/UAT/101/prechecks/uat_preupgrade.log
+                Check passed and no manual intervention needed
+------------------------------------------
+[Stage Name]    PREFIXUPS
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:50:17
+[Duration]      0:01:36
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/prefixups
+[Detail]        /u01/patches/19c-autoupg/UAT/UAT/101/prefixups/prefixups.xml
+------------------------------------------
+[Stage Name]    DRAIN
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:51:54
+[Duration]      0:00:27
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/drain
+------------------------------------------
+[Stage Name]    DBUPGRADE
+[Status]        SUCCESS
+[Start Time]    2023-05-22 09:52:21
+[Duration]      0:34:03
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/dbupgrade
+------------------------------------------
+[Stage Name]    POSTCHECKS
+[Status]        SUCCESS
+[Start Time]    2023-05-22 10:26:39
+[Duration]      0:00:01
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/postchecks
+[Detail]        /u01/patches/19c-autoupg/UAT/UAT/101/postchecks/uat_postupgrade.log
+                Check passed and no manual intervention needed
+------------------------------------------
+[Stage Name]    POSTFIXUPS
+[Status]        SUCCESS
+[Start Time]    2023-05-22 10:26:40
+[Duration]      0:07:06
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/postfixups
+[Detail]        /u01/patches/19c-autoupg/UAT/UAT/101/postfixups/postfixups.xml
+------------------------------------------
+[Stage Name]    POSTUPGRADE
+[Status]        SUCCESS
+[Start Time]    2023-05-22 10:33:47
+[Duration]      0:01:20
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/postupgrade
+------------------------------------------
+[Stage Name]    SYSUPDATES
+[Status]        SUCCESS
+[Start Time]    2023-05-22 10:35:07
+[Duration]
+[Log Directory] /u01/patches/19c-autoupg/UAT/UAT/101/sysupdates
+------------------------------------------
+Summary: /u01/patches/19c-autoupg/UAT/UAT/101/dbupgrade/upg_summary.log
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$ cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+DEV:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+UAT:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+TEST:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[oracle@oraclelab1 19c-autoupg]$ ps -ef|grep smon
+oracle    4370     1  0 10:13 ?        00:00:00 ora_smon_DEV
+oracle   10004     1  0 10:35 ?        00:00:00 ora_smon_UAT
+oracle   10167     1  0 May19 ?        00:00:03 ora_smon_TEST
+oracle   10559 28640  0 10:36 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 19c-autoupg]$ . oraenv
+ORACLE_SID = [UAT] ? UAT
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 19c-autoupg]$
+[oracle@oraclelab1 19c-autoupg]$ env |grep ORA
+ORACLE_SID=UAT
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 19c-autoupg]$ sqlplus / as sysdba
+
+SQL*Plus: Release 12.2.0.1.0 Production on Mon May 22 10:36:28 2023
+
+Copyright (c) 1982, 2016, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+
+SQL> column comp_name format a40
+column version format a12
+column status format a15
+select cSQL> SQL> SQL> omp_name,version,status from dba_registry;
+
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Oracle Database Catalog Views            19.0.0.0.0   VALID
+Oracle Database Packages and Types       19.0.0.0.0   VALID
+JServer JAVA Virtual Machine             19.0.0.0.0   VALID
+Oracle XDK                               19.0.0.0.0   VALID
+Oracle Database Java Packages            19.0.0.0.0   VALID
+OLAP Analytic Workspace                  19.0.0.0.0   VALID
+Oracle Real Application Clusters         19.0.0.0.0   OPTION OFF
+Oracle XML Database                      19.0.0.0.0   VALID
+Oracle Workspace Manager                 19.0.0.0.0   VALID
+Oracle Text                              19.0.0.0.0   VALID
+Oracle Multimedia                        19.0.0.0.0   VALID
+
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Spatial                                  19.0.0.0.0   VALID
+Oracle OLAP API                          19.0.0.0.0   VALID
+Oracle Label Security                    19.0.0.0.0   VALID
+Oracle Database Vault                    19.0.0.0.0   VALID
+
+15 rows selected.
+
+SQL> column owner format a15
+column object_name format a40
+column object_type format a20
+select owner, object_name, object_type from dba_objects where status='INVALID' and owner like '%SYS%' order by object_type,owner,object_name;
+SQL> SQL> SQL>
+no rows selected
+
+SQL> select NAME,TIME from v$restore_point;
+
+NAME
+--------------------------------------------------------------------------------
+TIME
+---------------------------------------------------------------------------
+AUTOUPGRADE_9212_UAT122010
+22-MAY-23 09.49.57.000000000 AM
+
+
+SQL>
+
+
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last failed login: Mon May 22 09:55:05 IST 2023 from 172.29.0.102 on ssh:notty
+There was 1 failed login attempt since the last successful login.
+Last login: Mon May 22 09:24:49 2023 from 172.29.0.102
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May 22 09:38:27 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? DEV
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 22 09:55:54 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> column comp_name format a40
+column version format a12
+column status format a15
+select comp_name,version,status from dba_registry;
+SQL> SQL> SQL>
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Oracle Database Catalog Views            19.0.0.0.0   UPGRADED
+Oracle Database Packages and Types       19.0.0.0.0   UPGRADED
+JServer JAVA Virtual Machine             19.0.0.0.0   UPGRADED
+Oracle XDK                               19.0.0.0.0   UPGRADED
+Oracle Database Java Packages            19.0.0.0.0   UPGRADED
+OLAP Analytic Workspace                  19.0.0.0.0   UPGRADED
+Oracle Real Application Clusters         19.0.0.0.0   UPGRADED
+Oracle XML Database                      19.0.0.0.0   UPGRADED
+Oracle Workspace Manager                 19.0.0.0.0   UPGRADED
+Oracle Text                              19.0.0.0.0   UPGRADED
+Oracle Multimedia                        19.0.0.0.0   UPGRADED
+
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Spatial                                  19.0.0.0.0   UPGRADED
+Oracle OLAP API                          19.0.0.0.0   UPGRADED
+Oracle Label Security                    19.0.0.0.0   UPGRADED
+Oracle Database Vault                    19.0.0.0.0   UPGRADED
+
+15 rows selected.
+
+SQL> column owner format a15
+column object_name format a40
+column object_type format a20
+select owner, object_name, object_type from dba_objects where status='INVALID' and owner like '%SYS%' order by object_type,owner,object_name;
+SQL> SQL> SQL>
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             AQ$_AQ$_MEM_MC_V                         EVALUATION CONTEXT
+SYS             AQ$_AQ_PROP_TABLE_V                      EVALUATION CONTEXT
+SYS             AQ$_ORA$PREPLUGIN_BACKUP_QTB_V           EVALUATION CONTEXT
+SYS             AQ$_SCHEDULER$_EVENT_QTAB_V              EVALUATION CONTEXT
+SYS             AQ$_SCHEDULER$_REMDB_JOBQTAB_V           EVALUATION CONTEXT
+SYS             AQ$_SCHEDULER_FILEWATCHER_QT_V           EVALUATION CONTEXT
+SYS             AQ$_SYS$SERVICE_METRICS_TAB_V            EVALUATION CONTEXT
+SYS             DV$RULE_EVALCTX                          EVALUATION CONTEXT
+DVSYS           CLAUSE_NAME                              FUNCTION
+DVSYS           DV_DATABASE_NAME                         FUNCTION
+DVSYS           DV_DICT_OBJ_OWNER                        FUNCTION
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+DVSYS           DV_DICT_OBJ_TYPE                         FUNCTION
+DVSYS           DV_INSTANCE_NUM                          FUNCTION
+DVSYS           DV_JOB_INVOKER                           FUNCTION
+DVSYS           DV_JOB_OWNER                             FUNCTION
+DVSYS           DV_LOGIN_USER                            FUNCTION
+DVSYS           EVENT_ACTION                             FUNCTION
+DVSYS           EVENT_ACTION_LEVEL                       FUNCTION
+DVSYS           EVENT_LEVEL                              FUNCTION
+DVSYS           EVENT_NAME                               FUNCTION
+DVSYS           EVENT_TARGET                             FUNCTION
+DVSYS           PARAMETER_NAME                           FUNCTION
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+DVSYS           PARAMETER_VALUE                          FUNCTION
+LBACSYS         FETCH_ILABEL                             FUNCTION
+MDSYS           GET_TOPO_GEOMETRY_LAYER_ARRAY            FUNCTION
+MDSYS           GET_TOPO_GEOMETRY_LAYER_TABLE            FUNCTION
+SYS             DBJ_LONG_NAME                            FUNCTION
+SYSTEM          LOGMNR$COL_GG_TABF_PUBLIC                FUNCTION
+SYSTEM          LOGMNR$GSBA_GG_TABF_PUBLIC               FUNCTION
+SYSTEM          LOGMNR$KEY_GG_TABF_PUBLIC                FUNCTION
+SYSTEM          LOGMNR$SEQ_GG_TABF_PUBLIC                FUNCTION
+SYSTEM          LOGMNR$TAB_GG_TABF_PUBLIC                FUNCTION
+SYSTEM          LOGMNR$USER_GG_TABF_PUBLIC               FUNCTION
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+LBACSYS         LBAC$STD_LIBT                            LIBRARY
+ORDSYS          ORDIMLIBS                                LIBRARY
+SYS             CRYPTO_INTERNAL_LIB                      LIBRARY
+SYS             CRYPTO_TOOLKIT_LIBRARY                   LIBRARY
+SYS             DBMS_ADR_LIB                             LIBRARY
+SYS             DBMS_APBACKEND_LIB                       LIBRARY
+SYS             DBMS_APP_CONT_LIB                        LIBRARY
+SYS             DBMS_AQELM_LIB                           LIBRARY
+SYS             DBMS_AUDIT_UTIL_LIB                      LIBRARY
+SYS             DBMS_CHNF_LIB                            LIBRARY
+SYS             DBMS_CONNECTION_POOL_LIB                 LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_EXTENDED_TTS_CHECKS_LIB             LIBRARY
+SYS             DBMS_FBT_LIB                             LIBRARY
+SYS             DBMS_FDA_LIB                             LIBRARY
+SYS             DBMS_FGA_LIB                             LIBRARY
+SYS             DBMS_FILE_TRANSFER_LIB                   LIBRARY
+SYS             DBMS_HANG_MANAGER_LIB                    LIBRARY
+SYS             DBMS_HPROF_LIB                           LIBRARY
+SYS             DBMS_ILM_LIB                             LIBRARY
+SYS             DBMS_INMEMORY_LIB                        LIBRARY
+SYS             DBMS_LDAP_API_LIB                        LIBRARY
+SYS             DBMS_MAP_LIB                             LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_MONITOR_LIB                         LIBRARY
+SYS             DBMS_OUTLN_LIB                           LIBRARY
+SYS             DBMS_PLSQL_WARNING_LIB                   LIBRARY
+SYS             DBMS_PLUGTS_LIB                          LIBRARY
+SYS             DBMS_PROCESS_LIB                         LIBRARY
+SYS             DBMS_PROFILER_LIB                        LIBRARY
+SYS             DBMS_RC_LIB                              LIBRARY
+SYS             DBMS_RECO_SCRIPT_LIB                     LIBRARY
+SYS             DBMS_REDACT_LIB                          LIBRARY
+SYS             DBMS_REPAIR_LIB                          LIBRARY
+SYS             DBMS_REPAPI_LIB                          LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_RESUMABLE_LIB                       LIBRARY
+SYS             DBMS_ROLLING_LIB                         LIBRARY
+SYS             DBMS_RWEQUIV_LIB                         LIBRARY
+SYS             DBMS_SCN_LIB                             LIBRARY
+SYS             DBMS_SERVER_TRACE_LIB                    LIBRARY
+SYS             DBMS_SERVICE_LIB                         LIBRARY
+SYS             DBMS_SPACE_ALERT_LIB                     LIBRARY
+SYS             DBMS_SQADM_LIB                           LIBRARY
+SYS             DBMS_SQLMON_LIB                          LIBRARY
+SYS             DBMS_SQLPA_LIB                           LIBRARY
+SYS             DBMS_SQL_TRANSLATOR_LIB                  LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SS_LIB                              LIBRARY
+SYS             DBMS_STAT_FUNCS_AUX_LIB                  LIBRARY
+SYS             DBMS_STAT_FUNCS_LIB                      LIBRARY
+SYS             DBMS_STREAMS_TBS_LIB                     LIBRARY
+SYS             DBMS_SVRALRT_PRVT_LIB                    LIBRARY
+SYS             DBMS_TG_DBG_LIB                          LIBRARY
+SYS             DBMS_TLOG_LIB                            LIBRARY
+SYS             DBMS_TNS_LIB                             LIBRARY
+SYS             DBMS_TRACE_LIB                           LIBRARY
+SYS             DBMS_TRIGGER_LIB                         LIBRARY
+SYS             DBMS_TTS_LIB                             LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_UNDOADV_LIB                         LIBRARY
+SYS             DBMS_UTL_COLL_LIB                        LIBRARY
+SYS             DBMS_UTL_REF_LIB                         LIBRARY
+SYS             DBMS_WLM_LIB                             LIBRARY
+SYS             DBMS_WORKLOAD_CAPTURE_LIB                LIBRARY
+SYS             DBMS_WORKLOAD_REPLAY_LIB                 LIBRARY
+SYS             DBMS_XA_LIB                              LIBRARY
+SYS             DBMS_XDS_LIB                             LIBRARY
+SYS             DBMS_XMLGEN_LIB                          LIBRARY
+SYS             DBMS_XMV_LIB                             LIBRARY
+SYS             DBMS_XRW_LIB                             LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_XSP_LIB                             LIBRARY
+SYS             DBMS_ZHELP_LIB                           LIBRARY
+SYS             KUPDLIB                                  LIBRARY
+SYS             KUPFLIB                                  LIBRARY
+SYS             ODCI_EXTOPT_LIB                          LIBRARY
+SYS             TDE_LIBRARY                              LIBRARY
+SYS             URI_LIB                                  LIBRARY
+SYS             UTL_GDK_LIB                              LIBRARY
+SYS             UTL_HTT_LIB                              LIBRARY
+SYS             UTL_I18_LIB                              LIBRARY
+SYS             UTL_INA_LIB                              LIBRARY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             UTL_LMS_LIB                              LIBRARY
+SYS             UTL_MAT_LIB                              LIBRARY
+SYS             UTL_SMT_LIB                              LIBRARY
+SYS             UTL_TCP_LIB                              LIBRARY
+SYS             UTL_URL_LIB                              LIBRARY
+AUDSYS          DBMS_AUDIT_MGMT_LSBY                     PACKAGE
+LBACSYS         LBAC_ERRORS                              PACKAGE
+MDSYS           PRVTPC                                   PACKAGE
+ORDSYS          ORDERRORINT                              PACKAGE
+ORDSYS          ORD_DATASOURCE_PKG                       PACKAGE
+ORDSYS          ORD_DICOM_ADMIN_PRV                      PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ORD_DICOM_CT                             PACKAGE
+SYS             DBMS_ADVANCED_REWRITE                    PACKAGE
+SYS             DBMS_APBACKEND                           PACKAGE
+SYS             DBMS_AQ_EXP_ZECURITY                     PACKAGE
+SYS             DBMS_AQ_IMP_ZECURITY                     PACKAGE
+SYS             DBMS_AQ_SYS_EXP_ACTIONS                  PACKAGE
+SYS             DBMS_AQ_SYS_IMP_INTERNAL                 PACKAGE
+SYS             DBMS_ARCH_PROVIDER_INTL                  PACKAGE
+SYS             DBMS_CLIENT_RESULT_CACHE                 PACKAGE
+SYS             DBMS_CONNECTION_POOL                     PACKAGE
+SYS             DBMS_CRYPTO_FFI                          PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_CRYPTO_TOOLKIT                      PACKAGE
+SYS             DBMS_CRYPTO_TOOLKIT_FFI                  PACKAGE
+SYS             DBMS_CRYPTO_TOOLKIT_TYPES                PACKAGE
+SYS             DBMS_DATA_MINING_INTERNAL                PACKAGE
+SYS             DBMS_DBVERIFY                            PACKAGE
+SYS             DBMS_DG                                  PACKAGE
+SYS             DBMS_DM_EXP_INTERNAL                     PACKAGE
+SYS             DBMS_EXTENDED_TTS_CHECKS                 PACKAGE
+SYS             DBMS_GOLDENGATE_ADM_INT_INVOK            PACKAGE
+SYS             DBMS_GOLDENGATE_AUTH                     PACKAGE
+SYS             DBMS_HADOOP_INTERNAL                     PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_HA_ALERTS                           PACKAGE
+SYS             DBMS_INTERNAL_ROLLING                    PACKAGE
+SYS             DBMS_IREFSTATS                           PACKAGE
+SYS             DBMS_ISYNCREF                            PACKAGE
+SYS             DBMS_JAVA_DUMP                           PACKAGE
+SYS             DBMS_JVM_EXP_PERMS                       PACKAGE
+SYS             DBMS_MASTER_TABLE                        PACKAGE
+SYS             DBMS_MVIEW_STATS_INTERNAL                PACKAGE
+SYS             DBMS_PCLXUTIL_INTERNAL                   PACKAGE
+SYS             DBMS_PROCESS                             PACKAGE
+SYS             DBMS_REDACT_INT                          PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_REDEFINITION_INTERNAL               PACKAGE
+SYS             DBMS_REGXDB                              PACKAGE
+SYS             DBMS_RULE_EXP_EC_INTERNAL                PACKAGE
+SYS             DBMS_RULE_EXP_RL_INTERNAL                PACKAGE
+SYS             DBMS_RULE_EXP_RS_INTERNAL                PACKAGE
+SYS             DBMS_SCHED_ARGUMENT_IMPORT               PACKAGE
+SYS             DBMS_SECUREFILE_LOG_ADMIN                PACKAGE
+SYS             DBMS_SESSION_STATE                       PACKAGE
+SYS             DBMS_SNAP_REPAPI                         PACKAGE
+SYS             DBMS_SPACE_ALERT                         PACKAGE
+SYS             DBMS_SQADM_SYSCALLS                      PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SQLHASH                             PACKAGE
+SYS             DBMS_SQLJTYPE                            PACKAGE
+SYS             DBMS_SUM_RWEQ_EXPORT_INTERNAL            PACKAGE
+SYS             DBMS_SYNC_REFRESH_INTERNAL               PACKAGE
+SYS             DBMS_TDE_TOOLKIT_FFI                     PACKAGE
+SYS             DBMS_TRANSACTION_INTERNAL_SYS            PACKAGE
+SYS             DBMS_TRANSFORM_EXIMP_INTERNAL            PACKAGE
+SYS             DBMS_TSDP_MANAGE                         PACKAGE
+SYS             DBMS_WORKLOAD_CAPTURE_I                  PACKAGE
+SYS             DBMS_WRR_INTERNAL                        PACKAGE
+SYS             DBMS_WRR_PROTECTED                       PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_WRR_REPORT                          PACKAGE
+SYS             DBMS_XDS_INT                             PACKAGE
+SYS             DBMS_XS_FIDM                             PACKAGE
+SYS             DBMS_XS_SESSIONS_FFI                     PACKAGE
+SYS             DBMS_XS_SYSTEM                           PACKAGE
+SYS             DBMS_XS_SYSTEM_FFI                       PACKAGE
+SYS             DM_XFORM                                 PACKAGE
+SYS             OJDS_NAMESPACE                           PACKAGE
+SYS             OWA_CUSTOM                               PACKAGE
+SYS             PBREAK                                   PACKAGE
+SYS             PBRPH                                    PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             PBUTL                                    PACKAGE
+SYS             PRVT_DIMENSION_SYS_UTIL                  PACKAGE
+SYS             PRVT_ILM                                 PACKAGE
+SYS             PRVT_PARTREC_NOPRIV                      PACKAGE
+SYS             PRVT_REPORT_REGISTRY                     PACKAGE
+SYS             XS_ACL_INT                               PACKAGE
+SYS             XS_DATA_SECURITY_INT                     PACKAGE
+SYS             XS_DATA_SECURITY_UTIL_INT                PACKAGE
+SYS             XS_DIAG_INT                              PACKAGE
+SYS             XS_NAMESPACE_INT                         PACKAGE
+SYS             XS_ROLESET_INT                           PACKAGE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+AUDSYS          DBMS_AUDIT_MGMT                          PACKAGE BODY
+AUDSYS          DBMS_AUDIT_MGMT_LSBY                     PACKAGE BODY
+DVSYS           DBMS_MACAUD                              PACKAGE BODY
+DVSYS           DBMS_MACOUT                              PACKAGE BODY
+LBACSYS         LBAC_STANDARD                            PACKAGE BODY
+MDSYS           MD                                       PACKAGE BODY
+MDSYS           MD1                                      PACKAGE BODY
+MDSYS           OPG_CTX                                  PACKAGE BODY
+MDSYS           OPG_CTX_SESSION                          PACKAGE BODY
+MDSYS           PRVTPC                                   PACKAGE BODY
+MDSYS           SDO                                      PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+MDSYS           TRANSFORM_MAP                            PACKAGE BODY
+ORDSYS          IM                                       PACKAGE BODY
+ORDSYS          ORDAUDIO_PKG                             PACKAGE BODY
+ORDSYS          ORDDOC_PKG                               PACKAGE BODY
+ORDSYS          ORDERROR                                 PACKAGE BODY
+ORDSYS          ORDERRORINT                              PACKAGE BODY
+ORDSYS          ORDIMERRORCODES                          PACKAGE BODY
+ORDSYS          ORDIMGEXTCODEC_PKG                       PACKAGE BODY
+ORDSYS          ORDIMG_PKG                               PACKAGE BODY
+ORDSYS          ORDPLSGWYUTIL                            PACKAGE BODY
+ORDSYS          ORDUTIL                                  PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ORDUTIL_PRV                              PACKAGE BODY
+ORDSYS          ORDVIDEO_PKG                             PACKAGE BODY
+ORDSYS          ORD_AUDIO                                PACKAGE BODY
+ORDSYS          ORD_DATASOURCE_PKG                       PACKAGE BODY
+ORDSYS          ORD_DICOM                                PACKAGE BODY
+ORDSYS          ORD_DICOM_ADMIN                          PACKAGE BODY
+ORDSYS          ORD_DICOM_ADMIN_PRV                      PACKAGE BODY
+ORDSYS          ORD_DICOM_CT                             PACKAGE BODY
+ORDSYS          ORD_DICOM_PKG                            PACKAGE BODY
+ORDSYS          ORD_DOC                                  PACKAGE BODY
+ORDSYS          ORD_IMAGE                                PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ORD_VIDEO                                PACKAGE BODY
+SYS             AMGT$DATAPUMP                            PACKAGE BODY
+SYS             AS_REPLAY                                PACKAGE BODY
+SYS             DBMSZEXP_SYSPKGGRNT                      PACKAGE BODY
+SYS             DBMS_ADDM                                PACKAGE BODY
+SYS             DBMS_ADR                                 PACKAGE BODY
+SYS             DBMS_ADR_APP                             PACKAGE BODY
+SYS             DBMS_ADR_INTERNAL                        PACKAGE BODY
+SYS             DBMS_ADVANCED_REWRITE                    PACKAGE BODY
+SYS             DBMS_ALERT                               PACKAGE BODY
+SYS             DBMS_APBACKEND                           PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_APPLY_ADM                           PACKAGE BODY
+SYS             DBMS_APPLY_ADM_INTERNAL                  PACKAGE BODY
+SYS             DBMS_APPLY_ADM_IVK                       PACKAGE BODY
+SYS             DBMS_APPLY_ERROR                         PACKAGE BODY
+SYS             DBMS_APPLY_POSITION                      PACKAGE BODY
+SYS             DBMS_APPLY_PROCESS                       PACKAGE BODY
+SYS             DBMS_APP_CONT                            PACKAGE BODY
+SYS             DBMS_APP_CONT_REPORT                     PACKAGE BODY
+SYS             DBMS_AQELM                               PACKAGE BODY
+SYS             DBMS_AQIN                                PACKAGE BODY
+SYS             DBMS_AQJMS                               PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_AQJMS_INTERNAL                      PACKAGE BODY
+SYS             DBMS_AQ_BQVIEW                           PACKAGE BODY
+SYS             DBMS_AQ_EXP_CMT_TIME_TABLES              PACKAGE BODY
+SYS             DBMS_AQ_EXP_DEQUEUELOG_TABLES            PACKAGE BODY
+SYS             DBMS_AQ_EXP_HISTORY_TABLES               PACKAGE BODY
+SYS             DBMS_AQ_EXP_INDEX_TABLES                 PACKAGE BODY
+SYS             DBMS_AQ_EXP_QUEUES                       PACKAGE BODY
+SYS             DBMS_AQ_EXP_QUEUE_TABLES                 PACKAGE BODY
+SYS             DBMS_AQ_EXP_SIGNATURE_TABLES             PACKAGE BODY
+SYS             DBMS_AQ_EXP_SUBSCRIBER_TABLES            PACKAGE BODY
+SYS             DBMS_AQ_EXP_TIMEMGR_TABLES               PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_AQ_EXP_ZECURITY                     PACKAGE BODY
+SYS             DBMS_AQ_IMP_INTERNAL                     PACKAGE BODY
+SYS             DBMS_AQ_IMP_ZECURITY                     PACKAGE BODY
+SYS             DBMS_AQ_SYS_EXP_ACTIONS                  PACKAGE BODY
+SYS             DBMS_AQ_SYS_IMP_INTERNAL                 PACKAGE BODY
+SYS             DBMS_ARCH_PROVIDER_INTL                  PACKAGE BODY
+SYS             DBMS_ASH                                 PACKAGE BODY
+SYS             DBMS_ASH_INTERNAL                        PACKAGE BODY
+SYS             DBMS_AUDIT_UTIL                          PACKAGE BODY
+SYS             DBMS_AUTO_INDEX                          PACKAGE BODY
+SYS             DBMS_AUTO_REPORT                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_AUTO_SQLTUNE                        PACKAGE BODY
+SYS             DBMS_AUTO_TASK_ADMIN                     PACKAGE BODY
+SYS             DBMS_AUTO_TASK_IMMEDIATE                 PACKAGE BODY
+SYS             DBMS_AWR_PROTECTED                       PACKAGE BODY
+SYS             DBMS_AWR_REPORT_LAYOUT                   PACKAGE BODY
+SYS             DBMS_AWR_WAREHOUSE_SERVER                PACKAGE BODY
+SYS             DBMS_AWR_WAREHOUSE_SOURCE                PACKAGE BODY
+SYS             DBMS_AW_XML                              PACKAGE BODY
+SYS             DBMS_BDSQL                               PACKAGE BODY
+SYS             DBMS_CACHEUTIL                           PACKAGE BODY
+SYS             DBMS_CAPTURE_ADM                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_CAPTURE_ADM_INTERNAL                PACKAGE BODY
+SYS             DBMS_CAPTURE_ADM_IVK                     PACKAGE BODY
+SYS             DBMS_CAPTURE_PROCESS                     PACKAGE BODY
+SYS             DBMS_CAPTURE_SWITCH_ADM                  PACKAGE BODY
+SYS             DBMS_CAPTURE_SWITCH_INTERNAL             PACKAGE BODY
+SYS             DBMS_CHAIN_INVOKER                       PACKAGE BODY
+SYS             DBMS_CHANGE_NOTIFICATION                 PACKAGE BODY
+SYS             DBMS_CLIENT_RESULT_CACHE                 PACKAGE BODY
+SYS             DBMS_CLUSTDB                             PACKAGE BODY
+SYS             DBMS_CMP_INT                             PACKAGE BODY
+SYS             DBMS_COMPARISON                          PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_COMPRESSION                         PACKAGE BODY
+SYS             DBMS_CONNECTION_POOL                     PACKAGE BODY
+SYS             DBMS_CREDENTIAL                          PACKAGE BODY
+SYS             DBMS_CRYPTO                              PACKAGE BODY
+SYS             DBMS_CRYPTO_FFI                          PACKAGE BODY
+SYS             DBMS_CRYPTO_INTERNAL                     PACKAGE BODY
+SYS             DBMS_CRYPTO_TOOLKIT                      PACKAGE BODY
+SYS             DBMS_CRYPTO_TOOLKIT_FFI                  PACKAGE BODY
+SYS             DBMS_DATAPUMP_INT                        PACKAGE BODY
+SYS             DBMS_DATA_MINING                         PACKAGE BODY
+SYS             DBMS_DATA_MINING_INTERNAL                PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_DATA_MINING_TRANSFORM               PACKAGE BODY
+SYS             DBMS_DBCOMP                              PACKAGE BODY
+SYS             DBMS_DBFS_CONTENT                        PACKAGE BODY
+SYS             DBMS_DBFS_CONTENT_ADMIN                  PACKAGE BODY
+SYS             DBMS_DBFS_HS                             PACKAGE BODY
+SYS             DBMS_DBFS_SFS                            PACKAGE BODY
+SYS             DBMS_DBFS_SFS_ADMIN                      PACKAGE BODY
+SYS             DBMS_DBVERIFY                            PACKAGE BODY
+SYS             DBMS_DDL_INTERNAL                        PACKAGE BODY
+SYS             DBMS_DEBUG                               PACKAGE BODY
+SYS             DBMS_DEBUG_JDWP                          PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_DEBUG_JDWP_CUSTOM                   PACKAGE BODY
+SYS             DBMS_DEFER_IMPORT_INTERNAL               PACKAGE BODY
+SYS             DBMS_DESCRIBE                            PACKAGE BODY
+SYS             DBMS_DG                                  PACKAGE BODY
+SYS             DBMS_DIMENSION                           PACKAGE BODY
+SYS             DBMS_DISRUPT                             PACKAGE BODY
+SYS             DBMS_DISTRIBUTED_TRUST_ADMIN             PACKAGE BODY
+SYS             DBMS_DM_EXP_INTERNAL                     PACKAGE BODY
+SYS             DBMS_DM_MODEL_EXP                        PACKAGE BODY
+SYS             DBMS_DM_MODEL_IMP                        PACKAGE BODY
+SYS             DBMS_DM_UTIL                             PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_DNFS                                PACKAGE BODY
+SYS             DBMS_DRS                                 PACKAGE BODY
+SYS             DBMS_EDITIONS_UTILITIES                  PACKAGE BODY
+SYS             DBMS_EDITIONS_UTILITIES2                 PACKAGE BODY
+SYS             DBMS_ERRLOG                              PACKAGE BODY
+SYS             DBMS_EXPORT_EXTENSION_I                  PACKAGE BODY
+SYS             DBMS_EXTENDED_TTS_CHECKS                 PACKAGE BODY
+SYS             DBMS_FBT                                 PACKAGE BODY
+SYS             DBMS_FEATURE_USAGE_CLIENT                PACKAGE BODY
+SYS             DBMS_FEATURE_USAGE_REPORT                PACKAGE BODY
+SYS             DBMS_FGA                                 PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_FILE_GROUP_EXP                      PACKAGE BODY
+SYS             DBMS_FILE_GROUP_EXP_INTERNAL             PACKAGE BODY
+SYS             DBMS_FILE_GROUP_IMP                      PACKAGE BODY
+SYS             DBMS_FILE_GROUP_IMP_INTERNAL             PACKAGE BODY
+SYS             DBMS_FILE_GROUP_INTERNAL_INVOK           PACKAGE BODY
+SYS             DBMS_FILE_GROUP_UTL                      PACKAGE BODY
+SYS             DBMS_FILE_GROUP_UTL_INVOK                PACKAGE BODY
+SYS             DBMS_FILE_TRANSFER                       PACKAGE BODY
+SYS             DBMS_FLASHBACK                           PACKAGE BODY
+SYS             DBMS_FLASHBACK_ARCHIVE                   PACKAGE BODY
+SYS             DBMS_FREQUENT_ITEMSET                    PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_FS                                  PACKAGE BODY
+SYS             DBMS_FUSE                                PACKAGE BODY
+SYS             DBMS_FUSE_PUBLIC                         PACKAGE BODY
+SYS             DBMS_GOLDENGATE_ADM                      PACKAGE BODY
+SYS             DBMS_GOLDENGATE_ADM_INTERNAL             PACKAGE BODY
+SYS             DBMS_GOLDENGATE_ADM_INT_INVOK            PACKAGE BODY
+SYS             DBMS_GOLDENGATE_AUTH                     PACKAGE BODY
+SYS             DBMS_GOLDENGATE_EXP                      PACKAGE BODY
+SYS             DBMS_GOLDENGATE_IMP                      PACKAGE BODY
+SYS             DBMS_HADOOP                              PACKAGE BODY
+SYS             DBMS_HADOOP_INTERNAL                     PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_HANG_MANAGER                        PACKAGE BODY
+SYS             DBMS_HA_ALERTS                           PACKAGE BODY
+SYS             DBMS_HIERARCHY                           PACKAGE BODY
+SYS             DBMS_HM                                  PACKAGE BODY
+SYS             DBMS_HPROF                               PACKAGE BODY
+SYS             DBMS_IJOB                                PACKAGE BODY
+SYS             DBMS_ILM                                 PACKAGE BODY
+SYS             DBMS_ILM_ADMIN                           PACKAGE BODY
+SYS             DBMS_INMEMORY                            PACKAGE BODY
+SYS             DBMS_INMEMORY_ADMIN                      PACKAGE BODY
+SYS             DBMS_INTERNAL_ROLLING                    PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_INTERNAL_SAFE_SCN                   PACKAGE BODY
+SYS             DBMS_INTERNAL_TRIGGER                    PACKAGE BODY
+SYS             DBMS_IREFSTATS                           PACKAGE BODY
+SYS             DBMS_ISCHED_AGENT                        PACKAGE BODY
+SYS             DBMS_ISCHED_CHAIN_CONDITION              PACKAGE BODY
+SYS             DBMS_ISCHED_REMDB_JOB                    PACKAGE BODY
+SYS             DBMS_ISCHED_REMOTE_ACCESS                PACKAGE BODY
+SYS             DBMS_ISCHED_UTL                          PACKAGE BODY
+SYS             DBMS_ISYNCREF                            PACKAGE BODY
+SYS             DBMS_JAVASCRIPT                          PACKAGE BODY
+SYS             DBMS_JAVA_DEFINERS                       PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_JAVA_DUMP                           PACKAGE BODY
+SYS             DBMS_JMS_PLSQL                           PACKAGE BODY
+SYS             DBMS_JOB                                 PACKAGE BODY
+SYS             DBMS_JSON0                               PACKAGE BODY
+SYS             DBMS_JVM_EXP_PERMS                       PACKAGE BODY
+SYS             DBMS_LDAP_API_FFI                        PACKAGE BODY
+SYS             DBMS_LDAP_UTL                            PACKAGE BODY
+SYS             DBMS_LOBUTIL                             PACKAGE BODY
+SYS             DBMS_LOB_AM_PRIVATE                      PACKAGE BODY
+SYS             DBMS_LOG                                 PACKAGE BODY
+SYS             DBMS_LOGMNR                              PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_LOGMNR_LOGREP_DICT                  PACKAGE BODY
+SYS             DBMS_LOGREP_DEF_PROC_UTL                 PACKAGE BODY
+SYS             DBMS_LOGREP_EXP                          PACKAGE BODY
+SYS             DBMS_LOGREP_IMP                          PACKAGE BODY
+SYS             DBMS_LOGREP_IMP_INTERNAL                 PACKAGE BODY
+SYS             DBMS_LOGREP_UTIL_INVOK                   PACKAGE BODY
+SYS             DBMS_LOGSTDBY_CONTEXT                    PACKAGE BODY
+SYS             DBMS_MANAGEMENT_BOOTSTRAP                PACKAGE BODY
+SYS             DBMS_MASTER_TABLE                        PACKAGE BODY
+SYS             DBMS_MDX_ODBO                            PACKAGE BODY
+SYS             DBMS_METADATA                            PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_MONITOR                             PACKAGE BODY
+SYS             DBMS_MVIEW_STATS                         PACKAGE BODY
+SYS             DBMS_MVIEW_STATS_INTERNAL                PACKAGE BODY
+SYS             DBMS_ODCI                                PACKAGE BODY
+SYS             DBMS_OPTIM_BUNDLE                        PACKAGE BODY
+SYS             DBMS_PARALLEL_EXECUTE                    PACKAGE BODY
+SYS             DBMS_PCLXUTIL                            PACKAGE BODY
+SYS             DBMS_PCLXUTIL_INTERNAL                   PACKAGE BODY
+SYS             DBMS_PDB_ALTER_SHARING                   PACKAGE BODY
+SYS             DBMS_PDB_APP_CON                         PACKAGE BODY
+SYS             DBMS_PERF                                PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_PICKLER                             PACKAGE BODY
+SYS             DBMS_PITR                                PACKAGE BODY
+SYS             DBMS_PLSQL_CODE_COVERAGE                 PACKAGE BODY
+SYS             DBMS_PLUGTS                              PACKAGE BODY
+SYS             DBMS_PLUGTSP                             PACKAGE BODY
+SYS             DBMS_PREDICTIVE_ANALYTICS                PACKAGE BODY
+SYS             DBMS_PREPROCESSOR                        PACKAGE BODY
+SYS             DBMS_PRIVILEGE_CAPTURE                   PACKAGE BODY
+SYS             DBMS_PROCESS                             PACKAGE BODY
+SYS             DBMS_PROFILER                            PACKAGE BODY
+SYS             DBMS_PROPAGATION_ADM                     PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_PROPAGATION_INTERNAL                PACKAGE BODY
+SYS             DBMS_PRVTAQIP                            PACKAGE BODY
+SYS             DBMS_PRVTRMIE                            PACKAGE BODY
+SYS             DBMS_PRVTSQDS                            PACKAGE BODY
+SYS             DBMS_PRVTSQIS                            PACKAGE BODY
+SYS             DBMS_PSP                                 PACKAGE BODY
+SYS             DBMS_PSWMG_IMPORT                        PACKAGE BODY
+SYS             DBMS_RANDOM                              PACKAGE BODY
+SYS             DBMS_RAT_MASK                            PACKAGE BODY
+SYS             DBMS_RAT_MASK_INTERNAL                   PACKAGE BODY
+SYS             DBMS_RECOVERABLE_SCRIPT                  PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_RECO_SCRIPT_INT                     PACKAGE BODY
+SYS             DBMS_RECO_SCRIPT_INVOK                   PACKAGE BODY
+SYS             DBMS_REDACT                              PACKAGE BODY
+SYS             DBMS_REDACT_INT                          PACKAGE BODY
+SYS             DBMS_REDEFINITION                        PACKAGE BODY
+SYS             DBMS_REDEFINITION_INTERNAL               PACKAGE BODY
+SYS             DBMS_REFRESH                             PACKAGE BODY
+SYS             DBMS_REGXDB                              PACKAGE BODY
+SYS             DBMS_REPAIR                              PACKAGE BODY
+SYS             DBMS_REPCAT                              PACKAGE BODY
+SYS             DBMS_REPCAT_MIG                          PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_REPUTIL                             PACKAGE BODY
+SYS             DBMS_RESULT_CACHE                        PACKAGE BODY
+SYS             DBMS_RESULT_CACHE_INTERNAL               PACKAGE BODY
+SYS             DBMS_RESUMABLE                           PACKAGE BODY
+SYS             DBMS_RMGR_GROUP_EXPORT                   PACKAGE BODY
+SYS             DBMS_RMGR_PACT_EXPORT                    PACKAGE BODY
+SYS             DBMS_RMGR_PLAN_EXPORT                    PACKAGE BODY
+SYS             DBMS_ROLLING                             PACKAGE BODY
+SYS             DBMS_ROWID                               PACKAGE BODY
+SYS             DBMS_RULE_EXIMP                          PACKAGE BODY
+SYS             DBMS_RULE_EXP_EC_INTERNAL                PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_RULE_EXP_EV_CTXS                    PACKAGE BODY
+SYS             DBMS_RULE_EXP_RL_INTERNAL                PACKAGE BODY
+SYS             DBMS_RULE_EXP_RS_INTERNAL                PACKAGE BODY
+SYS             DBMS_RULE_EXP_RULES                      PACKAGE BODY
+SYS             DBMS_RULE_EXP_RULE_SETS                  PACKAGE BODY
+SYS             DBMS_RULE_EXP_UTL                        PACKAGE BODY
+SYS             DBMS_RULE_EXP_UTLI                       PACKAGE BODY
+SYS             DBMS_RULE_IMP_OBJ                        PACKAGE BODY
+SYS             DBMS_RULE_INTERNAL                       PACKAGE BODY
+SYS             DBMS_SCHED_ARGUMENT_IMPORT               PACKAGE BODY
+SYS             DBMS_SCHED_ATTRIBUTE_EXPORT              PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SCHED_CHAIN_EXPORT                  PACKAGE BODY
+SYS             DBMS_SCHED_CLASS_EXPORT                  PACKAGE BODY
+SYS             DBMS_SCHED_CONSTRAINT_EXPORT             PACKAGE BODY
+SYS             DBMS_SCHED_CREDENTIAL_EXPORT             PACKAGE BODY
+SYS             DBMS_SCHED_EXPORT_CALLOUTS               PACKAGE BODY
+SYS             DBMS_SCHED_FILE_WATCHER_EXPORT           PACKAGE BODY
+SYS             DBMS_SCHED_JOB_EXPORT                    PACKAGE BODY
+SYS             DBMS_SCHED_MAIN_EXPORT                   PACKAGE BODY
+SYS             DBMS_SCHED_PROGRAM_EXPORT                PACKAGE BODY
+SYS             DBMS_SCHED_SCHEDULE_EXPORT               PACKAGE BODY
+SYS             DBMS_SCHED_WINDOW_EXPORT                 PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SCHED_WINGRP_EXPORT                 PACKAGE BODY
+SYS             DBMS_SCN                                 PACKAGE BODY
+SYS             DBMS_SECUREFILE_LOG_ADMIN                PACKAGE BODY
+SYS             DBMS_SERVER_ALERT_EXPORT                 PACKAGE BODY
+SYS             DBMS_SERVER_ALERT_PRVT                   PACKAGE BODY
+SYS             DBMS_SERVER_TRACE                        PACKAGE BODY
+SYS             DBMS_SERVICE                             PACKAGE BODY
+SYS             DBMS_SERVICE_ERR                         PACKAGE BODY
+SYS             DBMS_SESSION_STATE                       PACKAGE BODY
+SYS             DBMS_SHARED_POOL                         PACKAGE BODY
+SYS             DBMS_SMB_INTERNAL                        PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SNAPSHOT_COMMON                     PACKAGE BODY
+SYS             DBMS_SNAPSHOT_KKXRCA                     PACKAGE BODY
+SYS             DBMS_SNAPSHOT_UTL                        PACKAGE BODY
+SYS             DBMS_SNAP_INTERNAL                       PACKAGE BODY
+SYS             DBMS_SNAP_REPAPI                         PACKAGE BODY
+SYS             DBMS_SODA                                PACKAGE BODY
+SYS             DBMS_SODA_UTIL                           PACKAGE BODY
+SYS             DBMS_SPACE_ALERT                         PACKAGE BODY
+SYS             DBMS_SQADM_SYSCALLS                      PACKAGE BODY
+SYS             DBMS_SQLHASH                             PACKAGE BODY
+SYS             DBMS_SQLJTYPE                            PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_SQLPA                               PACKAGE BODY
+SYS             DBMS_SQLSET                              PACKAGE BODY
+SYS             DBMS_SQLTCB_INTERNAL                     PACKAGE BODY
+SYS             DBMS_SQL_MONITOR                         PACKAGE BODY
+SYS             DBMS_SQL_TRANSLATOR                      PACKAGE BODY
+SYS             DBMS_SQL_TRANSLATOR_EXPORT               PACKAGE BODY
+SYS             DBMS_STATS_INTERNAL_AGG                  PACKAGE BODY
+SYS             DBMS_STAT_FUNCS                          PACKAGE BODY
+SYS             DBMS_STAT_FUNCS_AUX                      PACKAGE BODY
+SYS             DBMS_STORAGE_MAP                         PACKAGE BODY
+SYS             DBMS_STREAMS_ADM                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_STREAMS_ADM_IVK                     PACKAGE BODY
+SYS             DBMS_STREAMS_ADM_UTL_INVOK               PACKAGE BODY
+SYS             DBMS_STREAMS_AUTH                        PACKAGE BODY
+SYS             DBMS_STREAMS_CONTROL_ADM                 PACKAGE BODY
+SYS             DBMS_STREAMS_DATAPUMP                    PACKAGE BODY
+SYS             DBMS_STREAMS_LCR_INT                     PACKAGE BODY
+SYS             DBMS_STREAMS_MT                          PACKAGE BODY
+SYS             DBMS_STREAMS_PUB_RPC                     PACKAGE BODY
+SYS             DBMS_STREAMS_RPC                         PACKAGE BODY
+SYS             DBMS_STREAMS_RPC_INTERNAL                PACKAGE BODY
+SYS             DBMS_STREAMS_SM                          PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_STREAMS_TABLESPACE_ADM              PACKAGE BODY
+SYS             DBMS_STREAMS_TBS_INT                     PACKAGE BODY
+SYS             DBMS_STREAMS_TBS_INT_INVOK               PACKAGE BODY
+SYS             DBMS_SUMMARY                             PACKAGE BODY
+SYS             DBMS_SUMVDM                              PACKAGE BODY
+SYS             DBMS_SUM_RWEQ_EXPORT                     PACKAGE BODY
+SYS             DBMS_SUM_RWEQ_EXPORT_INTERNAL            PACKAGE BODY
+SYS             DBMS_SWRF_REPORT_INTERNAL                PACKAGE BODY
+SYS             DBMS_SYNC_REFRESH                        PACKAGE BODY
+SYS             DBMS_SYNC_REFRESH_INTERNAL               PACKAGE BODY
+SYS             DBMS_TDB                                 PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_TDE_TOOLKIT                         PACKAGE BODY
+SYS             DBMS_TDE_TOOLKIT_FFI                     PACKAGE BODY
+SYS             DBMS_TF                                  PACKAGE BODY
+SYS             DBMS_TG_DBG                              PACKAGE BODY
+SYS             DBMS_TNS                                 PACKAGE BODY
+SYS             DBMS_TRACE                               PACKAGE BODY
+SYS             DBMS_TRANSACTION                         PACKAGE BODY
+SYS             DBMS_TRANSACTION_INTERNAL_SYS            PACKAGE BODY
+SYS             DBMS_TRANSFORM_EXIMP                     PACKAGE BODY
+SYS             DBMS_TRANSFORM_EXIMP_INTERNAL            PACKAGE BODY
+SYS             DBMS_TSDP_MANAGE                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_TTS                                 PACKAGE BODY
+SYS             DBMS_TYPE_UTILITY                        PACKAGE BODY
+SYS             DBMS_UMF                                 PACKAGE BODY
+SYS             DBMS_UNDO_ADV                            PACKAGE BODY
+SYS             DBMS_WARNING                             PACKAGE BODY
+SYS             DBMS_WLM                                 PACKAGE BODY
+SYS             DBMS_WORKLOAD_CAPTURE                    PACKAGE BODY
+SYS             DBMS_WORKLOAD_CAPTURE_I                  PACKAGE BODY
+SYS             DBMS_WORKLOAD_REPLAY                     PACKAGE BODY
+SYS             DBMS_WORKLOAD_REPLAY_I                   PACKAGE BODY
+SYS             DBMS_WRR_INTERNAL                        PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_WRR_PROTECTED                       PACKAGE BODY
+SYS             DBMS_WRR_REPORT                          PACKAGE BODY
+SYS             DBMS_XA                                  PACKAGE BODY
+SYS             DBMS_XDB_UTIL                            PACKAGE BODY
+SYS             DBMS_XDS                                 PACKAGE BODY
+SYS             DBMS_XDS_INT                             PACKAGE BODY
+SYS             DBMS_XMLGEN                              PACKAGE BODY
+SYS             DBMS_XMLSAVE                             PACKAGE BODY
+SYS             DBMS_XMLSCHEMA_UTIL                      PACKAGE BODY
+SYS             DBMS_XMLSTORE                            PACKAGE BODY
+SYS             DBMS_XQUERYINT                           PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_XRWMV                               PACKAGE BODY
+SYS             DBMS_XSTREAM_ADM                         PACKAGE BODY
+SYS             DBMS_XSTREAM_ADM_INTERNAL                PACKAGE BODY
+SYS             DBMS_XSTREAM_ADM_UTL                     PACKAGE BODY
+SYS             DBMS_XSTREAM_AUTH                        PACKAGE BODY
+SYS             DBMS_XSTREAM_AUTH_IVK                    PACKAGE BODY
+SYS             DBMS_XSTREAM_GG                          PACKAGE BODY
+SYS             DBMS_XSTREAM_GG_ADM                      PACKAGE BODY
+SYS             DBMS_XSTREAM_GG_INTERNAL                 PACKAGE BODY
+SYS             DBMS_XSTREAM_UTL_IVK                     PACKAGE BODY
+SYS             DBMS_XS_FIDM                             PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_XS_PRINCIPALS                       PACKAGE BODY
+SYS             DBMS_XS_SESSIONS                         PACKAGE BODY
+SYS             DBMS_XS_SESSIONS_FFI                     PACKAGE BODY
+SYS             DBMS_XS_SYSTEM                           PACKAGE BODY
+SYS             DBMS_XS_SYSTEM_FFI                       PACKAGE BODY
+SYS             DBMS_ZHELP                               PACKAGE BODY
+SYS             DBMS_ZHELP_IR                            PACKAGE BODY
+SYS             DIANA                                    PACKAGE BODY
+SYS             DMP_SEC                                  PACKAGE BODY
+SYS             DM_QGEN                                  PACKAGE BODY
+SYS             DM_XFORM                                 PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             HTF                                      PACKAGE BODY
+SYS             KUBSAGT                                  PACKAGE BODY
+SYS             KUBSD$DESC_INT                           PACKAGE BODY
+SYS             KUPC$QUEUE                               PACKAGE BODY
+SYS             KUPC$QUEUE_INT                           PACKAGE BODY
+SYS             KUPC$QUE_INT                             PACKAGE BODY
+SYS             KUPD$DATA_INT                            PACKAGE BODY
+SYS             KUPF$FILE_INT                            PACKAGE BODY
+SYS             LOGMNR_DICT_CACHE                        PACKAGE BODY
+SYS             LOGMNR_EM_SUPPORT                        PACKAGE BODY
+SYS             LOGSTDBY_INTERNAL                        PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             ODM_MODEL_UTIL                           PACKAGE BODY
+SYS             ODM_UTIL                                 PACKAGE BODY
+SYS             OJDS_CONTEXT                             PACKAGE BODY
+SYS             OJDS_NAMESPACE                           PACKAGE BODY
+SYS             ORDIMDPCALLOUTS                          PACKAGE BODY
+SYS             ORD_ADMIN                                PACKAGE BODY
+SYS             OUTLN_PKG                                PACKAGE BODY
+SYS             OUTLN_PKG_INTERNAL                       PACKAGE BODY
+SYS             OWA                                      PACKAGE BODY
+SYS             OWA_CACHE                                PACKAGE BODY
+SYS             OWA_COOKIE                               PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             OWA_CUSTOM                               PACKAGE BODY
+SYS             OWA_IMAGE                                PACKAGE BODY
+SYS             OWA_MATCH                                PACKAGE BODY
+SYS             OWA_PATTERN                              PACKAGE BODY
+SYS             OWA_SEC                                  PACKAGE BODY
+SYS             OWA_TEXT                                 PACKAGE BODY
+SYS             PBREAK                                   PACKAGE BODY
+SYS             PBRPH                                    PACKAGE BODY
+SYS             PBSDE                                    PACKAGE BODY
+SYS             PIDL                                     PACKAGE BODY
+SYS             PRIVATE_JDBC                             PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             PRIVATE_JDBC_DR                          PACKAGE BODY
+SYS             PRVTEMX_ADMIN                            PACKAGE BODY
+SYS             PRVTEMX_CELL                             PACKAGE BODY
+SYS             PRVTEMX_DBHOME                           PACKAGE BODY
+SYS             PRVTEMX_MEMORY                           PACKAGE BODY
+SYS             PRVTEMX_PERF                             PACKAGE BODY
+SYS             PRVTEMX_RSRCMGR                          PACKAGE BODY
+SYS             PRVTEMX_SQL                              PACKAGE BODY
+SYS             PRVTPARENTCHILD                          PACKAGE BODY
+SYS             PRVT_ASH_OMX                             PACKAGE BODY
+SYS             PRVT_AWR_DATA_CP                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             PRVT_AWR_VIEWER                          PACKAGE BODY
+SYS             PRVT_COMPRESS                            PACKAGE BODY
+SYS             PRVT_CPADDM                              PACKAGE BODY
+SYS             PRVT_DBMS_INMEMORY_ADMIN                 PACKAGE BODY
+SYS             PRVT_DIMENSION_SYS_UTIL                  PACKAGE BODY
+SYS             PRVT_ILM                                 PACKAGE BODY
+SYS             PRVT_PARTREC_NOPRIV                      PACKAGE BODY
+SYS             PRVT_REPORT_REGISTRY                     PACKAGE BODY
+SYS             PRVT_RTADDM                              PACKAGE BODY
+SYS             PRVT_SQLADV_INFRA                        PACKAGE BODY
+SYS             PRVT_SQLPA                               PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             PRVT_SQLPROF_INFRA                       PACKAGE BODY
+SYS             PRVT_SYS_TUNE_MVIEW                      PACKAGE BODY
+SYS             PRVT_UADV                                PACKAGE BODY
+SYS             PRVT_WORKLOAD_NOPRIV                     PACKAGE BODY
+SYS             PSTDY_DATAPUMP_SUPPORT                   PACKAGE BODY
+SYS             TSDP$DATAPUMP                            PACKAGE BODY
+SYS             URIFACTORY                               PACKAGE BODY
+SYS             UTL_COLL                                 PACKAGE BODY
+SYS             UTL_GDK                                  PACKAGE BODY
+SYS             UTL_HTTP                                 PACKAGE BODY
+SYS             UTL_I18N                                 PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             UTL_INADDR                               PACKAGE BODY
+SYS             UTL_LMS                                  PACKAGE BODY
+SYS             UTL_NLA                                  PACKAGE BODY
+SYS             UTL_RECOMP2                              PACKAGE BODY
+SYS             UTL_REF                                  PACKAGE BODY
+SYS             UTL_SMTP                                 PACKAGE BODY
+SYS             UTL_TCP                                  PACKAGE BODY
+SYS             UTL_URL                                  PACKAGE BODY
+SYS             WPG_DOCLOAD                              PACKAGE BODY
+SYS             XML_SCHEMA_NAME_PRESENT                  PACKAGE BODY
+SYS             XS_ACL                                   PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             XS_ACL_INT                               PACKAGE BODY
+SYS             XS_DATA_SECURITY                         PACKAGE BODY
+SYS             XS_DATA_SECURITY_INT                     PACKAGE BODY
+SYS             XS_DATA_SECURITY_UTIL                    PACKAGE BODY
+SYS             XS_DATA_SECURITY_UTIL_INT                PACKAGE BODY
+SYS             XS_DIAG                                  PACKAGE BODY
+SYS             XS_DIAG_INT                              PACKAGE BODY
+SYS             XS_NAMESPACE                             PACKAGE BODY
+SYS             XS_NAMESPACE_INT                         PACKAGE BODY
+SYS             XS_PRINCIPAL                             PACKAGE BODY
+SYS             XS_PRINCIPAL_INT                         PACKAGE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             XS_ROLESET                               PACKAGE BODY
+SYS             XS_ROLESET_INT                           PACKAGE BODY
+DVSYS           EVALUATE_RULE_SET                        PROCEDURE
+DVSYS           MACOLS_INIT_SESSION                      PROCEDURE
+LBACSYS         CODE_COVERAGE                            PROCEDURE
+MDSYS           RESET_INPROG_INDEX                       PROCEDURE
+SYS             DBMS_FEATURE_RULESMANAGER                PROCEDURE
+SYS             DBMS_FEATURE_TEST_PROC_1                 PROCEDURE
+SYS             DBMS_FEATURE_TEST_PROC_2                 PROCEDURE
+SYS             DBMS_FEATURE_TEST_PROC_3                 PROCEDURE
+SYS             DBMS_FEATURE_TEST_PROC_4                 PROCEDURE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBMS_FEATURE_TEST_PROC_5                 PROCEDURE
+SYS             DM$RQEVALSERINP                          PROCEDURE
+SYS             DM$RQMOD_BUILD                           PROCEDURE
+SYS             DM$RQMOD_SCORE                           PROCEDURE
+SYS             LOGMNR_KRVRDA_TEST_APPLY                 PROCEDURE
+SYS             LOGMNR_KRVRDREPDICT3                     PROCEDURE
+SYS             LOGMNR_RMT_BLD                           PROCEDURE
+SYS             MIGRATE_80SYSIMAGES_TO_81                PROCEDURE
+SYS             ALERT_QUE$1                              RULE SET
+SYS             ALERT_QUE_N                              RULE SET
+SYS             AQ_PROP_NOTIFY_N                         RULE SET
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             AQ_PROP_NOTIFY_R                         RULE SET
+SYS             ORA$PREPLUGIN_BACKUP_QUE_N               RULE SET
+SYS             ORA$PREPLUGIN_BACKUP_QUE_R               RULE SET
+SYS             SCHEDULER$_EVENT_QUEUE_N                 RULE SET
+SYS             SCHEDULER$_EVENT_QUEUE_R                 RULE SET
+SYS             SCHEDULER$_REMDB_JOBQ_N                  RULE SET
+SYS             SCHEDULER$_REMDB_JOBQ_R                  RULE SET
+SYS             SCHEDULER_FILEWATCHER_Q_N                RULE SET
+SYS             SCHEDULER_FILEWATCHER_Q_R                RULE SET
+SYS             SYS$SERVICE_METRICS_N                    RULE SET
+SYS             SYS$SERVICE_METRICS_R                    RULE SET
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+APPQOSSYS       DBMS_WLM                                 SYNONYM
+DVSYS           CONFIGURE_DV                             SYNONYM
+LBACSYS         OLS_ENFORCEMENT                          SYNONYM
+SYS             DBMS_WM                                  SYNONYM
+ORDSYS          ACCESSION_NUMBER_ORD_IMG_T               TYPE
+ORDSYS          ACQUISITION_DATETIME_ORD_IMG_T           TYPE
+ORDSYS          ACQUISITION_DATE_ORD_IMG_T               TYPE
+ORDSYS          ACQUISITION_NUMBER_ORD_IMG_T             TYPE
+ORDSYS          ACQUISITION_TIME_ORD_IMG_T               TYPE
+ORDSYS          ACTION_ORD_DCM_C                         TYPE
+ORDSYS          ACTION_ORD_DCM_T                         TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ADMITTING_DIAG_DESC_ORD_IMG_C            TYPE
+ORDSYS          ADMITTING_DIAG_DESC_ORD_IMG_T            TYPE
+ORDSYS          AE_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          AGE_STRING_ORD_DCM_C                     TYPE
+ORDSYS          ANONYMITY_RULE_DOC_ORD_DCM_T             TYPE
+ORDSYS          ANONYM_G_ORD_DCM_T                       TYPE
+ORDSYS          ANONYM_ORD_DCM_T                         TYPE
+ORDSYS          ANY_ATTR_ORD_DCM_T                       TYPE
+ORDSYS          APPLICATION_ENTITY_ORD_DCM_C             TYPE
+ORDSYS          AS_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          AS_ORD_DCM_T                             TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ATTRIBUTE_TAG_ORD_DCM_C                  TYPE
+ORDSYS          ATTR_DEFINERS_ORD_DCM_T                  TYPE
+ORDSYS          ATTR_DEFINER_ORD_DCM_C                   TYPE
+ORDSYS          ATTR_DEFINER_ORD_DCM_T                   TYPE
+ORDSYS          ATTR_NAME_ORD_DCM_C                      TYPE
+ORDSYS          ATTR_RANCE_T_ORD_DCM_T                   TYPE
+ORDSYS          ATTR_VALUE_ORD_DCM_T                     TYPE
+ORDSYS          AT_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          BITSPERSAMPLE_ORD_IMG_T                  TYPE
+ORDSYS          BIT_ALLOCATED_ORD_IMG_T                  TYPE
+ORDSYS          BIT_STORED_ORD_IMG_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          BODY_PART_EXAMINED_ORD_IMG_T             TYPE
+ORDSYS          BOOLEAN_FUNC_PRED_ORD_DCM_T              TYPE
+ORDSYS          BYLINE_ORD_IMG_C                         TYPE
+ORDSYS          BYLINE_ORD_IMG_T                         TYPE
+ORDSYS          CHARACTER_SET_ORD_IMG_C                  TYPE
+ORDSYS          CHARACTER_SET_ORD_IMG_T                  TYPE
+ORDSYS          CHROMATICITY_ORD_IMG_T                   TYPE
+ORDSYS          CODE_SEQUENCE_ORD_IMG_C                  TYPE
+ORDSYS          CODE_SEQUENCE_ORD_IMG_T                  TYPE
+ORDSYS          CODE_SQ_ORD_IMG_T                        TYPE
+ORDSYS          CODE_STRING_ORD_DCM_C                    TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          COLORSPACE_ORD_IMG_T                     TYPE
+ORDSYS          COMPRESSION_ORD_IMG_T                    TYPE
+ORDSYS          CONFORMANCE_DEF_ORD_DCM_T                TYPE
+ORDSYS          CONTENT_LOC_ORD_IMG_C                    TYPE
+ORDSYS          CONTRAST_ORD_IMG_T                       TYPE
+ORDSYS          CS_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          CT_OPERAND_ORD_DCM_T                     TYPE
+ORDSYS          CUSTOMRENDERED_ORD_IMG_T                 TYPE
+ORDSYS          DATASET_ORD_DCM_T                        TYPE
+ORDSYS          DATETIME_ORD_IMG_T                       TYPE
+ORDSYS          DATE_ORD_DCM_C                           TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DATE_ORD_IMG_T                           TYPE
+ORDSYS          DATE_TIME_ORD_DCM_C                      TYPE
+ORDSYS          DA_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          DECIMAL_STRING_ORD_DCM_C                 TYPE
+ORDSYS          DICOM_IMAGE_ORD_IMG_T                    TYPE
+ORDSYS          DICOM_PRIVATE_ATTR_ORD_DCM_T             TYPE
+ORDSYS          DICOM_RUNTIME_PREF_ORD_DCM_T             TYPE
+ORDSYS          DICOM_STANDARD_ATTR_ORD_DCM_T            TYPE
+ORDSYS          DICOM_UID_DEFINITION_ORD_DCM_T           TYPE
+ORDSYS          DOCUMENT_CHANGE_LOG_ORD_DCM_T            TYPE
+ORDSYS          DOCUMENT_HEADER_ORD_DCM_C                TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DOCUMENT_HEADER_ORD_DCM_T                TYPE
+ORDSYS          DS_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          DT_AE_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_AGE_STRING_ORD_DCM_C                  TYPE
+ORDSYS          DT_APP_ENTITY_ORD_DCM_C                  TYPE
+ORDSYS          DT_AS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_AS_ORD_DCM_T                          TYPE
+ORDSYS          DT_ATTRIBUTE_TAG_ORD_DCM_C               TYPE
+ORDSYS          DT_ATTR_DEFINERS_ORD_DCM_T               TYPE
+ORDSYS          DT_ATTR_DEFINER_ORD_DCM_C                TYPE
+ORDSYS          DT_ATTR_DEFINER_ORD_DCM_T                TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_ATTR_NAME_ORD_DCM_C                   TYPE
+ORDSYS          DT_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          DT_ATTR_RANCE_ORD_DCM_T                  TYPE
+ORDSYS          DT_ATTR_VALUE_ORD_DCM_T                  TYPE
+ORDSYS          DT_AT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_CODE_STRING_ORD_DCM_C                 TYPE
+ORDSYS          DT_CS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_DATASET_ORD_DCM_T                     TYPE
+ORDSYS          DT_DATE_ORD_DCM_C                        TYPE
+ORDSYS          DT_DATE_TIME_ORD_DCM_C                   TYPE
+ORDSYS          DT_DA_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_DECIMAL_STRING_ORD_DCM_C              TYPE
+ORDSYS          DT_DOCUMENT_HEADER_ORD_DCM_C             TYPE
+ORDSYS          DT_DOCUMENT_HEADER_ORD_DCM_T             TYPE
+ORDSYS          DT_DOC_CHANGE_LOG_ORD_DCM_T              TYPE
+ORDSYS          DT_DS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_DT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_DT_NAME_ORD_DCM_C                     TYPE
+ORDSYS          DT_EXCEPTION_TYPE_ORD_DCM_C              TYPE
+ORDSYS          DT_EXP_ATTR_ORD_DCM_T                    TYPE
+ORDSYS          DT_EXTENDED_TYPE_ORD_DCM_C               TYPE
+ORDSYS          DT_EXT_ATTR_ORD_DCM_T                    TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_EXT_ORD_DCM_T                         TYPE
+ORDSYS          DT_FD_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_FLOAT_DOUBLE_STR_ORD_DCM_C            TYPE
+ORDSYS          DT_FLOAT_SINGLE_ORD_DCM_C                TYPE
+ORDSYS          DT_FL_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_INTEGER_STRING_ORD_DCM_C              TYPE
+ORDSYS          DT_IS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_ITEM_ORD_DCM_C                        TYPE
+ORDSYS          DT_LONG_STRING_ORD_DCM_C                 TYPE
+ORDSYS          DT_LONG_TEXT_ORD_DCM_C                   TYPE
+ORDSYS          DT_LO_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_LT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_MIXED_TEXT_ORD_DCM_T                  TYPE
+ORDSYS          DT_NAME_ORD_DCM_T                        TYPE
+ORDSYS          DT_OB_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_OF_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_OTHER_BYTE_ORD_DCM_C                  TYPE
+ORDSYS          DT_OTHER_FLOAT_ORD_DCM_C                 TYPE
+ORDSYS          DT_OTHER_WORD_ORD_DCM_C                  TYPE
+ORDSYS          DT_OW_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_OW_ORD_DCM_T                          TYPE
+ORDSYS          DT_PERSON_NAME_ORD_DCM_C                 TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_PN_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_PN_ORD_DCM_T                          TYPE
+ORDSYS          DT_SHORT_STRING_ORD_DCM_C                TYPE
+ORDSYS          DT_SHORT_TEXT_ORD_DCM_C                  TYPE
+ORDSYS          DT_SH_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_SIGNED_LONG_ORD_DCM_C                 TYPE
+ORDSYS          DT_SIGNED_SHORT_ORD_DCM_C                TYPE
+ORDSYS          DT_SL_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_SQ_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_SQ_ORD_DCM_T                          TYPE
+ORDSYS          DT_SS_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_ST_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_TIME_ORD_DCM_C                        TYPE
+ORDSYS          DT_TM_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_UI_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_UL_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_UNIQUE_ID_ORD_DCM_C                   TYPE
+ORDSYS          DT_UNKNOWN_ORD_DCM_C                     TYPE
+ORDSYS          DT_UNLIMITED_TEXT_ORD_DCM_C              TYPE
+ORDSYS          DT_UNSIGNED_LONG_ORD_DCM_C               TYPE
+ORDSYS          DT_UNSIGNED_SHORT_ORD_DCM_C              TYPE
+ORDSYS          DT_UN_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          DT_UN_ORD_DCM_T                          TYPE
+ORDSYS          DT_US_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          DT_UT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          EXCEPTION_TYPE_ORD_DCM_C                 TYPE
+ORDSYS          EXIFIFD_ORD_IMG_T                        TYPE
+ORDSYS          EXIF_METADATA_ORD_IMG_T                  TYPE
+ORDSYS          EXPOSUREMODE_ORD_IMG_T                   TYPE
+ORDSYS          EXPOSUREPROGRAM_ORD_IMG_T                TYPE
+ORDSYS          EXP_ATTR_ORD_DCM_T                       TYPE
+ORDSYS          EXTENDED_TYPE_ORD_DCM_C                  TYPE
+ORDSYS          EXT_ATTR_ORD_DCM_T                       TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          EXT_MACRO_INCLUDE_ORD_DCM_C              TYPE
+ORDSYS          EXT_MACRO_INCLUDE_ORD_DCM_T              TYPE
+ORDSYS          EXT_ORD_DCM_T                            TYPE
+ORDSYS          EXT_RULE_INCLUDE_ORD_DCM_C               TYPE
+ORDSYS          EXT_RULE_INCLUDE_ORD_DCM_T               TYPE
+ORDSYS          FD_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          FIELD_ORD_IMG_C                          TYPE
+ORDSYS          FILESOURCE_ORD_IMG_T                     TYPE
+ORDSYS          FILE_META_HEADER_ORD_IMG_T               TYPE
+ORDSYS          FLASH_ORD_IMG_T                          TYPE
+ORDSYS          FLAT_COLORPOSITIONS                      TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          FLOAT_DOUBLE_STRING_ORD_DCM_C            TYPE
+ORDSYS          FLOAT_SINGLE_ORD_DCM_C                   TYPE
+ORDSYS          FL_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          FRAME_LATERALITY_ORD_IMG_T               TYPE
+ORDSYS          FUNCTION_ATTR_ORD_DCM_C                  TYPE
+ORDSYS          FUNCTION_ORD_DCM_C                       TYPE
+ORDSYS          FUNCTION_ORD_DCM_T                       TYPE
+ORDSYS          GAINCONTROL_ORD_IMG_T                    TYPE
+ORDSYS          GENERAL_EQUIPMENT_ORD_IMG_T              TYPE
+ORDSYS          GENERAL_IMAGE_ORD_IMG_T                  TYPE
+ORDSYS          GENERAL_SERIES_ORD_IMG_T                 TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          GENERAL_STUDY_ORD_IMG_T                  TYPE
+ORDSYS          GLOBAL_MACRO_ORD_DCM_C                   TYPE
+ORDSYS          GPSIFD_ORD_IMG_T                         TYPE
+ORDSYS          GPS_ALT_REF_ORD_IMG_T                    TYPE
+ORDSYS          GPS_BEARING_ORD_IMG_T                    TYPE
+ORDSYS          GPS_DIFFERENTIAL_ORD_IMG_T               TYPE
+ORDSYS          GPS_DIRECTION_ORD_IMG_T                  TYPE
+ORDSYS          GPS_DIST_REF_ORD_IMG_T                   TYPE
+ORDSYS          GPS_LAT_ORD_IMG_T                        TYPE
+ORDSYS          GPS_LAT_REF_ORD_IMG_T                    TYPE
+ORDSYS          GPS_LONG_ORD_IMG_T                       TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          GPS_LONG_REF_ORD_IMG_T                   TYPE
+ORDSYS          GPS_MEASUREMODE_ORD_IMG_T                TYPE
+ORDSYS          GPS_SPEED_REF_ORD_IMG_T                  TYPE
+ORDSYS          GPS_STATUS_ORD_IMG_T                     TYPE
+ORDSYS          HIGH_BIT_ORD_IMG_T                       TYPE
+ORDSYS          IMAGEATTRIBUTES_ORD_IMG_T                TYPE
+ORDSYS          IMAGE_COLUMNS_ORD_IMG_T                  TYPE
+ORDSYS          IMAGE_PIXEL_ORD_IMG_T                    TYPE
+ORDSYS          IMAGE_ROWS_ORD_IMG_T                     TYPE
+ORDSYS          IMPLEMENTATION_CLASS_ORD_IMG_T           TYPE
+ORDSYS          IMPLEMENTATION_VER_ORD_IMG_T             TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          INDIVIDUAL_ATTRIBUTE_ORD_DCM_T           TYPE
+ORDSYS          INDIVIDUAL_ATTR_ORD_DCM_C                TYPE
+ORDSYS          INSTANCE_NUMBER_ORD_IMG_T                TYPE
+ORDSYS          INTEGER_STRING_ORD_DCM_C                 TYPE
+ORDSYS          INTEROPERABILITYIFD_ORD_IMG_T            TYPE
+ORDSYS          INTEROPERABILITY_ORD_IMG_T               TYPE
+ORDSYS          IPTC_METADATA_ORD_IMG_T                  TYPE
+ORDSYS          IS_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          ITEM_ORD_DCM_C                           TYPE
+ORDSYS          LIGHTSOURCE_ORD_IMG_T                    TYPE
+ORDSYS          LOCATION_ORD_IMG_T                       TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          LOGICAL_PREDICATE_ORD_DCM_T              TYPE
+ORDSYS          LONG_STRING_ORD_DCM_C                    TYPE
+ORDSYS          LONG_TEXT_ORD_DCM_C                      TYPE
+ORDSYS          LO_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          LT_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          MACRO_NAME_ORD_DCM_C                     TYPE
+ORDSYS          MACRO_USE_ORD_DCM_T                      TYPE
+ORDSYS          MANUFACTURER_ORD_IMG_T                   TYPE
+ORDSYS          MAPPED_PATH_ORD_DCM_C                    TYPE
+ORDSYS          MAPPED_PATH_ORD_DCM_T                    TYPE
+ORDSYS          MD_AE_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_AGE_STRING_ORD_DCM_C                  TYPE
+ORDSYS          MD_APP_ENTITY_ORD_DCM_C                  TYPE
+ORDSYS          MD_AS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_AS_ORD_DCM_T                          TYPE
+ORDSYS          MD_ATTRIBUTE_TAG_ORD_DCM_C               TYPE
+ORDSYS          MD_ATTR_DEFINERS_ORD_DCM_T               TYPE
+ORDSYS          MD_ATTR_DEFINER_ORD_DCM_C                TYPE
+ORDSYS          MD_ATTR_DEFINER_ORD_DCM_T                TYPE
+ORDSYS          MD_ATTR_NAME_ORD_DCM_C                   TYPE
+ORDSYS          MD_ATTR_RANGE_ORD_DCM_T                  TYPE
+ORDSYS          MD_ATTR_VALUE_ORD_DCM_T                  TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_AT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_CODE_STRING_ORD_DCM_C                 TYPE
+ORDSYS          MD_CS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_DATASET_ORD_DCM_T                     TYPE
+ORDSYS          MD_DATE_ORD_DCM_C                        TYPE
+ORDSYS          MD_DATE_TIME_ORD_DCM_C                   TYPE
+ORDSYS          MD_DA_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_DECIMAL_STRING_ORD_DCM_C              TYPE
+ORDSYS          MD_DOCUMENT_HEADER_ORD_DCM_C             TYPE
+ORDSYS          MD_DOC_CHANGE_LOG_ORD_DCM_T              TYPE
+ORDSYS          MD_DOC_HEADER_ORD_DCM_T                  TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_DS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_DT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_EXCEPTION_TYPE_ORD_DCM_C              TYPE
+ORDSYS          MD_EXP_ATTR_ORD_DCM_T                    TYPE
+ORDSYS          MD_EXTENDED_TYPE_ORD_DCM_C               TYPE
+ORDSYS          MD_EXT_ATTR_ORD_DCM_T                    TYPE
+ORDSYS          MD_EXT_ORD_DCM_T                         TYPE
+ORDSYS          MD_FD_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_FLOAT_DOUBLE_STR_ORD_DCM_C            TYPE
+ORDSYS          MD_FLOAT_SINGLE_ORD_DCM_C                TYPE
+ORDSYS          MD_FL_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_INTEGER_STRING_ORD_DCM_C              TYPE
+ORDSYS          MD_IS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_ITEM_ORD_DCM_C                        TYPE
+ORDSYS          MD_LONG_STRING_ORD_DCM_C                 TYPE
+ORDSYS          MD_LONG_TEXT_ORD_DCM_C                   TYPE
+ORDSYS          MD_LO_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_LT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_MIXED_TEXT_ORD_DCM_T                  TYPE
+ORDSYS          MD_NAME_ORD_DCM_C                        TYPE
+ORDSYS          MD_NAME_ORD_DCM_T                        TYPE
+ORDSYS          MD_OB_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_OF_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_OTHER_BYTE_ORD_DCM_C                  TYPE
+ORDSYS          MD_OTHER_FLOAT_ORD_DCM_C                 TYPE
+ORDSYS          MD_OTHER_WORD_ORD_DCM_C                  TYPE
+ORDSYS          MD_OW_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_OW_ORD_DCM_T                          TYPE
+ORDSYS          MD_PERSON_NAME_ORD_DCM_C                 TYPE
+ORDSYS          MD_PN_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_PN_ORD_DCM_T                          TYPE
+ORDSYS          MD_SHORT_STRING_ORD_DCM_C                TYPE
+ORDSYS          MD_SHORT_TEXT_ORD_DCM_C                  TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_SH_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_SIGNED_LONG_ORD_DCM_C                 TYPE
+ORDSYS          MD_SIGNED_SHORT_ORD_DCM_C                TYPE
+ORDSYS          MD_SL_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_SQ_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_SQ_ORD_DCM_T                          TYPE
+ORDSYS          MD_SS_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_ST_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_TIME_ORD_DCM_C                        TYPE
+ORDSYS          MD_TM_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_UI_ATTR_ORD_DCM_T                     TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MD_UL_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_UNIQUE_ID_ORD_DCM_C                   TYPE
+ORDSYS          MD_UNKNOWN_ORD_DCM_C                     TYPE
+ORDSYS          MD_UNLIMITED_TEXT_ORD_DCM_C              TYPE
+ORDSYS          MD_UNSIGNED_LONG_ORD_DCM_C               TYPE
+ORDSYS          MD_UNSIGNED_SHORT_ORD_DCM_C              TYPE
+ORDSYS          MD_UN_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_UN_ORD_DCM_T                          TYPE
+ORDSYS          MD_US_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MD_UT_ATTR_ORD_DCM_T                     TYPE
+ORDSYS          MEDIASTORAGE_CLASS_ORD_IMG_T             TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          MEDIASTORAGE_INSTAN_ORD_IMG_T            TYPE
+ORDSYS          METERINGMODE_ORD_IMG_T                   TYPE
+ORDSYS          MIXED_TEXT_ORD_DCM_T                     TYPE
+ORDSYS          MODALITY_ORD_IMG_T                       TYPE
+ORDSYS          NAME_ORD_DCM_C                           TYPE
+ORDSYS          NAME_ORD_DCM_T                           TYPE
+ORDSYS          NONNEGATIVEINTEGER_ORD_IMG_T             TYPE
+ORDSYS          NONNEGATIVEREAL_ORD_IMG_T                TYPE
+ORDSYS          OB_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          OF_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          ORD_DICOM_HEADER_ORD_IMG_T               TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ORIENTATION_ORD_IMG_T                    TYPE
+ORDSYS          OTHER_BYTE_ORD_DCM_C                     TYPE
+ORDSYS          OTHER_FLOAT_ORD_DCM_C                    TYPE
+ORDSYS          OTHER_WORD_ORD_DCM_C                     TYPE
+ORDSYS          OW_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          OW_ORD_DCM_T                             TYPE
+ORDSYS          PARAMETER_ORD_DCM_C                      TYPE
+ORDSYS          PARAMETER_ORD_DCM_T                      TYPE
+ORDSYS          PATIENT_BIRTH_DATE_ORD_IMG_T             TYPE
+ORDSYS          PATIENT_ID_ORD_IMG_T                     TYPE
+ORDSYS          PATIENT_NAME_ORD_IMG_T                   TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          PATIENT_ORD_IMG_T                        TYPE
+ORDSYS          PATIENT_ORIENTATION_ORD_IMG_C            TYPE
+ORDSYS          PATIENT_ORIENTATION_ORD_IMG_T            TYPE
+ORDSYS          PATIENT_POSITION_ORD_IMG_T               TYPE
+ORDSYS          PATIENT_SEX_ORD_IMG_T                    TYPE
+ORDSYS          PATIENT_STUDY_ORD_IMG_T                  TYPE
+ORDSYS          PERFORMED_PROC_ID_ORD_IMG_T              TYPE
+ORDSYS          PERFORMING_PHYSICIAN_ORD_IMG_C           TYPE
+ORDSYS          PERFORMING_PHYSICIAN_ORD_IMG_T           TYPE
+ORDSYS          PERF_PROC_DESC_ORD_IMG_T                 TYPE
+ORDSYS          PERF_PROC_STARTDATE_ORD_IMG_T            TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          PERF_PROC_STARTTIME_ORD_IMG_T            TYPE
+ORDSYS          PERSON_NAME_ORD_DCM_C                    TYPE
+ORDSYS          PHOTOMETRICINTERP_ORD_IMG_T              TYPE
+ORDSYS          PHOTOMETRIC_INTERP_ORD_IMG_T             TYPE
+ORDSYS          PIXEL_ASPECT_RATIO_ORD_IMG_C             TYPE
+ORDSYS          PIXEL_ASPECT_RATIO_ORD_IMG_T             TYPE
+ORDSYS          PIXEL_REPRESENTATION_ORD_IMG_T           TYPE
+ORDSYS          PLANARCONFIG_ORD_IMG_T                   TYPE
+ORDSYS          PLANAR_CONFIGURATION_ORD_IMG_T           TYPE
+ORDSYS          PN_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          PN_ORD_DCM_T                             TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          POSITIVEINTEGER_ORD_IMG_T                TYPE
+ORDSYS          PREDICATES_DEF_ORD_DCM_C                 TYPE
+ORDSYS          PREDICATE_GROUP_ORD_DCM_T                TYPE
+ORDSYS          PREDICATE_MACRO_ORD_DCM_T                TYPE
+ORDSYS          PREDICATE_ORD_DCM_C                      TYPE
+ORDSYS          PREDICATE_ORD_DCM_T                      TYPE
+ORDSYS          PREFERENCE_DEF_ORD_DCM_C                 TYPE
+ORDSYS          PREFERENCE_DEF_ORD_DCM_T                 TYPE
+ORDSYS          PRIM_CHROMATICITIES_ORD_IMG_T            TYPE
+ORDSYS          PRIVATE_ATTR_DEF_ORD_DCM_T               TYPE
+ORDSYS          REAL_ORD_IMG_T                           TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          REFERING_PHYSICIANS_ORD_IMG_T            TYPE
+ORDSYS          RELATIONAL_PREDICATE_ORD_DCM_T           TYPE
+ORDSYS          REPEATEDFIELD_ORD_IMG_T                  TYPE
+ORDSYS          RESOLUTION_ORD_IMG_T                     TYPE
+ORDSYS          RIVATE_ATTR_DEF_ORD_DCM_C                TYPE
+ORDSYS          SAMPLES_PER_PIXEL_ORD_IMG_T              TYPE
+ORDSYS          SATURATION_ORD_IMG_T                     TYPE
+ORDSYS          SCENECAPTURE_ORD_IMG_T                   TYPE
+ORDSYS          SENSINGMETHOD_ORD_IMG_T                  TYPE
+ORDSYS          SERIES_DATE_ORD_IMG_T                    TYPE
+ORDSYS          SERIES_INSTANCE_UID_ORD_IMG_T            TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          SERIES_TIME_ORD_IMG_T                    TYPE
+ORDSYS          SHARPNESS_ORD_IMG_T                      TYPE
+ORDSYS          SHORT_STRING_ORD_DCM_C                   TYPE
+ORDSYS          SHORT_TEXT_ORD_DCM_C                     TYPE
+ORDSYS          SH_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          SIGNED_LONG_ORD_DCM_C                    TYPE
+ORDSYS          SIGNED_SHORT_ORD_DCM_C                   TYPE
+ORDSYS          SINGLEFIELDT_ORD_IMG_T                   TYPE
+ORDSYS          SINGLEFIELD_ORD_IMG_T                    TYPE
+ORDSYS          SL_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          SOP_CLASS_UID_ORD_IMG_T                  TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          SOP_COMMON_ORD_IMG_T                     TYPE
+ORDSYS          SOP_INSTANCE_UID_ORD_IMG_T               TYPE
+ORDSYS          SQ_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          SQ_ORD_DCM_T                             TYPE
+ORDSYS          SRC_APP_ENTITY_TITLE_ORD_IMG_T           TYPE
+ORDSYS          SS_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          STANDARD_ATTR_DEF_ORD_DCM_C              TYPE
+ORDSYS          STANDARD_ATTR_DEF_ORD_DCM_T              TYPE
+ORDSYS          STRING_ORD_IMG_T                         TYPE
+ORDSYS          STRING_VALUE_ORD_DCM_C                   TYPE
+ORDSYS          STRIPBYTECOUNTS_ORD_IMG_T                TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          STRIPBYTECOUNT_ORD_IMG_C                 TYPE
+ORDSYS          STRIPBYTECOUNT_ORD_IMG_T                 TYPE
+ORDSYS          STRIPOFFSETS_ORD_IMG_T                   TYPE
+ORDSYS          STRIPOFFSET_ORD_IMG_C                    TYPE
+ORDSYS          STRIPOFFSET_ORD_IMG_T                    TYPE
+ORDSYS          STUDY_DATE_ORD_IMG_T                     TYPE
+ORDSYS          STUDY_DESCRIPTION_ORD_IMG_T              TYPE
+ORDSYS          STUDY_ID_ORD_IMG_T                       TYPE
+ORDSYS          STUDY_INSTANCE_UID_ORD_IMG_T             TYPE
+ORDSYS          STUDY_TIME_ORD_IMG_T                     TYPE
+ORDSYS          ST_ATTR_ORD_DCM_T                        TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          SUBJECTAREA_ORD_IMG_T                    TYPE
+ORDSYS          SUBJECTDISTANCERANGE_ORD_IMG_T           TYPE
+ORDSYS          SUBJECTLOCATION_ORD_IMG_T                TYPE
+ORDSYS          SUPP_CAT_ORD_IMG_C                       TYPE
+ORDSYS          TIFFIFD_ORD_IMG_T                        TYPE
+ORDSYS          TIME_ORD_DCM_C                           TYPE
+ORDSYS          TIME_ORD_IMG_T                           TYPE
+ORDSYS          TM_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          TRANSFER_SYNTAX_UID_ORD_IMG_T            TYPE
+ORDSYS          UID_DEF_ORD_DCM_C                        TYPE
+ORDSYS          UID_DEF_ORD_DCM_T                        TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          UID_ENTRY_ORD_DCM_T                      TYPE
+ORDSYS          UI_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          UL_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          UNIQUE_ID_ORD_DCM_C                      TYPE
+ORDSYS          UNKNOWN_ORD_DCM_C                        TYPE
+ORDSYS          UNLIMITED_TEXT_ORD_DCM_C                 TYPE
+ORDSYS          UNSIGNED_LONG_ORD_DCM_C                  TYPE
+ORDSYS          UNSIGNED_SHORT_ORD_DCM_C                 TYPE
+ORDSYS          UN_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          UN_ORD_DCM_T                             TYPE
+ORDSYS          US_ATTR_ORD_DCM_T                        TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          UT_ATTR_ORD_DCM_T                        TYPE
+ORDSYS          UUID_ORD_IMG_T                           TYPE
+ORDSYS          WHITEBALANCE_ORD_IMG_T                   TYPE
+ORDSYS          WHITEPOINT_ORD_IMG_T                     TYPE
+ORDSYS          XML_MAPPING_DOCUMENT_ORD_DCM_T           TYPE
+ORDSYS          XML_VALUE_ORD_DCM_C                      TYPE
+ORDSYS          XMP_METADATA_ORD_IMG_T                   TYPE
+ORDSYS          YCBCRCOEFFICIENTS_ORD_IMG_T              TYPE
+ORDSYS          YCBCRPOSITIONING_ORD_IMG_T               TYPE
+ORDSYS          YCBCRSUBSAMPLING_ORD_IMG_T               TYPE
+SYS             DDL_LCR_T                                TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             LCR_ANYDATA_T                            TYPE
+SYS             LCR_COLUMN_VALUE_T                       TYPE
+SYS             LCR_DATETIME_FORMAT_T                    TYPE
+SYS             LCR_EXTRA_ATTRIBUTE_T                    TYPE
+SYS             LCR_EXTRA_ATTRIBUTE_VALUES_T             TYPE
+SYS             LCR_EXTRA_ATTRIBUTE_VALUE_T              TYPE
+SYS             LCR_NEW_VALUES_T                         TYPE
+SYS             LCR_OLD_NEW_VALUE_T                      TYPE
+SYS             LCR_OLD_VALUES_T                         TYPE
+SYS             ORATSDP_SCT_DDRM_T                       TYPE
+SYS             ORATSDP_SCT_SENSITIVE_TYPE_T             TYPE
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             ORATSDP_SCT_SENSITIVE_TYPE_V             TYPE
+SYS             ORATSDP_SD_APPLICATION_T                 TYPE
+SYS             ORATSDP_SD_APPLICATION_V                 TYPE
+SYS             ORATSDP_SD_DDRM_T                        TYPE
+SYS             ORATSDP_SD_SENSITIVE_INFO_OTV            TYPE
+SYS             ORATSDP_SD_SENSITIVE_INFO_T              TYPE
+SYS             ORATSDP_SD_SENSITIVE_INFO_V              TYPE
+SYS             ORATSDP_SD_SENSITIVE_TYPE_T              TYPE
+SYS             ORATSDP_SD_SENSITIVE_TYPE_V              TYPE
+SYS             ROW_LCR_T                                TYPE
+ORDSYS          ORDAUDIO                                 TYPE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          ORDDATASOURCE                            TYPE BODY
+ORDSYS          ORDDICOM                                 TYPE BODY
+ORDSYS          ORDDOC                                   TYPE BODY
+ORDSYS          ORDIMAGE                                 TYPE BODY
+ORDSYS          ORDIMAGESIGNATURE                        TYPE BODY
+ORDSYS          ORDSOURCE                                TYPE BODY
+ORDSYS          ORDVIDEO                                 TYPE BODY
+ORDSYS          SI_AVERAGECOLOR                          TYPE BODY
+ORDSYS          SI_COLOR                                 TYPE BODY
+ORDSYS          SI_COLORHISTOGRAM                        TYPE BODY
+ORDSYS          SI_FEATURELIST                           TYPE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+ORDSYS          SI_POSITIONALCOLOR                       TYPE BODY
+ORDSYS          SI_STILLIMAGE                            TYPE BODY
+ORDSYS          SI_TEXTURE                               TYPE BODY
+SYS             ADVISOR_OBJECT                           TYPE BODY
+SYS             AWR_OBJECT                               TYPE BODY
+SYS             CURSOR_CACHE_OBJECT                      TYPE BODY
+SYS             DM$RQMOD_DETAILIMPL                      TYPE BODY
+SYS             JOB_DEFINITION                           TYPE BODY
+SYS             PLAN_TABLE_OBJECT                        TYPE BODY
+SYS             PRVT_AWRV_METADATA                       TYPE BODY
+SYS             PRVT_AWR_PERIOD                          TYPE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             SODA_COLLECTION_T                        TYPE BODY
+SYS             SODA_CURSOR_T                            TYPE BODY
+SYS             SODA_DOCUMENT_T                          TYPE BODY
+SYS             SODA_OPERATION_T                         TYPE BODY
+SYS             SPM_OBJECT                               TYPE BODY
+SYS             SQLSET_OBJECT                            TYPE BODY
+SYS             SQL_PROFILE_OBJECT                       TYPE BODY
+SYS             WRI$_ADV_OBJSPACE_TREND_T                TYPE BODY
+SYS             WRI$_ADV_TUNEMVIEW_ADV                   TYPE BODY
+SYS             WRI$_ADV_WORKLOAD                        TYPE BODY
+SYS             WRI$_REPT_ADDM                           TYPE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             WRI$_REPT_ASH                            TYPE BODY
+SYS             WRI$_REPT_ASH_OMX                        TYPE BODY
+SYS             WRI$_REPT_AUTO_INDEX                     TYPE BODY
+SYS             WRI$_REPT_AWRV                           TYPE BODY
+SYS             WRI$_REPT_CPADDM                         TYPE BODY
+SYS             WRI$_REPT_DBHOME                         TYPE BODY
+SYS             WRI$_REPT_EMX_PERF                       TYPE BODY
+SYS             WRI$_REPT_PERF                           TYPE BODY
+SYS             WRI$_REPT_RTADDM                         TYPE BODY
+SYS             WRI$_REPT_SESSION                        TYPE BODY
+SYS             WRI$_REPT_SQLT                           TYPE BODY
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             ALL_AUDIT_POLICIES                       VIEW
+SYS             ALL_AUDIT_POLICY_COLUMNS                 VIEW
+SYS             ALL_HIVE_COLUMNS                         VIEW
+SYS             ALL_HIVE_DATABASES                       VIEW
+SYS             ALL_HIVE_PART_KEY_COLUMNS                VIEW
+SYS             ALL_HIVE_TABLES                          VIEW
+SYS             ALL_HIVE_TAB_PARTITIONS                  VIEW
+SYS             ALL_NESTED_TABLE_COLS                    VIEW
+SYS             ALL_POLICY_ATTRIBUTES                    VIEW
+SYS             ALL_POLICY_CONTEXTS                      VIEW
+SYS             ALL_POLICY_GROUPS                        VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             ALL_SEC_RELEVANT_COLS                    VIEW
+SYS             ALL_SUBPART_COL_STATISTICS               VIEW
+SYS             ALL_VIEWS_AE                             VIEW
+SYS             ALL_XS_APPLICABLE_OBJECTS                VIEW
+SYS             ALL_XT_HIVE_TABLES_VALIDATION            VIEW
+SYS             AQ$ALERT_QT                              VIEW
+SYS             AQ$ALERT_QT_R                            VIEW
+SYS             AQ$AQ_EVENT_TABLE                        VIEW
+SYS             AQ$AQ_PROP_TABLE                         VIEW
+SYS             AQ$AQ_PROP_TABLE_R                       VIEW
+SYS             AQ$ORA$PREPLUGIN_BACKUP_QTB              VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             AQ$ORA$PREPLUGIN_BACKUP_QTB_R            VIEW
+SYS             AQ$SCHEDULER$_EVENT_QTAB_R               VIEW
+SYS             AQ$SCHEDULER$_REMDB_JOBQTAB              VIEW
+SYS             AQ$SCHEDULER$_REMDB_JOBQTAB_R            VIEW
+SYS             AQ$SCHEDULER_FILEWATCHER_QT_R            VIEW
+SYS             AQ$SYS$SERVICE_METRICS_TAB_R             VIEW
+SYS             AQ$_ALERT_QT_F                           VIEW
+SYS             AQ$_AQ$_MEM_MC_F                         VIEW
+SYS             AQ$_AQ_EVENT_TABLE_F                     VIEW
+SYS             AQ$_AQ_PROP_TABLE_F                      VIEW
+SYS             AQ$_ORA$PREPLUGIN_BACKUP_QTB_F           VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             AQ$_SCHEDULER$_EVENT_QTAB_F              VIEW
+SYS             AQ$_SCHEDULER$_REMDB_JOBQTAB_F           VIEW
+SYS             AQ$_SCHEDULER_FILEWATCHER_QT_F           VIEW
+SYS             AQ$_SYS$SERVICE_METRICS_TAB_F            VIEW
+SYS             AWR_CDB_CELL_DISK_NAME                   VIEW
+SYS             AWR_PDB_CELL_DISK_NAME                   VIEW
+SYS             AWR_ROOT_CELL_DISK_NAME                  VIEW
+SYS             CDB_CONSTRAINTS                          VIEW
+SYS             CDB_HIST_CELL_DISK_NAME                  VIEW
+SYS             CDB_HIVE_COLUMNS                         VIEW
+SYS             CDB_HIVE_DATABASES                       VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             CDB_HIVE_PART_KEY_COLUMNS                VIEW
+SYS             CDB_HIVE_TABLES                          VIEW
+SYS             CDB_HIVE_TAB_PARTITIONS                  VIEW
+SYS             CDB_NESTED_TABLE_COLS                    VIEW
+SYS             CDB_SUBPART_COL_STATISTICS               VIEW
+SYS             CDB_TAB_COLS                             VIEW
+SYS             CDB_TAB_COLS_V$                          VIEW
+SYS             CDB_TAB_COLUMNS                          VIEW
+SYS             CDB_TSTZ_TABLES                          VIEW
+SYS             CDB_TSTZ_TAB_COLS                        VIEW
+SYS             CDB_VIEWS                                VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             CDB_VIEWS_AE                             VIEW
+SYS             CDB_XT_HIVE_TABLES_VALIDATION            VIEW
+SYS             DBA_HIST_CELL_DISK_NAME                  VIEW
+SYS             DBA_HIVE_COLUMNS                         VIEW
+SYS             DBA_HIVE_DATABASES                       VIEW
+SYS             DBA_HIVE_PART_KEY_COLUMNS                VIEW
+SYS             DBA_HIVE_TABLES                          VIEW
+SYS             DBA_HIVE_TAB_PARTITIONS                  VIEW
+SYS             DBA_NESTED_TABLE_COLS                    VIEW
+SYS             DBA_SUBPART_COL_STATISTICS               VIEW
+SYS             DBA_TSTZ_TABLES                          VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             DBA_TSTZ_TAB_COLS                        VIEW
+SYS             DBA_VIEWS_AE                             VIEW
+SYS             DBA_XT_HIVE_TABLES_VALIDATION            VIEW
+SYS             EXU10ASC                                 VIEW
+SYS             EXU10ASCU                                VIEW
+SYS             EXU8ASC                                  VIEW
+SYS             EXU8ASCU                                 VIEW
+SYS             EXU8HST                                  VIEW
+SYS             EXU8HSTU                                 VIEW
+SYS             INT$DBA_VIEWS_AE                         VIEW
+SYS             KU$_10_1_FHTABLE_VIEW                    VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             KU$_10_1_IOTABLE_VIEW                    VIEW
+SYS             KU$_10_1_PFHTABLE_VIEW                   VIEW
+SYS             KU$_10_1_PIOTABLE_VIEW                   VIEW
+SYS             KU$_10_2_FHTABLE_VIEW                    VIEW
+SYS             KU$_11_2_VIEW_VIEW                       VIEW
+SYS             KU$_ACPTABLE_VIEW                        VIEW
+SYS             KU$_CLUSTER_VIEW                         VIEW
+SYS             KU$_COLLIST_VIEW                         VIEW
+SYS             KU$_COLUMN_VIEW                          VIEW
+SYS             KU$_FHTABLE_VIEW                         VIEW
+SYS             KU$_IOTABLE_VIEW                         VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             KU$_M_VIEW_FH_VIEW                       VIEW
+SYS             KU$_M_VIEW_IOT_VIEW                      VIEW
+SYS             KU$_M_VIEW_LOG_FH_VIEW                   VIEW
+SYS             KU$_M_VIEW_LOG_PFH_VIEW                  VIEW
+SYS             KU$_M_VIEW_PFH_VIEW                      VIEW
+SYS             KU$_M_VIEW_PIOT_VIEW                     VIEW
+SYS             KU$_M_ZONEMAP_FH_VIEW                    VIEW
+SYS             KU$_M_ZONEMAP_IOT_VIEW                   VIEW
+SYS             KU$_M_ZONEMAP_PFH_VIEW                   VIEW
+SYS             KU$_M_ZONEMAP_PIOT_VIEW                  VIEW
+SYS             KU$_NT_PARENT_VIEW                       VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             KU$_OPQTYPE_VIEW                         VIEW
+SYS             KU$_P2TCOLUMN_VIEW                       VIEW
+SYS             KU$_P2TPARTCOL_VIEW                      VIEW
+SYS             KU$_PARTITION_VIEW                       VIEW
+SYS             KU$_PCOLUMN_VIEW                         VIEW
+SYS             KU$_PFHTABLE_VIEW                        VIEW
+SYS             KU$_PIOTABLE_VIEW                        VIEW
+SYS             KU$_QTAB_STORAGE_VIEW                    VIEW
+SYS             KU$_QUEUE_TABLE_VIEW                     VIEW
+SYS             KU$_SP2TCOLUMN_VIEW                      VIEW
+SYS             KU$_SP2TPARTCOL_VIEW                     VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             KU$_SUBPARTITION_VIEW                    VIEW
+SYS             KU$_TTS_TYPES_VIEW                       VIEW
+SYS             KU$_VIEW_VIEW                            VIEW
+SYS             KU$_ZM_VIEW_FH_VIEW                      VIEW
+SYS             KU$_ZM_VIEW_IOT_VIEW                     VIEW
+SYS             KU$_ZM_VIEW_PFH_VIEW                     VIEW
+SYS             KU$_ZM_VIEW_PIOT_VIEW                    VIEW
+SYS             MDX_ODBO_DIMENSIONS                      VIEW
+SYS             MDX_ODBO_FUNCTIONS                       VIEW
+SYS             MDX_ODBO_HIERARCHIES                     VIEW
+SYS             MDX_ODBO_LEVELS                          VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             MDX_ODBO_MEASURES                        VIEW
+SYS             MDX_ODBO_PROPERTIES                      VIEW
+SYS             SM$INTEGRITY_CONS                        VIEW
+SYS             UMF_SCHEMA_XMLTYPE                       VIEW
+SYS             USER_HIVE_COLUMNS                        VIEW
+SYS             USER_HIVE_DATABASES                      VIEW
+SYS             USER_HIVE_PART_KEY_COLUMNS               VIEW
+SYS             USER_HIVE_TABLES                         VIEW
+SYS             USER_HIVE_TAB_PARTITIONS                 VIEW
+SYS             USER_NESTED_TABLE_COLS                   VIEW
+SYS             USER_SEC_RELEVANT_COLS                   VIEW
+
+OWNER           OBJECT_NAME                              OBJECT_TYPE
+--------------- ---------------------------------------- --------------------
+SYS             USER_SUBPART_COL_STATISTICS              VIEW
+SYS             USER_TSTZ_TABLES                         VIEW
+SYS             USER_TSTZ_TAB_COLS                       VIEW
+SYS             USER_VIEWS_AE                            VIEW
+SYS             USER_XT_HIVE_TABLES_VALIDATION           VIEW
+SYS             _DBA_XSTREAM_UNSUPPORTED_12_1            VIEW
+SYS             _USER_QUEUE_SCHEDULES_COMPAT             VIEW
+
+1349 rows selected.
+
+SQL>  @?/rdbms/admin/utlprp.sql 16
+
+Session altered.
+
+
+TIMESTAMP
+--------------------------------------------------------------------------------
+COMP_TIMESTAMP UTLRP_BGN              2023-05-22 09:57:23
+
+DOC>   The following PL/SQL block invokes UTL_RECOMP to recompile invalid
+DOC>   objects in the database. Recompilation time is proportional to the
+DOC>   number of invalid objects in the database, so this command may take
+DOC>   a long time to execute on a database with a large number of invalid
+DOC>   objects.
+DOC>
+DOC>   Use the following queries to track recompilation progress:
+DOC>
+DOC>   1. Query returning the number of invalid objects remaining. This
+DOC>      number should decrease with time.
+DOC>         SELECT COUNT(*) FROM obj$ WHERE status IN (4, 5, 6);
+DOC>
+DOC>   2. Query returning the number of objects compiled so far. This number
+DOC>      should increase with time.
+DOC>         SELECT COUNT(*) FROM UTL_RECOMP_COMPILED;
+DOC>
+DOC>   This script automatically chooses serial or parallel recompilation
+DOC>   based on the number of CPUs available (parameter cpu_count) multiplied
+DOC>   by the number of threads per CPU (parameter parallel_threads_per_cpu).
+DOC>   On RAC, this number is added across all RAC nodes.
+DOC>
+DOC>   UTL_RECOMP uses DBMS_SCHEDULER to create jobs for parallel
+DOC>   recompilation. Jobs are created without instance affinity so that they
+DOC>   can migrate across RAC nodes. Use the following queries to verify
+DOC>   whether UTL_RECOMP jobs are being created and run correctly:
+DOC>
+DOC>   1. Query showing jobs created by UTL_RECOMP
+DOC>         SELECT job_name FROM dba_scheduler_jobs
+DOC>            WHERE job_name like 'UTL_RECOMP_SLAVE_%';
+DOC>
+DOC>   2. Query showing UTL_RECOMP jobs that are running
+DOC>         SELECT job_name FROM dba_scheduler_running_jobs
+DOC>            WHERE job_name like 'UTL_RECOMP_SLAVE_%';
+DOC>#
+
+PL/SQL procedure successfully completed.
+
+
+TIMESTAMP
+--------------------------------------------------------------------------------
+COMP_TIMESTAMP UTLRP_END              2023-05-22 10:03:06
+
+DOC> The following query reports the number of invalid objects.
+DOC>
+DOC> If the number is higher than expected, please examine the error
+DOC> messages reported with each object (using SHOW ERRORS) to see if they
+DOC> point to system misconfiguration or resource constraints that must be
+DOC> fixed before attempting to recompile these objects.
+DOC>#
+
+OBJECTS WITH ERRORS
+-------------------
+                  0
+
+DOC> The following query reports the number of exceptions caught during
+DOC> recompilation. If this number is non-zero, please query the error
+DOC> messages in the table UTL_RECOMP_ERRORS to see if any of these errors
+DOC> are due to misconfiguration or resource constraints that must be
+DOC> fixed before objects can compile successfully.
+DOC> Note: Typical compilation errors (due to coding errors) are not
+DOC>       logged into this table: they go into DBA_ERRORS instead.
+DOC>#
+
+ERRORS DURING RECOMPILATION
+---------------------------
+                          0
+
+
+Function created.
+
+
+PL/SQL procedure successfully completed.
+
+
+Function dropped.
+
+
+PL/SQL procedure successfully completed.
+
+SQL> column owner format a15
+column object_name format a40
+column object_type format a20
+select owner, object_name, object_type from dba_objects where status='INVALID' and owner like '%SYS%' order by object_type,owner,object_name;
+SQL> SQL> SQL>
+no rows selected
+
+SQL> column comp_name format a40
+column version format a12
+column status format a15
+select comp_name,version,status from dba_registry;
+SQL> SQL> SQL>
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Oracle Database Catalog Views            19.0.0.0.0   VALID
+Oracle Database Packages and Types       19.0.0.0.0   VALID
+JServer JAVA Virtual Machine             19.0.0.0.0   VALID
+Oracle XDK                               19.0.0.0.0   VALID
+Oracle Database Java Packages            19.0.0.0.0   VALID
+OLAP Analytic Workspace                  19.0.0.0.0   VALID
+Oracle Real Application Clusters         19.0.0.0.0   OPTION OFF
+Oracle XML Database                      19.0.0.0.0   VALID
+Oracle Workspace Manager                 19.0.0.0.0   VALID
+Oracle Text                              19.0.0.0.0   VALID
+Oracle Multimedia                        19.0.0.0.0   VALID
+
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Spatial                                  19.0.0.0.0   VALID
+Oracle OLAP API                          19.0.0.0.0   VALID
+Oracle Label Security                    19.0.0.0.0   VALID
+Oracle Database Vault                    19.0.0.0.0   VALID
+
+15 rows selected.
+
+SQL>
+SQL> select NAME,TIME from v$restore_point;
+
+NAME
+--------------------------------------------------------------------------------
+TIME
+---------------------------------------------------------------------------
+BEFORE_UPGRADE
+19-MAY-23 10.06.45.000000000 AM
+
+
+SQL> EXECUTE DBMS_STATS.GATHER_DICTIONARY_STATS;
+EXECUTE DBMS_STATS.GATHER_FIXED_OBJECTS_STATS;
+
+
+
+PL/SQL procedure successfully completed.
+
+SQL>
+
+
+
+
+
+
+
+PL/SQL procedure successfully completed.
+
+SQL> SQL> SQL> SQL> SQL> SQL> SQL> SQL> SQL> SQL>
+SQL>
+SQL>
+SQL>
+SQL> @/u01/app/oracle/cfgtoollogs/DEV/preupgrade/postupgrade_fixups.sql
+
+Session altered.
+
+
+PL/SQL procedure successfully completed.
+
+
+PL/SQL procedure successfully completed.
+
+
+PL/SQL procedure successfully completed.
+
+
+Package created.
+
+No errors.
+
+Package body created.
+
+
+PL/SQL procedure successfully completed.
+
+No errors.
+
+
+
+
+
+Package created.
+
+No errors.
+
+Package body created.
+
+No errors.
+Executing Oracle POST-Upgrade Fixup Script
+
+Auto-Generated by:       Oracle Preupgrade Script
+                         Version: 19.0.0.0.0 Build: 13
+Generated on:            2023-05-19 10:15:47
+
+For Source Database:     DEV
+Source Database Version: 12.2.0.1.0
+For Upgrade to Version:  19.0.0.0.0
+
+Preup                             Preupgrade
+Action                            Issue Is
+Number  Preupgrade Check Name     Remedied    Further DBA Action
+------  ------------------------  ----------  --------------------------------
+    9.  old_time_zones_exist      NO          Manual fixup recommended.
+   10.  post_dictionary           YES         None.
+   11.  post_fixed_objects        NO          Informational only.
+                                              Further action is optional.
+
+The fixup scripts have been run and resolved what they can. However,
+there are still issues originally identified by the preupgrade that
+have not been remedied and are still present in the database.
+Depending on the severity of the specific issue, and the nature of
+the issue itself, that could mean that your database upgrade is not
+fully complete.  To resolve the outstanding issues, start by reviewing
+the postupgrade_fixups.sql and searching it for the name of
+the failed CHECK NAME or Preupgrade Action Number listed above.
+There you will find the original corresponding diagnostic message
+from the preupgrade which explains in more detail what still needs
+to be done.
+
+PL/SQL procedure successfully completed.
+
+
+Session altered.
+
+SQL> shutdown immediate;
+Database closed.
+Database dismounted.
+ORACLE instance shut down.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+DEV:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+UAT:/u01/app/oracle/product/12.2.0.1/dbhome_1:N
+TEST:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 22 10:11:57 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup upgrade;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             855638016 bytes
+Database Buffers         2818572288 bytes
+Redo Buffers                7872512 bytes
+Database mounted.
+Database opened.
+SQL> SET SERVEROUTPUT ON
+
+DECLARE
+  l_tz_version PLS_INTEGER;
+BEGIN
+  l_tz_version := DBMS_DST.get_latest_timezone_version;
+
+  DBMS_OUTPUT.put_line('l_tz_version=' || l_tz_version);
+  DBMS_DST.begin_upgrade(l_tz_version);
+END;
+/SQL> SQL>   2    3    4    5    6    7    8    9
+l_tz_version=32
+An upgrade window has been successfully started.
+
+PL/SQL procedure successfully completed.
+
+SQL> SELECT PROPERTY_NAME, SUBSTR(property_value, 1, 30) value
+FROM DATABASE_PROPERTIES
+WHERE PROPERTY_NAME LIKE 'DST_%'
+ORDER BY PROPERTY_NAME;   2    3    4
+
+PROPERTY_NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+DST_PRIMARY_TT_VERSION
+32
+
+DST_SECONDARY_TT_VERSION
+26
+
+DST_UPGRADE_STATE
+UPGRADE
+
+
+SQL> shut immediate;
+Database closed.
+Database dismounted.
+ORACLE instance shut down.
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             855638016 bytes
+Database Buffers         2818572288 bytes
+Redo Buffers                7872512 bytes
+Database mounted.
+Database opened.
+SQL> SET SERVEROUTPUT ON
+
+DECLARE
+  l_failures   PLS_INTEGER;
+BEGIN
+  DBMS_DST.upgrade_database(l_failures);
+  DBMS_OUTPUT.put_line('DBMS_DST.upgrade_database : l_failures=' || l_failures);
+  DBMS_DST.end_upgrade(l_failures);
+  DBMS_OUTPUT.put_line('DBMS_DST.end_upgrade : l_failures=' || l_failures);
+END;
+/SQL> SQL>   2    3    4    5    6    7    8    9
+Table list: "GSMADMIN_INTERNAL"."AQ$_CHANGE_LOG_QUEUE_TABLE_S"
+Number of failures: 0
+Table list: "GSMADMIN_INTERNAL"."AQ$_CHANGE_LOG_QUEUE_TABLE_L"
+Number of failures: 0
+Table list: "MDSYS"."SDO_DIAG_MESSAGES_TABLE"
+Number of failures: 0
+Table list: "DVSYS"."SIMULATION_LOG$"
+Number of failures: 0
+Table list: "DVSYS"."AUDIT_TRAIL$"
+Number of failures: 0
+DBMS_DST.upgrade_database : l_failures=0
+An upgrade window has been successfully ended.
+DBMS_DST.end_upgrade : l_failures=0
+
+PL/SQL procedure successfully completed.
+
+SQL> SELECT * FROM v$timezone_file;
+
+FILENAME                VERSION     CON_ID
+-------------------- ---------- ----------
+timezlrg_32.dat              32          0
+
+SQL>
+SQL>
+Network error: Software caused connection abort
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon May 22 09:55:32 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May 22 09:55:37 IST 2023 on pts/5
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? DEV
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |hrep ORA
+bash: hrep: command not found...
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEV
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ env |hrep ORA^C
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 22 09:58:37 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> SELECT COUNT(*) FROM obj$ WHERE status IN (4, 5, 6);
+
+  COUNT(*)
+----------
+       281
+
+SQL> /
+
+  COUNT(*)
+----------
+       271
+
+SQL> /
+
+  COUNT(*)
+----------
+       242
+
+SQL> /
+
+  COUNT(*)
+----------
+       188
+
+SQL> /
+
+  COUNT(*)
+----------
+       175
+
+SQL> /
+
+  COUNT(*)
+----------
+       151
+
+SQL> /
+
+  COUNT(*)
+----------
+       129
+
+SQL> /
+
+  COUNT(*)
+----------
+        19
+
+SQL> /
+
+  COUNT(*)
+----------
+        19
+
+SQL> /
+
+  COUNT(*)
+----------
+        19
+
+SQL> /
+
+  COUNT(*)
+----------
+        16
+
+SQL> /
+
+  COUNT(*)
+----------
+        14
+
+SQL> /
+
+  COUNT(*)
+----------
+        13
+
+SQL> /
+
+  COUNT(*)
+----------
+        13
+
+SQL> /
+
+  COUNT(*)
+----------
+        13
+
+SQL> /
+
+  COUNT(*)
+----------
+         9
+
+SQL> /
+
+  COUNT(*)
+----------
+         9
+
+SQL> /
+
+  COUNT(*)
+----------
+         7
+
+SQL> /
+
+  COUNT(*)
+----------
+         6
+
+SQL> /
+
+  COUNT(*)
+----------
+         4
+
+SQL> /
+
+  COUNT(*)
+----------
+         1
+
+SQL> select NAME,TIME from v$restore_point;^C^C
+
+SQL>
+SQL>
+SQL> SELECT * FROM v$timezone_file;
+
+FILENAME                VERSION     CON_ID
+-------------------- ---------- ----------
+timezlrg_26.dat              26          0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon May 22 09:55:10 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May 22 09:55:14 IST 2023 on pts/4
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? TEST
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 22 09:55:58 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> column comp_name format a40
+column version format a12
+column status format a15
+select comp_name,version,status from dba_registry;
+SQL> SQL> SQL>
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Oracle Database Catalog Views            19.0.0.0.0   VALID
+Oracle Database Packages and Types       19.0.0.0.0   VALID
+JServer JAVA Virtual Machine             19.0.0.0.0   VALID
+Oracle XDK                               19.0.0.0.0   VALID
+Oracle Database Java Packages            19.0.0.0.0   VALID
+OLAP Analytic Workspace                  19.0.0.0.0   VALID
+Oracle Real Application Clusters         19.0.0.0.0   OPTION OFF
+Oracle XML Database                      19.0.0.0.0   VALID
+Oracle Workspace Manager                 19.0.0.0.0   VALID
+Oracle Text                              19.0.0.0.0   VALID
+Oracle Multimedia                        19.0.0.0.0   VALID
+
+COMP_NAME                                VERSION      STATUS
+---------------------------------------- ------------ ---------------
+Spatial                                  19.0.0.0.0   VALID
+Oracle OLAP API                          19.0.0.0.0   VALID
+Oracle Label Security                    19.0.0.0.0   VALID
+Oracle Database Vault                    19.0.0.0.0   VALID
+
+15 rows selected.
+
+SQL> column owner format a15
+column object_name format a40
+column object_type format a20
+select owner, object_name, object_type from dba_objects where status='INVALID' and owner like '%SYS%' order by object_type,owner,object_name;
+SQL> SQL> SQL>
+no rows selected
+
+SQL> select NAME,TIME from v$restore_point;
+
+NAME
+--------------------------------------------------------------------------------
+TIME
+---------------------------------------------------------------------------
+GRP_1684473654556
+19-MAY-23 10.50.54.000000000 AM
+
+
+SQL> ^C
+
+SQL>
+SQL> ^C
+
+SQL>
+SQL>
+SQL> SELECT * FROM v$timezone_file;
+
+FILENAME                VERSION     CON_ID
+-------------------- ---------- ----------
+timezlrg_32.dat      ##########          0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 22 10:06:01 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> SELECT * FROM v$timezone_file;
+
+FILENAME                VERSION     CON_ID
+-------------------- ---------- ----------
+timezlrg_32.dat              32          0
+
+SQL> wxit
+SP2-0042: unknown command "wxit" - rest of line ignored.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$

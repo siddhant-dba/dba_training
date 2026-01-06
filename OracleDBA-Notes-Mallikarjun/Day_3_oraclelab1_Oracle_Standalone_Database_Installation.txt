@@ -1,0 +1,1084 @@
+Database-Course-Material:
+https://drive.google.com/drive/folders/183dcnQtLtEp8mS3MX3VvCyiKjrpNGicT?usp=sharing
+- DBA Course Material >>> Database-Course.pptx
+- Ready_VMs_Standalone --> https://drive.google.com/drive/folders/1T5z2Uvsoaj6DkR-e1pG_gLsoHBr31LdJ
+
+DBA-Batch-13-Apr-2023 - Recording --> https://drive.google.com/drive/folders/1-BrDmaKM-tnodyA_Tb3CeLbN3rGM34l7?usp=sharing
+
+Other-Information --> https://drive.google.com/drive/folders/1mh5j3hBMad0cCpV7mhph2mmyAGYfwx3U?usp=sharing
+
+zoom link: 
+Meeting ID: 
+Passcode: 
+
+Weekdays Batch: Monday to Friday
+Course is Start Date: 17-Apr-2023 (Monday)
+Time: 09:30 AM IST to 11:30 AM IST (12:00 AM EST to 02:00 AM EST) (2 hour everyday)
+Duration: 45 days
+Database Course fees 10K INR (125 USD)
+Mode: Online Live Classes
+Oracle: 19c Version
+
+Types of Database:
+==================
+1. Standalone / Single node / Single Instance: 	- Without ASM 
+2. Oralce Rstart:				- With ASM 
+3. Oracle RAC		- RAC 
+4. Oracle RAC onenode 	- RAC 
+
+Standalone Vs RAC:
+
+1. Standalone without ASM: oraclelab1
+2. Standalone with ASM:    oraclelab2
+
+
+Standalone without ASM:
+=======================
+1. Install VM / Physical Server (OEL 7.9) & Network setup - Linux Admin 
+	- userid & pawword (mallik, oracle, root)
+	- Hostname and IP (oraclelab1.localdomain.com/192.168.1.101)
+	- putty or mobaxterm
+
+Option 1: - VM Install from scratch 
+	- Install oracle VM virtual manager (Hyperwiser) - Oracle VM VirtualBox https://www.virtualbox.org
+	- VM setup (oraclelab1) 
+	- Download Linux ISO image - https://edelivery.oracle.com/ (Oracle Linux 7.9.0.0.0 ( Oracle Linux )
+		- Oracle Linux 7.9.0.0.0 ( Oracle Linux ) 
+		- V1009690-01.iso - Oracle Linux Release 7 Update 9 for x86 (64 bit), 4.5 GB
+		
+	- Install VM from ISO image 
+		- /boot (600MB) (1G)
+		- swap (2x times of RAM) (15G)
+		- / (34GB)
+
+Option 2: 
+	- oraclelelabl1.rar - Reday VM 
+	- Use Ready VM from - Database-Course-Material >>> Ready_VMs_Standalone
+	- oraclelab1.rar 
+
+root / Pasword: 
+
+My laptop IP address: 192.168.1.7 (Praveeen: 192.168.1.110)
+My laptop DNS IP address: 192.168.1.1
+
+VM IP:  
+oraclelab1.localdomain.com
+
+[root@oraclelab1 ~]# vi /etc/hosts
+192.168.1.101	oraclelab1.localdomain.com	oraclelab1
+
+Static & DHCP - IP
+
+2. Instalaltion of Database Software / Oracle Software / Oracle Home
+	a. Download DB software (19c) - https://edelivery.oracle.com (Oracle Database 19c 19.3.0.0.0)	
+		- Oracle Database 19c 19.3.0.0.0 ( Oracle Database In-Memory, Oracle Database Vault ) 	
+		- DB - V982063-01.zip	
+		- GI - V982068-01.zip	
+	
+	b. Install Oracle Software (Oracle Home)
+		- Copy DB SW from lapttop/Desktop to VM (oraclelab1)
+			- Use winscp 
+			- Shared folder
+
+		- Directory creation & SW unzip 
+			- mkdir -p /u01/app/oracle/product/19.0.0.0/dbhome_1
+			- unzip /media/sf_Software/DB_19c_Software/V982063-01.zip -d /u01/app/oracle/product/19.0.0.0/dbhome_1
+                                        
+		- yum install oracle* --skip-broken 
+		- yum -y install oracle-database-ee-19c
+		- yum -y install oracle-database-ee-21c
+			https://docs.oracle.com/en/database/oracle/oracle-database/19
+
+		- Optinal (In case if you installed above RPM)
+		- User & group create 
+			# groupadd dba
+			# groupadd oinstall 
+			# useradd -g oinstall -G oinstall,dba oracle 
+			# 	
+
+		- Change premission	
+			#chown -R oracle:oinstall /u01
+	
+		- passwd oracle
+		
+		- Database SW Installation / Oracle SW Installation / Oracle Home Installation (from GUI screen as oracle user)
+			$ cd /u01/app/oracle/product/19.0.0.0/dbhome_1
+			$ ./runInstaller 
+
+
+#***************************************************************
+/u01/app/oraInventory/orainstRoot.sh
+
+output: 
+
+[root@oraclelab1 dbhome_1]# /u01/app/oraInventory/orainstRoot.sh
+Changing permissions of /u01/app/oraInventory.
+Adding read,write permissions for group.
+Removing read,write,execute permissions for world.
+#***************************************************************
+/u01/app/oracle/product/19.0.0.0/dbhome_1/root.sh
+output: 
+
+[root@oraclelab1 dbhome_1]# /u01/app/oracle/product/19.0.0.0/dbhome_1/root.sh
+Performing root user operation.
+
+The following environment variables are set as:
+    ORACLE_OWNER= oracle
+    ORACLE_HOME=  /u01/app/oracle/product/19.0.0.0/dbhome_1
+
+Enter the full pathname of the local bin directory: [/usr/local/bin]:
+#***************************************************************
+
+3. Creation of Database (DEVDB)
+		- Create Database 
+		- $ cd /u01/app/oracle/product/19.0.0.0/dbhome_1/bin
+		- $ ./dbca
+
+1. Tool to install Oracle software / OH / DB software 
+	- /u01/app/oracle/product/19.0.0.0/dbhome_1/runInstaller 
+
+2. Tool to use my database creation
+	- /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/dbca
+
+3. How to find which is my oarcle software location or what all oracle softwares version are installed on server?
+	- /u01/app/oraInventory/ContentsXML/inventory.xml
+
+4. How to find where is central inventory or central inventory location?
+	- cat /etc/oraInst.loc
+
+5. How to find how many DBs are created on a server?
+	- cat /etc/oratab 
+
+6. How to find out how many DBs are currently running on a server? 
+	- ps -ef|grep smon
+
+7. How to connect to DB?
+	- su - oracle
+	- . oraenv
+	- env |grep ORA
+	- sqlplus / as sysdba
+
+
+oraclelab1_with_DB.rar -  Oracle Server with DB installed in it
+
+login as: root
+root@192.168.1.101's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@192.168.1.101                                  │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon Apr 17 10:19:05 2023 from 192.168.1.7
+[root@oraclelab1 ~]# id oracle
+id: oracle: no such user
+[root@oraclelab1 ~]# cat /etc/group
+root:x:0:
+bin:x:1:
+daemon:x:2:
+sys:x:3:
+adm:x:4:
+tty:x:5:
+disk:x:6:
+lp:x:7:
+mem:x:8:
+kmem:x:9:
+wheel:x:10:mallik
+cdrom:x:11:
+mail:x:12:postfix
+man:x:15:
+dialout:x:18:
+floppy:x:19:
+games:x:20:
+tape:x:33:
+video:x:39:
+ftp:x:50:
+lock:x:54:
+audio:x:63:
+nobody:x:99:
+users:x:100:
+utmp:x:22:
+utempter:x:35:
+stapusr:x:156:
+stapsys:x:157:
+stapdev:x:158:
+input:x:999:
+systemd-journal:x:190:
+systemd-network:x:192:
+dbus:x:81:
+polkitd:x:998:
+printadmin:x:997:
+libstoragemgmt:x:996:
+colord:x:995:
+rpc:x:32:
+dip:x:40:
+cgred:x:994:
+ssh_keys:x:993:
+saslauth:x:76:
+abrt:x:173:
+setroubleshoot:x:992:
+rtkit:x:172:
+radvd:x:75:
+unbound:x:991:
+kvm:x:36:qemu
+qemu:x:107:
+gluster:x:990:
+chrony:x:989:
+tss:x:59:
+libvirt:x:988:
+usbmuxd:x:113:
+geoclue:x:987:
+pulse-access:x:986:
+pulse-rt:x:985:
+pulse:x:171:
+gdm:x:42:
+saned:x:984:
+rpcuser:x:29:
+nfsnobody:x:65534:
+gnome-initial-setup:x:983:
+sshd:x:74:
+slocate:x:21:
+avahi:x:70:
+postdrop:x:90:
+postfix:x:89:
+ntp:x:38:
+tcpdump:x:72:
+mallik:x:1000:
+vboxsf:x:982:
+[root@oraclelab1 ~]# cat /etc/group |grep dba
+[root@oraclelab1 ~]# cat /etc/group |grep oinstall
+[root@oraclelab1 ~]# cat /etc/passwd |grep oracle
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# cat /etc/passwd |grep oracle
+oracle:x:54321:54321::/home/oracle:/bin/bash
+[root@oraclelab1 ~]# cat /etc/group |grep dba
+dba:x:54322:oracle
+backupdba:x:54324:
+dgdba:x:54325:
+kmdba:x:54326:
+racdba:x:54330:
+[root@oraclelab1 ~]# cat /etc/group |grep oinstall
+oinstall:x:54321:
+[root@oraclelab1 ~]# id oracle
+uid=54321(oracle) gid=54321(oinstall) groups=54321(oinstall),54322(dba)
+[root@oraclelab1 ~]# chown -R oracle:oinstall /u01
+[root@oraclelab1 ~]# cd /u01
+[root@oraclelab1 u01]# ll
+total 0
+drwxr-xr-x 3 oracle oinstall 20 Apr 17 10:33 app
+[root@oraclelab1 u01]# cd app/oracle/product/19.0.0.0/
+[root@oraclelab1 19.0.0.0]# cd dbhome_1/
+[root@oraclelab1 dbhome_1]# ls
+addnode     crs   dbjava       dmu      hs             jdbc  md       olap     ords  plsql    rdb
+apex        css   dbs          drdaas   install        jdk   mgw      OPatch   oss   precomp  rel
+assistants  ctx   deinstall    dv       instantclient  jlib  network  opmn     oui   QOpatch  roo
+bin         cv    demo         env.ora  inventory      ldap  nls      oracore  owm   R        roo
+clone       data  diagnostics  has      javavm         lib   odbc     ord      perl  racg     roo
+[root@oraclelab1 dbhome_1]# ls -l
+total 92
+drwxr-xr-x  2 oracle oinstall   102 Apr 18  2019 addnode
+drwxr-xr-x  6 oracle oinstall  4096 Apr 17  2019 apex
+drwxr-xr-x  9 oracle oinstall    93 Apr 17  2019 assistants
+drwxr-xr-x  2 oracle oinstall  8192 Apr 18  2019 bin
+drwxr-xr-x  4 oracle oinstall    87 Apr 18  2019 clone
+drwxr-xr-x  6 oracle oinstall    55 Apr 17  2019 crs
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 css
+drwxr-xr-x 11 oracle oinstall   119 Apr 17  2019 ctx
+drwxr-xr-x  7 oracle oinstall    71 Apr 17  2019 cv
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 data
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 dbjava
+drwxr-xr-x  2 oracle oinstall    22 Apr 17  2019 dbs
+drwxr-xr-x  5 oracle oinstall  4096 Apr 18  2019 deinstall
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 demo
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 diagnostics
+drwxr-xr-x 13 oracle oinstall  4096 Apr 17  2019 dmu
+drwxr-xr-x  4 oracle oinstall    30 Apr 17  2019 drdaas
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 dv
+-rw-r--r--  1 oracle oinstall   852 Aug 18  2015 env.ora
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 has
+drwxr-xr-x  5 oracle oinstall    41 Apr 17  2019 hs
+drwxr-xr-x 10 oracle oinstall  4096 Apr 18  2019 install
+drwxr-xr-x  2 oracle oinstall    29 Apr 17  2019 instantclient
+drwxr-x--- 13 oracle oinstall  4096 Apr 18  2019 inventory
+drwxr-xr-x  8 oracle oinstall    82 Apr 18  2019 javavm
+drwxr-xr-x  3 oracle oinstall    35 Apr 17  2019 jdbc
+drwxr-xr-x  6 oracle oinstall  4096 Apr 18  2019 jdk
+drwxr-xr-x  2 oracle oinstall  4096 Apr 17  2019 jlib
+drwxr-xr-x 10 oracle oinstall   112 Apr 17  2019 ldap
+drwxr-xr-x  4 oracle oinstall 12288 Apr 18  2019 lib
+drwxr-xr-x  9 oracle oinstall    98 Apr 17  2019 md
+drwxr-xr-x  4 oracle oinstall    31 Apr 17  2019 mgw
+drwxr-xr-x 10 oracle oinstall   106 Apr 17  2019 network
+drwxr-xr-x  5 oracle oinstall    46 Apr 17  2019 nls
+drwxr-xr-x  8 oracle oinstall   101 Apr 17  2019 odbc
+drwxr-xr-x  5 oracle oinstall    42 Apr 17  2019 olap
+drwxr-x--- 14 oracle oinstall  4096 Apr 12  2019 OPatch
+drwxr-xr-x  7 oracle oinstall    65 Apr 17  2019 opmn
+drwxr-xr-x  4 oracle oinstall    34 Apr 17  2019 oracore
+drwxr-xr-x  6 oracle oinstall    52 Apr 17  2019 ord
+drwxr-xr-x  4 oracle oinstall    66 Apr 17  2019 ords
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 oss
+drwxr-xr-x  8 oracle oinstall  4096 Apr 18  2019 oui
+drwxr-xr-x  4 oracle oinstall    33 Apr 17  2019 owm
+drwxr-xr-x  5 oracle oinstall    39 Apr 17  2019 perl
+drwxr-xr-x  6 oracle oinstall    78 Apr 17  2019 plsql
+drwxr-xr-x  6 oracle oinstall    56 Apr 18  2019 precomp
+drwxr-xr-x  2 oracle oinstall    26 Apr 17  2019 QOpatch
+drwxr-xr-x  5 oracle oinstall    52 Apr 17  2019 R
+drwxr-xr-x  4 oracle oinstall    29 Apr 17  2019 racg
+drwxr-xr-x 13 oracle oinstall   140 Apr 18  2019 rdbms
+drwxr-xr-x  3 oracle oinstall    21 Apr 17  2019 relnotes
+-rwx------  1 oracle oinstall   638 Apr 18  2019 root.sh
+-rwx------  1 oracle oinstall   786 Apr 17  2019 root.sh.old
+-rw-r-----  1 oracle oinstall    10 Apr 17  2019 root.sh.old.1
+-rwxr-x---  1 oracle oinstall  1783 Mar  8  2017 runInstaller
+-rw-r--r--  1 oracle oinstall  2927 Oct 14  2016 schagent.conf
+drwxr-xr-x  5 oracle oinstall   119 Apr 17  2019 sdk
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 slax
+drwxr-xr-x  4 oracle oinstall    41 Apr 17  2019 sqldeveloper
+drwxr-xr-x  3 oracle oinstall    17 Apr 17  2019 sqlj
+drwxr-xr-x  4 oracle oinstall  4096 Apr 18  2019 sqlpatch
+drwxr-xr-x  6 oracle oinstall    53 Apr 18  2019 sqlplus
+drwxr-xr-x  6 oracle oinstall    54 Apr 17  2019 srvm
+drwxr-xr-x  5 oracle oinstall    45 Apr 17  2019 suptools
+drwxr-xr-x  3 oracle oinstall    35 Apr 17  2019 ucp
+drwxr-xr-x  4 oracle oinstall    31 Apr 17  2019 usm
+drwxr-xr-x  2 oracle oinstall    33 Apr 17  2019 utl
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 wwg
+drwxr-x---  7 oracle oinstall    69 Apr 17  2019 xdk
+[root@oraclelab1 dbhome_1]#
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+login as: root
+root@192.168.1.101's password:
+Access denied
+root@192.168.1.101's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@192.168.1.101                                  │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last failed login: Mon Apr 17 10:49:25 IST 2023 from 192.168.1.7 on ssh:notty
+There was 1 failed login attempt since the last successful login.
+Last login: Mon Apr 17 10:40:18 2023 from 192.168.1.7
+[root@oraclelab1 ~]# id oracle
+uid=54321(oracle) gid=54321(oinstall) groups=54321(oinstall),54322(dba)
+[root@oraclelab1 ~]# /u01/app/oraInventory/orainstRoot.sh
+Changing permissions of /u01/app/oraInventory.
+Adding read,write permissions for group.
+Removing read,write,execute permissions for world.
+
+Changing groupname of /u01/app/oraInventory to oinstall.
+The execution of the script is complete.
+[root@oraclelab1 ~]# /u01/app/oracle/product/19.0.0.0/dbhome_1/root.sh
+Performing root user operation.
+
+The following environment variables are set as:
+    ORACLE_OWNER= oracle
+    ORACLE_HOME=  /u01/app/oracle/product/19.0.0.0/dbhome_1
+
+Enter the full pathname of the local bin directory: [/usr/local/bin]:
+   Copying dbhome to /usr/local/bin ...
+   Copying oraenv to /usr/local/bin ...
+   Copying coraenv to /usr/local/bin ...
+
+
+Creating /etc/oratab file...
+Entries will be added to the /etc/oratab file as needed by
+Database Configuration Assistant when a database is created
+Finished running generic part of root script.
+Now product-specific root actions will be performed.
+Oracle Trace File Analyzer (TFA - Standalone Mode) is available at :
+    /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tfactl
+
+Note :
+1. tfactl will use TFA Service if that service is running and user has been granted access
+2. tfactl will configure TFA Standalone Mode only if user has no access to TFA Service or TFA is lled
+
+[root@oraclelab1 ~]# cat /etc/oratab
+#
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+[root@oraclelab1 ~]# cd /u01/app/oraInventory/
+[root@oraclelab1 oraInventory]# ll
+total 8
+drwxrwx--- 2 oracle oinstall   81 Apr 17 10:53 ContentsXML
+drwxrwx--- 3 oracle oinstall   49 Apr 17 10:54 logs
+-rw-rw---- 1 oracle oinstall   56 Apr 17 10:53 oraInst.loc
+-rwxrwx--- 1 oracle oinstall 1617 Apr 17 10:53 orainstRoot.sh
+[root@oraclelab1 oraInventory]# cat /etc/oraInst.loc
+inventory_loc=/u01/app/oraInventory
+inst_group=oinstall
+[root@oraclelab1 oraInventory]# cd /u01/app/oraInventory
+[root@oraclelab1 oraInventory]# ll
+total 8
+drwxrwx--- 2 oracle oinstall   81 Apr 17 10:53 ContentsXML
+drwxrwx--- 3 oracle oinstall   49 Apr 17 10:54 logs
+-rw-rw---- 1 oracle oinstall   56 Apr 17 10:53 oraInst.loc
+-rwxrwx--- 1 oracle oinstall 1617 Apr 17 10:53 orainstRoot.sh
+[root@oraclelab1 oraInventory]# cd ContentsXML
+[root@oraclelab1 ContentsXML]# ll
+total 16
+-rw-rw---- 1 oracle oinstall 300 Apr 17 10:53 comps.xml
+-rw-rw---- 1 oracle oinstall 480 Apr 17 10:53 inventory.xml
+-rw-rw---- 1 oracle oinstall 292 Apr 17 10:53 libs.xml
+-rw-rw---- 1 oracle oinstall 174 Apr 17 10:53 oui-patch.xml
+[root@oraclelab1 ContentsXML]# cat inventory.xml
+<?xml version="1.0" standalone="yes" ?>
+<!-- Copyright (c) 1999, 2023, Oracle and/or its affiliates.
+All rights reserved. -->
+<!-- Do not modify the contents of this file by hand. -->
+<INVENTORY>
+<VERSION_INFO>
+   <SAVED_WITH>12.2.0.7.0</SAVED_WITH>
+   <MINIMUM_VER>2.1.0.6.0</MINIMUM_VER>
+</VERSION_INFO>
+<HOME_LIST>
+<HOME NAME="OraDB19Home1" LOC="/u01/app/oracle/product/19.0.0.0/dbhome_1" TYPE="O" IDX="1"/>
+</HOME_LIST>
+<COMPOSITEHOME_LIST>
+</COMPOSITEHOME_LIST>
+</INVENTORY>
+[root@oraclelab1 ContentsXML]# cd /u01/app/oracle/product/19.0.0.0/dbhome_1
+[root@oraclelab1 dbhome_1]# ls
+addnode      ctx          dmu            inventory  mgw      oraInst.loc  precomp      root.sh.ol
+apex         cv           drdaas         javavm     network  ord          QOpatch      root.sh.ol
+assistants   data         dv             jdbc       nls      ords         R            root.sh.ol
+bin          dbjava       env.ora        jdk        odbc     oss          racg         runInstall
+cfgtoollogs  dbs          has            jlib       olap     oui          rdbms        schagent.c
+clone        deinstall    hs             ldap       OPatch   owm          relnotes     sdk
+crs          demo         install        lib        opmn     perl         root.sh      slax
+css          diagnostics  instantclient  md         oracore  plsql        root.sh.old  sqldevelop
+[root@oraclelab1 dbhome_1]# ps -ef|grep smon
+root     10214  4105  0 10:56 pts/1    00:00:00 grep --color=auto smon
+[root@oraclelab1 dbhome_1]# cat /etc/oratab
+#
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+[root@oraclelab1 dbhome_1]# cd /u01/app/oraInventory/ContentsXML/
+[root@oraclelab1 ContentsXML]# pwd
+/u01/app/oraInventory/ContentsXML
+[root@oraclelab1 ContentsXML]# ll
+total 16
+-rw-rw---- 1 oracle oinstall 300 Apr 17 10:53 comps.xml
+-rw-rw---- 1 oracle oinstall 480 Apr 17 10:53 inventory.xml
+-rw-rw---- 1 oracle oinstall 292 Apr 17 10:53 libs.xml
+-rw-rw---- 1 oracle oinstall 174 Apr 17 10:53 oui-patch.xml
+[root@oraclelab1 ContentsXML]# cat inventory.xml
+<?xml version="1.0" standalone="yes" ?>
+<!-- Copyright (c) 1999, 2023, Oracle and/or its affiliates.
+All rights reserved. -->
+<!-- Do not modify the contents of this file by hand. -->
+<INVENTORY>
+<VERSION_INFO>
+   <SAVED_WITH>12.2.0.7.0</SAVED_WITH>
+   <MINIMUM_VER>2.1.0.6.0</MINIMUM_VER>
+</VERSION_INFO>
+<HOME_LIST>
+<HOME NAME="OraDB19Home1" LOC="/u01/app/oracle/product/19.0.0.0/dbhome_1" TYPE="O" IDX="1"/>
+</HOME_LIST>
+<COMPOSITEHOME_LIST>
+</COMPOSITEHOME_LIST>
+</INVENTORY>
+[root@oraclelab1 ContentsXML]# cat /etc/oraInst.loc
+inventory_loc=/u01/app/oraInventory
+inst_group=oinstall
+[root@oraclelab1 ContentsXML]# cd /u01/app/oraInventory
+[root@oraclelab1 oraInventory]# ll
+total 8
+drwxrwx--- 2 oracle oinstall   81 Apr 17 10:53 ContentsXML
+drwxrwx--- 3 oracle oinstall   49 Apr 17 10:54 logs
+-rw-rw---- 1 oracle oinstall   56 Apr 17 10:53 oraInst.loc
+-rwxrwx--- 1 oracle oinstall 1617 Apr 17 10:53 orainstRoot.sh
+[root@oraclelab1 oraInventory]# cd ContentsXML
+[root@oraclelab1 ContentsXML]# ll
+total 16
+-rw-rw---- 1 oracle oinstall 300 Apr 17 10:53 comps.xml
+-rw-rw---- 1 oracle oinstall 480 Apr 17 10:53 inventory.xml
+-rw-rw---- 1 oracle oinstall 292 Apr 17 10:53 libs.xml
+-rw-rw---- 1 oracle oinstall 174 Apr 17 10:53 oui-patch.xml
+[root@oraclelab1 ContentsXML]# cat inventory.xml
+<?xml version="1.0" standalone="yes" ?>
+<!-- Copyright (c) 1999, 2023, Oracle and/or its affiliates.
+All rights reserved. -->
+<!-- Do not modify the contents of this file by hand. -->
+<INVENTORY>
+<VERSION_INFO>
+   <SAVED_WITH>12.2.0.7.0</SAVED_WITH>
+   <MINIMUM_VER>2.1.0.6.0</MINIMUM_VER>
+</VERSION_INFO>
+<HOME_LIST>
+<HOME NAME="OraDB19Home1" LOC="/u01/app/oracle/product/19.0.0.0/dbhome_1" TYPE="O" IDX="1"/>
+</HOME_LIST>
+<COMPOSITEHOME_LIST>
+</COMPOSITEHOME_LIST>
+</INVENTORY>
+[root@oraclelab1 ContentsXML]# cat /etc/oratab
+#
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[root@oraclelab1 ContentsXML]# ps -ef|grep smon
+oracle   13665     1  0 11:11 ?        00:00:00 ora_smon_DEVDB
+root     14141  4105  0 11:14 pts/1    00:00:00 grep --color=auto smon
+[root@oraclelab1 ContentsXML]# kill -9 13665
+[root@oraclelab1 ContentsXML]# ps -ef|grep smon
+root     14171  4105  0 11:14 pts/1    00:00:00 grep --color=auto smon
+[root@oraclelab1 ContentsXML]#
+[root@oraclelab1 ContentsXML]#
+[root@oraclelab1 ContentsXML]#
+[root@oraclelab1 ContentsXML]#
+[root@oraclelab1 ContentsXML]# ps -ef|grep smon
+root     14217  4105  0 11:15 pts/1    00:00:00 grep --color=auto smon
+[root@oraclelab1 ContentsXML]# su - oracle
+Last login: Mon Apr 17 10:53:54 IST 2023 on pts/1
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   14283 14230  0 11:15 pts/1    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   14326 14230  0 11:16 pts/1    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ ls -ltr /u01/app/oracle/product/19.0.0.0/dbhome_1
+total 104
+-rw-r--r--  1 oracle oinstall   852 Aug 18  2015 env.ora
+-rw-r--r--  1 oracle oinstall  2927 Oct 14  2016 schagent.conf
+-rwxr-x---  1 oracle oinstall  1783 Mar  8  2017 runInstaller
+drwxr-x---  7 oracle oinstall    69 Apr 17  2019 xdk
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 wwg
+drwxr-xr-x  4 oracle oinstall    31 Apr 17  2019 usm
+drwxr-xr-x  5 oracle oinstall    45 Apr 17  2019 suptools
+drwxr-xr-x  6 oracle oinstall    54 Apr 17  2019 srvm
+drwxr-xr-x  3 oracle oinstall    17 Apr 17  2019 sqlj
+drwxr-xr-x  4 oracle oinstall    41 Apr 17  2019 sqldeveloper
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 slax
+-rw-r-----  1 oracle oinstall    10 Apr 17  2019 root.sh.old.3
+-rw-r-----  1 oracle oinstall    10 Apr 17  2019 root.sh.old.1
+drwxr-xr-x  3 oracle oinstall    21 Apr 17  2019 relnotes
+drwxr-xr-x  4 oracle oinstall    29 Apr 17  2019 racg
+drwxr-xr-x  5 oracle oinstall    52 Apr 17  2019 R
+drwxr-xr-x  5 oracle oinstall    39 Apr 17  2019 perl
+drwxr-xr-x  4 oracle oinstall    33 Apr 17  2019 owm
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 oss
+drwxr-xr-x  6 oracle oinstall    52 Apr 17  2019 ord
+drwxr-xr-x  4 oracle oinstall    34 Apr 17  2019 oracore
+drwxr-xr-x  7 oracle oinstall    65 Apr 17  2019 opmn
+drwxr-xr-x  5 oracle oinstall    42 Apr 17  2019 olap
+drwxr-xr-x  5 oracle oinstall    46 Apr 17  2019 nls
+drwxr-xr-x  4 oracle oinstall    31 Apr 17  2019 mgw
+drwxr-xr-x  9 oracle oinstall    98 Apr 17  2019 md
+drwxr-xr-x 10 oracle oinstall   112 Apr 17  2019 ldap
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 has
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 dv
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 diagnostics
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 demo
+drwxr-xr-x  3 oracle oinstall    19 Apr 17  2019 dbjava
+drwxr-xr-x  3 oracle oinstall    20 Apr 17  2019 data
+drwxr-xr-x  7 oracle oinstall    71 Apr 17  2019 cv
+drwxr-xr-x  3 oracle oinstall    18 Apr 17  2019 css
+drwxr-xr-x  6 oracle oinstall    55 Apr 17  2019 crs
+drwxr-xr-x  6 oracle oinstall    78 Apr 17  2019 plsql
+drwxr-xr-x  2 oracle oinstall    33 Apr 17  2019 utl
+drwxr-xr-x  2 oracle oinstall    29 Apr 17  2019 instantclient
+drwxr-xr-x 13 oracle oinstall  4096 Apr 17  2019 dmu
+drwxr-xr-x  3 oracle oinstall    35 Apr 17  2019 ucp
+drwxr-xr-x  3 oracle oinstall    35 Apr 17  2019 jdbc
+drwxr-xr-x  2 oracle oinstall    26 Apr 17  2019 QOpatch
+drwxr-xr-x  4 oracle oinstall    66 Apr 17  2019 ords
+drwxr-xr-x  5 oracle oinstall   119 Apr 17  2019 sdk
+drwxr-xr-x  6 oracle oinstall  4096 Apr 17  2019 apex
+drwxr-xr-x  8 oracle oinstall   101 Apr 17  2019 odbc
+drwxr-xr-x  2 oracle oinstall  4096 Apr 17  2019 jlib
+drwxr-xr-x  4 oracle oinstall    30 Apr 17  2019 drdaas
+drwxr-xr-x 11 oracle oinstall   119 Apr 17  2019 ctx
+-rwx------  1 oracle oinstall   786 Apr 17  2019 root.sh.old
+drwxr-xr-x 10 oracle oinstall   106 Apr 17  2019 network
+drwxr-xr-x  5 oracle oinstall    41 Apr 17  2019 hs
+drwxr-xr-x  9 oracle oinstall    93 Apr 17  2019 assistants
+-rwx------  1 oracle oinstall   638 Apr 18  2019 root.sh.old.2
+drwxr-xr-x  4 oracle oinstall  4096 Apr 18  2019 sqlpatch
+drwxr-xr-x 13 oracle oinstall   140 Apr 18  2019 rdbms
+drwxr-xr-x  6 oracle oinstall    56 Apr 18  2019 precomp
+drwxr-xr-x  6 oracle oinstall  4096 Apr 18  2019 jdk
+drwxr-xr-x  8 oracle oinstall    82 Apr 18  2019 javavm
+-rw-r-----  1 oracle oinstall    56 Apr 17 10:52 oraInst.loc
+drwxr-xr-x  6 oracle oinstall    53 Apr 17 10:52 sqlplus
+drwxr-x--- 14 oracle oinstall  4096 Apr 17 10:53 OPatch
+drwxr-xr-x  4 oracle oinstall 12288 Apr 17 10:53 lib
+-rwx------  1 oracle oinstall   652 Apr 17 10:53 root.sh
+drwxr-x--- 14 oracle oinstall  4096 Apr 17 10:53 inventory
+drwxr-xr-x  8 oracle oinstall  4096 Apr 17 10:53 oui
+drwxr-xr-x  4 oracle oinstall    87 Apr 17 10:53 clone
+drwxr-xr-x  5 oracle oinstall  4096 Apr 17 10:53 deinstall
+drwxr-xr-x  2 oracle oinstall   102 Apr 17 10:53 addnode
+drwxr-xr-x  4 oracle oinstall    30 Apr 17 10:53 cfgtoollogs
+drwxrwx--- 10 oracle oinstall  4096 Apr 17 10:53 install
+drwxr-xr-x  2 oracle oinstall  8192 Apr 17 10:53 bin
+drwxr-xr-x  2 oracle oinstall    98 Apr 17 11:11 dbs
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEVDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 17 11:17:42 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL>
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 2365586088 bytes
+Fixed Size                  8899240 bytes
+Variable Size             520093696 bytes
+Database Buffers         1828716544 bytes
+Redo Buffers                7876608 bytes
+Database mounted.
+Database opened.
+SQL>
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+login as: root
+root@192.168.1.101's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@192.168.1.101                                  │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon Apr 17 11:19:33 2023
+[root@oraclelab1 ~]# cat /etc/oratab
+#
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle    3201     1  0 11:20 ?        00:00:00 ora_smon_DEVDB
+root      4029  3961  0 11:28 pts/1    00:00:00 grep --color=auto smon
+[root@oraclelab1 ~]# . oraenv^C
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon Apr 17 11:20:02 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEVDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 17 11:29:45 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+
+==================================================================================================================
+==================================================================================================================
+
+**classic Oracle installer issue** when X11 GUI can’t connect.
+The error:
+Unable to verify the graphical display setup
+Can't connect to X11 window server using ':0'
+
+Means the **DISPLAY variable is set**, but the system either:
+
+* doesn’t have an X server running, OR
+* you’re connecting over SSH without X forwarding, OR
+* the oracle user doesn’t have permission to use the X server.
+
+# 🔧 Fix Options
+=====================================================
+## **Option 1 – Run with X11 Forwarding (GUI Mode)**
+=====================================================
+If you really want the GUI installer:
+
+1. On your **client machine (Windows/Linux/Mac)** install an **X server**:
+
+   * Windows → [VcXsrv](https://sourceforge.net/projects/vcxsrv/) or \[Xming].
+   * Linux/Mac → Already have XQuartz or X11.
+
+2. When connecting via SSH, enable **X11 forwarding**:
+
+   ssh -X oracle@<your_server_ip>
+   
+   (use -Y if -X doesn’t work)
+
+3. Inside the session:
+
+   bash
+   export DISPLAY=:0
+   xhost +SI:localuser:oracle
+   ./runInstaller
+   
+That should open the Oracle Installer GUI on your local system.
+
+=====================================================
+## **Option 2 – Use Silent Installation (Recommended for Servers/VMs)**
+=====================================================
+If you don’t care about the GUI, Oracle provides a **silent mode** (no X11 needed).
+
+1. Go to the **response file** directory:
+
+   bash
+   cd $ORACLE_HOME/install/response
+   cp db_install.rsp /tmp/db_install.rsp
+   vi /tmp/db_install.rsp
+   
+2. Edit key parameters:
+
+   oracle.install.option=INSTALL_DB_SWONLY
+   UNIX_GROUP_NAME=oinstall
+   INVENTORY_LOCATION=/u01/app/oraInventory
+   ORACLE_HOME=/u01/app/oracle/product/19.3.0/dbhome_1
+   ORACLE_BASE=/u01/app/oracle
+   oracle.install.db.InstallEdition=EE
+   DECLINE_SECURITY_UPDATES=true
+   
+3. Run installer silently:
+
+  ./runInstaller -silent -responseFile /tmp/db_install.rsp -ignorePrereq
+   
+4. At the end, run the root scripts:
+
+   bash
+   sudo /u01/app/oraInventory/orainstRoot.sh
+   sudo /u01/app/oracle/product/19.3.0/dbhome_1/root.sh
+   
+✅ My Recommendation
+
+For **classroom labs or servers without GUI**, always use **silent install** — it’s faster, cleaner, and avoids X11 headaches. 
+GUI makes sense only if you want to **demo the installer screens**.
+
+====================================================================================================================================================================
+====================================================================================================================================================================
+
+Ready-made Oracle 19c silent install response file (db_install.rsp) tailored for your oraclelab1 setup so you can just plug it in and run.
+
+here’s a **ready-to-use Oracle 19c Silent Install response file** customized for your `oraclelab1` lab environment. 
+You can copy this into /tmp/db_install.rsp and run the installer with it.
+
+=====================================================
+## 📄 Response File (`/tmp/db_install.rsp`)
+
+####################################################################
+# Oracle 19c Silent Installation Response File - oraclelab1
+####################################################################
+
+# Install software only (no DB created yet)
+oracle.install.option=INSTALL_DB_SWONLY
+
+# OS groups
+UNIX_GROUP_NAME=oinstall
+INVENTORY_LOCATION=/u01/app/oraInventory
+
+# Oracle base and home
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.3.0/dbhome_1
+
+# Edition
+oracle.install.db.InstallEdition=EE
+
+# Language
+oracle.install.db.OSDBA_GROUP=dba
+oracle.install.db.OSOPER_GROUP=dba
+oracle.install.db.OSBACKUPDBA_GROUP=dba
+oracle.install.db.OSDGDBA_GROUP=dba
+oracle.install.db.OSKMDBA_GROUP=dba
+oracle.install.db.OSRACDBA_GROUP=dba
+
+# Decline security updates (since no GUI)
+DECLINE_SECURITY_UPDATES=true
+SECURITY_UPDATES_VIA_MYORACLESUPPORT=false
+PROXY_HOST=
+PROXY_PORT=
+PROXY_USER=
+PROXY_PWD=
+COLLECTOR_SUPPORTHUB_URL=
+
+=====================================================
+## 🚀 Installation Steps
+=====================================================
+1. Save response file:
+
+   vi /tmp/db_install.rsp
+   # paste the above config and save
+
+
+2. Run silent installer:
+
+    cd /u01/app/oracle/product/19.3.0/dbhome_1
+   ./runInstaller -silent -responseFile /tmp/db_install.rsp -ignorePrereq
+
+
+3. At the end, run root scripts:
+
+   sudo /u01/app/oraInventory/orainstRoot.sh
+   sudo /u01/app/oracle/product/19.3.0/dbhome_1/root.sh
+
+✅ What This Will Do
+
+* Installs **Oracle 19c binaries** into `/u01/app/oracle/product/19.3.0/dbhome_1`
+* No GUI needed
+* Doesn’t create a database yet — just installs the software
+* Afterward, you can create a DB manually using **DBCA in silent mode**
+
+Example DBCA command:
+
+dbca -silent -createDatabase \
+  -templateName General_Purpose.dbc \
+  -gdbname orcl \
+  -sid orcl \
+  -createAsContainerDatabase true \
+  -numberOfPDBs 1 \
+  -pdbName pdb1 \
+  -createListener LISTENER:1521 \
+  -databaseType MULTIPURPOSE \
+  -memoryMgmtType auto_sga \
+  -emConfiguration NONE \
+  -datafileDestination /u01/app/oracle/oradata \
+  -storageType FS \
+  -characterSet AL32UTF8 \
+  -nationalCharacterSet AL16UTF16 \
+  -sampleSchema true \
+  -SysPassword Welcome123 \
+  -SystemPassword Welcome123 \
+  -PDBAdminPassword Welcome123
+====================================================================================================================================================================
+====================================================================================================================================================================
+Step-by-step DBCA Silent Install Guide so we can create the CDB + PDB after installing the binaries:
+
+**step-by-step DBCA Silent Install Guide** so after the Oracle 19c software install (via `runInstaller`), we can create a full database (CDB + PDB) without needing the GUI.
+
+🏗️ DBCA Silent Install Guide (Oracle 19c on OL7)
+=====================================================
+## 1. Prepare directories
+=====================================================
+Make sure your Oracle environment variables are set (`.bash_profile` of oracle user):
+
+export ORACLE_BASE=/u01/app/oracle
+export ORACLE_HOME=/u01/app/oracle/product/19.3.0/dbhome_1
+export PATH=$ORACLE_HOME/bin:$PATH
+
+Create storage directories:
+
+mkdir -p /u01/app/oracle/oradata
+
+=====================================================
+## 2. Run DBCA Silent Mode
+=====================================================
+Here’s a **ready command** to create a **CDB with 1 PDB**:
+
+dbca -silent -createDatabase \
+  -templateName General_Purpose.dbc \
+  -gdbname orcl \
+  -sid orcl \
+  -createAsContainerDatabase true \
+  -numberOfPDBs 1 \
+  -pdbName pdb1 \
+  -createListener LISTENER:1521 \
+  -databaseType MULTIPURPOSE \
+  -memoryMgmtType auto_sga \
+  -datafileDestination /u01/app/oracle/oradata \
+  -storageType FS \
+  -characterSet AL32UTF8 \
+  -nationalCharacterSet AL16UTF16 \
+  -sampleSchema true \
+  -SysPassword Welcome123 \
+  -SystemPassword Welcome123 \
+  -PDBAdminPassword Welcome123
+
+=====================================================
+## 3. What this does
+=====================================================
+* **Global DB Name**: `orcl`
+* **SID**: `orcl`
+* **Container DB**: Yes
+* **Pluggable DB**: `pdb1`
+* **Listener**: Port `1521`
+* **Character Set**: `AL32UTF8`
+* **Sample Schemas**: Installed (HR, SH, etc.)
+* **Passwords**: `Welcome123` for SYS, SYSTEM, and PDB admin
+=====================================================
+## 4. Verify Database Creation
+=====================================================
+Switch to Oracle environment and test:
+
+
+sqlplus / as sysdba
+
+Check database and PDBs:
+
+select name, open_mode, cdb from v$database;
+show pdbs;
+
+Expected result:
+
+
+NAME   OPEN_MODE   CDB
+-----  ----------  ---
+ORCL   READ WRITE  YES
+
+    PDB_NAME  STATUS
+    --------  ---------
+    PDB$SEED  READ ONLY
+    PDB1      READ WRITE
+
+=====================================================
+## 5. Add to `oratab` (optional)
+=====================================================
+Edit `/etc/oratab` and add:
+
+orcl:/u01/app/oracle/product/19.3.0/dbhome_1:Y
+
+This allows `dbstart` and `dbshut` scripts to manage the instance.
+
+✅ Summary
+
+* `runInstaller -silent` → Installs Oracle 19c binaries
+* `dbca -silent` → Creates database (CDB + PDB)
+* Everything works **without GUI/X11**
+

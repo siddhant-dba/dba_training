@@ -1,0 +1,2647 @@
+Administration:
+===============
+DG - 
+
+Create:
+Ext
+Normal
+High
+
+Alter:
+
+Drop:
+
+
+/dev/sdb - 3G - OCR
+/dev/sdc - 20G - DATA
+/dev/sdd - 10G - RECO
+
+/dev/sde
+
+fdisk /dev/sde
+
+oracleasm createdisk D1 /dev/sde1
+
+
+
+
+CREATE DISKGROUP dgroupA NORMAL REDUNDANCY AU 4M
+DISK '/dev/oracleasm/disks/D1',
+   '/dev/oracleasm/disks/D2';
+
+CREATE DISKGROUP dgroupA NORMAL REDUNDANCY  
+FAILGROUP mallik1 DISK
+   '/dev/oracleasm/disks/D1'
+FAILGROUP mallik2 DISK
+   '/dev/oracleasm/disks/D2';
+
+
+
+CREATE DISKGROUP dgroupB HIGH REDUNDANCY  
+FAILGROUP FG1 DISK
+   '/dev/oracleasm/disks/D3' NAME DGB_D3
+FAILGROUP FG2 DISK
+   '/dev/oracleasm/disks/D4' NAME DGB_D4
+FAILGROUP FG3 DISK
+   '/dev/oracleasm/disks/D5' NAME DGB_D5;
+
+
+ASM - v$
+
+v$asm_diskgroup
+v$asm_disk
+
+select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+
+CREATE DISKGROUP dgroupC EXTERNAL REDUNDANCY  
+DISK '/dev/oracleasm/disks/D6'
+DISK '/dev/oracleasm/disks/D7';
+
+
+ALTER DISKGROUP dgroupA ADD DISK
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9';
+
+
+ALTER DISKGROUP dgroupB ADD DISK
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9',
+  '/dev/oracleasm/disks/D10';
+
+V$ASM_OPERATION
+
+
+ALTER DISKGROUP dgroupA DROP DISK
+  '/dev/oracleasm/disks/D1',
+  '/dev/oracleasm/disks/D2';
+
+ALTER DISKGROUP dgroupA DROP DISK
+  'D1',
+  'D2';
+
+
+ALTER DISKGROUP dgroupA DROP DISK 'D1','D2'
+ADD DISK 
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9';
+
+ALTER DISKGROUP dgroupA ADD DISK 
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9';
+DROP DISK 'D1','D2'
+
+
+
+
+1. reuse 
+
+2. Chnage AU - 4M DATA
+
+dgroupB - 1M
+dgroupA - 1M
+dgroupC - 1M
+
+Create DATAC - 1M 
+
+3. Chnage reduncadnay - Exte -> Normal -> High 
+Create DATAC - Normal / High
+ 
+4. Change DG name 
+
+DATA -> DATAC 
+is it possible? 
+can i do it online?
+
+
+
+ASM maitanance:
+===============
+
+DB:
+====
+SQL> shut immedaite;
+$srvctl stop database -d TESTDB
+
+
+ASM:
+====
+SQL> shut abort;
+$srvctl stop asm ---- best practice 
+ASMCMD> shut abort;
+
+HAS:
+====
+$crsctl stop has
+$crsctl start has
+
+/etc/init.d/ohasd
+
+
+ASM / cluster / HAS / grid software  / asm software / cluster software / GI home / ASM home 
+
+
+12c online datafile move:
+=========================
+
+alter database move datafile '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_users_l4ly6vbg_.dbf' to '/tmp/users.dbf'
+
+alter database move datafile 7 to '/tmp/users.dbf'
+
+alter database move datafile 7 to '+OCR/DEVDB/users.dbf'
+
+alter database move datafile 7 to '+OCR'
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle    6081     1  0 Apr27 ?        00:00:08 ora_smon_TESTDB
+root     11000  2822  0 11:06 pts/0    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:06 ora_smon_DEVDB
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# su - oracle
+Last login: Sun Apr 30 12:59:41 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 2 11:07:04 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+SQL>
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_users_l4ly6vbg_.dbf
+
+SQL> desc v$datafile;
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ FILE#                                              NUMBER
+ CREATION_CHANGE#                                   NUMBER
+ CREATION_TIME                                      DATE
+ TS#                                                NUMBER
+ RFILE#                                             NUMBER
+ STATUS                                             VARCHAR2(7)
+ ENABLED                                            VARCHAR2(10)
+ CHECKPOINT_CHANGE#                                 NUMBER
+ CHECKPOINT_TIME                                    DATE
+ UNRECOVERABLE_CHANGE#                              NUMBER
+ UNRECOVERABLE_TIME                                 DATE
+ LAST_CHANGE#                                       NUMBER
+ LAST_TIME                                          DATE
+ OFFLINE_CHANGE#                                    NUMBER
+ ONLINE_CHANGE#                                     NUMBER
+ ONLINE_TIME                                        DATE
+ BYTES                                              NUMBER
+ BLOCKS                                             NUMBER
+ CREATE_BYTES                                       NUMBER
+ BLOCK_SIZE                                         NUMBER
+ NAME                                               VARCHAR2(513)
+ PLUGGED_IN                                         NUMBER
+ BLOCK1_OFFSET                                      NUMBER
+ AUX_NAME                                           VARCHAR2(513)
+ FIRST_NONLOGGED_SCN                                NUMBER
+ FIRST_NONLOGGED_TIME                               DATE
+ FOREIGN_DBID                                       NUMBER
+ FOREIGN_CREATION_CHANGE#                           NUMBER
+ FOREIGN_CREATION_TIME                              DATE
+ PLUGGED_READONLY                                   VARCHAR2(3)
+ PLUGIN_CHANGE#                                     NUMBER
+ PLUGIN_RESETLOGS_CHANGE#                           NUMBER
+ PLUGIN_RESETLOGS_TIME                              DATE
+ CON_ID                                             NUMBER
+
+SQL> select FILE#,name from v$datafile;
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         1
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+
+         3
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+
+         4
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         7
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_users_l4ly6vbg_.dbf
+
+
+SQL> alter database move datafile 7 to '/tmp/users.dbf'
+  2  ;
+
+Database altered.
+
+SQL> select FILE#,name from v$datafile;
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         1
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+
+         3
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+
+         4
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         7
+/tmp/users.dbf
+
+
+SQL> alter database move datafile 7 to '/u01/app/oracle/oradata/DEVDB/datafile/users.dbf';
+
+Database altered.
+
+SQL>
+
+
+[root@oraclelab2 ~]# clear
+[root@oraclelab2 ~]# cd /dev/
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 Apr 26 01:53 sde
+brw-rw----. 1 root disk 8,  80 Apr 26 01:53 sdf
+brw-rw----. 1 root disk 8,  96 Apr 26 01:53 sdg
+brw-rw----. 1 root disk 8, 112 Apr 26 01:53 sdh
+brw-rw----. 1 root disk 8, 128 Apr 26 01:53 sdi
+brw-rw----. 1 root disk 8, 144 Apr 26 01:53 sdj
+brw-rw----. 1 root disk 8, 160 Apr 26 01:53 sdk
+brw-rw----. 1 root disk 8, 176 Apr 26 01:53 sdl
+brw-rw----. 1 root disk 8, 192 Apr 26 01:53 sdm
+brw-rw----. 1 root disk 8, 208 Apr 26 01:53 sdn
+brw-rw----. 1 root disk 8, 224 Apr 26 01:53 sdo
+brw-rw----. 1 root disk 8, 240 Apr 26 01:53 sdp
+[root@oraclelab2 dev]# fdisk /dev/sde
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 May  2 09:40 sde
+brw-rw----. 1 root disk 8,  65 May  2 09:40 sde1
+brw-rw----. 1 root disk 8,  80 Apr 26 01:53 sdf
+brw-rw----. 1 root disk 8,  96 Apr 26 01:53 sdg
+brw-rw----. 1 root disk 8, 112 Apr 26 01:53 sdh
+brw-rw----. 1 root disk 8, 128 Apr 26 01:53 sdi
+brw-rw----. 1 root disk 8, 144 Apr 26 01:53 sdj
+brw-rw----. 1 root disk 8, 160 Apr 26 01:53 sdk
+brw-rw----. 1 root disk 8, 176 Apr 26 01:53 sdl
+brw-rw----. 1 root disk 8, 192 Apr 26 01:53 sdm
+brw-rw----. 1 root disk 8, 208 Apr 26 01:53 sdn
+brw-rw----. 1 root disk 8, 224 Apr 26 01:53 sdo
+brw-rw----. 1 root disk 8, 240 Apr 26 01:53 sdp
+[root@oraclelab2 dev]# fdisk /dev/sdf
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]# fdisk /dev/sdg
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]# fdisk /dev/sdh
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 May  2 09:40 sde
+brw-rw----. 1 root disk 8,  65 May  2 09:40 sde1
+brw-rw----. 1 root disk 8,  80 May  2 09:40 sdf
+brw-rw----. 1 root disk 8,  81 May  2 09:40 sdf1
+brw-rw----. 1 root disk 8,  96 May  2 09:40 sdg
+brw-rw----. 1 root disk 8,  97 May  2 09:40 sdg1
+brw-rw----. 1 root disk 8, 112 May  2 09:41 sdh
+brw-rw----. 1 root disk 8, 113 May  2 09:41 sdh1
+brw-rw----. 1 root disk 8, 128 Apr 26 01:53 sdi
+brw-rw----. 1 root disk 8, 144 Apr 26 01:53 sdj
+brw-rw----. 1 root disk 8, 160 Apr 26 01:53 sdk
+brw-rw----. 1 root disk 8, 176 Apr 26 01:53 sdl
+brw-rw----. 1 root disk 8, 192 Apr 26 01:53 sdm
+brw-rw----. 1 root disk 8, 208 Apr 26 01:53 sdn
+brw-rw----. 1 root disk 8, 224 Apr 26 01:53 sdo
+brw-rw----. 1 root disk 8, 240 Apr 26 01:53 sdp
+[root@oraclelab2 dev]# fdisk /dev/sdi
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]# fdisk /dev/sdj
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 May  2 09:40 sde
+brw-rw----. 1 root disk 8,  65 May  2 09:40 sde1
+brw-rw----. 1 root disk 8,  80 May  2 09:40 sdf
+brw-rw----. 1 root disk 8,  81 May  2 09:40 sdf1
+brw-rw----. 1 root disk 8,  96 May  2 09:40 sdg
+brw-rw----. 1 root disk 8,  97 May  2 09:40 sdg1
+brw-rw----. 1 root disk 8, 112 May  2 09:41 sdh
+brw-rw----. 1 root disk 8, 113 May  2 09:41 sdh1
+brw-rw----. 1 root disk 8, 128 May  2 09:41 sdi
+brw-rw----. 1 root disk 8, 129 May  2 09:41 sdi1
+brw-rw----. 1 root disk 8, 144 May  2 09:41 sdj
+brw-rw----. 1 root disk 8, 145 May  2 09:41 sdj1
+brw-rw----. 1 root disk 8, 160 Apr 26 01:53 sdk
+brw-rw----. 1 root disk 8, 176 Apr 26 01:53 sdl
+brw-rw----. 1 root disk 8, 192 Apr 26 01:53 sdm
+brw-rw----. 1 root disk 8, 208 Apr 26 01:53 sdn
+brw-rw----. 1 root disk 8, 224 Apr 26 01:53 sdo
+brw-rw----. 1 root disk 8, 240 Apr 26 01:53 sdp
+[root@oraclelab2 dev]# fdisk /dev/sdk
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p): w
+Invalid partition type `w'
+
+Command (m for help):
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# fdisk /dev/sdl
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# fdisk /dev/sdm
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# fdisk /dev/sdn
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 May  2 09:40 sde
+brw-rw----. 1 root disk 8,  65 May  2 09:40 sde1
+brw-rw----. 1 root disk 8,  80 May  2 09:40 sdf
+brw-rw----. 1 root disk 8,  81 May  2 09:40 sdf1
+brw-rw----. 1 root disk 8,  96 May  2 09:40 sdg
+brw-rw----. 1 root disk 8,  97 May  2 09:40 sdg1
+brw-rw----. 1 root disk 8, 112 May  2 09:41 sdh
+brw-rw----. 1 root disk 8, 113 May  2 09:41 sdh1
+brw-rw----. 1 root disk 8, 128 May  2 09:41 sdi
+brw-rw----. 1 root disk 8, 129 May  2 09:41 sdi1
+brw-rw----. 1 root disk 8, 144 May  2 09:41 sdj
+brw-rw----. 1 root disk 8, 145 May  2 09:41 sdj1
+brw-rw----. 1 root disk 8, 160 May  2 09:42 sdk
+brw-rw----. 1 root disk 8, 161 May  2 09:42 sdk1
+brw-rw----. 1 root disk 8, 176 May  2 09:42 sdl
+brw-rw----. 1 root disk 8, 177 May  2 09:42 sdl1
+brw-rw----. 1 root disk 8, 192 May  2 09:42 sdm
+brw-rw----. 1 root disk 8, 193 May  2 09:42 sdm1
+brw-rw----. 1 root disk 8, 208 May  2 09:42 sdn
+brw-rw----. 1 root disk 8, 209 May  2 09:42 sdn1
+brw-rw----. 1 root disk 8, 224 Apr 26 01:53 sdo
+brw-rw----. 1 root disk 8, 240 Apr 26 01:53 sdp
+[root@oraclelab2 dev]# fdisk /dev/sdo
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# fdisk /dev/sdp
+Welcome to fdisk (util-linux 2.23.2).
+
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+
+Command (m for help): n
+Partition type:
+   p   primary (0 primary, 0 extended, 4 free)
+   e   extended
+Select (default p):
+Using default response p
+Partition number (1-4, default 1):
+First sector (2048-2097151, default 2048):
+Using default value 2048
+Last sector, +sectors or +size{K,M,G} (2048-2097151, default 2097151):
+Using default value 2097151
+Partition 1 of type Linux and of size 1023 MiB is set
+
+Command (m for help):
+Command (m for help):
+Command (m for help): w
+The partition table has been altered!
+
+Calling ioctl() to re-read partition table.
+Syncing disks.
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# ll sd*
+brw-rw----. 1 root disk 8,   0 Apr 26 01:52 sda
+brw-rw----. 1 root disk 8,   1 Apr 26 01:52 sda1
+brw-rw----. 1 root disk 8,   2 Apr 26 01:52 sda2
+brw-rw----. 1 root disk 8,  16 Apr 26 01:53 sdb
+brw-rw----. 1 root disk 8,  17 Apr 26 01:55 sdb1
+brw-rw----. 1 root disk 8,  32 Apr 26 01:53 sdc
+brw-rw----. 1 root disk 8,  33 Apr 26 01:53 sdc1
+brw-rw----. 1 root disk 8,  48 Apr 26 01:53 sdd
+brw-rw----. 1 root disk 8,  49 Apr 26 01:55 sdd1
+brw-rw----. 1 root disk 8,  64 May  2 09:40 sde
+brw-rw----. 1 root disk 8,  65 May  2 09:40 sde1
+brw-rw----. 1 root disk 8,  80 May  2 09:40 sdf
+brw-rw----. 1 root disk 8,  81 May  2 09:40 sdf1
+brw-rw----. 1 root disk 8,  96 May  2 09:40 sdg
+brw-rw----. 1 root disk 8,  97 May  2 09:40 sdg1
+brw-rw----. 1 root disk 8, 112 May  2 09:41 sdh
+brw-rw----. 1 root disk 8, 113 May  2 09:41 sdh1
+brw-rw----. 1 root disk 8, 128 May  2 09:41 sdi
+brw-rw----. 1 root disk 8, 129 May  2 09:41 sdi1
+brw-rw----. 1 root disk 8, 144 May  2 09:41 sdj
+brw-rw----. 1 root disk 8, 145 May  2 09:41 sdj1
+brw-rw----. 1 root disk 8, 160 May  2 09:42 sdk
+brw-rw----. 1 root disk 8, 161 May  2 09:42 sdk1
+brw-rw----. 1 root disk 8, 176 May  2 09:42 sdl
+brw-rw----. 1 root disk 8, 177 May  2 09:42 sdl1
+brw-rw----. 1 root disk 8, 192 May  2 09:42 sdm
+brw-rw----. 1 root disk 8, 193 May  2 09:42 sdm1
+brw-rw----. 1 root disk 8, 208 May  2 09:42 sdn
+brw-rw----. 1 root disk 8, 209 May  2 09:42 sdn1
+brw-rw----. 1 root disk 8, 224 May  2 09:43 sdo
+brw-rw----. 1 root disk 8, 225 May  2 09:43 sdo1
+brw-rw----. 1 root disk 8, 240 May  2 09:43 sdp
+brw-rw----. 1 root disk 8, 241 May  2 09:43 sdp1
+[root@oraclelab2 dev]# oracleasm listdisks
+ASM_DSISK1
+ASM_DSISK2
+ASM_DSISK3
+[root@oraclelab2 dev]# oracleasm createdisk D1 /dev/sde1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# oracleasm createdisk D2 /dev/sdf1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D3 /dev/sdg1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D4 /dev/sdh1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D5 /dev/sdi1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D6 /dev/sdj1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D7 /dev/sdk1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D8 /dev/sdl1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D9 /dev/sdm1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D10 /dev/sdn1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D11 /dev/sdo1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]# oracleasm createdisk D12 /dev/sdp1
+Writing disk header: done
+Instantiating disk: done
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]#
+[root@oraclelab2 dev]# oracleasm listdisks
+ASM_DSISK1
+ASM_DSISK2
+ASM_DSISK3
+D1
+D10
+D11
+D12
+D2
+D3
+D4
+D5
+D6
+D7
+D8
+D9
+[root@oraclelab2 dev]# cd /dev/oracleasm/disks/
+[root@oraclelab2 disks]# ls -ltrh
+total 0
+brw-rw----. 1 oracle oinstall 8,  65 May  2 09:44 D1
+brw-rw----. 1 oracle oinstall 8,  81 May  2 09:44 D2
+brw-rw----. 1 oracle oinstall 8,  97 May  2 09:44 D3
+brw-rw----. 1 oracle oinstall 8, 113 May  2 09:44 D4
+brw-rw----. 1 oracle oinstall 8, 129 May  2 09:45 D5
+brw-rw----. 1 oracle oinstall 8, 145 May  2 09:45 D6
+brw-rw----. 1 oracle oinstall 8, 161 May  2 09:45 D7
+brw-rw----. 1 oracle oinstall 8, 177 May  2 09:45 D8
+brw-rw----. 1 oracle oinstall 8, 193 May  2 09:45 D9
+brw-rw----. 1 oracle oinstall 8, 209 May  2 09:45 D10
+brw-rw----. 1 oracle oinstall 8, 225 May  2 09:45 D11
+brw-rw----. 1 oracle oinstall 8, 241 May  2 09:45 D12
+brw-rw----. 1 oracle oinstall 8,  17 May  2 09:46 ASM_DSISK1
+brw-rw----. 1 oracle oinstall 8,  49 May  2 09:46 ASM_DSISK3
+brw-rw----. 1 oracle oinstall 8,  33 May  2 09:46 ASM_DSISK2
+[root@oraclelab2 disks]# su - oracle
+Last login: Mon May  1 09:54:07 IST 2023 on pts/0
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? +ASM
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ sqlplus / as sysasm
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 2 09:47:40 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D1';  2
+CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+*
+ERROR at line 1:
+ORA-15018: diskgroup cannot be created
+ORA-15167: command requires at least 2 failure groups; found only 1
+
+
+SQL> CREATE DISKGROUP dgroupA HIGH REDUNDANCY
+DISK '/dev/oracleasm/disks/D1',
+'/dev/oracleasm/disks/D2';  2    3
+CREATE DISKGROUP dgroupA HIGH REDUNDANCY
+*
+ERROR at line 1:
+ORA-15018: diskgroup cannot be created
+ORA-15167: command requires at least 3 failure groups; found only 2
+
+
+SQL> CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+FAILGROUP mallik1 DISK
+   '/dev/oracleasm/disks/D1'
+FAILGROUP mallik2 DISK
+   '/dev/oracleasm/disks/D2';
+  2    3    4    5
+
+
+Diskgroup created.
+
+SQL> SQL> SQL>
+SQL>
+SQL> CREATE DISKGROUP dgroupB HIGH REDUNDANCY
+FAILGROUP FG1 DISK
+   '/dev/oracleasm/disks/D3' NAME DGB_D3
+FAILGROUP FG2 DISK
+   '/dev/oracleasm/disks/D4' NAME DGB_D4
+FAILGROUP FG3 DISK
+   '/dev/oracleasm/disks/D5' NAME DGB_D5;  2    3    4    5    6    7
+
+
+Diskgroup created.
+
+SQL> SQL>
+SQL> desc v$asm_diskgroup
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ GROUP_NUMBER                                       NUMBER
+ NAME                                               VARCHAR2(30)
+ SECTOR_SIZE                                        NUMBER
+ LOGICAL_SECTOR_SIZE                                NUMBER
+ BLOCK_SIZE                                         NUMBER
+ ALLOCATION_UNIT_SIZE                               NUMBER
+ STATE                                              VARCHAR2(11)
+ TYPE                                               VARCHAR2(6)
+ TOTAL_MB                                           NUMBER
+ FREE_MB                                            NUMBER
+ HOT_USED_MB                                        NUMBER
+ COLD_USED_MB                                       NUMBER
+ REQUIRED_MIRROR_FREE_MB                            NUMBER
+ USABLE_FILE_MB                                     NUMBER
+ OFFLINE_DISKS                                      NUMBER
+ COMPATIBILITY                                      VARCHAR2(60)
+ DATABASE_COMPATIBILITY                             VARCHAR2(60)
+ VOTING_FILES                                       VARCHAR2(1)
+ CON_ID                                             NUMBER
+
+SQL> select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+GROUP_NUMBER NAME
+------------ ------------------------------
+           1 OCR
+           2 DATA
+           3 RECO
+           4 DGROUPA
+           5 DGROUPB
+
+SQL> desc v$asm_disk
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ GROUP_NUMBER                                       NUMBER
+ DISK_NUMBER                                        NUMBER
+ COMPOUND_INDEX                                     NUMBER
+ INCARNATION                                        NUMBER
+ MOUNT_STATUS                                       VARCHAR2(7)
+ HEADER_STATUS                                      VARCHAR2(12)
+ MODE_STATUS                                        VARCHAR2(7)
+ STATE                                              VARCHAR2(8)
+ REDUNDANCY                                         VARCHAR2(7)
+ LIBRARY                                            VARCHAR2(64)
+ OS_MB                                              NUMBER
+ TOTAL_MB                                           NUMBER
+ FREE_MB                                            NUMBER
+ HOT_USED_MB                                        NUMBER
+ COLD_USED_MB                                       NUMBER
+ NAME                                               VARCHAR2(30)
+ FAILGROUP                                          VARCHAR2(30)
+ LABEL                                              VARCHAR2(31)
+ PATH                                               VARCHAR2(256)
+ UDID                                               VARCHAR2(64)
+ PRODUCT                                            VARCHAR2(32)
+ CREATE_DATE                                        DATE
+ MOUNT_DATE                                         DATE
+ REPAIR_TIMER                                       NUMBER
+ READS                                              NUMBER
+ WRITES                                             NUMBER
+ READ_ERRS                                          NUMBER
+ WRITE_ERRS                                         NUMBER
+ READ_TIMEOUT                                       NUMBER
+ WRITE_TIMEOUT                                      NUMBER
+ READ_TIME                                          NUMBER
+ WRITE_TIME                                         NUMBER
+ BYTES_READ                                         NUMBER
+ BYTES_WRITTEN                                      NUMBER
+ PREFERRED_READ                                     VARCHAR2(1)
+ HASH_VALUE                                         NUMBER
+ HOT_READS                                          NUMBER
+ HOT_WRITES                                         NUMBER
+ HOT_BYTES_READ                                     NUMBER
+ HOT_BYTES_WRITTEN                                  NUMBER
+ COLD_READS                                         NUMBER
+ COLD_WRITES                                        NUMBER
+ COLD_BYTES_READ                                    NUMBER
+ COLD_BYTES_WRITTEN                                 NUMBER
+ VOTING_FILE                                        VARCHAR2(1)
+ SECTOR_SIZE                                        NUMBER
+ LOGICAL_SECTOR_SIZE                                NUMBER
+ FAILGROUP_TYPE                                     VARCHAR2(7)
+ CON_ID                                             NUMBER
+ THIN_PROVISION_CAPABLE                             VARCHAR2(1)
+ DATA_INTEGRITY_CAPABLE                             VARCHAR2(1)
+ SITE_NAME                                          VARCHAR2(30)
+ SITE_GUID                                          VARCHAR2(33)
+ FAILGROUP_LABEL                                    VARCHAR2(30)
+ SITE_LABEL                                         VARCHAR2(30)
+ SITE_STATUS                                        VARCHAR2(11)
+
+SQL> select GROUP_NUMBER,NAME,FAILGROUP,PATH from v$asm_disk;
+
+GROUP_NUMBER NAME                           FAILGROUP
+------------ ------------------------------ ------------------------------
+PATH
+--------------------------------------------------------------------------------
+           0
+/dev/oracleasm/disks/D7
+
+           0
+/dev/oracleasm/disks/D9
+
+           0
+/dev/oracleasm/disks/D8
+
+
+GROUP_NUMBER NAME                           FAILGROUP
+------------ ------------------------------ ------------------------------
+PATH
+--------------------------------------------------------------------------------
+           0
+/dev/oracleasm/disks/D10
+
+           0
+/dev/oracleasm/disks/D11
+
+           0
+/dev/oracleasm/disks/D12
+
+
+GROUP_NUMBER NAME                           FAILGROUP
+------------ ------------------------------ ------------------------------
+PATH
+--------------------------------------------------------------------------------
+           0
+/dev/oracleasm/disks/D6
+
+           3 RECO_0000                      RECO_0000
+/dev/oracleasm/disks/ASM_DSISK3
+
+           1 OCR_0000                       OCR_0000
+/dev/oracleasm/disks/ASM_DSISK1
+
+
+GROUP_NUMBER NAME                           FAILGROUP
+------------ ------------------------------ ------------------------------
+PATH
+--------------------------------------------------------------------------------
+           2 DATA_0000                      DATA_0000
+/dev/oracleasm/disks/ASM_DSISK2
+
+           5 DGB_D5                         FG3
+/dev/oracleasm/disks/D5
+
+           5 DGB_D4                         FG2
+/dev/oracleasm/disks/D4
+
+
+GROUP_NUMBER NAME                           FAILGROUP
+------------ ------------------------------ ------------------------------
+PATH
+--------------------------------------------------------------------------------
+           5 DGB_D3                         FG1
+/dev/oracleasm/disks/D3
+
+           4 D2                             MALLIK2
+/dev/oracleasm/disks/D2
+
+           4 D1                             MALLIK1
+/dev/oracleasm/disks/D1
+
+
+15 rows selected.
+
+SQL> set pages 1000 lines 1000
+SQL> select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+GROUP_NUMBER NAME
+------------ ------------------------------
+           1 OCR
+           2 DATA
+           3 RECO
+           4 DGROUPA
+           5 DGROUPB
+
+SQL> select GROUP_NUMBER,NAME,FAILGROUP,PATH from v$asm_disk;
+
+GROUP_NUMBER NAME                           FAILGROUP                      PATH
+------------ ------------------------------ ------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+           0                                                               /dev/oracleasm/disks/D7
+           0                                                               /dev/oracleasm/disks/D9
+           0                                                               /dev/oracleasm/disks/D8
+           0                                                               /dev/oracleasm/disks/D10
+           0                                                               /dev/oracleasm/disks/D11
+           0                                                               /dev/oracleasm/disks/D12
+           0                                                               /dev/oracleasm/disks/D6
+           3 RECO_0000                      RECO_0000                      /dev/oracleasm/disks/ASM_DSISK3
+           1 OCR_0000                       OCR_0000                       /dev/oracleasm/disks/ASM_DSISK1
+           2 DATA_0000                      DATA_0000                      /dev/oracleasm/disks/ASM_DSISK2
+           5 DGB_D5                         FG3                            /dev/oracleasm/disks/D5
+           5 DGB_D4                         FG2                            /dev/oracleasm/disks/D4
+           5 DGB_D3                         FG1                            /dev/oracleasm/disks/D3
+           4 D2                             MALLIK2                        /dev/oracleasm/disks/D2
+           4 D1                             MALLIK1                        /dev/oracleasm/disks/D1
+
+15 rows selected.
+
+SQL> select GROUP_NUMBER,NAME,FAILGROUP,PATH from v$asm_disk order by GROUP_NUMBER;
+
+GROUP_NUMBER NAME                           FAILGROUP                      PATH
+------------ ------------------------------ ------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+           0                                                               /dev/oracleasm/disks/D7
+           0                                                               /dev/oracleasm/disks/D9
+           0                                                               /dev/oracleasm/disks/D8
+           0                                                               /dev/oracleasm/disks/D10
+           0                                                               /dev/oracleasm/disks/D11
+           0                                                               /dev/oracleasm/disks/D6
+           0                                                               /dev/oracleasm/disks/D12
+           1 OCR_0000                       OCR_0000                       /dev/oracleasm/disks/ASM_DSISK1
+           2 DATA_0000                      DATA_0000                      /dev/oracleasm/disks/ASM_DSISK2
+           3 RECO_0000                      RECO_0000                      /dev/oracleasm/disks/ASM_DSISK3
+           4 D2                             MALLIK2                        /dev/oracleasm/disks/D2
+           4 D1                             MALLIK1                        /dev/oracleasm/disks/D1
+           5 DGB_D5                         FG3                            /dev/oracleasm/disks/D5
+           5 DGB_D4                         FG2                            /dev/oracleasm/disks/D4
+           5 DGB_D3                         FG1                            /dev/oracleasm/disks/D3
+
+15 rows selected.
+
+SQL> select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+GROUP_NUMBER NAME
+------------ ------------------------------
+           1 OCR
+           2 DATA
+           3 RECO
+           4 DGROUPA
+           5 DGROUPB
+
+SQL>
+SQL> CREATE DISKGROUP dgroupC EXTERNAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D6'
+DISK '/dev/oracleasm/disks/D7';  2    3
+
+Diskgroup created.
+
+SQL>
+SQL>
+SQL>
+SQL> select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+GROUP_NUMBER NAME
+------------ ------------------------------
+           1 OCR
+           2 DATA
+           3 RECO
+           4 DGROUPA
+           5 DGROUPB
+           6 DGROUPC
+
+6 rows selected.
+
+SQL> ALTER DISKGROUP dgroupA ADD DISK
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9';  2    3
+
+Diskgroup altered.
+
+SQL> select * from V$ASM_OPERATION;
+
+no rows selected
+
+SQL> select GROUP_NUMBER,NAME,FAILGROUP,PATH from v$asm_disk order by GROUP_NUMBER;
+
+GROUP_NUMBER NAME                           FAILGROUP                      PATH
+------------ ------------------------------ ------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+           0                                                               /dev/oracleasm/disks/D11
+           0                                                               /dev/oracleasm/disks/D10
+           0                                                               /dev/oracleasm/disks/D12
+           1 OCR_0000                       OCR_0000                       /dev/oracleasm/disks/ASM_DSISK1
+           2 DATA_0000                      DATA_0000                      /dev/oracleasm/disks/ASM_DSISK2
+           3 RECO_0000                      RECO_0000                      /dev/oracleasm/disks/ASM_DSISK3
+           4 D1                             MALLIK1                        /dev/oracleasm/disks/D1
+           4 DGROUPA_0003                   DGROUPA_0003                   /dev/oracleasm/disks/D9
+           4 DGROUPA_0002                   DGROUPA_0002                   /dev/oracleasm/disks/D8
+           4 D2                             MALLIK2                        /dev/oracleasm/disks/D2
+           5 DGB_D5                         FG3                            /dev/oracleasm/disks/D5
+           5 DGB_D4                         FG2                            /dev/oracleasm/disks/D4
+           5 DGB_D3                         FG1                            /dev/oracleasm/disks/D3
+           6 DGROUPC_0000                   DGROUPC_0000                   /dev/oracleasm/disks/D6
+           6 DGROUPC_0001                   DGROUPC_0001                   /dev/oracleasm/disks/D7
+
+15 rows selected.
+
+SQL> ALTER DISKGROUP dgroupA DROP DISK
+  '/dev/oracleasm/disks/D1',
+  '/dev/oracleasm/disks/D2';  2    3
+ALTER DISKGROUP dgroupA DROP DISK
+*
+ERROR at line 1:
+ORA-15032: not all alterations performed
+ORA-15054: disk "/DEV/ORACLEASM/DISKS/D2" does not exist in diskgroup "DGROUPA"
+ORA-15054: disk "/DEV/ORACLEASM/DISKS/D1" does not exist in diskgroup "DGROUPA"
+
+
+SQL>
+SQL> ALTER DISKGROUP dgroupA DROP DISK
+  'D1',
+  'D2';  2    3
+
+Diskgroup altered.
+
+SQL> select * from V$ASM_OPERATION;
+
+no rows selected
+
+SQL>
+SQL>
+SQL> select GROUP_NUMBER,NAME,FAILGROUP,PATH from v$asm_disk order by GROUP_NUMBER;
+
+GROUP_NUMBER NAME                           FAILGROUP                      PATH
+------------ ------------------------------ ------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+           0                                                               /dev/oracleasm/disks/D2
+           0                                                               /dev/oracleasm/disks/D10
+           0                                                               /dev/oracleasm/disks/D1
+           0                                                               /dev/oracleasm/disks/D11
+           0                                                               /dev/oracleasm/disks/D12
+           1 OCR_0000                       OCR_0000                       /dev/oracleasm/disks/ASM_DSISK1
+           2 DATA_0000                      DATA_0000                      /dev/oracleasm/disks/ASM_DSISK2
+           3 RECO_0000                      RECO_0000                      /dev/oracleasm/disks/ASM_DSISK3
+           4 DGROUPA_0003                   DGROUPA_0003                   /dev/oracleasm/disks/D9
+           4 DGROUPA_0002                   DGROUPA_0002                   /dev/oracleasm/disks/D8
+           5 DGB_D3                         FG1                            /dev/oracleasm/disks/D3
+           5 DGB_D5                         FG3                            /dev/oracleasm/disks/D5
+           5 DGB_D4                         FG2                            /dev/oracleasm/disks/D4
+           6 DGROUPC_0001                   DGROUPC_0001                   /dev/oracleasm/disks/D7
+           6 DGROUPC_0000                   DGROUPC_0000                   /dev/oracleasm/disks/D6
+
+15 rows selected.
+
+SQL> select GROUP_NUMBER,NAME from v$asm_diskgroup;
+
+GROUP_NUMBER NAME
+------------ ------------------------------
+           1 OCR
+           2 DATA
+           3 RECO
+           4 DGROUPA
+           5 DGROUPB
+           6 DGROUPC
+
+6 rows selected.
+
+SQL> DROP DISKGROUP dgroupA including contents;
+
+Diskgroup dropped.
+
+SQL> DROP DISKGROUP dgroupB;
+
+Diskgroup dropped.
+
+SQL> DROP DISKGROUP dgroupC;
+
+Diskgroup dropped.
+
+SQL>
+SQL>
+SQL> ^Cexit
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+oracle    4084     1  0 11:06 ?        00:00:00 ora_smon_TESTDB
+oracle    4655 29826  0 11:09 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [+ASM] ? TESTDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 2 11:10:09 2023
+Version 19.14.0.0.0
+
+Copyright (c) 1982, 2021, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.14.0.0.0
+
+SQL>
+SQL> select FILE#,name from v$datafile;
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         1
++DATA/TESTDB/DATAFILE/system.256.1135130965
+
+         3
++DATA/TESTDB/DATAFILE/sysaux.257.1135131001
+
+         4
++DATA/TESTDB/DATAFILE/undotbs1.258.1135131025
+
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         7
++DATA/TESTDB/DATAFILE/users.259.1135131027
+
+
+SQL> alter database move datafile 7 to '+OCR'
+  2  ;
+
+Database altered.
+
+SQL> select FILE#,name from v$datafile;
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         1
++DATA/TESTDB/DATAFILE/system.256.1135130965
+
+         3
++DATA/TESTDB/DATAFILE/sysaux.257.1135131001
+
+         4
++DATA/TESTDB/DATAFILE/undotbs1.258.1135131025
+
+
+     FILE#
+----------
+NAME
+--------------------------------------------------------------------------------
+         7
++OCR/TESTDB/DATAFILE/users.257.1135768295
+
+
+SQL> alter database move datafile 7 to '+DATA';
+
+Database altered.
+
+SQL>
+
+
+login as: root
+root@10.38.4.179's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.179                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue May  2 09:46:54 2023 from 172.29.0.102
+[root@oraclelab2 ~]# su - oracle
+Last login: Tue May  2 09:47:15 IST 2023 on pts/0
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? +ASM
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16820                0           16820              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8124                0            8124              0             N  RECO/
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16820                0           16820              0             N  DATA/
+MOUNTED  NORMAL  N         512             512   4096  1048576      2046     1940                0             970              0             N  DGROUPA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8124                0            8124              0             N  RECO/
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16820                0           16820              0             N  DATA/
+MOUNTED  NORMAL  N         512             512   4096  1048576      2046     1940                0             970              0             N  DGROUPA/
+MOUNTED  HIGH    N         512             512   4096  1048576      3069     2910                0             970              0             N  DGROUPB/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8124                0            8124              0             N  RECO/
+ASMCMD [+] > lsdsk
+Path
+/dev/oracleasm/disks/ASM_DSISK1
+/dev/oracleasm/disks/ASM_DSISK2
+/dev/oracleasm/disks/ASM_DSISK3
+/dev/oracleasm/disks/D1
+/dev/oracleasm/disks/D2
+/dev/oracleasm/disks/D3
+/dev/oracleasm/disks/D4
+/dev/oracleasm/disks/D5
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16820                0           16820              0             N  DATA/
+MOUNTED  NORMAL  N         512             512   4096  1048576      2046     1940                0             970              0             N  DGROUPA/
+MOUNTED  HIGH    N         512             512   4096  1048576      3069     2910                0             970              0             N  DGROUPB/
+MOUNTED  EXTERN  N         512             512   4096  1048576      2046     1992                0            1992              0             N  DGROUPC/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8124                0            8124              0             N  RECO/
+ASMCMD [+] > cd DATA/
+ASMCMD [+DATA] > ls -ltr
+WARNING:option 'r' is deprecated for 'ls'
+please use 'reverse'
+
+Type  Redund  Striped  Time  Sys  Name
+                             N    TESTDB/
+ASMCMD [+DATA] > cd TESTDB/
+ASMCMD [+DATA/TESTDB] > ls -ltrh
+WARNING:option 'r' is deprecated for 'ls'
+please use 'reverse'
+
+Type  Redund  Striped  Time  Sys  Name
+                             Y    CONTROLFILE/
+                             Y    DATAFILE/
+                             Y    ONLINELOG/
+                             Y    PARAMETERFILE/
+                             Y    TEMPFILE/
+ASMCMD [+DATA/TESTDB] > exit
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    1477 29981  0 10:44 pts/3    00:00:00 grep --color=auto smon
+oracle   13958     1  0 Apr26 ?        00:00:08 asm_smon_+ASM
+oracle   21256     1  0 Apr26 ?        00:00:07 ora_smon_TESTDB
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    1586 29981  0 10:46 pts/3    00:00:00 grep --color=auto smon
+oracle   13958     1  0 Apr26 ?        00:00:08 asm_smon_+ASM
+oracle   21256     1  0 Apr26 ?        00:00:07 ora_smon_TESTDB
+[oracle@oraclelab2 ~]$ env |grpe ORA
+bash: grpe: command not found...
+Similar command is: 'grep'
+[oracle@oraclelab2 ~]$ env |grpe ORA
+bash: grpe: command not found...
+Similar command is: 'grep'
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ env |grep ORA
+ORACLE_SID=+ASM
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/19.0.0.0/grid
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [+ASM] ? TESTDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ env |grep ORA
+ORACLE_SID=TESTDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab2 ~]$ srvctl stop database -d TESTDB
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2093 29981  0 10:53 pts/3    00:00:00 grep --color=auto smon
+oracle   13958     1  0 Apr26 ?        00:00:08 asm_smon_+ASM
+[oracle@oraclelab2 ~]$ srvctl stop asm
+PRCR-1065 : Failed to stop resource ora.asm
+CRS-2974: unable to act on resource 'ora.asm' on server 'oraclelab2' because that would require stopping or relocating resource 'ora.OCR.dg' but the appropriate force flag was not specified
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ env |grep ORA
+ORACLE_SID=TESTDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [TESTDB] ? +ASM
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ env |grep ORA
+ORACLE_SID=+ASM
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/19.0.0.0/grid
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ srvctl stop asm
+PRCR-1065 : Failed to stop resource ora.asm
+CRS-2974: unable to act on resource 'ora.asm' on server 'oraclelab2' because that would require stopping or relocating resource 'ora.OCR.dg' but the appropriate force flag was not specified
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ srvctl stop asm -f
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2279 29981  0 10:54 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ crsctl stop has
+CRS-2791: Starting shutdown of Oracle High Availability Services-managed resources on 'oraclelab2'
+CRS-2673: Attempting to stop 'ora.LISTENER.lsnr' on 'oraclelab2'
+CRS-2673: Attempting to stop 'ora.evmd' on 'oraclelab2'
+CRS-2677: Stop of 'ora.LISTENER.lsnr' on 'oraclelab2' succeeded
+CRS-2677: Stop of 'ora.evmd' on 'oraclelab2' succeeded
+CRS-2673: Attempting to stop 'ora.cssd' on 'oraclelab2'
+CRS-2677: Stop of 'ora.cssd' on 'oraclelab2' succeeded
+CRS-2793: Shutdown of Oracle High Availability Services-managed resources on 'oraclelab2' has completed
+CRS-4133: Oracle High Availability Services has been stopped.
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ crsctl start has
+CRS-4123: Oracle High Availability Services has been started.
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2905 29981  0 10:57 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2908 29981  0 10:57 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2921 29981  0 10:57 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+oracle    3030 29981  0 10:58 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+oracle    3043 29981  0 10:58 pts/3    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ cd /etc/^C
+[oracle@oraclelab2 ~]$ exit
+logout
+[root@oraclelab2 ~]# cd /etc/init.d/
+[root@oraclelab2 init.d]# ls -ltr ohasd
+-rwxr-x---. 1 root root 7795 Apr 26 02:03 ohasd
+[root@oraclelab2 init.d]# pwd
+/etc/init.d
+[root@oraclelab2 init.d]# ls -ltrh
+total 108K
+-rwxr-xr-x. 1 root root 4.9K Feb  3  2018 oracleasm
+-rwxr-xr-x. 1 root root 2.4K Feb  6  2018 rhnsd
+-rwx------. 1 root root 1.3K Jun 20  2018 oracle-database-preinstall-18c-firstboot
+-rwx------. 1 root root 1.3K Sep 20  2018 oracle-rdbms-server-12cR1-preinstall-firstboot
+-rwxr--r--. 1 root root 1.4K Nov  2  2018 oracle-rdbms-server-11gR2-preinstall-firstboot
+-rwx------. 1 root root 1.3K Jun 25  2019 oracle-database-server-12cR2-preinstall-firstboot
+-rwxr-xr-x. 1 root root 4.5K May 22  2020 netconsole
+-rw-r--r--. 1 root root  18K May 22  2020 functions
+-rwxr-xr-x. 1 root root 9.0K Nov 11  2020 network
+-rwx------. 1 root root 1.3K Apr  1  2021 oracle-database-preinstall-19c-firstboot
+-rw-r--r--. 1 root root 1.2K May 27  2021 README
+-rwx------. 1 root root 1.3K Jul 12  2021 oracle-database-preinstall-21c-firstboot
+-rwxr-xr-x. 1 root root 3.3K Apr 26 00:36 acfssihamount
+-rwxr-x---. 1 root root  15K Apr 26 02:03 init.ohasd
+-rwxr-x---. 1 root root 7.7K Apr 26 02:03 ohasd
+[root@oraclelab2 init.d]# ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+root      3183 29931  0 11:00 pts/3    00:00:00 grep --color=auto smon
+[root@oraclelab2 init.d]# systemctl status ohasd
+● ohasd.service - LSB: Start and Stop Oracle High Availability Service
+   Loaded: loaded (/etc/rc.d/init.d/ohasd; bad; vendor preset: disabled)
+   Active: inactive (dead)
+     Docs: man:systemd-sysv-generator(8)
+[root@oraclelab2 init.d]# systemctl strt  ohasd
+Unknown operation 'strt'.
+'[root@oraclelab2 init.d]# systemctl start  ohasd
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]# systemctl status ohasd
+● ohasd.service - LSB: Start and Stop Oracle High Availability Service
+   Loaded: loaded (/etc/rc.d/init.d/ohasd; bad; vendor preset: disabled)
+   Active: active (exited) since Tue 2023-05-02 11:00:29 IST; 3s ago
+     Docs: man:systemd-sysv-generator(8)
+  Process: 3220 ExecStart=/etc/rc.d/init.d/ohasd start (code=exited, status=0/SUCCESS)
+
+May 02 11:00:29 oraclelab2.localdomain.com systemd[1]: Starting LSB: Start and Stop Oracle High Availability Service...
+May 02 11:00:29 oraclelab2.localdomain.com ohasd[3220]: Starting ohasd:
+May 02 11:00:29 oraclelab2.localdomain.com su[3248]: (to oracle) root on none
+May 02 11:00:29 oraclelab2.localdomain.com ohasd[3220]: CRS-4640: Oracle High Availability Services is already active
+May 02 11:00:29 oraclelab2.localdomain.com ohasd[3220]: CRS-4000: Command Start failed, or completed with errors.
+May 02 11:00:29 oraclelab2.localdomain.com systemd[1]: Started LSB: Start and Stop Oracle High Availability Service.
+[root@oraclelab2 init.d]# pwd
+/etc/init.d
+[root@oraclelab2 init.d]# ls -ltr ohasd
+-rwxr-x---. 1 root root 7795 Apr 26 02:03 ohasd
+[root@oraclelab2 init.d]# ps -ef|grpe has
+bash: grpe: command not found...
+Similar command is: 'grep'
+[root@oraclelab2 init.d]# ps -ef|grep has
+oracle    2523     1  1 10:57 ?        00:00:04 /u01/app/19.0.0.0/grid/bin/ohasd.bin reboot
+root      3406 29931  0 11:01 pts/3    00:00:00 grep --color=auto has
+root     11588     1  0 Apr26 ?        00:00:00 /bin/sh /etc/init.d/init.ohasd run >/dev/null 2>&1 </dev/null
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]# ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+root      3476 29931  0 11:02 pts/3    00:00:00 grep --color=auto smon
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]# ps -ef|grep smon^C
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]#
+[root@oraclelab2 init.d]# ps -ef|grep smon
+oracle    2967     1  0 10:57 ?        00:00:00 asm_smon_+ASM
+root      3747 29931  0 11:06 pts/3    00:00:00 grep --color=auto smon
+[root@oraclelab2 init.d]# su - oracle
+Last login: Tue May  2 11:00:29 IST 2023
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? TESTDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ srvctl start database -d TESTDB
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [TESTDB] ? +ASM
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Voting_files  Name
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    16808                0           16808              0             N  DATA/
+MOUNTED  EXTERN  N         512             512   4096  4194304      3068     2968                0            2968              0             N  OCR/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236     8124                0            8124              0             N  RECO/
+ASMCMD [+] >
+
+
+login as: root
+root@10.38.4.179's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.179                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue May  2 08:59:55 2023 from 172.29.0.102
+[root@oraclelab2 ~]# locate alert_+ASM.log
+/u01/app/oracle/diag/asm/+asm/+ASM/trace/alert_+ASM.log
+[root@oraclelab2 ~]# tail -f /u01/app/oracle/diag/asm/+asm/+ASM/trace/alert_+ASM.log
+NOTE: check client alert log.
+2023-04-26T10:19:09.790004+05:30
+Dumping diagnostic data in directory=[cdmp_20230426101909], requested by (instance=1, osid=19162), summary=[trace bucket dump request (kfnclDelete0)].
+2023-04-26T10:19:09.792120+05:30
+NOTE: cleaned up ASM client TESTDB:TESTDB:ASM connection state
+2023-04-26T10:19:31.874815+05:30
+NOTE: Standard client TESTDB:TESTDB:ASM registered, osid 21290, mbr 0x1, asmb 21281 (reg:3724788058)
+2023-04-26T10:19:35.263233+05:30
+NOTE: client TESTDB:TESTDB:ASM mounted group 2 (DATA)
+NOTE: client TESTDB:TESTDB:ASM mounted group 3 (RECO)
+2023-05-02T09:48:38.673434+05:30
+SQL> CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D1'
+2023-05-02T09:48:38.845648+05:30
+NOTE: Assigning number (4,0) to disk (/dev/oracleasm/disks/D1)
+NOTE: initializing header on grp 4 disk DGROUPA_0000
+NOTE: Disk 0 in group 4 is assigned fgnum=1
+2023-05-02T09:48:38.872845+05:30
+GMON updating for reconfiguration, group 4 at 145 for pid 28, osid 29905
+2023-05-02T09:48:38.873108+05:30
+NOTE: group 4 PST updated.
+NOTE: initiating PST update: grp = 4
+2023-05-02T09:48:38.873714+05:30
+GMON updating group 4 at 146 for pid 28, osid 29905
+2023-05-02T09:48:38.949262+05:30
+NOTE: PST update grp = 4 not completed, ret 10
+NOTE: erasing header on grp 4 disk DGROUPA_0000
+2023-05-02T09:48:38.965570+05:30
+GMON dismounting group 4 at 147 for pid 28, osid 29905
+2023-05-02T09:48:38.966708+05:30
+NOTE: Disk DGROUPA_0000 in mode 0x7f marked for de-assignment
+ERROR: diskgroup DGROUPA was not created
+ORA-15018: diskgroup cannot be created
+ORA-15167: command requires at least 2 failure groups; found only 1
+
+2023-05-02T09:48:38.972116+05:30
+ERROR: CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D1'
+2023-05-02T09:49:12.330584+05:30
+SQL> CREATE DISKGROUP dgroupA HIGH REDUNDANCY
+DISK '/dev/oracleasm/disks/D1',
+'/dev/oracleasm/disks/D2'
+2023-05-02T09:49:12.422539+05:30
+NOTE: Assigning number (4,0) to disk (/dev/oracleasm/disks/D1)
+NOTE: Assigning number (4,1) to disk (/dev/oracleasm/disks/D2)
+NOTE: initializing header on grp 4 disk D1
+NOTE: initializing header on grp 4 disk DGROUPA_0001
+NOTE: Disk 0 in group 4 is assigned fgnum=1
+NOTE: Disk 1 in group 4 is assigned fgnum=2
+2023-05-02T09:49:12.452412+05:30
+GMON updating for reconfiguration, group 4 at 148 for pid 28, osid 29905
+2023-05-02T09:49:12.452839+05:30
+NOTE: group 4 PST updated.
+NOTE: initiating PST update: grp = 4
+2023-05-02T09:49:12.453342+05:30
+GMON updating group 4 at 149 for pid 28, osid 29905
+2023-05-02T09:49:12.454636+05:30
+NOTE: PST update grp = 4 not completed, ret 10
+NOTE: erasing header on grp 4 disk D1
+NOTE: erasing header on grp 4 disk DGROUPA_0001
+2023-05-02T09:49:12.457236+05:30
+GMON dismounting group 4 at 150 for pid 28, osid 29905
+2023-05-02T09:49:12.457390+05:30
+NOTE: Disk D1 in mode 0x7f marked for de-assignment
+NOTE: Disk DGROUPA_0001 in mode 0x7f marked for de-assignment
+ERROR: diskgroup DGROUPA was not created
+ORA-15018: diskgroup cannot be created
+ORA-15167: command requires at least 3 failure groups; found only 2
+
+2023-05-02T09:49:12.461965+05:30
+ERROR: CREATE DISKGROUP dgroupA HIGH REDUNDANCY
+DISK '/dev/oracleasm/disks/D1',
+'/dev/oracleasm/disks/D2'
+2023-05-02T09:51:46.288439+05:30
+SQL> CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+FAILGROUP mallik1 DISK
+   '/dev/oracleasm/disks/D1'
+FAILGROUP mallik2 DISK
+   '/dev/oracleasm/disks/D2'
+2023-05-02T09:51:46.369274+05:30
+NOTE: Assigning number (4,0) to disk (/dev/oracleasm/disks/D1)
+NOTE: Assigning number (4,1) to disk (/dev/oracleasm/disks/D2)
+NOTE: initializing header on grp 4 disk D1
+NOTE: initializing header on grp 4 disk D2
+NOTE: Disk 0 in group 4 is assigned fgnum=1
+NOTE: Disk 1 in group 4 is assigned fgnum=2
+2023-05-02T09:51:46.395392+05:30
+GMON updating for reconfiguration, group 4 at 151 for pid 28, osid 29905
+2023-05-02T09:51:46.395532+05:30
+NOTE: group 4 PST updated.
+NOTE: initiating PST update: grp = 4
+2023-05-02T09:51:46.395854+05:30
+GMON updating group 4 at 152 for pid 28, osid 29905
+NOTE: set version 0 for asmCompat 11.2.0.2.0 for group 4
+NOTE: group DGROUPA: initial PST location: disks 0000 0001
+2023-05-02T09:51:46.399556+05:30
+NOTE: PST update grp = 4 completed successfully
+NOTE: cache registered group DGROUPA 4/0xB4911A0B
+NOTE: cache began mount (first) of group DGROUPA 4/0xB4911A0B
+NOTE: cache is mounting group DGROUPA created on 2023/05/02 09:51:46
+NOTE: cache opening disk 0 of grp 4: D1 path:/dev/oracleasm/disks/D1
+NOTE: cache opening disk 1 of grp 4: D2 path:/dev/oracleasm/disks/D2
+NOTE: cache creating group 4/0xB4911A0B (DGROUPA)
+NOTE: cache mounting group 4/0xB4911A0B (DGROUPA) succeeded
+NOTE: allocating F1X0 on grp 4 disk D1
+NOTE: allocating F1X0 on grp 4 disk D2
+NOTE: Created Used Space Directory for 1 threads
+NOTE: diskgroup must now be re-mounted prior to first use
+2023-05-02T09:51:46.662178+05:30
+NOTE: cache dismounting (clean) group 4/0xB4911A0B (DGROUPA)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+2023-05-02T09:51:47.736647+05:30
+NOTE: LGWR not being messaged to dismount
+NOTE: cache dismounted group 4/0xB4911A0B (DGROUPA)
+2023-05-02T09:51:47.739554+05:30
+GMON dismounting group 4 at 153 for pid 28, osid 29905
+GMON dismounting group 4 at 154 for pid 28, osid 29905
+2023-05-02T09:51:47.746211+05:30
+NOTE: Disk D1 in mode 0x7f marked for de-assignment
+NOTE: Disk D2 in mode 0x7f marked for de-assignment
+SUCCESS: diskgroup DGROUPA was created
+NOTE: cache deleting context for group DGROUPA 4/0xb4911a0b
+NOTE: cache registered group DGROUPA 4/0xBDB11A0F
+NOTE: cache began mount (first) of group DGROUPA 4/0xBDB11A0F
+NOTE: Assigning number (4,1) to disk (/dev/oracleasm/disks/D2)
+NOTE: Assigning number (4,0) to disk (/dev/oracleasm/disks/D1)
+2023-05-02T09:51:47.837879+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T09:51:53.843904+05:30
+NOTE: GMON heartbeating for grp 4 (DGROUPA)
+GMON querying group 4 at 157 for pid 28, osid 29905
+2023-05-02T09:51:53.845390+05:30
+NOTE: cache is mounting group DGROUPA created on 2023/05/02 09:51:46
+NOTE: cache opening disk 0 of grp 4: D1 path:/dev/oracleasm/disks/D1
+NOTE: 05/02/23 09:51:52 DGROUPA.F1X0 found on disk 0 au 2 fcn 0.0 datfmt 1
+NOTE: cache opening disk 1 of grp 4: D2 path:/dev/oracleasm/disks/D2
+NOTE: 05/02/23 09:51:52 DGROUPA.F1X0 found on disk 1 au 2 fcn 0.0 datfmt 1
+2023-05-02T09:51:53.845933+05:30
+NOTE: cache mounting (first) normal redundancy group 4/0xBDB11A0F (DGROUPA)
+NOTE: cache recovered group 4 to fcn 0.0
+NOTE: redo buffer size is 256 blocks (1056768 bytes)
+2023-05-02T09:51:53.860565+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 4 (DGROUPA)
+NOTE: LGWR found thread 1 closed at ABA 0.10750 lock domain=0 inc#=0 instnum=0
+NOTE: LGWR mounted thread 1 for diskgroup 4 (DGROUPA)
+NOTE: setting 11.2 start ABA for group DGROUPA thread 1 to 2.0
+2023-05-02T09:51:53.864637+05:30
+NOTE: LGWR opened thread 1 (DGROUPA) at fcn 0.0 ABA 2.0 lock domain=4 inc#=0 instnum=1 gx.incarn=3182500367 mntstmp=2023/05/02 09:51:53.862000
+2023-05-02T09:51:53.864785+05:30
+NOTE: cache mounting group 4/0xBDB11A0F (DGROUPA) succeeded
+NOTE: cache ending mount (success) of group DGROUPA number=4 incarn=0xbdb11a0f
+2023-05-02T09:51:53.871814+05:30
+NOTE: Instance updated compatible.asm to 11.2.0.2.0 for grp 4 (DGROUPA).
+2023-05-02T09:51:53.872676+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 4 (DGROUPA).
+2023-05-02T09:51:53.874255+05:30
+SUCCESS: diskgroup DGROUPA was mounted
+2023-05-02T09:51:53.898861+05:30
+SUCCESS: CREATE DISKGROUP dgroupA NORMAL REDUNDANCY
+FAILGROUP mallik1 DISK
+   '/dev/oracleasm/disks/D1'
+FAILGROUP mallik2 DISK
+   '/dev/oracleasm/disks/D2'
+2023-05-02T09:51:53.944197+05:30
+NOTE: diskgroup resource ora.DGROUPA.dg is online
+NOTE: diskgroup resource ora.DGROUPA.dg is updated
+2023-05-02T09:54:47.954941+05:30
+SQL> CREATE DISKGROUP dgroupB HIGH REDUNDANCY
+FAILGROUP FG1 DISK
+   '/dev/oracleasm/disks/D3' NAME DGB_D3
+FAILGROUP FG2 DISK
+   '/dev/oracleasm/disks/D4' NAME DGB_D4
+FAILGROUP FG3 DISK
+   '/dev/oracleasm/disks/D5' NAME DGB_D5
+2023-05-02T09:54:48.048325+05:30
+NOTE: Assigning number (5,0) to disk (/dev/oracleasm/disks/D3)
+NOTE: Assigning number (5,1) to disk (/dev/oracleasm/disks/D4)
+NOTE: Assigning number (5,2) to disk (/dev/oracleasm/disks/D5)
+NOTE: initializing header on grp 5 disk DGB_D3
+NOTE: initializing header on grp 5 disk DGB_D4
+NOTE: initializing header on grp 5 disk DGB_D5
+NOTE: Disk 0 in group 5 is assigned fgnum=1
+NOTE: Disk 1 in group 5 is assigned fgnum=2
+NOTE: Disk 2 in group 5 is assigned fgnum=3
+2023-05-02T09:54:48.089364+05:30
+GMON updating for reconfiguration, group 5 at 159 for pid 28, osid 29905
+2023-05-02T09:54:48.089521+05:30
+NOTE: group 5 PST updated.
+NOTE: initiating PST update: grp = 5
+2023-05-02T09:54:48.089861+05:30
+GMON updating group 5 at 160 for pid 28, osid 29905
+NOTE: set version 0 for asmCompat 11.2.0.2.0 for group 5
+NOTE: group DGROUPB: initial PST location: disks 0000 0001 0002
+2023-05-02T09:54:48.094653+05:30
+NOTE: PST update grp = 5 completed successfully
+NOTE: cache registered group DGROUPB 5/0x24011A11
+NOTE: cache began mount (first) of group DGROUPB 5/0x24011A11
+NOTE: cache is mounting group DGROUPB created on 2023/05/02 09:54:47
+NOTE: cache opening disk 0 of grp 5: DGB_D3 path:/dev/oracleasm/disks/D3
+NOTE: cache opening disk 1 of grp 5: DGB_D4 path:/dev/oracleasm/disks/D4
+NOTE: cache opening disk 2 of grp 5: DGB_D5 path:/dev/oracleasm/disks/D5
+NOTE: cache creating group 5/0x24011A11 (DGROUPB)
+NOTE: cache mounting group 5/0x24011A11 (DGROUPB) succeeded
+NOTE: allocating F1X0 on grp 5 disk DGB_D3
+NOTE: allocating F1X0 on grp 5 disk DGB_D4
+NOTE: allocating F1X0 on grp 5 disk DGB_D5
+NOTE: Created Used Space Directory for 1 threads
+NOTE: diskgroup must now be re-mounted prior to first use
+2023-05-02T09:54:48.463484+05:30
+NOTE: cache dismounting (clean) group 5/0x24011A11 (DGROUPB)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+2023-05-02T09:54:51.295094+05:30
+NOTE: LGWR not being messaged to dismount
+NOTE: cache dismounted group 5/0x24011A11 (DGROUPB)
+2023-05-02T09:54:51.295859+05:30
+GMON dismounting group 5 at 161 for pid 28, osid 29905
+GMON dismounting group 5 at 162 for pid 28, osid 29905
+2023-05-02T09:54:51.298675+05:30
+NOTE: Disk DGB_D3 in mode 0x7f marked for de-assignment
+NOTE: Disk DGB_D4 in mode 0x7f marked for de-assignment
+NOTE: Disk DGB_D5 in mode 0x7f marked for de-assignment
+SUCCESS: diskgroup DGROUPB was created
+NOTE: cache deleting context for group DGROUPB 5/0x24011a11
+NOTE: cache registered group DGROUPB 5/0x38F11A14
+NOTE: cache began mount (first) of group DGROUPB 5/0x38F11A14
+NOTE: Assigning number (5,2) to disk (/dev/oracleasm/disks/D5)
+NOTE: Assigning number (5,1) to disk (/dev/oracleasm/disks/D4)
+NOTE: Assigning number (5,0) to disk (/dev/oracleasm/disks/D3)
+2023-05-02T09:54:51.401108+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T09:54:57.408746+05:30
+NOTE: GMON heartbeating for grp 5 (DGROUPB)
+GMON querying group 5 at 165 for pid 28, osid 29905
+2023-05-02T09:54:57.410342+05:30
+NOTE: cache is mounting group DGROUPB created on 2023/05/02 09:54:47
+NOTE: cache opening disk 0 of grp 5: DGB_D3 path:/dev/oracleasm/disks/D3
+NOTE: 05/02/23 09:54:56 DGROUPB.F1X0 found on disk 0 au 2 fcn 0.0 datfmt 1
+NOTE: cache opening disk 1 of grp 5: DGB_D4 path:/dev/oracleasm/disks/D4
+NOTE: 05/02/23 09:54:56 DGROUPB.F1X0 found on disk 1 au 2 fcn 0.0 datfmt 1
+NOTE: cache opening disk 2 of grp 5: DGB_D5 path:/dev/oracleasm/disks/D5
+NOTE: 05/02/23 09:54:56 DGROUPB.F1X0 found on disk 2 au 2 fcn 0.0 datfmt 1
+2023-05-02T09:54:57.410996+05:30
+NOTE: cache mounting (first) high redundancy group 5/0x38F11A14 (DGROUPB)
+NOTE: cache recovered group 5 to fcn 0.0
+NOTE: redo buffer size is 256 blocks (1056768 bytes)
+2023-05-02T09:54:57.425478+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 5 (DGROUPB)
+NOTE: LGWR found thread 1 closed at ABA 0.10750 lock domain=0 inc#=0 instnum=0
+NOTE: LGWR mounted thread 1 for diskgroup 5 (DGROUPB)
+NOTE: setting 11.2 start ABA for group DGROUPB thread 1 to 2.0
+2023-05-02T09:54:57.428776+05:30
+NOTE: LGWR opened thread 1 (DGROUPB) at fcn 0.0 ABA 2.0 lock domain=5 inc#=0 instnum=1 gx.incarn=955324948 mntstmp=2023/05/02 09:54:57.427000
+2023-05-02T09:54:57.428910+05:30
+NOTE: cache mounting group 5/0x38F11A14 (DGROUPB) succeeded
+NOTE: cache ending mount (success) of group DGROUPB number=5 incarn=0x38f11a14
+2023-05-02T09:54:57.434837+05:30
+NOTE: Instance updated compatible.asm to 11.2.0.2.0 for grp 5 (DGROUPB).
+2023-05-02T09:54:57.435656+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 5 (DGROUPB).
+2023-05-02T09:54:57.437467+05:30
+SUCCESS: diskgroup DGROUPB was mounted
+2023-05-02T09:54:57.455421+05:30
+SUCCESS: CREATE DISKGROUP dgroupB HIGH REDUNDANCY
+FAILGROUP FG1 DISK
+   '/dev/oracleasm/disks/D3' NAME DGB_D3
+FAILGROUP FG2 DISK
+   '/dev/oracleasm/disks/D4' NAME DGB_D4
+FAILGROUP FG3 DISK
+   '/dev/oracleasm/disks/D5' NAME DGB_D5
+2023-05-02T09:54:57.506339+05:30
+NOTE: diskgroup resource ora.DGROUPB.dg is online
+NOTE: diskgroup resource ora.DGROUPB.dg is updated
+2023-05-02T10:02:12.782406+05:30
+SQL> CREATE DISKGROUP dgroupC EXTERNAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D6'
+DISK '/dev/oracleasm/disks/D7'
+2023-05-02T10:02:12.864532+05:30
+NOTE: Assigning number (6,0) to disk (/dev/oracleasm/disks/D6)
+NOTE: Assigning number (6,1) to disk (/dev/oracleasm/disks/D7)
+NOTE: initializing header on grp 6 disk DGROUPC_0000
+NOTE: initializing header on grp 6 disk DGROUPC_0001
+NOTE: Disk 0 in group 6 is assigned fgnum=1
+NOTE: Disk 1 in group 6 is assigned fgnum=2
+NOTE: initiating PST update: grp = 6
+2023-05-02T10:02:12.891828+05:30
+GMON updating group 6 at 167 for pid 28, osid 29905
+NOTE: set version 0 for asmCompat 11.2.0.2.0 for group 6
+NOTE: group DGROUPC: initial PST location: disks 0000
+2023-05-02T10:02:12.895700+05:30
+NOTE: PST update grp = 6 completed successfully
+NOTE: cache registered group DGROUPC 6/0x00211A16
+NOTE: cache began mount (first) of group DGROUPC 6/0x00211A16
+NOTE: cache is mounting group DGROUPC created on 2023/05/02 10:02:12
+NOTE: cache opening disk 0 of grp 6: DGROUPC_0000 path:/dev/oracleasm/disks/D6
+NOTE: cache opening disk 1 of grp 6: DGROUPC_0001 path:/dev/oracleasm/disks/D7
+NOTE: cache creating group 6/0x00211A16 (DGROUPC)
+NOTE: cache mounting group 6/0x00211A16 (DGROUPC) succeeded
+NOTE: allocating F1X0 on grp 6 disk DGROUPC_0000
+NOTE: Created Used Space Directory for 1 threads
+NOTE: diskgroup must now be re-mounted prior to first use
+2023-05-02T10:02:13.077666+05:30
+NOTE: cache dismounting (clean) group 6/0x00211A16 (DGROUPC)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+NOTE: LGWR not being messaged to dismount
+NOTE: cache dismounted group 6/0x00211A16 (DGROUPC)
+2023-05-02T10:02:13.446987+05:30
+GMON dismounting group 6 at 168 for pid 28, osid 29905
+GMON dismounting group 6 at 169 for pid 28, osid 29905
+2023-05-02T10:02:13.450088+05:30
+NOTE: Disk DGROUPC_0000 in mode 0x7f marked for de-assignment
+NOTE: Disk DGROUPC_0001 in mode 0x7f marked for de-assignment
+SUCCESS: diskgroup DGROUPC was created
+NOTE: cache deleting context for group DGROUPC 6/0x00211a16
+NOTE: cache registered group DGROUPC 6/0x04611A19
+NOTE: cache began mount (first) of group DGROUPC 6/0x04611A19
+NOTE: Assigning number (6,1) to disk (/dev/oracleasm/disks/D7)
+NOTE: Assigning number (6,0) to disk (/dev/oracleasm/disks/D6)
+2023-05-02T10:02:13.583037+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T10:02:19.585789+05:30
+NOTE: GMON heartbeating for grp 6 (DGROUPC)
+GMON querying group 6 at 172 for pid 28, osid 29905
+2023-05-02T10:02:19.587513+05:30
+NOTE: cache is mounting group DGROUPC created on 2023/05/02 10:02:12
+NOTE: cache opening disk 0 of grp 6: DGROUPC_0000 path:/dev/oracleasm/disks/D6
+NOTE: 05/02/23 10:02:19 DGROUPC.F1X0 found on disk 0 au 2 fcn 0.0 datfmt 1
+NOTE: cache opening disk 1 of grp 6: DGROUPC_0001 path:/dev/oracleasm/disks/D7
+2023-05-02T10:02:19.587921+05:30
+NOTE: cache mounting (first) external redundancy group 6/0x04611A19 (DGROUPC)
+NOTE: cache recovered group 6 to fcn 0.0
+NOTE: redo buffer size is 256 blocks (1056768 bytes)
+2023-05-02T10:02:19.602705+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 6 (DGROUPC)
+NOTE: LGWR found thread 1 closed at ABA 0.10750 lock domain=0 inc#=0 instnum=0
+NOTE: LGWR mounted thread 1 for diskgroup 6 (DGROUPC)
+NOTE: setting 11.2 start ABA for group DGROUPC thread 1 to 2.0
+2023-05-02T10:02:19.607106+05:30
+NOTE: LGWR opened thread 1 (DGROUPC) at fcn 0.0 ABA 2.0 lock domain=6 inc#=0 instnum=1 gx.incarn=73472537 mntstmp=2023/05/02 10:02:19.604000
+2023-05-02T10:02:19.607431+05:30
+NOTE: cache mounting group 6/0x04611A19 (DGROUPC) succeeded
+NOTE: cache ending mount (success) of group DGROUPC number=6 incarn=0x04611a19
+2023-05-02T10:02:19.612979+05:30
+NOTE: Instance updated compatible.asm to 11.2.0.2.0 for grp 6 (DGROUPC).
+2023-05-02T10:02:19.613782+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 6 (DGROUPC).
+2023-05-02T10:02:19.615380+05:30
+SUCCESS: diskgroup DGROUPC was mounted
+2023-05-02T10:02:19.633677+05:30
+SUCCESS: CREATE DISKGROUP dgroupC EXTERNAL REDUNDANCY
+DISK '/dev/oracleasm/disks/D6'
+DISK '/dev/oracleasm/disks/D7'
+2023-05-02T10:02:19.687204+05:30
+NOTE: diskgroup resource ora.DGROUPC.dg is online
+NOTE: diskgroup resource ora.DGROUPC.dg is updated
+2023-05-02T10:07:55.871256+05:30
+SQL> ALTER DISKGROUP dgroupA ADD DISK
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9'
+2023-05-02T10:07:55.874281+05:30
+NOTE: client +ASM:+ASM:ASM no longer has group 2 (DATA) mounted
+2023-05-02T10:07:55.956229+05:30
+NOTE: Assigning number (4,2) to disk (/dev/oracleasm/disks/D8)
+NOTE: Assigning number (4,3) to disk (/dev/oracleasm/disks/D9)
+NOTE: requesting all-instance membership refresh for group=4
+NOTE: Disk 2 in group 4 is assigned fgnum=3
+NOTE: Disk 3 in group 4 is assigned fgnum=4
+NOTE: discarding redo for group 4 disk 2
+NOTE: discarding redo for group 4 disk 3
+NOTE: initializing header on grp 4 disk DGROUPA_0002
+NOTE: initializing header on grp 4 disk DGROUPA_0003
+NOTE: requesting all-instance disk validation for group=4
+2023-05-02T10:07:55.986271+05:30
+NOTE: skipping rediscovery for group 4/0xbdb11a0f (DGROUPA) on local instance.
+2023-05-02T10:07:55.990803+05:30
+NOTE: requesting all-instance disk validation for group=4
+2023-05-02T10:07:55.990959+05:30
+NOTE: skipping rediscovery for group 4/0xbdb11a0f (DGROUPA) on local instance.
+2023-05-02T10:07:55.993299+05:30
+GMON updating for reconfiguration, group 4 at 174 for pid 28, osid 29905
+NOTE: group DGROUPA: updated PST location: disks 0000 0001 0002
+2023-05-02T10:07:55.997835+05:30
+NOTE: group 4 PST updated.
+2023-05-02T10:07:55.999122+05:30
+NOTE: membership refresh pending for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:07:56.010286+05:30
+GMON querying group 4 at 175 for pid 19, osid 13964
+NOTE: cache opening disk 2 of grp 4: DGROUPA_0002 path:/dev/oracleasm/disks/D8
+NOTE: cache opening disk 3 of grp 4: DGROUPA_0003 path:/dev/oracleasm/disks/D9
+GMON querying group 4 at 176 for pid 19, osid 13964
+2023-05-02T10:07:56.044010+05:30
+SUCCESS: refreshed membership for 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:07:56.044791+05:30
+SUCCESS: ALTER DISKGROUP dgroupA ADD DISK
+  '/dev/oracleasm/disks/D8',
+  '/dev/oracleasm/disks/D9'
+NOTE: Attempting voting file refresh on diskgroup DGROUPA
+2023-05-02T10:07:56.359742+05:30
+NOTE: starting rebalance of group 4/0xbdb11a0f (DGROUPA) at power 1
+NOTE: starting process ARBA
+Starting background process ARBA
+2023-05-02T10:07:56.376499+05:30
+ARBA started with pid=31, OS id=31396
+NOTE: starting process ARB0
+Starting background process ARB0
+2023-05-02T10:07:56.401509+05:30
+ARB0 started with pid=33, OS id=31398
+NOTE: assigning ARBA to group 4/0xbdb11a0f (DGROUPA) to compute estimates
+NOTE: assigning ARB0 to group 4/0xbdb11a0f (DGROUPA) with 1 parallel I/O
+2023-05-02T10:07:56.472792+05:30
+NOTE: F1X0 on disk 3 (fmt 1) relocated at fcn 0.17: AU 0 -> AU 2
+NOTE: 05/02/23 10:07:56 DGROUPA.F1X0 copy 3 relocating from 65534:4294967294 to 3:2 at FCN 0.17
+2023-05-02T10:07:58.369181+05:30
+NOTE: stopping process ARB0
+NOTE: stopping process ARBA
+NOTE: Starting expel slave for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:07:58.390747+05:30
+NOTE: requesting all-instance membership refresh for group=4
+2023-05-02T10:07:58.391900+05:30
+NOTE: membership refresh pending for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:07:58.393323+05:30
+GMON querying group 4 at 177 for pid 19, osid 13964
+2023-05-02T10:07:58.394000+05:30
+SUCCESS: refreshed membership for 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:07:59.411438+05:30
+SUCCESS: rebalance completed for group 4/0xbdb11a0f (DGROUPA)
+NOTE: Attempting voting file refresh on diskgroup DGROUPA
+2023-05-02T10:13:01.748255+05:30
+NOTE: ASMB process exiting due to lack of ASM file activity for 303 seconds
+NOTE: ASMB clearing idle groups before exit
+2023-05-02T10:13:01.751627+05:30
+NOTE: client +ASM:+ASM:ASM deregistered
+2023-05-02T10:16:48.016269+05:30
+SQL> ALTER DISKGROUP dgroupA DROP DISK
+  '/dev/oracleasm/disks/D1',
+  '/dev/oracleasm/disks/D2'
+2023-05-02T10:16:48.017300+05:30
+ORA-15032: not all alterations performed
+ORA-15054: disk "/DEV/ORACLEASM/DISKS/D2" does not exist in diskgroup "DGROUPA"
+ORA-15054: disk "/DEV/ORACLEASM/DISKS/D1" does not exist in diskgroup "DGROUPA"
+
+2023-05-02T10:16:48.017480+05:30
+ERROR: ALTER DISKGROUP dgroupA DROP DISK
+  '/dev/oracleasm/disks/D1',
+  '/dev/oracleasm/disks/D2'
+2023-05-02T10:17:11.125626+05:30
+SQL> ALTER DISKGROUP dgroupA DROP DISK
+  'D1',
+  'D2'
+2023-05-02T10:17:11.127474+05:30
+NOTE: requesting all-instance membership refresh for group=4
+2023-05-02T10:17:11.130560+05:30
+GMON updating for reconfiguration, group 4 at 178 for pid 28, osid 29905
+2023-05-02T10:17:11.156182+05:30
+NOTE: group 4 PST updated.
+2023-05-02T10:17:11.157806+05:30
+NOTE: membership refresh pending for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:17:11.158928+05:30
+GMON querying group 4 at 179 for pid 19, osid 13964
+2023-05-02T10:17:11.159401+05:30
+SUCCESS: refreshed membership for 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:17:11.160013+05:30
+SUCCESS: ALTER DISKGROUP dgroupA DROP DISK
+  'D1',
+  'D2'
+2023-05-02T10:17:12.962030+05:30
+NOTE: Attempting voting file refresh on diskgroup DGROUPA
+2023-05-02T10:17:12.970470+05:30
+NOTE: starting rebalance of group 4/0xbdb11a0f (DGROUPA) at power 1
+NOTE: starting process ARBA
+Starting background process ARBA
+2023-05-02T10:17:12.985898+05:30
+ARBA started with pid=25, OS id=31988
+NOTE: starting process ARB0
+Starting background process ARB0
+2023-05-02T10:17:13.001594+05:30
+ARB0 started with pid=26, OS id=31990
+NOTE: assigning ARBA to group 4/0xbdb11a0f (DGROUPA) to compute estimates
+NOTE: assigning ARB0 to group 4/0xbdb11a0f (DGROUPA) with 1 parallel I/O
+2023-05-02T10:17:13.121928+05:30
+NOTE: F1X0 on disk 0 (fmt 1) relocated at fcn 0.108: AU 2 -> AU 0
+NOTE: F1X0 on disk 1 (fmt 1) relocated at fcn 0.108: AU 2 -> AU 0
+NOTE: F1X0 on disk 2 (fmt 1) relocated at fcn 0.108: AU 0 -> AU 38
+NOTE: 05/02/23 10:17:12 DGROUPA.F1X0 copy 1 relocating from 0:2 to 2:38 at FCN 0.108
+NOTE: 05/02/23 10:17:12 DGROUPA.F1X0 copy 2 relocating from 1:2 to 3:2 at FCN 0.108
+NOTE: 05/02/23 10:17:12 DGROUPA.F1X0 copy 3 relocating from 3:2 to 65534:4294967294 at FCN 0.108
+2023-05-02T10:17:13.605102+05:30
+NOTE: stopping process ARB0
+NOTE: stopping process ARBA
+NOTE: Starting expel slave for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:17:13.631974+05:30
+NOTE: requesting all-instance membership refresh for group=4
+2023-05-02T10:17:13.634885+05:30
+GMON updating for reconfiguration, group 4 at 180 for pid 31, osid 31992
+2023-05-02T10:17:13.637716+05:30
+NOTE: group 4 PST updated.
+SUCCESS: grp 4 disk D1 emptied
+SUCCESS: grp 4 disk D2 emptied
+NOTE: process _x000_+asm (31992) initiating offline of disk 0.4042385742 (D1) with mask 0x7e in group 4 (DGROUPA) without client assisting
+NOTE: process _x000_+asm (31992) initiating offline of disk 1.4042385741 (D2) with mask 0x7e in group 4 (DGROUPA) without client assisting
+NOTE: initiating PST update: grp 4 (DGROUPA), dsk = 0/0xf0f1e94e, mask = 0x6a, op = clear mandatory
+NOTE: initiating PST update: grp 4 (DGROUPA), dsk = 1/0xf0f1e94d, mask = 0x6a, op = clear mandatory
+2023-05-02T10:17:13.776910+05:30
+GMON updating disk modes for group 4 at 181 for pid 31, osid 31992
+WARNING: GMON has insufficient disks to maintain consensus for group 4 site (name unknownsite, guid 00000000000000000000000000000000). Minimum required is 2: updating 2 PST copies from a total of 3.
+NOTE: group DGROUPA: updated PST location: disks 0002 0003
+2023-05-02T10:17:13.781248+05:30
+NOTE: PST update grp = 4 completed successfully
+NOTE: initiating PST update: grp 4 (DGROUPA), dsk = 0/0xf0f1e94e, mask = 0x7e, op = clear mandatory
+NOTE: initiating PST update: grp 4 (DGROUPA), dsk = 1/0xf0f1e94d, mask = 0x7e, op = clear mandatory
+2023-05-02T10:17:13.781493+05:30
+GMON updating disk modes for group 4 at 182 for pid 31, osid 31992
+2023-05-02T10:17:13.783510+05:30
+NOTE: cache closing disk 0 of grp 4: D1
+2023-05-02T10:17:13.784814+05:30
+NOTE: cache closing disk 1 of grp 4: D2
+2023-05-02T10:17:13.785810+05:30
+NOTE: cache closing disk 0 of grp 4: (not open) D1
+2023-05-02T10:17:13.785874+05:30
+NOTE: cache closing disk 1 of grp 4: (not open) D2
+2023-05-02T10:17:13.786185+05:30
+NOTE: PST update grp = 4 completed successfully
+2023-05-02T10:17:13.786305+05:30
+GMON updating for reconfiguration, group 4 at 183 for pid 31, osid 31992
+2023-05-02T10:17:13.786495+05:30
+NOTE: cache closing disk 0 of grp 4: (not open) D1
+2023-05-02T10:17:13.786568+05:30
+NOTE: cache closing disk 1 of grp 4: (not open) D2
+2023-05-02T10:17:13.789029+05:30
+NOTE: group 4 PST updated.
+NOTE: grp 4 disk 0 expelled from the PST.
+NOTE: grp 4 disk 1 expelled from the PST.
+NOTE: Erasing header on /dev/oracleasm/disks/D1
+NOTE: Erasing header on /dev/oracleasm/disks/D2
+2023-05-02T10:17:13.829158+05:30
+NOTE: membership refresh pending for group 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:17:13.844315+05:30
+GMON querying group 4 at 184 for pid 19, osid 13964
+GMON querying group 4 at 185 for pid 19, osid 13964
+2023-05-02T10:17:13.845212+05:30
+NOTE: Disk D1 in mode 0x0 marked for de-assignment
+NOTE: Disk D2 in mode 0x0 marked for de-assignment
+SUCCESS: refreshed membership for 4/0xbdb11a0f (DGROUPA)
+2023-05-02T10:17:16.018295+05:30
+SUCCESS: rebalance completed for group 4/0xbdb11a0f (DGROUPA)
+NOTE: Attempting voting file refresh on diskgroup DGROUPA
+2023-05-02T10:31:37.953711+05:30
+SQL> DROP DISKGROUP dgroupA including contents
+2023-05-02T10:31:39.031232+05:30
+NOTE: cache dismounting (clean) group 4/0xBDB11A0F (DGROUPA)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+2023-05-02T10:31:39.038145+05:30
+NOTE: LGWR doing clean dismount of group 4 (DGROUPA) thread 1
+NOTE: LGWR closing thread 1 of diskgroup 4 (DGROUPA) at ABA 2.56
+2023-05-02T10:31:39.039174+05:30
+NOTE: cache dismounted group 4/0xBDB11A0F (DGROUPA)
+2023-05-02T10:31:39.049485+05:30
+GMON dismounting group 4 at 186 for pid 28, osid 29905
+2023-05-02T10:31:39.051400+05:30
+NOTE: erasing header on grp 4 disk DGROUPA_0002
+NOTE: erasing header on grp 4 disk DGROUPA_0003
+SUCCESS: diskgroup DGROUPA was dropped
+2023-05-02T10:31:39.055866+05:30
+NOTE: Disk DGROUPA_0002 in mode 0x7f marked for de-assignment
+NOTE: Disk DGROUPA_0003 in mode 0x7f marked for de-assignment
+NOTE: cache deleting context for group DGROUPA 4/0xbdb11a0f
+2023-05-02T10:31:39.081420+05:30
+SUCCESS: DROP DISKGROUP dgroupA including contents
+2023-05-02T10:31:39.144529+05:30
+NOTE: diskgroup resource ora.DGROUPA.dg is dropped
+WARNING: unknown state for diskgroup resource ora.DGROUPA.dg, Return Value: 3
+2023-05-02T10:32:12.885173+05:30
+SQL> DROP DISKGROUP dgroupB
+2023-05-02T10:32:14.971587+05:30
+NOTE: cache dismounting (clean) group 5/0x38F11A14 (DGROUPB)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+2023-05-02T10:32:14.974639+05:30
+NOTE: LGWR doing clean dismount of group 5 (DGROUPB) thread 1
+NOTE: LGWR closing thread 1 of diskgroup 5 (DGROUPB) at ABA 2.1
+2023-05-02T10:32:14.976218+05:30
+NOTE: cache dismounted group 5/0x38F11A14 (DGROUPB)
+2023-05-02T10:32:14.976775+05:30
+GMON dismounting group 5 at 187 for pid 28, osid 29905
+2023-05-02T10:32:14.979163+05:30
+NOTE: erasing header on grp 5 disk DGB_D3
+NOTE: erasing header on grp 5 disk DGB_D4
+NOTE: erasing header on grp 5 disk DGB_D5
+SUCCESS: diskgroup DGROUPB was dropped
+2023-05-02T10:32:14.986867+05:30
+NOTE: Disk DGB_D3 in mode 0x7f marked for de-assignment
+NOTE: Disk DGB_D4 in mode 0x7f marked for de-assignment
+NOTE: Disk DGB_D5 in mode 0x7f marked for de-assignment
+NOTE: cache deleting context for group DGROUPB 5/0x38f11a14
+2023-05-02T10:32:15.010546+05:30
+SUCCESS: DROP DISKGROUP dgroupB
+2023-05-02T10:32:15.075872+05:30
+NOTE: diskgroup resource ora.DGROUPB.dg is dropped
+WARNING: unknown state for diskgroup resource ora.DGROUPB.dg, Return Value: 3
+2023-05-02T10:32:19.715124+05:30
+SQL> DROP DISKGROUP dgroupC
+2023-05-02T10:32:20.798827+05:30
+NOTE: cache dismounting (clean) group 6/0x04611A19 (DGROUPC)
+NOTE: messaging CKPT to quiesce pins Unix process pid: 29905, image: oracle@oraclelab2.localdomain.com (TNS V1-V3)
+2023-05-02T10:32:20.800876+05:30
+NOTE: LGWR doing clean dismount of group 6 (DGROUPC) thread 1
+NOTE: LGWR closing thread 1 of diskgroup 6 (DGROUPC) at ABA 2.1
+2023-05-02T10:32:20.802101+05:30
+NOTE: cache dismounted group 6/0x04611A19 (DGROUPC)
+2023-05-02T10:32:20.802363+05:30
+GMON dismounting group 6 at 188 for pid 28, osid 29905
+2023-05-02T10:32:20.804694+05:30
+NOTE: erasing header on grp 6 disk DGROUPC_0000
+NOTE: erasing header on grp 6 disk DGROUPC_0001
+SUCCESS: diskgroup DGROUPC was dropped
+2023-05-02T10:32:20.811010+05:30
+NOTE: Disk DGROUPC_0000 in mode 0x7f marked for de-assignment
+NOTE: Disk DGROUPC_0001 in mode 0x7f marked for de-assignment
+NOTE: cache deleting context for group DGROUPC 6/0x04611a19
+2023-05-02T10:32:20.840268+05:30
+SUCCESS: DROP DISKGROUP dgroupC
+2023-05-02T10:32:20.909152+05:30
+NOTE: diskgroup resource ora.DGROUPC.dg is dropped
+WARNING: unknown state for diskgroup resource ora.DGROUPC.dg, Return Value: 3
+2023-05-02T10:50:43.830931+05:30
+NOTE: client TESTDB:TESTDB:ASM deregistered
+2023-05-02T10:54:19.834659+05:30
+Shutting down ORACLE instance (abort) (OS id: 15124)
+License high water mark = 14
+2023-05-02T10:54:19.843679+05:30
+USER (ospid: 15124): terminating the instance
+2023-05-02T10:54:20.852028+05:30
+Instance terminated by USER, pid = 15124
+2023-05-02T10:54:20.919117+05:30
+Instance shutdown complete (OS id: 15124)
+2023-05-02T10:57:31.206105+05:30
+MEMORY_TARGET defaulting to 1128267776.
+* instance_number obtained from CSS = 1, checking for the existence of node 0...
+* node 0 does not exist. instance_number = 1
+Starting ORACLE instance (normal) (OS id: 2925)
+2023-05-02T10:57:31.230296+05:30
+****************************************************
+ /dev/shm will be used for creating SGA
+Large pages will not be used. Only standard 4K pages will be used
+****************************************************
+2023-05-02T10:57:31.240504+05:30
+**********************************************************************
+2023-05-02T10:57:31.240580+05:30
+Dump of system resources acquired for SHARED GLOBAL AREA (SGA)
+
+2023-05-02T10:57:31.240779+05:30
+ Per process system memlock (soft) limit = 128G
+2023-05-02T10:57:31.240863+05:30
+ Expected per process system memlock (soft) limit to lock
+ instance MAX SHARED GLOBAL AREA (SGA) into memory: 1085M
+2023-05-02T10:57:31.241005+05:30
+ Available system pagesizes:
+  4K, 2048K
+2023-05-02T10:57:31.241139+05:30
+ Supported system pagesize(s):
+2023-05-02T10:57:31.241208+05:30
+  PAGESIZE  AVAILABLE_PAGES  EXPECTED_PAGES  ALLOCATED_PAGES  ERROR(s)
+2023-05-02T10:57:31.241291+05:30
+        4K       Configured          277638          277638        NONE
+2023-05-02T10:57:31.241363+05:30
+ Reason for not supporting certain system pagesizes:
+2023-05-02T10:57:31.241424+05:30
+  2048K - Dynamic allocate and free memory regions
+2023-05-02T10:57:31.241483+05:30
+**********************************************************************
+2023-05-02T10:57:34.643084+05:30
+LICENSE_MAX_SESSION = 0
+LICENSE_SESSIONS_WARNING = 0
+2023-05-02T10:57:34.734944+05:30
+Initial number of CPU is 2
+Number of processor cores in the system is 2
+Number of processor sockets in the system is 2
+Capability Type : Network
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Runtime Environment
+capabilities requested : 400000FF detected : 40000000 Simulated : 0
+Capability Type : Engineered Systems
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Database Test
+capabilities requested : 3 detected : 0 Simulated : 0
+Using LOG_ARCHIVE_DEST_1 parameter default value as /u01/app/19.0.0.0/grid/dbs/arch
+Autotune of undo retention is turned on.
+IMODE=BR
+ILAT =0
+LICENSE_MAX_USERS = 0
+SYS auditing is enabled
+NOTE: remote asm mode is local (mode 0x301; from cluster type)
+NOTE: Using default ASM root directory ASM
+NOTE: Cluster configuration type = SIHA [3]
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0.
+ORACLE_HOME:    /u01/app/19.0.0.0/grid
+System name:    Linux
+Node name:      oraclelab2.localdomain.com
+Release:        4.14.35-2047.505.4.el7uek.x86_64
+Version:        #2 SMP Mon Jun 28 18:02:57 PDT 2021
+Machine:        x86_64
+Using parameter settings in server-side spfile +OCR/ASM/ASMPARAMETERFILE/registry.253.1135130687
+System parameters with non-default values:
+  large_pool_size          = 12M
+  remote_login_passwordfile= "EXCLUSIVE"
+  asm_diskstring           = "/dev/oracleasm/disks/*"
+  asm_diskgroups           = "DATA"
+  asm_diskgroups           = "RECO"
+  asm_power_limit          = 1
+NOTE: remote asm mode is local (mode 0x301; from cluster type)
+2023-05-02T10:57:34.900100+05:30
+============================================================
+NOTE: PatchLevel of this instance 724960844
+============================================================
+Dumping list of patches:
+============================================================
+29401763,29517242,29517247,29585399
+============================================================
+Starting background process PMON
+2023-05-02T10:57:35.375659+05:30
+PMON started with pid=2, OS id=2934
+Starting background process CLMN
+2023-05-02T10:57:35.392330+05:30
+CLMN started with pid=3, OS id=2936
+Starting background process PSP0
+2023-05-02T10:57:35.406589+05:30
+PSP0 started with pid=4, OS id=2939
+Starting background process VKTM
+2023-05-02T10:57:36.453091+05:30
+VKTM started with pid=5, OS id=2941 at elevated (RT) priority
+2023-05-02T10:57:36.453310+05:30
+Starting background process GEN0
+2023-05-02T10:57:36.454948+05:30
+VKTM running at (1)millisec precision with DBRM quantum (100)ms
+2023-05-02T10:57:36.466489+05:30
+GEN0 started with pid=6, OS id=2945
+Starting background process MMAN
+2023-05-02T10:57:36.483802+05:30
+MMAN started with pid=7, OS id=2948
+Starting background process GEN1
+2023-05-02T10:57:36.514570+05:30
+GEN1 started with pid=9, OS id=2952_2953
+Starting background process DIAG
+2023-05-02T10:57:36.527208+05:30
+DIAG started with pid=11, OS id=2955
+Starting background process PMAN
+2023-05-02T10:57:36.540112+05:30
+PMAN started with pid=12, OS id=2957
+Starting background process DIA0
+2023-05-02T10:57:36.553242+05:30
+DIA0 started with pid=8, OS id=2959
+Starting background process DBW0
+2023-05-02T10:57:36.573692+05:30
+DBW0 started with pid=13, OS id=2961
+Starting background process LGWR
+2023-05-02T10:57:36.587263+05:30
+LGWR started with pid=14, OS id=2963
+Starting background process CKPT
+2023-05-02T10:57:36.600177+05:30
+CKPT started with pid=15, OS id=2965
+Starting background process SMON
+2023-05-02T10:57:36.613437+05:30
+SMON started with pid=16, OS id=2967
+Starting background process LREG
+2023-05-02T10:57:36.627082+05:30
+LREG started with pid=17, OS id=2969
+Starting background process PXMN
+2023-05-02T10:57:36.638104+05:30
+PXMN started with pid=18, OS id=2971
+Starting background process RBAL
+2023-05-02T10:57:36.650373+05:30
+RBAL started with pid=19, OS id=2973
+Starting background process GMON
+2023-05-02T10:57:36.663623+05:30
+GMON started with pid=20, OS id=2975
+Starting background process MMON
+2023-05-02T10:57:36.680581+05:30
+MMON started with pid=21, OS id=2977
+Starting background process MMNL
+2023-05-02T10:57:36.692153+05:30
+MMNL started with pid=22, OS id=2979
+2023-05-02T10:57:36.791080+05:30
+Setting CPU count to 2
+ORACLE_BASE from environment = /u01/app/oracle
+2023-05-02T10:57:36.837000+05:30
+SQL> ALTER DISKGROUP ALL MOUNT /* asm agent call crs *//* {0:0:2} */
+2023-05-02T10:57:36.855931+05:30
+Diskgroup with spfile:OCR
+NOTE: Diskgroups listed in ASM_DISKGROUP are
+         DATA
+
+         RECO
+
+2023-05-02T10:57:36.871042+05:30
+NOTE: ASM instance +ASM is discoverable by local clients on node oraclelab2
+2023-05-02T10:57:36.922829+05:30
+NOTE: cache registered group DATA 1/0x27F8E1AC
+NOTE: cache began mount (first) of group DATA 1/0x27F8E1AC
+NOTE: cache registered group OCR 2/0x27F8E1AD
+NOTE: cache began mount (first) of group OCR 2/0x27F8E1AD
+NOTE: cache registered group RECO 3/0x2808E1AE
+NOTE: cache began mount (first) of group RECO 3/0x2808E1AE
+NOTE: Assigning number (1,0) to disk (/dev/oracleasm/disks/ASM_DSISK2)
+2023-05-02T10:57:37.019702+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T10:57:37.021521+05:30
+NOTE: Assigning number (2,0) to disk (/dev/oracleasm/disks/ASM_DSISK1)
+2023-05-02T10:57:37.023287+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T10:57:37.024599+05:30
+NOTE: Assigning number (3,0) to disk (/dev/oracleasm/disks/ASM_DSISK3)
+2023-05-02T10:57:37.026145+05:30
+cluster guid (3afaa10342eaef4fbf3c5c35117aa0a9) generated for PST Hbeat for instance 1
+2023-05-02T10:57:39.506533+05:30
+kzaac_get_instance_lock: Single instance node. Ismaster = TRUE
+2023-05-02T10:57:43.022003+05:30
+NOTE: GMON heartbeating for grp 1 (DATA)
+GMON querying group 1 at 5 for pid 23, osid 2981
+2023-05-02T10:57:43.022824+05:30
+NOTE: cache is mounting group DATA created on 2023/04/26 02:05:55
+NOTE: cache opening disk 0 of grp 1: DATA_0000 path:/dev/oracleasm/disks/ASM_DSISK2
+NOTE: 05/02/23 10:57:42 DATA.F1X0 found on disk 0 au 10 fcn 0.0 datfmt 1
+2023-05-02T10:57:43.023073+05:30
+NOTE: cache mounting (first) external redundancy group 1/0x27F8E1AC (DATA)
+NOTE: crash recovery of group DATA will recover thread=1 ckpt=2.992 domain=2 inc#=0 instnum=1
+NOTE: advancing ckpt for group 1 (DATA) thread=1 ckpt=2.992 domain inc# 0
+NOTE: cache recovered group 1 to fcn 0.4427
+NOTE: redo buffer size is 512 blocks (2105344 bytes)
+2023-05-02T10:57:43.042219+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 1 (DATA)
+NOTE: LGWR found thread 1 closed at ABA 2.991 lock domain=0 inc#=0 instnum=1
+NOTE: LGWR mounted thread 1 for diskgroup 1 (DATA)
+2023-05-02T10:57:43.098980+05:30
+NOTE: LGWR opened thread 1 (DATA) at fcn 0.4427 ABA 3.992 lock domain=1 inc#=0 instnum=1 gx.incarn=670622124 mntstmp=2023/05/02 10:57:43.045000
+2023-05-02T10:57:43.099266+05:30
+NOTE: cache mounting group 1/0x27F8E1AC (DATA) succeeded
+NOTE: cache ending mount (success) of group DATA number=1 incarn=0x27f8e1ac
+2023-05-02T10:57:43.108025+05:30
+NOTE: GMON heartbeating for grp 2 (OCR)
+GMON querying group 2 at 7 for pid 23, osid 2981
+2023-05-02T10:57:43.109493+05:30
+NOTE: cache is mounting group OCR created on 2023/04/26 02:04:38
+NOTE: cache opening disk 0 of grp 2: OCR_0000 path:/dev/oracleasm/disks/ASM_DSISK1
+NOTE: 05/02/23 10:57:42 OCR.F1X0 found on disk 0 au 10 fcn 0.0 datfmt 1
+2023-05-02T10:57:43.109668+05:30
+NOTE: cache mounting (first) external redundancy group 2/0x27F8E1AD (OCR)
+NOTE: crash recovery of group OCR will recover thread=1 ckpt=3.122 domain=1 inc#=0 instnum=1
+NOTE: advancing ckpt for group 2 (OCR) thread=1 ckpt=3.122 domain inc# 0
+NOTE: cache recovered group 2 to fcn 0.1849
+NOTE: redo buffer size is 512 blocks (2105344 bytes)
+2023-05-02T10:57:43.128264+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 2 (OCR)
+NOTE: LGWR found thread 1 closed at ABA 3.121 lock domain=0 inc#=0 instnum=1
+NOTE: LGWR mounted thread 1 for diskgroup 2 (OCR)
+2023-05-02T10:57:43.131230+05:30
+NOTE: LGWR opened thread 1 (OCR) at fcn 0.1849 ABA 4.122 lock domain=2 inc#=0 instnum=1 gx.incarn=670622125 mntstmp=2023/05/02 10:57:43.129000
+2023-05-02T10:57:43.131392+05:30
+NOTE: cache mounting group 2/0x27F8E1AD (OCR) succeeded
+NOTE: cache ending mount (success) of group OCR number=2 incarn=0x27f8e1ad
+2023-05-02T10:57:43.137326+05:30
+NOTE: GMON heartbeating for grp 3 (RECO)
+GMON querying group 3 at 9 for pid 23, osid 2981
+2023-05-02T10:57:43.138529+05:30
+NOTE: cache is mounting group RECO created on 2023/04/26 02:06:16
+NOTE: cache opening disk 0 of grp 3: RECO_0000 path:/dev/oracleasm/disks/ASM_DSISK3
+NOTE: 05/02/23 10:57:42 RECO.F1X0 found on disk 0 au 10 fcn 0.0 datfmt 1
+2023-05-02T10:57:43.138842+05:30
+NOTE: cache mounting (first) external redundancy group 3/0x2808E1AE (RECO)
+NOTE: crash recovery of group RECO will recover thread=1 ckpt=2.157 domain=3 inc#=0 instnum=1
+NOTE: advancing ckpt for group 3 (RECO) thread=1 ckpt=2.157 domain inc# 0
+NOTE: cache recovered group 3 to fcn 0.1967
+NOTE: redo buffer size is 512 blocks (2105344 bytes)
+2023-05-02T10:57:43.157429+05:30
+NOTE: LGWR attempting to mount thread 1 for diskgroup 3 (RECO)
+NOTE: LGWR found thread 1 closed at ABA 2.156 lock domain=0 inc#=0 instnum=1
+NOTE: LGWR mounted thread 1 for diskgroup 3 (RECO)
+2023-05-02T10:57:43.161637+05:30
+NOTE: LGWR opened thread 1 (RECO) at fcn 0.1967 ABA 3.157 lock domain=3 inc#=0 instnum=1 gx.incarn=671670702 mntstmp=2023/05/02 10:57:43.159000
+2023-05-02T10:57:43.161885+05:30
+NOTE: cache mounting group 3/0x2808E1AE (RECO) succeeded
+NOTE: cache ending mount (success) of group RECO number=3 incarn=0x2808e1ae
+2023-05-02T10:57:43.170260+05:30
+NOTE: Instance updated compatible.asm to 19.0.0.0.0 for grp 1 (DATA).
+2023-05-02T10:57:43.171993+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 1 (DATA).
+2023-05-02T10:57:43.175344+05:30
+SUCCESS: diskgroup DATA was mounted
+2023-05-02T10:57:43.179092+05:30
+NOTE: Instance updated compatible.asm to 19.0.0.0.0 for grp 2 (OCR).
+2023-05-02T10:57:43.180245+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 2 (OCR).
+2023-05-02T10:57:43.183139+05:30
+SUCCESS: diskgroup OCR was mounted
+2023-05-02T10:57:43.187229+05:30
+NOTE: Instance updated compatible.asm to 19.0.0.0.0 for grp 3 (RECO).
+2023-05-02T10:57:43.188349+05:30
+NOTE: Instance updated compatible.rdbms to 10.1.0.0.0 for grp 3 (RECO).
+2023-05-02T10:57:43.191513+05:30
+SUCCESS: diskgroup RECO was mounted
+2023-05-02T10:57:43.230128+05:30
+SUCCESS: ALTER DISKGROUP ALL MOUNT /* asm agent call crs *//* {0:0:2} */
+2023-05-02T10:57:43.327565+05:30
+NOTE: diskgroup resource ora.DATA.dg is online
+NOTE: diskgroup resource ora.OCR.dg is online
+NOTE: diskgroup resource ora.RECO.dg is online
+2023-05-02T10:57:44.094678+05:30
+ALTER SYSTEM SET local_listener=' (ADDRESS=(PROTOCOL=TCP)(HOST=10.38.4.179)(PORT=1521))' SCOPE=MEMORY SID='+ASM';
+2023-05-02T11:06:21.622411+05:30
+Starting background process ASMB
+2023-05-02T11:06:21.637879+05:30
+ASMB started with pid=27, OS id=3939
+2023-05-02T11:06:21.682580+05:30
+NOTE: ASMB (index:0) registering with ASM instance as Standard client 0xffffffffffffffff (reg:1043905408) (startid:1135767454) (new connection)
+2023-05-02T11:06:21.775415+05:30
+NOTE: Standard client +ASM:+ASM:ASM registered, osid 3943, mbr 0x0, asmb 3939 (reg:1043905408)
+2023-05-02T11:06:21.775858+05:30
+NOTE: ASMB (index:0) (3939) connected to ASM instance +ASM, osid: 3943 (Standard mode; client id 0xffffffffffffffff)
+2023-05-02T11:06:26.427932+05:30
+NOTE: Standard client TESTDB:TESTDB:ASM registered, osid 4129, mbr 0x1, asmb 4120 (reg:3652012753)
+2023-05-02T11:06:29.745022+05:30
+NOTE: client TESTDB:TESTDB:ASM mounted group 1 (DATA)
+NOTE: client TESTDB:TESTDB:ASM mounted group 3 (RECO)
+2023-05-02T11:11:34.252019+05:30
+NOTE: client TESTDB:TESTDB:ASM mounted group 2 (OCR)
+
+
+ 

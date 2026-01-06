@@ -1,0 +1,1425 @@
+expdb & impdb (exp & imp)
+sqlldr
+external table
+
+
+/etc/rc.local 
+
+expdb & impdb (exp & imp)
+Table 
+schema 
+
+
+CREATE OR REPLACE DIRECTORY DUMP AS '/u01/DUMP';
+GRANT READ, WRITE ON DIRECTORY DUMP TO MALLIK;
+
+table:
+======
+expdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT directory=DUMP dumpfile=EMP_DEPT.dmp logfile=expdpEMP_DEPT.log
+impdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATE directory=DUMP dumpfile=EMP_DEPT.dmp logfile=impdpEMP_DEPT.log
+
+
+TABLE_EXISTS_ACTION=[SKIP | APPEND | TRUNCATE | REPLACE]
+
+
+set long 1000000
+select dbms_metadata.get_ddl ('TABLE', 'DEPT', 'MALLIK') from dual;
+ 
+
+schema:
+=======
+expdp system/Mallik123 schemas=MALLIK,MALLIK1,MALLIK2 directory=DUMP dumpfile=MALLIK.dmp logfile=expdpoMALLIK.log
+impdp system/Mallik123 schemas=MALLIK directory=DUMP dumpfile=MALLIK.dmp logfile=impdpMALLIK.log
+
+impdp system/Mallik123 remap_schema=MALLIK:MALLIK11 directory=DUMP dumpfile=MALLIK.dmp logfile=impdpMALLIK.log
+
+
+DB:
+===
+expdp system/Mallik123 full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=expdpDEVDB.log
+impdp system/Mallik123 full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=impdpDEVDB.log
+
+
+PDB:
+====
+expdp system/Mallik123@PDB1 tables=MALLIK.EMP,MALLIK.DEPT directory=DUMP dumpfile=EMP_DEPT.dmp logfile=expdpEMP_DEPT.log
+impdp system/Mallik123@PDB1 tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATE directory=DUMP dumpfile=EMP_DEPT.dmp logfile=impdpEMP_DEPT.log
+
+expdp system/Mallik123@PDB1 schemas=MALLIK,MALLIK1,MALLIK2 directory=DUMP dumpfile=MALLIK.dmp logfile=expdpoMALLIK.log
+impdp system/Mallik123@PDB1 schemas=MALLIK directory=DUMP dumpfile=MALLIK.dmp logfile=impdpMALLIK.log
+
+
+
+
+Stop and resume:
+================
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/TABLE_DATA
+[Ctrl-c]
+Export> KILL_JOB
+..or..
+Export> STOP_JOB=IMMEDIATE
+Are you sure you wish to stop this job ([yes]/no): yes
+
+SELECT owner_name, job_name, operation, job_mode, state FROM dba_datapump_jobs;
+
+expdp system ATTACH=SYS_EXPORT_FULL_01
+expdp system/Mallik123 ATTACH=SYS_EXPORT_FULL_01
+
+Export> START_JOB [=SKIP_CURRENT]
+Export> CONTINUE_CLIENT
+
+
+sqlldr:
+=======
+
+
+email.dat
+=========
+1,john.doe@example.com
+2,jane.doe@example.com
+3,
+Asasas
+Asas
+
+email.ctl
+=========
+load data into table emails_tbl 
+insert fields terminated by "," 
+(slno, email_id )
+
+Table:
+======
+CREATE TABLE emails_tbl
+( SLNO NUMBER, 
+email_id VARCHAR2(150) NOT NULL );
+
+
+email.par
+==========
+userid=mallik/mallik 
+control=email.ctl 
+data=email.dat
+log=email.log 
+bad=email.bad 
+direct=true
+
+
+sqlldr parfile=email.par
+
+external table:
+===============
+
+Countries1.txt
+===============
+ENG,England,English
+SCO,Scotland,English
+IRE,Ireland,English
+WAL,Wales,Welsh
+
+Countries2.txt
+==============
+FRA,France,French
+GER,Germany,German
+USA,America,English
+
+
+
+CREATE TABLE countries_ext (
+  country_code      VARCHAR2(5),
+  country_name      VARCHAR2(50),
+  country_language  VARCHAR2(50)
+)
+ORGANIZATION EXTERNAL (
+  TYPE ORACLE_LOADER
+  DEFAULT DIRECTORY DUMP
+  ACCESS PARAMETERS (
+    RECORDS DELIMITED BY NEWLINE
+    FIELDS TERMINATED BY ','
+    MISSING FIELD VALUES ARE NULL
+    (
+      country_code      CHAR(5),
+      country_name      CHAR(50),
+      country_language  CHAR(50)
+    )
+  )
+  LOCATION ('Countries1.txt','Countries2.txt')
+)
+PARALLEL 5
+REJECT LIMIT UNLIMITED;
+
+
+expdp/impdp
+sqlldr
+external table 
+
+
+
+
+expdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT parallel=5 directory=DUMP dumpfile=EMP_DEPT.dmp logfile=expdpEMP_DEPT.log
+impdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT parallel=5 TABLE_EXISTS_ACTION=TRUNCATE directory=DUMP dumpfile=EMP_DEPT.dmp logfile=impdpEMP_DEPT.log
+
+set long 1000000
+select dbms_metadata.get_ddl ('TABLE', 'DEPT', 'MALLIK') from dual;
+
+
+[root@oraclelab1 patches]# clear
+[root@oraclelab1 patches]# ps -ef|grep smon
+root      4780  4650  0 09:31 pts/2    00:00:00 grep --color=auto smon
+oracle   21690     1  0 May26 ?        00:00:03 ora_smon_DEVDB
+[root@oraclelab1 patches]# cd ../DUMP/
+[root@oraclelab1 DUMP]# pwd
+/u01/DUMP
+[root@oraclelab1 DUMP]# ll
+total 0
+[root@oraclelab1 DUMP]#
+[root@oraclelab1 DUMP]#
+[root@oraclelab1 DUMP]# pwd
+/u01/DUMP
+[root@oraclelab1 DUMP]# su - oracle
+Last login: Fri May 26 10:56:02 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? DEVDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 09:50:34 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> CREATE OR REPLACE DIRECTORY DUMP AS '/u01/DUMP';
+
+Directory created.
+
+SQL> GRANT READ, WRITE ON DIRECTORY DUMP TO system;
+
+Grant succeeded.
+
+SQL> conn mallik/mallik
+Connected.
+SQL> select * from emp;
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7839 KING       PRESIDENT            17-NOV-81       5000
+        10
+
+      7698 BLAKE      MANAGER         7839 01-MAY-81       2850
+        30
+
+      7782 CLARK      MANAGER         7839 09-JUN-81       2450
+        10
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7566 JONES      MANAGER         7839 02-APR-81       2975
+        20
+
+      7788 SCOTT      ANALYST         7566 19-APR-87       3000
+        20
+
+      7902 FORD       ANALYST         7566 03-DEC-81       3000
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7369 SMITH      CLERK           7902 17-DEC-80        800
+        20
+
+      7499 ALLEN      SALESMAN        7698 20-FEB-81       1600        300
+        30
+
+      7521 WARD       SALESMAN        7698 22-FEB-81       1250        500
+        30
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7654 MARTIN     SALESMAN        7698 28-SEP-81       1250       1400
+        30
+
+      7844 TURNER     SALESMAN        7698 08-SEP-81       1500          0
+        30
+
+      7876 ADAMS      CLERK           7788 23-MAY-87       1100
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7900 JAMES      CLERK           7698 03-DEC-81        950
+        30
+
+      7934 MILLER     CLERK           7782 23-JAN-82       1300
+        10
+
+
+14 rows selected.
+
+SQL> select * from dept;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 ~]$ expdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT directory=DUMP dumpfile=EMP_DEPT.dmp log
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 09:53:19 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Starting "SYSTEM"."SYS_EXPORT_TABLE_01":  system/******** tables=MALLIK.EMP,MALLIK.DEPT directory=DUMP dumpfile=EMP_.log
+Processing object type TABLE_EXPORT/TABLE/TABLE_DATA
+Processing object type TABLE_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/MARKER
+Processing object type TABLE_EXPORT/TABLE/TABLE
+Processing object type TABLE_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+. . exported "MALLIK"."EMP"                              8.773 KB      14 rows
+. . exported "MALLIK"."DEPT"                             6.031 KB       4 rows
+Master table "SYSTEM"."SYS_EXPORT_TABLE_01" successfully loaded/unloaded
+******************************************************************************
+Dump file set for SYSTEM.SYS_EXPORT_TABLE_01 is:
+  /u01/DUMP/EMP_DEPT.dmp
+Job "SYSTEM"."SYS_EXPORT_TABLE_01" successfully completed at Mon May 29 09:53:50 2023 elapsed 0 00:00:27
+
+[oracle@oraclelab1 ~]$ cd /u01/DUMP/
+[oracle@oraclelab1 DUMP]$ ls -ltrh
+total 248K
+-rw-r-----. 1 oracle oinstall 244K May 29 09:53 EMP_DEPT.dmp
+-rw-r--r--. 1 oracle oinstall 1.4K May 29 09:53 expdpEMP_DEPT.log
+[oracle@oraclelab1 DUMP]$ impdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATE directorogfile=impdpEMP_DEPT.log
+
+Import: Release 19.0.0.0.0 - Production on Mon May 29 09:57:31 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Master table "SYSTEM"."SYS_IMPORT_TABLE_01" successfully loaded/unloaded
+Starting "SYSTEM"."SYS_IMPORT_TABLE_01":  system/******** tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATEEPT.dmp logfile=impdpEMP_DEPT.log
+Processing object type TABLE_EXPORT/TABLE/TABLE
+ORA-39120: Table "MALLIK"."DEPT" can't be truncated, data will be skipped. Failing error is:
+ORA-02266: unique/primary keys in table referenced by enabled foreign keys
+ORA-00955: name is already used by an existing object
+
+Table "MALLIK"."EMP" exists and has been truncated. Data will be loaded but all dependent metadata will be skipped druncate
+Processing object type TABLE_EXPORT/TABLE/TABLE_DATA
+. . imported "MALLIK"."EMP"                              8.773 KB      14 rows
+Processing object type TABLE_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+ORA-39112: Dependent object type OBJECT_GRANT:"MALLIK"."INSERT" skipped, base object type TABLE:"MALLIK"."DEPT" crea
+
+ORA-39112: Dependent object type OBJECT_GRANT:"MALLIK"."UPDATE" skipped, base object type TABLE:"MALLIK"."DEPT" crea
+
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+ORA-39112: Dependent object type CONSTRAINT:"MALLIK"."PK_DEPT" skipped, base object type TABLE:"MALLIK"."DEPT" creat
+
+Processing object type TABLE_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/MARKER
+Job "SYSTEM"."SYS_IMPORT_TABLE_01" completed with 4 error(s) at Mon May 29 09:57:39 2023 elapsed 0 00:00:07
+
+[oracle@oraclelab1 DUMP]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 09:59:08 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> drop table DEPT:
+  2  ^C^[[A^[[A
+
+SQL>
+SQL> drop table DEPT:
+  2  ^C
+
+SQL>
+SQL> ^[[A^[^C
+
+SQL>
+SQL>
+SQL> drop table DEPT;
+drop table DEPT
+           *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> drop table ML^?ALLIK.EMPT:^C
+
+SQL>
+SQL>
+SQL> drop table MALLIK.EMP;
+
+Table dropped.
+
+SQL> drop table MALLIK.DEPT:
+  2  ^C
+
+SQL>
+SQL> drop table MALLIK.DEPT;
+
+Table dropped.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ impdp system/Mallik123 tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATE directorogfile=impdpEMP_DEPT.log
+
+Import: Release 19.0.0.0.0 - Production on Mon May 29 10:00:16 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Master table "SYSTEM"."SYS_IMPORT_TABLE_01" successfully loaded/unloaded
+Starting "SYSTEM"."SYS_IMPORT_TABLE_01":  system/******** tables=MALLIK.EMP,MALLIK.DEPT TABLE_EXISTS_ACTION=TRUNCATEEPT.dmp logfile=impdpEMP_DEPT.log
+Processing object type TABLE_EXPORT/TABLE/TABLE
+Processing object type TABLE_EXPORT/TABLE/TABLE_DATA
+. . imported "MALLIK"."EMP"                              8.773 KB      14 rows
+. . imported "MALLIK"."DEPT"                             6.031 KB       4 rows
+Processing object type TABLE_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type TABLE_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/MARKER
+Job "SYSTEM"."SYS_IMPORT_TABLE_01" successfully completed at Mon May 29 10:00:38 2023 elapsed 0 00:00:22
+
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:02:05 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> set long 1000000
+select dbms_metadata.get_ddl ('Table', 'DEPT', 'MALLIK') from dual;SQL>
+ERROR:
+ORA-31600: invalid input value Table for parameter OBJECT_TYPE in function
+GET_DDL
+ORA-06512: at "SYS.DBMS_METADATA", line 6731
+ORA-06512: at "SYS.DBMS_METADATA", line 6516
+ORA-06512: at "SYS.DBMS_SYS_ERROR", line 105
+ORA-06512: at "SYS.DBMS_METADATA_INT", line 4166
+ORA-06512: at "SYS.DBMS_METADATA_INT", line 4643
+ORA-06512: at "SYS.DBMS_METADATA_INT", line 9660
+ORA-06512: at "SYS.DBMS_METADATA", line 6459
+ORA-06512: at "SYS.DBMS_METADATA", line 6572
+ORA-06512: at "SYS.DBMS_METADATA", line 9734
+ORA-06512: at line 1
+
+
+
+no rows selected
+
+SQL>
+SQL> set long 1000000
+select dbms_metadata.get_ddl ('TABLE', 'DEPT', 'MALLIK') from dual;
+ 
+SQL>
+
+DBMS_METADATA.GET_DDL('TABLE','DEPT','MALLIK')
+--------------------------------------------------------------------------------
+
+  CREATE TABLE "MALLIK"."DEPT"
+   (    "DEPTNO" NUMBER(2,0),
+        "DNAME" VARCHAR2(14),
+        "LOC" VARCHAR2(13),
+         CONSTRAINT "PK_DEPT" PRIMARY KEY ("DEPTNO")
+  USING INDEX PCTFREE 10 INITRANS 2 MAXTRANS 255 COMPUTE STATISTICS
+  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645
+  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1
+  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)
+  TABLESPACE "USERS"  ENABLE
+
+DBMS_METADATA.GET_DDL('TABLE','DEPT','MALLIK')
+--------------------------------------------------------------------------------
+   ) SEGMENT CREATION IMMEDIATE
+  PCTFREE 10 PCTUSED 40 INITRANS 1 MAXTRANS 255
+ NOCOMPRESS LOGGING
+  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645
+  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1
+  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)
+  TABLESPACE "USERS"
+
+
+SQL> SP2-0042: unknown command "▒" - rest of line ignored.
+SQL> SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ expdp system/Mallik123 schemas=MALLIK directory=DUMP dumpfile=MALLIK.dmp logfile=expdpoMAL
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:07:01 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Starting "SYSTEM"."SYS_EXPORT_SCHEMA_01":  system/******** schemas=MALLIK directory=DUMP dumpfile=MALLIK.dmp logfile
+Processing object type SCHEMA_EXPORT/TABLE/TABLE_DATA
+Processing object type SCHEMA_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type SCHEMA_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type SCHEMA_EXPORT/STATISTICS/MARKER
+Processing object type SCHEMA_EXPORT/USER
+Processing object type SCHEMA_EXPORT/SYSTEM_GRANT
+Processing object type SCHEMA_EXPORT/ROLE_GRANT
+Processing object type SCHEMA_EXPORT/DEFAULT_ROLE
+Processing object type SCHEMA_EXPORT/PRE_SCHEMA/PROCACT_SCHEMA
+Processing object type SCHEMA_EXPORT/TABLE/TABLE
+Processing object type SCHEMA_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type SCHEMA_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type SCHEMA_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+. . exported "MALLIK"."EMP"                              8.773 KB      14 rows
+. . exported "MALLIK"."DEPT"                             6.031 KB       4 rows
+. . exported "MALLIK"."SALGRADE"                         5.953 KB       5 rows
+. . exported "MALLIK"."BONUS"                                0 KB       0 rows
+Master table "SYSTEM"."SYS_EXPORT_SCHEMA_01" successfully loaded/unloaded
+******************************************************************************
+Dump file set for SYSTEM.SYS_EXPORT_SCHEMA_01 is:
+  /u01/DUMP/MALLIK.dmp
+Job "SYSTEM"."SYS_EXPORT_SCHEMA_01" successfully completed at Mon May 29 10:07:37 2023 elapsed 0 00:00:35
+
+[oracle@oraclelab1 DUMP]$ ls -ltrh
+total 700K
+-rw-r-----. 1 oracle oinstall 244K May 29 09:53 EMP_DEPT.dmp
+-rw-r--r--. 1 oracle oinstall 1.4K May 29 09:53 expdpEMP_DEPT.log
+-rw-r--r--. 1 oracle oinstall 1.3K May 29 10:00 impdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 440K May 29 10:07 MALLIK.dmp
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:07 expdpoMALLIK.log
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ impdp system/Mallik123 remap_schema=MALLIK:MALLIK11 directory=DUMP dumpfile=MALLIK.dmp log
+
+Import: Release 19.0.0.0.0 - Production on Mon May 29 10:09:02 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Master table "SYSTEM"."SYS_IMPORT_FULL_01" successfully loaded/unloaded
+Starting "SYSTEM"."SYS_IMPORT_FULL_01":  system/******** remap_schema=MALLIK:MALLIK11 directory=DUMP dumpfile=MALLIK
+Processing object type SCHEMA_EXPORT/USER
+Processing object type SCHEMA_EXPORT/SYSTEM_GRANT
+Processing object type SCHEMA_EXPORT/ROLE_GRANT
+Processing object type SCHEMA_EXPORT/DEFAULT_ROLE
+Processing object type SCHEMA_EXPORT/PRE_SCHEMA/PROCACT_SCHEMA
+Processing object type SCHEMA_EXPORT/TABLE/TABLE
+Processing object type SCHEMA_EXPORT/TABLE/TABLE_DATA
+. . imported "MALLIK11"."EMP"                            8.773 KB      14 rows
+. . imported "MALLIK11"."DEPT"                           6.031 KB       4 rows
+. . imported "MALLIK11"."SALGRADE"                       5.953 KB       5 rows
+. . imported "MALLIK11"."BONUS"                              0 KB       0 rows
+Processing object type SCHEMA_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type SCHEMA_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type SCHEMA_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type SCHEMA_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+Processing object type SCHEMA_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type SCHEMA_EXPORT/STATISTICS/MARKER
+Job "SYSTEM"."SYS_IMPORT_FULL_01" successfully completed at Mon May 29 10:09:23 2023 elapsed 0 00:00:21
+
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:09:37 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> conn mallik11/mallik
+Connected.
+SQL> select * from dept;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ expdb
+bash: expdb: command not found...
+[oracle@oraclelab1 DUMP]$ expdp
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:17:37 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Username: system
+Password:
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Starting "SYSTEM"."SYS_EXPORT_SCHEMA_01":  system/********
+Processing object type SCHEMA_EXPORT/TABLE/TABLE_DATA
+Processing object type SCHEMA_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type SCHEMA_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type SCHEMA_EXPORT/DEFAULT_ROLE
+Processing object type SCHEMA_EXPORT/PRE_SCHEMA/PROCACT_SCHEMA
+^C
+Export> exit
+
+[oracle@oraclelab1 DUMP]$ vi exp.par
+[oracle@oraclelab1 DUMP]$ expdb system/Mallik123 parfile=/u01/DUMP/exp.par
+bash: expdb: command not found...
+[oracle@oraclelab1 DUMP]$ expdp system/Mallik123 parfile=/u01/DUMP/exp.par
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:19:30 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+ORA-39001: invalid argument value
+ORA-39000: bad dump file specification
+ORA-31641: unable to create dump file "/u01/DUMP/EMP_DEPT.dmp"
+ORA-27038: created file already exists
+Additional information: 1
+
+
+[oracle@oraclelab1 DUMP]$ rm "/u01/DUMP/EMP_DEPT.dmp"
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ expdp system/Mallik123 parfile=/u01/DUMP/exp.par
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:19:41 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Starting "SYSTEM"."SYS_EXPORT_TABLE_01":  system/******** parfile=/u01/DUMP/exp.par
+Processing object type TABLE_EXPORT/TABLE/TABLE_DATA
+Processing object type TABLE_EXPORT/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/TABLE_STATISTICS
+Processing object type TABLE_EXPORT/TABLE/STATISTICS/MARKER
+Processing object type TABLE_EXPORT/TABLE/TABLE
+Processing object type TABLE_EXPORT/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type TABLE_EXPORT/TABLE/CONSTRAINT/REF_CONSTRAINT
+. . exported "MALLIK"."EMP"                              8.773 KB      14 rows
+. . exported "MALLIK"."DEPT"                             6.031 KB       4 rows
+Master table "SYSTEM"."SYS_EXPORT_TABLE_01" successfully loaded/unloaded
+******************************************************************************
+Dump file set for SYSTEM.SYS_EXPORT_TABLE_01 is:
+  /u01/DUMP/EMP_DEPT.dmp
+Job "SYSTEM"."SYS_EXPORT_TABLE_01" successfully completed at Mon May 29 10:20:01 2023 elapsed 0 00:00:20
+
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ expdp system/Mallik123 full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=expdpDEVDB.log
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:22:18 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Starting "SYSTEM"."SYS_EXPORT_FULL_01":  system/******** full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=expdpDEVDB.log
+Processing object type DATABASE_EXPORT/EARLY_OPTIONS/VIEWS_AS_TABLES/TABLE_DATA
+Processing object type DATABASE_EXPORT/NORMAL_OPTIONS/TABLE_DATA
+Processing object type DATABASE_EXPORT/NORMAL_OPTIONS/VIEWS_AS_TABLES/TABLE_DATA
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/TABLE_DATA
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/INDEX/STATISTICS/INDEX_STATISTICS
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/STATISTICS/TABLE_STATISTICS
+^C
+Export> STOP_JOB=IMMEDIATE
+Are you sure you wish to stop this job ([yes]/no): YES
+
+[oracle@oraclelab1 DUMP]$ expdb system/Mallik123 parfile=/u01/DUMP/exp.par^C
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:23:38 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> SELECT owner_name, job_name, operation, job_mode, state FROM dba_datapump_jobs;
+
+OWNER_NAME
+--------------------------------------------------------------------------------
+JOB_NAME
+--------------------------------------------------------------------------------
+OPERATION
+--------------------------------------------------------------------------------
+JOB_MODE
+--------------------------------------------------------------------------------
+STATE
+--------------------------------------------------------------------------------
+SYSTEM
+SYS_EXPORT_FULL_01
+EXPORT
+
+OWNER_NAME
+--------------------------------------------------------------------------------
+JOB_NAME
+--------------------------------------------------------------------------------
+OPERATION
+--------------------------------------------------------------------------------
+JOB_MODE
+--------------------------------------------------------------------------------
+STATE
+--------------------------------------------------------------------------------
+FULL
+NOT RUNNING
+
+
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ expdp system/Mallik123 ATTACH=SYS_EXPORT_FULL_01
+
+Export: Release 19.0.0.0.0 - Production on Mon May 29 10:24:19 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Connected to: Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+
+Job: SYS_EXPORT_FULL_01
+  Owner: SYSTEM
+  Operation: EXPORT
+  Creator Privs: TRUE
+  GUID: FCCED9F3610A1F85E053B404260A3B91
+  Start Time: Monday, 29 May, 2023 10:24:20
+  Mode: FULL
+  Instance: DEVDB
+  Max Parallelism: 1
+  Timezone: +00:00
+  Timezone version: 32
+  Endianness: LITTLE
+  NLS character set: AL32UTF8
+  NLS NCHAR character set: AL16UTF16
+  EXPORT Job Parameters:
+  Parameter Name      Parameter Value:
+     CLIENT_COMMAND        system/******** full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=expdpDEVDB.log
+     TRACE                 0
+  State: IDLING
+  Bytes Processed: 0
+  Current Parallelism: 1
+  Job Error Count: 0
+  Job heartbeat: 2
+  Dump File: /u01/DUMP/DEVDB.dmp
+    bytes written: 102,400
+
+Worker 1 Status:
+  Instance ID: 1
+  Instance name: DEVDB
+  Host name: oraclelab1.localdomain.com
+  Object start time: Monday, 29 May, 2023 10:22:37
+  Object status at: Monday, 29 May, 2023 10:22:44
+  Process Name: DW00
+  State: UNDEFINED
+
+Export> CONTINUE_CLIENT
+Job SYS_EXPORT_FULL_01 has been reopened at Mon May 29 10:24:20 2023
+Restarting "SYSTEM"."SYS_EXPORT_FULL_01":  system/******** full=Y directory=DUMP dumpfile=DEVDB.dmp logfile=expdpDEVDB.log
+Processing object type DATABASE_EXPORT/SYSTEM_PROCOBJACT/PRE_SYSTEM_ACTIONS/PROCACT_SYSTEM
+Processing object type DATABASE_EXPORT/SYSTEM_PROCOBJACT/PROCOBJ
+Processing object type DATABASE_EXPORT/SYSTEM_PROCOBJACT/POST_SYSTEM_ACTIONS/PROCACT_SYSTEM
+Processing object type DATABASE_EXPORT/SCHEMA/PROCACT_SCHEMA
+Processing object type DATABASE_EXPORT/EARLY_OPTIONS/VIEWS_AS_TABLES/TABLE
+Processing object type DATABASE_EXPORT/EARLY_POST_INSTANCE_IMPCALLOUT/MARKER
+Processing object type DATABASE_EXPORT/NORMAL_OPTIONS/TABLE
+Processing object type DATABASE_EXPORT/NORMAL_OPTIONS/VIEWS_AS_TABLES/TABLE
+Processing object type DATABASE_EXPORT/NORMAL_POST_INSTANCE_IMPCALLOUT/MARKER
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/TABLE
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/GRANT/OWNER_GRANT/OBJECT_GRANT
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/GRANT/CROSS_SCHEMA/OBJECT_GRANT
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/COMMENT
+Processing object type DATABASE_EXPORT/SCHEMA/PROCEDURE/PROCEDURE
+Processing object type DATABASE_EXPORT/SCHEMA/PROCEDURE/ALTER_PROCEDURE
+Processing object type DATABASE_EXPORT/SCHEMA/VIEW/VIEW
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/INDEX/INDEX
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/CONSTRAINT/CONSTRAINT
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/CONSTRAINT/REF_CONSTRAINT
+Processing object type DATABASE_EXPORT/SCHEMA/TABLE/TRIGGER
+Processing object type DATABASE_EXPORT/FINAL_POST_INSTANCE_IMPCALLOUT/MARKER
+Processing object type DATABASE_EXPORT/SCHEMA/POST_SCHEMA/PROCACT_SCHEMA
+Processing object type DATABASE_EXPORT/AUDIT_UNIFIED/AUDIT_POLICY_ENABLE
+Processing object type DATABASE_EXPORT/POST_SYSTEM_IMPCALLOUT/MARKER
+. . exported "SYS"."KU$_USER_MAPPING_VIEW"               6.210 KB      47 rows
+. . exported "AUDSYS"."AUD$UNIFIED":"SYS_P370"           16.06 MB    8479 rows
+. . exported "AUDSYS"."AUD$UNIFIED":"SYS_P181"           132.5 KB     159 rows
+. . exported "SYSTEM"."REDO_DB"                          25.59 KB       1 rows
+. . exported "WMSYS"."WM$WORKSPACES_TABLE$"              12.10 KB       1 rows
+. . exported "WMSYS"."WM$HINT_TABLE$"                    9.984 KB      97 rows
+. . exported "LBACSYS"."OLS$INSTALLATIONS"               6.960 KB       2 rows
+. . exported "WMSYS"."WM$WORKSPACE_PRIV_TABLE$"          7.078 KB      11 rows
+. . exported "SYS"."DAM_CONFIG_PARAM$"                   6.531 KB      14 rows
+. . exported "SYS"."TSDP_SUBPOL$"                        6.328 KB       1 rows
+. . exported "WMSYS"."WM$NEXTVER_TABLE$"                 6.375 KB       1 rows
+. . exported "LBACSYS"."OLS$PROPS"                       6.234 KB       5 rows
+. . exported "WMSYS"."WM$ENV_VARS$"                      6.015 KB       3 rows
+. . exported "SYS"."TSDP_PARAMETER$"                     5.953 KB       1 rows
+. . exported "SYS"."TSDP_POLICY$"                        5.921 KB       1 rows
+. . exported "WMSYS"."WM$VERSION_HIERARCHY_TABLE$"       5.984 KB       1 rows
+. . exported "WMSYS"."WM$EVENTS_INFO$"                   5.812 KB      12 rows
+. . exported "LBACSYS"."OLS$AUDIT_ACTIONS"               5.757 KB       8 rows
+. . exported "LBACSYS"."OLS$DIP_EVENTS"                  5.539 KB       2 rows
+. . exported "AUDSYS"."AUD$UNIFIED":"AUD_UNIFIED_P0"         0 KB       0 rows
+. . exported "LBACSYS"."OLS$AUDIT"                           0 KB       0 rows
+. . exported "LBACSYS"."OLS$COMPARTMENTS"                    0 KB       0 rows
+. . exported "LBACSYS"."OLS$DIP_DEBUG"                       0 KB       0 rows
+. . exported "LBACSYS"."OLS$GROUPS"                          0 KB       0 rows
+. . exported "LBACSYS"."OLS$LAB"                             0 KB       0 rows
+. . exported "LBACSYS"."OLS$LEVELS"                          0 KB       0 rows
+. . exported "LBACSYS"."OLS$POL"                             0 KB       0 rows
+. . exported "LBACSYS"."OLS$POLICY_ADMIN"                    0 KB       0 rows
+. . exported "LBACSYS"."OLS$POLS"                            0 KB       0 rows
+. . exported "LBACSYS"."OLS$POLT"                            0 KB       0 rows
+. . exported "LBACSYS"."OLS$PROFILE"                         0 KB       0 rows
+. . exported "LBACSYS"."OLS$PROFILES"                        0 KB       0 rows
+. . exported "LBACSYS"."OLS$PROG"                            0 KB       0 rows
+. . exported "LBACSYS"."OLS$SESSINFO"                        0 KB       0 rows
+. . exported "LBACSYS"."OLS$USER"                            0 KB       0 rows
+. . exported "LBACSYS"."OLS$USER_COMPARTMENTS"               0 KB       0 rows
+. . exported "LBACSYS"."OLS$USER_GROUPS"                     0 KB       0 rows
+. . exported "LBACSYS"."OLS$USER_LEVELS"                     0 KB       0 rows
+. . exported "SYS"."AUD$"                                    0 KB       0 rows
+. . exported "SYS"."DAM_CLEANUP_EVENTS$"                     0 KB       0 rows
+. . exported "SYS"."DAM_CLEANUP_JOBS$"                       0 KB       0 rows
+. . exported "SYS"."TSDP_ASSOCIATION$"                       0 KB       0 rows
+. . exported "SYS"."TSDP_CONDITION$"                         0 KB       0 rows
+. . exported "SYS"."TSDP_FEATURE_POLICY$"                    0 KB       0 rows
+. . exported "SYS"."TSDP_PROTECTION$"                        0 KB       0 rows
+. . exported "SYS"."TSDP_SENSITIVE_DATA$"                    0 KB       0 rows
+. . exported "SYS"."TSDP_SENSITIVE_TYPE$"                    0 KB       0 rows
+. . exported "SYS"."TSDP_SOURCE$"                            0 KB       0 rows
+. . exported "SYSTEM"."REDO_LOG"                             0 KB       0 rows
+. . exported "WMSYS"."WM$BATCH_COMPRESSIBLE_TABLES$"         0 KB       0 rows
+. . exported "WMSYS"."WM$CONSTRAINTS_TABLE$"                 0 KB       0 rows
+. . exported "WMSYS"."WM$CONS_COLUMNS$"                      0 KB       0 rows
+. . exported "WMSYS"."WM$LOCKROWS_INFO$"                     0 KB       0 rows
+. . exported "WMSYS"."WM$MODIFIED_TABLES$"                   0 KB       0 rows
+. . exported "WMSYS"."WM$MP_GRAPH_WORKSPACES_TABLE$"         0 KB       0 rows
+. . exported "WMSYS"."WM$MP_PARENT_WORKSPACES_TABLE$"        0 KB       0 rows
+. . exported "WMSYS"."WM$NESTED_COLUMNS_TABLE$"              0 KB       0 rows
+. . exported "WMSYS"."WM$RESOLVE_WORKSPACES_TABLE$"          0 KB       0 rows
+. . exported "WMSYS"."WM$RIC_LOCKING_TABLE$"                 0 KB       0 rows
+. . exported "WMSYS"."WM$RIC_TABLE$"                         0 KB       0 rows
+. . exported "WMSYS"."WM$RIC_TRIGGERS_TABLE$"                0 KB       0 rows
+. . exported "WMSYS"."WM$UDTRIG_DISPATCH_PROCS$"             0 KB       0 rows
+. . exported "WMSYS"."WM$UDTRIG_INFO$"                       0 KB       0 rows
+. . exported "WMSYS"."WM$VERSION_TABLE$"                     0 KB       0 rows
+. . exported "WMSYS"."WM$VT_ERRORS_TABLE$"                   0 KB       0 rows
+. . exported "WMSYS"."WM$WORKSPACE_SAVEPOINTS_TABLE$"        0 KB       0 rows
+. . exported "MDSYS"."RDF_PARAM$"                        6.515 KB       3 rows
+. . exported "SYS"."AUDTAB$TBS$FOR_EXPORT"               5.953 KB       2 rows
+. . exported "SYS"."DBA_SENSITIVE_DATA"                      0 KB       0 rows
+. . exported "SYS"."DBA_TSDP_POLICY_PROTECTION"              0 KB       0 rows
+. . exported "SYS"."FGA_LOG$FOR_EXPORT"                      0 KB       0 rows
+. . exported "SYS"."NACL$_ACE_EXP"                           0 KB       0 rows
+. . exported "SYS"."NACL$_HOST_EXP"                      6.976 KB       2 rows
+. . exported "SYS"."NACL$_WALLET_EXP"                        0 KB       0 rows
+. . exported "SYS"."SQL$TEXT_DATAPUMP"                   578.9 KB     104 rows
+. . exported "SYS"."SQL$_DATAPUMP"                       8.703 KB     104 rows
+. . exported "SYS"."SQLOBJ$AUXDATA_DATAPUMP"             127.4 KB     188 rows
+. . exported "SYS"."SQLOBJ$DATA_DATAPUMP"                    0 KB       0 rows
+. . exported "SYS"."SQLOBJ$PLAN_DATAPUMP"                6.638 MB   10999 rows
+. . exported "SYS"."SQLOBJ$_DATAPUMP"                    20.90 KB     188 rows
+. . exported "SYSTEM"."SCHEDULER_JOB_ARGS"                   0 KB       0 rows
+. . exported "SYSTEM"."SCHEDULER_PROGRAM_ARGS"               0 KB       0 rows
+. . exported "WMSYS"."WM$EXP_MAP"                        7.718 KB       3 rows
+. . exported "WMSYS"."WM$METADATA_MAP"                       0 KB       0 rows
+. . exported "HR"."EMPLOYEES"                            17.08 KB     107 rows
+. . exported "MALLIK"."EMP"                              8.773 KB      14 rows
+. . exported "MALLIK11"."EMP"                            8.781 KB      14 rows
+. . exported "HR"."LOCATIONS"                            8.437 KB      23 rows
+. . exported "HR"."JOB_HISTORY"                          7.195 KB      10 rows
+. . exported "HR"."JOBS"                                 7.109 KB      19 rows
+. . exported "HR"."DEPARTMENTS"                          7.125 KB      27 rows
+. . exported "HR"."COUNTRIES"                            6.367 KB      25 rows
+. . exported "MALLIK"."DEPT"                             6.031 KB       4 rows
+. . exported "MALLIK11"."DEPT"                           6.031 KB       4 rows
+. . exported "MALLIK"."SALGRADE"                         5.953 KB       5 rows
+. . exported "MALLIK11"."SALGRADE"                       5.960 KB       5 rows
+. . exported "HR"."REGIONS"                              5.546 KB       4 rows
+. . exported "TEST1"."TEST1"                             5.484 KB       1 rows
+. . exported "TEST2"."TEST2"                             5.484 KB       1 rows
+. . exported "MALLIK"."BONUS"                                0 KB       0 rows
+. . exported "MALLIK11"."BONUS"                              0 KB       0 rows
+. . exported "TEST3"."TEST3"                                 0 KB       0 rows
+. . exported "USER1"."T1"                                    0 KB       0 rows
+. . exported "USER2"."T2"                                    0 KB       0 rows
+. . exported "USER3"."T3"                                    0 KB       0 rows
+Master table "SYSTEM"."SYS_EXPORT_FULL_01" successfully loaded/unloaded
+******************************************************************************
+Dump file set for SYSTEM.SYS_EXPORT_FULL_01 is:
+  /u01/DUMP/DEVDB.dmp
+Job "SYSTEM"."SYS_EXPORT_FULL_01" successfully completed at Mon May 29 10:27:53 2023 elapsed 0 00:03:33
+
+[oracle@oraclelab1 DUMP]$ vi email.dat
+[oracle@oraclelab1 DUMP]$ vi email.ctl
+[oracle@oraclelab1 DUMP]$ sqlplus mallik/mallik
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:31:23 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 29 2023 09:52:14 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> CREATE TABLE emails_tbl
+( SLNO NUMBER,
+email_id VARCHAR2(150) NOT NULL );  2    3
+
+Table created.
+
+SQL> select * from emails_tbl;
+
+no rows selected
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ vi email.par
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlldr parfile=email.par
+
+SQL*Loader: Release 19.0.0.0.0 - Production on Mon May 29 10:33:28 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Path used:      Direct
+
+Load completed - logical record count 5.
+
+Table EMAILS_TBL:
+  2 Rows successfully loaded.
+
+Check the log file:
+  email.log
+for more information about the load.
+[oracle@oraclelab1 DUMP]$ ls -ltrh
+total 29M
+-rw-r--r--. 1 oracle oinstall 1.3K May 29 10:00 impdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 440K May 29 10:07 MALLIK.dmp
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:07 expdpoMALLIK.log
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:09 impdpMALLIK.log
+-rw-r--r--. 1 oracle oinstall   93 May 29 10:18 exp.par
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:20 expdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 240K May 29 10:20 EMP_DEPT.dmp
+-rw-r-----. 1 oracle oinstall  28M May 29 10:27 DEVDB.dmp
+-rw-r--r--. 1 oracle oinstall  13K May 29 10:27 expdpDEVDB.log
+-rw-r--r--. 1 oracle oinstall   61 May 29 10:29 email.dat
+-rw-r--r--. 1 oracle oinstall   84 May 29 10:30 email.ctl
+-rw-r--r--. 1 oracle oinstall   98 May 29 10:33 email.par
+-rw-r--r--. 1 oracle oinstall   15 May 29 10:33 email.bad
+-rw-r--r--. 1 oracle oinstall 2.0K May 29 10:33 email.log
+[oracle@oraclelab1 DUMP]$ cat email.bad
+3,
+Asasas
+Asas
+[oracle@oraclelab1 DUMP]$ more email.log
+
+SQL*Loader: Release 19.0.0.0.0 - Production on Mon May 29 10:33:28 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+Control File:   email.ctl
+Data File:      email.dat
+  Bad File:     email.bad
+  Discard File:  none specified
+
+ (Allow all discards)
+
+Number to load: ALL
+Number to skip: 0
+Errors allowed: 50
+Continuation:    none specified
+Path used:      Direct
+
+Table EMAILS_TBL, loaded from every logical record.
+Insert option in effect for this table: INSERT
+
+   Column Name                  Position   Len  Term Encl Datatype
+------------------------------ ---------- ----- ---- ---- ---------------------
+SLNO                                FIRST     *   ,       CHARACTER
+EMAIL_ID                             NEXT     *   ,       CHARACTER
+
+Record 3: Rejected - Error on table EMAILS_TBL, column EMAIL_ID.
+Column not found before end of logical record (use TRAILING NULLCOLS)
+Record 4: Rejected - Error on table EMAILS_TBL, column EMAIL_ID.
+Column not found before end of logical record (use TRAILING NULLCOLS)
+Record 5: Rejected - Error on table EMAILS_TBL, column EMAIL_ID.
+Column not found before end of logical record (use TRAILING NULLCOLS)
+
+Table EMAILS_TBL:
+  2 Rows successfully loaded.
+  3 Rows not loaded due to data errors.
+  0 Rows not loaded because all WHEN clauses were failed.
+  0 Rows not loaded because all fields were null.
+
+Bind array size not used in direct path.
+Column array  rows :    5000
+Stream buffer bytes:  256000
+Read   buffer bytes: 1048576
+
+Total logical records skipped:          0
+Total logical records read:             5
+Total logical records rejected:         3
+Total logical records discarded:        0
+Total stream buffers loaded by SQL*Loader main thread:        1
+Total stream buffers loaded by SQL*Loader load thread:        0
+
+Run began on Mon May 29 10:33:28 2023
+Run ended on Mon May 29 10:33:30 2023
+
+Elapsed time was:     00:00:01.62
+CPU time was:         00:00:00.04
+[oracle@oraclelab1 DUMP]$ sqlplus mallik/mallik
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:34:23 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 29 2023 10:33:28 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from emails_tbl;
+
+      SLNO
+----------
+EMAIL_ID
+--------------------------------------------------------------------------------
+         1
+john.doe@example.com
+
+         2
+jane.doe@example.com
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ exit
+logout
+[root@oraclelab1 DUMP]#
+[root@oraclelab1 DUMP]# su - oracle
+Last login: Mon May 29 09:50:22 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd /u01/DUMP/
+[oracle@oraclelab1 DUMP]$ ll
+total 29052
+-rw-r-----. 1 oracle oinstall 28991488 May 29 10:27 DEVDB.dmp
+-rw-r--r--. 1 oracle oinstall       15 May 29 10:33 email.bad
+-rw-r--r--. 1 oracle oinstall       84 May 29 10:30 email.ctl
+-rw-r--r--. 1 oracle oinstall       61 May 29 10:29 email.dat
+-rw-r--r--. 1 oracle oinstall     2003 May 29 10:33 email.log
+-rw-r--r--. 1 oracle oinstall       98 May 29 10:33 email.par
+-rw-r-----. 1 oracle oinstall   245760 May 29 10:20 EMP_DEPT.dmp
+-rw-r--r--. 1 oracle oinstall    12641 May 29 10:27 expdpDEVDB.log
+-rw-r--r--. 1 oracle oinstall     1679 May 29 10:20 expdpEMP_DEPT.log
+-rw-r--r--. 1 oracle oinstall     1812 May 29 10:07 expdpoMALLIK.log
+-rw-r--r--. 1 oracle oinstall       93 May 29 10:18 exp.par
+-rw-r--r--. 1 oracle oinstall     1291 May 29 10:00 impdpEMP_DEPT.log
+-rw-r--r--. 1 oracle oinstall     1667 May 29 10:09 impdpMALLIK.log
+-rw-r-----. 1 oracle oinstall   450560 May 29 10:07 MALLIK.dmp
+[oracle@oraclelab1 DUMP]$ sqlplus mallik/mallik
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:40:06 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 29 2023 10:34:23 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> CREATE TABLE countries_ext (
+  country_code      VARCHAR2(5),
+  country_name      VARCHAR2(50),
+  2    3    4    country_language  VARCHAR2(50)
+  5  )
+ORGANIZATION EXTERNAL (
+  6    7    TYPE ORACLE_LOADER
+  8    DEFAULT DIRECTORY DUMP
+  9    ACCESS PARAMETERS (
+ 10      RECORDS DELIMITED BY NEWLINE
+    FIELDS TERMINATED BY ','
+    MISSING FIELD VALUES ARE NULL
+    (
+      country_code      CHAR(5),
+ 11   12   13   14   15        country_name      CHAR(50),
+ 16        country_language  CHAR(50)
+    )
+  )
+ 17   18   19    LOCATION ('Countries1.txt','Countries2.txt')
+ 20  )
+PARALLEL 5
+ 21   22  REJECT LIMIT UNLIMITED;
+
+Table created.
+
+SQL>
+SQL> select * from countries_ext;
+select * from countries_ext
+*
+ERROR at line 1:
+ORA-29913: error in executing ODCIEXTTABLEOPEN callout
+ORA-29400: data cartridge error
+KUP-04040: file Countries1.txt in DUMP not found
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ pwd
+/u01/DUMP
+[oracle@oraclelab1 DUMP]$ ls -ltrh
+total 29M
+-rw-r--r--. 1 oracle oinstall 1.3K May 29 10:00 impdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 440K May 29 10:07 MALLIK.dmp
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:07 expdpoMALLIK.log
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:09 impdpMALLIK.log
+-rw-r--r--. 1 oracle oinstall   93 May 29 10:18 exp.par
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:20 expdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 240K May 29 10:20 EMP_DEPT.dmp
+-rw-r-----. 1 oracle oinstall  28M May 29 10:27 DEVDB.dmp
+-rw-r--r--. 1 oracle oinstall  13K May 29 10:27 expdpDEVDB.log
+-rw-r--r--. 1 oracle oinstall   61 May 29 10:29 email.dat
+-rw-r--r--. 1 oracle oinstall   84 May 29 10:30 email.ctl
+-rw-r--r--. 1 oracle oinstall   98 May 29 10:33 email.par
+-rw-r--r--. 1 oracle oinstall   15 May 29 10:33 email.bad
+-rw-r--r--. 1 oracle oinstall 2.0K May 29 10:33 email.log
+[oracle@oraclelab1 DUMP]$ pwd^C
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:43:46 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> GRANT READ, WRITE ON DIRECTORY DUMP TO MALLIK;
+
+Grant succeeded.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ vi Countries1.txt
+[oracle@oraclelab1 DUMP]$ vi Countries2.txt
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus mallik/mallik
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:44:23 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 29 2023 10:40:06 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from countries_ext;
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+ENG   England
+English
+
+SCO   Scotland
+English
+
+IRE   Ireland
+English
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+WAL   Wales
+Welsh
+
+FRA   France
+French
+
+GER   Germany
+German
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+USA   America
+English
+
+
+7 rows selected.
+
+SQL> set pages 1000
+SQL> /
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+FRA   France
+French
+
+GER   Germany
+German
+
+USA   America
+English
+
+ENG   England
+English
+
+SCO   Scotland
+English
+
+IRE   Ireland
+English
+
+WAL   Wales
+Welsh
+
+
+7 rows selected.
+
+SQL> col COUNTRY_NAME for a20
+SQL> /
+
+COUNT COUNTRY_NAME         COUNTRY_LANGUAGE
+----- -------------------- --------------------------------------------------
+ENG   England              English
+SCO   Scotland             English
+IRE   Ireland              English
+WAL   Wales                Welsh
+FRA   France               French
+GER   Germany              German
+USA   America              English
+
+7 rows selected.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+[oracle@oraclelab1 DUMP]$ ls -ltrh
+total 29M
+-rw-r--r--. 1 oracle oinstall 1.3K May 29 10:00 impdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 440K May 29 10:07 MALLIK.dmp
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:07 expdpoMALLIK.log
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:09 impdpMALLIK.log
+-rw-r--r--. 1 oracle oinstall   93 May 29 10:18 exp.par
+-rw-r--r--. 1 oracle oinstall 1.7K May 29 10:20 expdpEMP_DEPT.log
+-rw-r-----. 1 oracle oinstall 240K May 29 10:20 EMP_DEPT.dmp
+-rw-r-----. 1 oracle oinstall  28M May 29 10:27 DEVDB.dmp
+-rw-r--r--. 1 oracle oinstall  13K May 29 10:27 expdpDEVDB.log
+-rw-r--r--. 1 oracle oinstall   61 May 29 10:29 email.dat
+-rw-r--r--. 1 oracle oinstall   84 May 29 10:30 email.ctl
+-rw-r--r--. 1 oracle oinstall   98 May 29 10:33 email.par
+-rw-r--r--. 1 oracle oinstall   15 May 29 10:33 email.bad
+-rw-r--r--. 1 oracle oinstall 2.0K May 29 10:33 email.log
+-rw-r--r--. 1 oracle oinstall   77 May 29 10:44 Countries1.txt
+-rw-r--r--. 1 oracle oinstall   57 May 29 10:44 Countries2.txt
+-rw-r--r--. 1 oracle oinstall  459 May 29 10:44 COUNTRIES_EXT_9558.log
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:44 COUNTRIES_EXT_21758.log
+-rw-r--r--. 1 oracle oinstall 1.8K May 29 10:44 COUNTRIES_EXT_21756.log
+[oracle@oraclelab1 DUMP]$ vi Countries1.txt
+[oracle@oraclelab1 DUMP]$
+[oracle@oraclelab1 DUMP]$ sqlplus mallik/mallik
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 29 10:45:40 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 29 2023 10:44:23 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select * from countries_ext;
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+FRA   France
+French
+
+GER   Germany
+German
+
+USA   America
+English
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+ENG   England
+English
+
+SCO   Scotland
+English
+
+IRE   Ireland
+English
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+WAL   Wales
+Welsh
+
+AAA
+
+
+
+8 rows selected.
+
+SQL> create table countries_ext_tmp as (select * from countries_ext);
+
+Table created.
+
+SQL> select * from countries_ext_tmp;
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+FRA   France
+French
+
+GER   Germany
+German
+
+USA   America
+English
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+ENG   England
+English
+
+SCO   Scotland
+English
+
+IRE   Ireland
+English
+
+
+COUNT COUNTRY_NAME
+----- --------------------------------------------------
+COUNTRY_LANGUAGE
+--------------------------------------------------
+WAL   Wales
+Welsh
+
+AAA
+
+
+
+8 rows selected.
+
+SQL>

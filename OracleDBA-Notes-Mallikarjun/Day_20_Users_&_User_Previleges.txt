@@ -1,0 +1,3574 @@
+1. User creation
+2. Previ
+3. role
+4. user profiles & quota 
+
+
+users & schema 
+---------------
+prvi
+====
+System --- CREATE SESSION
+Object 
+
+test1/test1
+
+RESOURCE - Role 
+
+
+ALTER USER TEST1 QUOTA 10M ON USERS;
+
+ALTER USER TEST2 QUOTA UNLIMITED ON USERS;
+
+
+SELECT TABLESPACE_NAME,
+BYTES/1024/1024 "UTILIZIED_SPACE",
+MAX_BYTES/1024/1024 "QUOTA_ALLOCATED"
+FROM dba_ts_quotas
+WHERE username = 'TEST2';
+
+
+
+
+grant CREATE SESSION to test1;
+grant create table to test1;
+grant RESOURCE to test1;
+
+
+role - resource 
+
+
+
+System Privileges with ADMIN OPTION
+Object Privileges with GRANT OPTION
+
+
+system 
+grant create table to TEST1;
+grant create table to TEST1 with ADMIN OPTION;
+
+object 
+grant select on TEST2.TEST2 to TEST1;
+grant select on TEST2.TEST2 to TEST1 with GRANT OPTION;
+
+https://mallik034.blogspot.com/2021/07/emp-dept-salgrade-and-bonus-sample.html
+
+
+
+
+Mallik		TEST1		TEST2		TEST3
+EMP 		TEST1		TEST2		TEST3
+DEPT 
+
+
+TEST1
+=====
+grant select on MALLIK.EMP to TEST1;
+grant select on MALLIK.DEPT to TEST1;
+
+grant insert on MALLIK.EMP to TEST1;
+grant insert on MALLIK.DEPT to TEST1;
+
+grant update on MALLIK.EMP to TEST1;
+grant update on MALLIK.DEPT to TEST1;
+
+TEST2
+=====
+grant select on MALLIK.EMP to TEST2;
+grant select on MALLIK.DEPT to TEST2;
+
+grant insert on MALLIK.EMP to TEST2;
+grant insert on MALLIK.DEPT to TEST2;
+
+grant update on MALLIK.EMP to TEST2;
+grant update on MALLIK.DEPT to TEST2;
+
+TEST3:
+======
+TEST4:
+======
+
+
+revoke update on MALLIK.EMP from TEST1;
+revoke update on MALLIK.DEPT from TEST1;
+
+revoke update on MALLIK.EMP from TEST2;
+revoke update on MALLIK.DEPT from TEST2;
+
+role 
+====
+CREATE ROLES ROLE_EMP_DEPT;
+
+grant select on MALLIK.EMP to ROLE_EMP_DEPT;
+grant select on MALLIK.DEPT to ROLE_EMP_DEPT; -----------
+
+grant insert on MALLIK.EMP to ROLE_EMP_DEPT;
+grant insert on MALLIK.DEPT to ROLE_EMP_DEPT;
+
+grant update on MALLIK.EMP to ROLE_EMP_DEPT;
+grant update on MALLIK.DEPT to ROLE_EMP_DEPT;
+
+
+TEST1:
+GRANT ROLE_EMP_DEPT TO TEST1;
+
+GRANT ROLE_EMP_DEPT TO TEST2;
+
+GRANT ROLE_EMP_DEPT TO TEST3;
+
+GRANT ROLE_EMP_DEPT TO TEST4;
+
+
+revoke update on MALLIK.EMP from ROLE_EMP_DEPT;
+revoke update on MALLIK.DEPT from ROLE_EMP_DEPT;
+
+
+revoke select on MALLIK.DEPT from ROLE_EMP_DEPT;
+
+
+
+
+SELECT * FROM dba_role_privs WHERE grantee IN ('TEST1');
+SELECT * FROM DBA_SYS_PRIVS WHERE grantee IN ('TEST1');
+SELECT * FROM DBA_TAB_PRIVS WHERE grantee IN ('TEST1');
+
+
+
+Any New user:
+=============
+- system 
+- object 
+- roles 
+
+
+TEST1:
+ROLE_EMP_DEPT --- role 
+
+CREATE TABLE  --- system
+CREATE SESSION
+
+SELECT ----------- object 
+
+
+SELECT PRIVILEGE,TABLE_NAME FROM DBA_SYS_PRIVS WHERE grantee IN ('SYSDBA');
+SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('SYSDBA');
+
+
+
+1. create 
+create user test3 identified by test3;
+
+2. object & system 
+
+3. roles
+
+dba_role_privs
+DBA_SYS_PRIVS
+DBA_TAB_PRIVS
+
+4. User account 
+
+dba_users
+
+5. Profiles 
+
+6. quota
+
+7. default tablespaces 
+Deafult TEMP 
+Deafult UNDO 
+Deafult 
+
+create user test3 identified by test3
+role ROLE_EMP_DEPT
+profile DUMMY
+deafult tablespace USER2 
+deafult tempororty tablespace TEST2;
+
+
+
+CREATE PROFILE DUMMY LIMIT
+PASSWORD_LIFE_TIME 45
+PASSWORD_GRACE_TIME 12
+PASSWORD_REUSE_TIME 3
+PASSWORD_REUSE_MAX 5
+FAILED_LOGIN_ATTEMPTS 4
+PASSWORD_LOCK_TIME 2
+CPU_PER_CALL 5000
+PRIVATE_SGA 250K
+LOGICAL_READS_PER_CALL 2000;
+
+
+
+
+
+SELECT PRIVILEGE FROM DBA_SYS_PRIVS WHERE grantee IN ('RESOURCE');
+SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('RESOURCE');
+
+
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May  5 11:13:50 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:43:54 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "SYS"
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus sys/Mallik123 as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:44:30 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "SYS"
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[A^[[D[oracle@oraclelab1 ~]$ sqlplus sys/Mallik123 as sys^Ca
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus sys as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:45:25 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Enter password:
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus system/Mallik123 as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:46:09 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus system
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:46:18 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Enter password:
+ERROR:
+ORA-01005: null password given; logon denied
+
+
+Enter user-name: ^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:46:49 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Enter user-name: / as sysdba
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "SYS"
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:47:14 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Enter user-name: system
+Enter password:
+ERROR:
+ORA-01005: null password given; logon denied
+
+
+Enter user-name: mallik
+Enter password:
+ERROR:
+ORA-01005: null password given; logon denied
+
+
+Enter user-name: ^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as ssydba
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:48:01 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:52:43 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "SYS"
+SQL>
+SQL>
+SQL> create user test1 identified by test1;
+
+User created.
+
+SQL> grant CREATE SESSION to test1;
+
+Grant succeeded.
+
+SQL>
+SQL> grant create table to test1;
+
+Grant succeeded.
+
+SQL> create user test2 identified by test2;
+
+User created.
+
+SQL> grant CREATE SESSION to test2;
+
+Grant succeeded.
+
+SQL> grant create table to test2;
+
+Grant succeeded.
+
+SQL> grant select on TEST2.TEST2 to TEST1;
+
+Grant succeeded.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> ALTER USER TEST1 QUOTA 10M ON USERS;
+
+User altered.
+
+SQL> SELECT TABLESPACE_NAME,
+BYTES/1024/1024 "UTILIZIED_SPACE",
+MAX_BYTES/1024/1024 "QUOTA_ALLOCATED"
+FROM dba_ts_quotas
+WHERE username = 'TEST1';  2    3    4    5
+
+TABLESPACE_NAME                UTILIZIED_SPACE QUOTA_ALLOCATED
+------------------------------ --------------- ---------------
+USERS                                    .0625              10
+
+SQL> ALTER USER TEST2 QUOTA UNLIMITED ON USERS;
+
+User altered.
+
+SQL> SELECT TABLESPACE_NAME,
+BYTES/1024/1024 "UTILIZIED_SPACE",
+MAX_BYTES/1024/1024 "QUOTA_ALLOCATED"
+FROM dba_ts_quotas
+WHERE username = 'TEST2';  2    3    4    5
+
+TABLESPACE_NAME                UTILIZIED_SPACE QUOTA_ALLOCATED
+------------------------------ --------------- ---------------
+USERS                                        0      -9.537E-07
+
+SQL>
+SQL>
+SQL>
+SQL> create user test3 identified by test3;
+
+User created.
+
+SQL> grant CREATE SESSION to test3;
+
+Grant succeeded.
+
+SQL> grant create table to TEST1 with ADMIN OPTION;
+
+Grant succeeded.
+
+SQL> grant select on TEST2.TEST2 to TEST1 with GRANT OPTION;
+
+Grant succeeded.
+
+SQL> conn hr/hr
+Connected.
+SQL>
+SQL>
+SQL> conn mallik/mallik
+Connected.
+SQL> select * from tab;
+
+no rows selected
+
+SQL>
+SQL>
+SQL> CREATE TABLE dept(
+  deptno NUMBER(2,0),
+  dname  VARCHAR2(14),
+  loc    VARCHAR2(13),
+  CONSTRAINT pk_dept PRIMARY KEY (deptno));
+
+COMMIT;  2    3    4    5
+Table created.
+
+SQL> SQL> CREATE TABLE emp(
+  2    empno    NUMBER(4,0),
+  3    ename    VARCHAR2(10),
+  4    job      VARCHAR2(9),
+  5    mgr      NUMBER(4,0),
+  hiredate DATE,
+  6    7    sal      NUMBER(7,2),
+  8    comm     NUMBER(7,2),
+  9    deptno   NUMBER(2,0),
+ 10    CONSTRAINT pk_emp PRIMARY KEY (empno),
+ 11    CONSTRAINT fk_deptno FOREIGN KEY (deptno) REFERENCES dept (deptno)
+);
+ 12
+COMMIT;COMMIT;CREATE TABLE emp(
+      *
+ERROR at line 1:
+ORA-02185: a token other than WORK follows COMMIT
+
+
+SQL> SQL>
+
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> CREATE TABLE emp(
+  empno    NUMBER(4,0),
+  ename    VARCHAR2(10),
+  job      VARCHAR2(9),
+  2    3    4    5    mgr      NUMBER(4,0),
+  hiredate DATE,
+  sal      NUMBER(7,2),
+  comm     NUMBER(7,2),
+  deptno   NUMBER(2,0),
+  CONSTRAINT pk_emp PRIMARY KEY (empno),
+  6    7    8    9   10   11    CONSTRAINT fk_deptno FOREIGN KEY (deptno) REFERENCES dept (deptno)
+ 12  );
+
+COMMIT;
+Table created.
+
+SQL> SQL>
+
+Commit complete.
+
+SQL>
+SQL>
+SQL> CREATE TABLE bonus(
+  ename VARCHAR2(10),
+  job   VARCHAR2(9),
+  sal   NUMBER,
+  comm  NUMBER
+);
+
+COMMIT;
+  2    3    4    5    6
+Table created.
+
+SQL> SQL>
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> CREATE TABLE salgrade(
+  grade NUMBER,
+  losal NUMBER,
+  hisal NUMBER
+);
+
+COMMIT;  2    3    4    5
+Table created.
+
+SQL> SQL>
+
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> INSERT INTO dept VALUES(10, 'ACCOUNTING', 'NEW YORK');
+INSERT INTO dept VALUES(20, 'RESEARCH', 'DALLAS');
+INSERT INTO dept VALUES(30, 'SALES', 'CHICAGO');
+INSERT INTO dept VALUES(40, 'OPERATIONS', 'BOSTON');
+
+COMMIT;
+
+1 row created.
+
+SQL>
+1 row created.
+
+SQL>
+1 row created.
+
+SQL>
+1 row created.
+
+SQL> SQL>
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL> INSERT INTO emp VALUES(
+  2   7839, 'KING', 'PRESIDENT', null,
+  3   to_date('17-11-1981','dd-mm-yyyy'),
+ 5000, nu  4  ll, 10 );
+
+INSERT INTO emp VALUES(
+ 7698, 'BLAKE', 'MANAGER', 7839,
+ to_date('1-5-1981','dd-mm-yyyy'),
+ 2850, null, 30);
+
+INSERT INTO emp VALUES(
+ 7782, 'CLARK', 'MANAGER', 7839,
+ to_date('9-6-1981','dd-mm-yyyy'),
+ 2450, null, 10);
+
+INSERT INTO emp VALUES(
+ 7566, 'JONES', 'MANAGER', 7839,
+ to_date('2-4-1981','dd-mm-yyyy'),
+ 2975, null, 20);
+
+INSERT INTO emp VALUES(
+ 7788, 'SCOTT', 'ANALYST', 7566,
+ to_date('13-JUL-87','dd-mm-rr') - 85,
+ 3000, null, 20);
+
+INSERT INTO emp VALUES(
+ 7902, 'FORD', 'ANALYST', 7566,
+ to_date('3-12-1981','dd-mm-yyyy'),
+ 3000, null, 20 );
+
+INSERT INTO emp VALUES(
+ 7369, 'SMITH', 'CLERK', 7902,
+ to_date('17-12-1980','dd-mm-yyyy'),
+ 800, null, 20 );
+
+INSERT INTO emp VALUES(
+ 7499, 'ALLEN', 'SALESMAN', 7698,
+ to_date('20-2-1981','dd-mm-yyyy'),
+ 1600, 300, 30);
+
+INSERT INTO emp VALUES(
+ 7521, 'WARD', 'SALESMAN', 7698,
+ to_date('22-2-1981','dd-mm-yyyy'),
+ 1250, 500, 30 );
+
+INSERT INTO emp VALUES(
+ 7654, 'MARTIN', 'SALESMAN', 7698,
+ to_date('28-9-1981','dd-mm-yyyy'),
+ 1250, 1400, 30 );
+
+INSERT INTO emp VALUES(
+ 7844, 'TURNER', 'SALESMAN', 7698,
+ to_date('8-9-1981','dd-mm-yyyy'),
+ 1500, 0, 30);
+
+INSERT INTO emp VALUES(
+ 7876, 'ADAMS', 'CLERK', 7788,
+ to_date('13-JUL-87', 'dd-mm-rr') - 51,
+ 1100, null, 20 );
+
+INSERT INTO emp VALUES(
+ 7900, 'JAMES', 'CLERK', 7698,
+ to_date('3-12-1981','dd-mm-yyyy'),
+ 950, null, 30 );
+
+INSERT INTO emp VALUES(
+ 7934, 'MILLER', 'CLERK', 7782,
+ to_date('23-1-1982','dd-mm-yyyy'),
+ 1300, null, 10 );
+
+COMMIT;
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>   2    3    4
+1 row created.
+
+SQL> SQL>
+
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> INSERT INTO salgrade VALUES (1, 700, 1200);
+INSERT INTO salgrade VALUES (2, 1201, 1400);
+INSERT INTO salgrade VALUES (3, 1401, 2000);
+INSERT INTO salgrade VALUES (4, 2001, 3000);
+INSERT INTO salgrade VALUES (5, 3001, 9999);
+
+COMMIT;
+
+1 row created.
+
+SQL>
+1 row created.
+
+SQL>
+1 row created.
+
+SQL>
+1 row created.
+
+SQL>
+1 row created.
+
+SQL> SQL>
+Commit complete.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> select * from tab;
+
+TNAME
+--------------------------------------------------------------------------------
+TABTYPE        CLUSTERID
+------------- ----------
+DEPT
+TABLE
+
+EMP
+TABLE
+
+BONUS
+TABLE
+
+
+TNAME
+--------------------------------------------------------------------------------
+TABTYPE        CLUSTERID
+------------- ----------
+SALGRADE
+TABLE
+
+
+SQL> select * from EMP;
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7839 KING       PRESIDENT            17-NOV-81       5000
+        10
+
+      7698 BLAKE      MANAGER         7839 01-MAY-81       2850
+        30
+
+      7782 CLARK      MANAGER         7839 09-JUN-81       2450
+        10
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7566 JONES      MANAGER         7839 02-APR-81       2975
+        20
+
+      7788 SCOTT      ANALYST         7566 19-APR-87       3000
+        20
+
+      7902 FORD       ANALYST         7566 03-DEC-81       3000
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7369 SMITH      CLERK           7902 17-DEC-80        800
+        20
+
+      7499 ALLEN      SALESMAN        7698 20-FEB-81       1600        300
+        30
+
+      7521 WARD       SALESMAN        7698 22-FEB-81       1250        500
+        30
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7654 MARTIN     SALESMAN        7698 28-SEP-81       1250       1400
+        30
+
+      7844 TURNER     SALESMAN        7698 08-SEP-81       1500          0
+        30
+
+      7876 ADAMS      CLERK           7788 23-MAY-87       1100
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7900 JAMES      CLERK           7698 03-DEC-81        950
+        30
+
+      7934 MILLER     CLERK           7782 23-JAN-82       1300
+        10
+
+
+14 rows selected.
+
+SQL> select * from DEPT;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> CREATE ROLES ROLE_EMP_DEPT;^C
+
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[AYou have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:42:57 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+SQL>
+SQL> CREATE ROLES ROLE_EMP_DEPT;
+
+Role created.
+
+SQL> grant select on MALLIK.EMP to ROLE_EMP_DEPT;
+grant select on MALLIK.DEPT to ROLE_EMP_DEPT;
+
+grant insert on MALLIK.EMP to ROLE_EMP_DEPT;
+grant insert on MALLIK.DEPT to ROLE_EMP_DEPT;
+
+grant update on MALLIK.EMP to ROLE_EMP_DEPT;
+grant update on MALLIK.DEPT to ROLE_EMP_DEPT;
+
+Grant succeeded.
+
+SQL>
+Grant succeeded.
+
+SQL> SQL>
+Grant succeeded.
+
+SQL>
+Grant succeeded.
+
+SQL> SQL>
+Grant succeeded.
+
+SQL>
+Grant succeeded.
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> GRANT ROLE_EMP_DEPT TO TEST1;
+
+Grant succeeded.
+
+SQL> GRANT ROLE_EMP_DEPT TO TEST2;
+
+Grant succeeded.
+
+SQL> GRANT ROLE_EMP_DEPT TO TEST3;
+
+Grant succeeded.
+
+SQL>
+SQL>
+SQL> revoke select on MALLIK.DEPT from ROLE_EMP_DEPT;
+
+Revoke succeeded.
+
+SQL> SELECT * FROM dba_role_privs WHERE grantee IN ('TEST1');
+
+GRANTEE
+--------------------------------------------------------------------------------
+GRANTED_ROLE
+--------------------------------------------------------------------------------
+ADM DEL DEF COM INH
+--- --- --- --- ---
+TEST1
+ROLE_EMP_DEPT
+NO  NO  YES NO  NO
+
+
+SQL> SELECT * FROM DBA_SYS_PRIVS WHERE grantee IN ('TEST1');
+
+GRANT PRIVILEGE                                ADM COM INH
+----- ---------------------------------------- --- --- ---
+TEST1 CREATE TABLE                             YES NO  NO
+TEST1 CREATE SESSION                           NO  NO  NO
+
+SQL>
+SQL> SELECT * FROM DBA_TAB_PRIVS WHERE grantee IN ('TEST1');
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+TEST1
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+TEST2
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+TEST2
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+TEST2
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+SELECT                                   YES NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+SQL> SELECT PRIVILEGE FROM DBA_TAB_PRIVS WHERE grantee IN ('TEST1');
+
+PRIVILEGE
+----------------------------------------
+SELECT
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('TEST1');
+
+PRIVILEGE
+----------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+SELECT
+TEST2
+
+
+SQL> SELECT * FROM DBA_SYS_PRIVS WHERE grantee IN ('ROLE_EMP_DEPT');
+
+no rows selected
+
+SQL> SELECT * FROM DBA_TAB_PRIVS WHERE grantee IN ('ROLE_EMP_DEPT');
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+ROLE_EMP_DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+INSERT                                   NO  NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+ROLE_EMP_DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+EMP
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+INSERT                                   NO  NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+ROLE_EMP_DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+EMP
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+SELECT                                   NO  NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+ROLE_EMP_DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+UPDATE                                   NO  NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+ROLE_EMP_DEPT
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+EMP
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+MALLIK
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+UPDATE                                   NO  NO  NO  TABLE
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+NO
+
+GRANTEE
+--------------------------------------------------------------------------------
+OWNER
+--------------------------------------------------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+GRANTOR
+--------------------------------------------------------------------------------
+PRIVILEGE                                GRA HIE COM TYPE
+---------------------------------------- --- --- --- ------------------------
+INH
+---
+
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('ROLE_EMP_DEPT');
+
+PRIVILEGE
+----------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+INSERT
+DEPT
+
+INSERT
+EMP
+
+SELECT
+EMP
+
+
+PRIVILEGE
+----------------------------------------
+TABLE_NAME
+--------------------------------------------------------------------------------
+UPDATE
+DEPT
+
+UPDATE
+EMP
+
+
+SQL> ^C
+
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> desc dba_users
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ USERNAME                                  NOT NULL VARCHAR2(128)
+ USER_ID                                   NOT NULL NUMBER
+ PASSWORD                                           VARCHAR2(4000)
+ ACCOUNT_STATUS                            NOT NULL VARCHAR2(32)
+ LOCK_DATE                                          DATE
+ EXPIRY_DATE                                        DATE
+ DEFAULT_TABLESPACE                        NOT NULL VARCHAR2(30)
+ TEMPORARY_TABLESPACE                      NOT NULL VARCHAR2(30)
+ LOCAL_TEMP_TABLESPACE                              VARCHAR2(30)
+ CREATED                                   NOT NULL DATE
+ PROFILE                                   NOT NULL VARCHAR2(128)
+ INITIAL_RSRC_CONSUMER_GROUP                        VARCHAR2(128)
+ EXTERNAL_NAME                                      VARCHAR2(4000)
+ PASSWORD_VERSIONS                                  VARCHAR2(17)
+ EDITIONS_ENABLED                                   VARCHAR2(1)
+ AUTHENTICATION_TYPE                                VARCHAR2(8)
+ PROXY_ONLY_CONNECT                                 VARCHAR2(1)
+ COMMON                                             VARCHAR2(3)
+ LAST_LOGIN                                         TIMESTAMP(9) WITH TIME ZONE
+ ORACLE_MAINTAINED                                  VARCHAR2(1)
+ INHERITED                                          VARCHAR2(3)
+ DEFAULT_COLLATION                                  VARCHAR2(100)
+ IMPLICIT                                           VARCHAR2(3)
+ ALL_SHARD                                          VARCHAR2(3)
+ PASSWORD_CHANGE_DATE                               DATE
+
+SQL> set pages 1000 lines 1000
+SQL> select USERNAME,ACCOUNT_STATUS from dba_users;
+
+USERNAME                                                                                                                         ACCOUNT_STATUS
+-------------------------------------------------------------------------------------------------------------------------------- --------------------------           ------
+SYS                                                                                                                              OPEN
+SYSTEM                                                                                                                           OPEN
+XS$NULL                                                                                                                          EXPIRED & LOCKED
+OJVMSYS                                                                                                                          LOCKED
+LBACSYS                                                                                                                          LOCKED
+OUTLN                                                                                                                            LOCKED
+SYS$UMF                                                                                                                          LOCKED
+DBSNMP                                                                                                                           LOCKED
+APPQOSSYS                                                                                                                        LOCKED
+DBSFWUSER                                                                                                                        LOCKED
+GGSYS                                                                                                                            LOCKED
+ANONYMOUS                                                                                                                        EXPIRED & LOCKED
+CTXSYS                                                                                                                           EXPIRED & LOCKED
+DVSYS                                                                                                                            LOCKED
+DVF                                                                                                                              LOCKED
+GSMADMIN_INTERNAL                                                                                                                LOCKED
+MDSYS                                                                                                                            LOCKED
+OLAPSYS                                                                                                                          LOCKED
+XDB                                                                                                                              LOCKED
+WMSYS                                                                                                                            LOCKED
+GSMCATUSER                                                                                                                       LOCKED
+MDDATA                                                                                                                           LOCKED
+TEST1                                                                                                                            OPEN
+SYSBACKUP                                                                                                                        LOCKED
+REMOTE_SCHEDULER_AGENT                                                                                                           LOCKED
+GSMUSER                                                                                                                          LOCKED
+APPS                                                                                                                             OPEN
+TEST2                                                                                                                            OPEN
+SYSRAC                                                                                                                           LOCKED
+GSMROOTUSER                                                                                                                      LOCKED
+USER2                                                                                                                            OPEN
+HR                                                                                                                               OPEN
+TEST3                                                                                                                            OPEN
+MALLIK                                                                                                                           OPEN
+SI_INFORMTN_SCHEMA                                                                                                               LOCKED
+AUDSYS                                                                                                                           LOCKED
+DIP                                                                                                                              LOCKED
+ORDPLUGINS                                                                                                                       LOCKED
+SYSKM                                                                                                                            LOCKED
+ORDDATA                                                                                                                          LOCKED
+USER3                                                                                                                            OPEN
+ORACLE_OCM                                                                                                                       LOCKED
+SYSDG                                                                                                                            LOCKED
+ORDSYS                                                                                                                           LOCKED
+USER1                                                                                                                            OPEN
+
+45 rows selected.
+
+SQL>
+SQL>
+SQL> col USERNAME for a30
+SQL> /
+
+USERNAME                       ACCOUNT_STATUS
+------------------------------ --------------------------------
+SYS                            OPEN
+SYSTEM                         OPEN
+XS$NULL                        EXPIRED & LOCKED
+OJVMSYS                        LOCKED
+LBACSYS                        LOCKED
+OUTLN                          LOCKED
+SYS$UMF                        LOCKED
+DBSNMP                         LOCKED
+APPQOSSYS                      LOCKED
+DBSFWUSER                      LOCKED
+GGSYS                          LOCKED
+ANONYMOUS                      EXPIRED & LOCKED
+CTXSYS                         EXPIRED & LOCKED
+DVSYS                          LOCKED
+DVF                            LOCKED
+GSMADMIN_INTERNAL              LOCKED
+MDSYS                          LOCKED
+OLAPSYS                        LOCKED
+XDB                            LOCKED
+WMSYS                          LOCKED
+GSMCATUSER                     LOCKED
+MDDATA                         LOCKED
+TEST1                          OPEN
+SYSBACKUP                      LOCKED
+REMOTE_SCHEDULER_AGENT         LOCKED
+GSMUSER                        LOCKED
+APPS                           OPEN
+TEST2                          OPEN
+SYSRAC                         LOCKED
+GSMROOTUSER                    LOCKED
+USER2                          OPEN
+HR                             OPEN
+TEST3                          OPEN
+MALLIK                         OPEN
+SI_INFORMTN_SCHEMA             LOCKED
+AUDSYS                         LOCKED
+DIP                            LOCKED
+ORDPLUGINS                     LOCKED
+SYSKM                          LOCKED
+ORDDATA                        LOCKED
+USER3                          OPEN
+ORACLE_OCM                     LOCKED
+SYSDG                          LOCKED
+ORDSYS                         LOCKED
+USER1                          OPEN
+
+45 rows selected.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users;
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- -------------------------------------------------------------------------------------------           -------------------------------------
+SYS                            OPEN                             DEFAULT
+SYSTEM                         OPEN                             DEFAULT
+XS$NULL                        EXPIRED & LOCKED                 DEFAULT
+OJVMSYS                        LOCKED                           DEFAULT
+LBACSYS                        LOCKED                           DEFAULT
+OUTLN                          LOCKED                           DEFAULT
+SYS$UMF                        LOCKED                           DEFAULT
+DBSNMP                         LOCKED                           DEFAULT
+APPQOSSYS                      LOCKED                           DEFAULT
+DBSFWUSER                      LOCKED                           DEFAULT
+GGSYS                          LOCKED                           DEFAULT
+ANONYMOUS                      EXPIRED & LOCKED                 DEFAULT
+CTXSYS                         EXPIRED & LOCKED                 DEFAULT
+DVSYS                          LOCKED                           DEFAULT
+DVF                            LOCKED                           DEFAULT
+GSMADMIN_INTERNAL              LOCKED                           DEFAULT
+MDSYS                          LOCKED                           DEFAULT
+OLAPSYS                        LOCKED                           DEFAULT
+XDB                            LOCKED                           DEFAULT
+WMSYS                          LOCKED                           DEFAULT
+GSMCATUSER                     LOCKED                           DEFAULT
+MDDATA                         LOCKED                           DEFAULT
+TEST1                          OPEN                             DEFAULT
+SYSBACKUP                      LOCKED                           DEFAULT
+REMOTE_SCHEDULER_AGENT         LOCKED                           DEFAULT
+GSMUSER                        LOCKED                           DEFAULT
+APPS                           OPEN                             DEFAULT
+TEST2                          OPEN                             DEFAULT
+SYSRAC                         LOCKED                           DEFAULT
+GSMROOTUSER                    LOCKED                           DEFAULT
+USER2                          OPEN                             DEFAULT
+HR                             OPEN                             DEFAULT
+TEST3                          OPEN                             DEFAULT
+MALLIK                         OPEN                             DEFAULT
+SI_INFORMTN_SCHEMA             LOCKED                           DEFAULT
+AUDSYS                         LOCKED                           DEFAULT
+DIP                            LOCKED                           DEFAULT
+ORDPLUGINS                     LOCKED                           DEFAULT
+SYSKM                          LOCKED                           DEFAULT
+ORDDATA                        LOCKED                           DEFAULT
+USER3                          OPEN                             DEFAULT
+ORACLE_OCM                     LOCKED                           DEFAULT
+SYSDG                          LOCKED                           DEFAULT
+ORDSYS                         LOCKED                           DEFAULT
+USER1                          OPEN                             DEFAULT
+
+45 rows selected.
+
+SQL> desc DBA_PROFILES;
+ Name                                                                                                                                                                   Null?    Type
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------           -----------------------------------------------------------------------------------------------------------------------------------------------------------           -----------------------------------------------------------------------------------------------------------------------------------------------------------           --------------------------------------------------------------------------------------------------------------------------------- -------- ----------------           -----------------------------------------------------------------------------------------------------------------------------------------------------------           -----------------------------------------------------------------------------------------------------------------------------------------------------------           ----------------------------------------------------------------------
+ PROFILE                                                                                                                                                                NOT NULL VARCHAR2(128)
+ RESOURCE_NAME                                                                                                                                                          NOT NULL VARCHAR2(32)
+ RESOURCE_TYPE                                                                                                                                                           VARCHAR2(8)
+ LIMIT                                                                                                                                                                   VARCHAR2(128)
+ COMMON                                                                                                                                                                  VARCHAR2(3)
+ INHERITED                                                                                                                                                               VARCHAR2(3)
+ IMPLICIT                                                                                                                                                                VARCHAR2(3)
+
+SQL> select PROFILE,RESOURCE_NAME,LIMIT from DBA_PROFILES;
+
+PROFILE                                                                                                                          RESOURCE_NAME                         LIMIT
+-------------------------------------------------------------------------------------------------------------------------------- --------------------------           ------ --------------------------------------------------------------------------------------------------------------------------------
+DEFAULT                                                                                                                          COMPOSITE_LIMIT                       UNLIMITED
+DEFAULT                                                                                                                          SESSIONS_PER_USER                     UNLIMITED
+DEFAULT                                                                                                                          CPU_PER_SESSION                       UNLIMITED
+DEFAULT                                                                                                                          CPU_PER_CALL                          UNLIMITED
+DEFAULT                                                                                                                          LOGICAL_READS_PER_SESSION             UNLIMITED
+DEFAULT                                                                                                                          LOGICAL_READS_PER_CALL                UNLIMITED
+DEFAULT                                                                                                                          IDLE_TIME                             UNLIMITED
+DEFAULT                                                                                                                          CONNECT_TIME                          UNLIMITED
+DEFAULT                                                                                                                          PRIVATE_SGA                           UNLIMITED
+DEFAULT                                                                                                                          FAILED_LOGIN_ATTEMPTS                 10
+DEFAULT                                                                                                                          PASSWORD_LIFE_TIME                    180
+DEFAULT                                                                                                                          PASSWORD_REUSE_TIME                   UNLIMITED
+DEFAULT                                                                                                                          PASSWORD_REUSE_MAX                    UNLIMITED
+DEFAULT                                                                                                                          PASSWORD_VERIFY_FUNCTION              NULL
+DEFAULT                                                                                                                          PASSWORD_LOCK_TIME                    1
+DEFAULT                                                                                                                          PASSWORD_GRACE_TIME                   7
+DEFAULT                                                                                                                          INACTIVE_ACCOUNT_TIME                 UNLIMITED
+ORA_STIG_PROFILE                                                                                                                 COMPOSITE_LIMIT                       DEFAULT
+ORA_STIG_PROFILE                                                                                                                 SESSIONS_PER_USER                     DEFAULT
+ORA_STIG_PROFILE                                                                                                                 CPU_PER_SESSION                       DEFAULT
+ORA_STIG_PROFILE                                                                                                                 CPU_PER_CALL                          DEFAULT
+ORA_STIG_PROFILE                                                                                                                 LOGICAL_READS_PER_SESSION             DEFAULT
+ORA_STIG_PROFILE                                                                                                                 LOGICAL_READS_PER_CALL                DEFAULT
+ORA_STIG_PROFILE                                                                                                                 IDLE_TIME                             15
+ORA_STIG_PROFILE                                                                                                                 CONNECT_TIME                          DEFAULT
+ORA_STIG_PROFILE                                                                                                                 PRIVATE_SGA                           DEFAULT
+ORA_STIG_PROFILE                                                                                                                 FAILED_LOGIN_ATTEMPTS                 3
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_LIFE_TIME                    60
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_REUSE_TIME                   365
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_REUSE_MAX                    10
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_VERIFY_FUNCTION              ORA12C_STIG_VERIFY_FUNCTION
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_LOCK_TIME                    UNLIMITED
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_GRACE_TIME                   5
+ORA_STIG_PROFILE                                                                                                                 INACTIVE_ACCOUNT_TIME                 35
+
+34 rows selected.
+
+SQL> /
+
+PROFILE                                                                                                                          RESOURCE_NAME                    LIMIT
+-------------------------------------------------------------------------------------------------------------------------------- -------------------------------- --------------------------------------------------------------------------------------------------------------------------------
+DEFAULT                                                                                                                          COMPOSITE_LIMIT                  UNLIMITED
+DEFAULT                                                                                                                          SESSIONS_PER_USER                UNLIMITED
+DEFAULT                                                                                                                          CPU_PER_SESSION                  UNLIMITED
+DEFAULT                                                                                                                          CPU_PER_CALL                     UNLIMITED
+DEFAULT                                                                                                                          LOGICAL_READS_PER_SESSION        UNLIMITED
+DEFAULT                                                                                                                          LOGICAL_READS_PER_CALL           UNLIMITED
+DEFAULT                                                                                                                          IDLE_TIME                        UNLIMITED
+DEFAULT                                                                                                                          CONNECT_TIME                     UNLIMITED
+DEFAULT                                                                                                                          PRIVATE_SGA                      UNLIMITED
+DEFAULT                                                                                                                          FAILED_LOGIN_ATTEMPTS            10
+DEFAULT                                                                                                                          PASSWORD_LIFE_TIME               180
+DEFAULT                                                                                                                          PASSWORD_REUSE_TIME              UNLIMITED
+DEFAULT                                                                                                                          PASSWORD_REUSE_MAX               UNLIMITED
+DEFAULT                                                                                                                          PASSWORD_VERIFY_FUNCTION         NULL
+DEFAULT                                                                                                                          PASSWORD_LOCK_TIME               1
+DEFAULT                                                                                                                          PASSWORD_GRACE_TIME              7
+DEFAULT                                                                                                                          INACTIVE_ACCOUNT_TIME            UNLIMITED
+ORA_STIG_PROFILE                                                                                                                 COMPOSITE_LIMIT                  DEFAULT
+ORA_STIG_PROFILE                                                                                                                 SESSIONS_PER_USER                DEFAULT
+ORA_STIG_PROFILE                                                                                                                 CPU_PER_SESSION                  DEFAULT
+ORA_STIG_PROFILE                                                                                                                 CPU_PER_CALL                     DEFAULT
+ORA_STIG_PROFILE                                                                                                                 LOGICAL_READS_PER_SESSION        DEFAULT
+ORA_STIG_PROFILE                                                                                                                 LOGICAL_READS_PER_CALL           DEFAULT
+ORA_STIG_PROFILE                                                                                                                 IDLE_TIME                        15
+ORA_STIG_PROFILE                                                                                                                 CONNECT_TIME                     DEFAULT
+ORA_STIG_PROFILE                                                                                                                 PRIVATE_SGA                      DEFAULT
+ORA_STIG_PROFILE                                                                                                                 FAILED_LOGIN_ATTEMPTS            3
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_LIFE_TIME               60
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_REUSE_TIME              365
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_REUSE_MAX               10
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_VERIFY_FUNCTION         ORA12C_STIG_VERIFY_FUNCTION
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_LOCK_TIME               UNLIMITED
+ORA_STIG_PROFILE                                                                                                                 PASSWORD_GRACE_TIME              5
+ORA_STIG_PROFILE                                                                                                                 INACTIVE_ACCOUNT_TIME            35
+
+34 rows selected.
+
+SQL> col PROFILE for a30
+SQL> /
+
+PROFILE                        RESOURCE_NAME                    LIMIT
+------------------------------ -------------------------------- --------------------------------------------------------------------------------------------------------------------------------
+DEFAULT                        COMPOSITE_LIMIT                  UNLIMITED
+DEFAULT                        SESSIONS_PER_USER                UNLIMITED
+DEFAULT                        CPU_PER_SESSION                  UNLIMITED
+DEFAULT                        CPU_PER_CALL                     UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_SESSION        UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_CALL           UNLIMITED
+DEFAULT                        IDLE_TIME                        UNLIMITED
+DEFAULT                        CONNECT_TIME                     UNLIMITED
+DEFAULT                        PRIVATE_SGA                      UNLIMITED
+DEFAULT                        FAILED_LOGIN_ATTEMPTS            10
+DEFAULT                        PASSWORD_LIFE_TIME               180
+DEFAULT                        PASSWORD_REUSE_TIME              UNLIMITED
+DEFAULT                        PASSWORD_REUSE_MAX               UNLIMITED
+DEFAULT                        PASSWORD_VERIFY_FUNCTION         NULL
+DEFAULT                        PASSWORD_LOCK_TIME               1
+DEFAULT                        PASSWORD_GRACE_TIME              7
+DEFAULT                        INACTIVE_ACCOUNT_TIME            UNLIMITED
+ORA_STIG_PROFILE               COMPOSITE_LIMIT                  DEFAULT
+ORA_STIG_PROFILE               SESSIONS_PER_USER                DEFAULT
+ORA_STIG_PROFILE               CPU_PER_SESSION                  DEFAULT
+ORA_STIG_PROFILE               CPU_PER_CALL                     DEFAULT
+ORA_STIG_PROFILE               LOGICAL_READS_PER_SESSION        DEFAULT
+ORA_STIG_PROFILE               LOGICAL_READS_PER_CALL           DEFAULT
+ORA_STIG_PROFILE               IDLE_TIME                        15
+ORA_STIG_PROFILE               CONNECT_TIME                     DEFAULT
+ORA_STIG_PROFILE               PRIVATE_SGA                      DEFAULT
+ORA_STIG_PROFILE               FAILED_LOGIN_ATTEMPTS            3
+ORA_STIG_PROFILE               PASSWORD_LIFE_TIME               60
+ORA_STIG_PROFILE               PASSWORD_REUSE_TIME              365
+ORA_STIG_PROFILE               PASSWORD_REUSE_MAX               10
+ORA_STIG_PROFILE               PASSWORD_VERIFY_FUNCTION         ORA12C_STIG_VERIFY_FUNCTION
+ORA_STIG_PROFILE               PASSWORD_LOCK_TIME               UNLIMITED
+ORA_STIG_PROFILE               PASSWORD_GRACE_TIME              5
+ORA_STIG_PROFILE               INACTIVE_ACCOUNT_TIME            35
+
+34 rows selected.
+
+SQL> col LIMIT a30
+SP2-0158: unknown COLUMN option "a30"
+SQL> col LIMIT for a30
+SQL> /
+
+PROFILE                        RESOURCE_NAME                    LIMIT
+------------------------------ -------------------------------- ------------------------------
+DEFAULT                        COMPOSITE_LIMIT                  UNLIMITED
+DEFAULT                        SESSIONS_PER_USER                UNLIMITED
+DEFAULT                        CPU_PER_SESSION                  UNLIMITED
+DEFAULT                        CPU_PER_CALL                     UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_SESSION        UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_CALL           UNLIMITED
+DEFAULT                        IDLE_TIME                        UNLIMITED
+DEFAULT                        CONNECT_TIME                     UNLIMITED
+DEFAULT                        PRIVATE_SGA                      UNLIMITED
+DEFAULT                        FAILED_LOGIN_ATTEMPTS            10
+DEFAULT                        PASSWORD_LIFE_TIME               180
+DEFAULT                        PASSWORD_REUSE_TIME              UNLIMITED
+DEFAULT                        PASSWORD_REUSE_MAX               UNLIMITED
+DEFAULT                        PASSWORD_VERIFY_FUNCTION         NULL
+DEFAULT                        PASSWORD_LOCK_TIME               1
+DEFAULT                        PASSWORD_GRACE_TIME              7
+DEFAULT                        INACTIVE_ACCOUNT_TIME            UNLIMITED
+ORA_STIG_PROFILE               COMPOSITE_LIMIT                  DEFAULT
+ORA_STIG_PROFILE               SESSIONS_PER_USER                DEFAULT
+ORA_STIG_PROFILE               CPU_PER_SESSION                  DEFAULT
+ORA_STIG_PROFILE               CPU_PER_CALL                     DEFAULT
+ORA_STIG_PROFILE               LOGICAL_READS_PER_SESSION        DEFAULT
+ORA_STIG_PROFILE               LOGICAL_READS_PER_CALL           DEFAULT
+ORA_STIG_PROFILE               IDLE_TIME                        15
+ORA_STIG_PROFILE               CONNECT_TIME                     DEFAULT
+ORA_STIG_PROFILE               PRIVATE_SGA                      DEFAULT
+ORA_STIG_PROFILE               FAILED_LOGIN_ATTEMPTS            3
+ORA_STIG_PROFILE               PASSWORD_LIFE_TIME               60
+ORA_STIG_PROFILE               PASSWORD_REUSE_TIME              365
+ORA_STIG_PROFILE               PASSWORD_REUSE_MAX               10
+ORA_STIG_PROFILE               PASSWORD_VERIFY_FUNCTION         ORA12C_STIG_VERIFY_FUNCTION
+ORA_STIG_PROFILE               PASSWORD_LOCK_TIME               UNLIMITED
+ORA_STIG_PROFILE               PASSWORD_GRACE_TIME              5
+ORA_STIG_PROFILE               INACTIVE_ACCOUNT_TIME            35
+
+34 rows selected.
+
+SQL>
+SQL> l
+  1* select PROFILE,RESOURCE_NAME,LIMIT from DBA_PROFILES
+SQL> select PROFILE,RESOURCE_NAME,LIMIT from DBA_PROFILES where PROFILE='DEFAULT';
+
+PROFILE                        RESOURCE_NAME                    LIMIT
+------------------------------ -------------------------------- ------------------------------
+DEFAULT                        COMPOSITE_LIMIT                  UNLIMITED
+DEFAULT                        SESSIONS_PER_USER                UNLIMITED
+DEFAULT                        CPU_PER_SESSION                  UNLIMITED
+DEFAULT                        CPU_PER_CALL                     UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_SESSION        UNLIMITED
+DEFAULT                        LOGICAL_READS_PER_CALL           UNLIMITED
+DEFAULT                        IDLE_TIME                        UNLIMITED
+DEFAULT                        CONNECT_TIME                     UNLIMITED
+DEFAULT                        PRIVATE_SGA                      UNLIMITED
+DEFAULT                        FAILED_LOGIN_ATTEMPTS            10
+DEFAULT                        PASSWORD_LIFE_TIME               180
+DEFAULT                        PASSWORD_REUSE_TIME              UNLIMITED
+DEFAULT                        PASSWORD_REUSE_MAX               UNLIMITED
+DEFAULT                        PASSWORD_VERIFY_FUNCTION         NULL
+DEFAULT                        PASSWORD_LOCK_TIME               1
+DEFAULT                        PASSWORD_GRACE_TIME              7
+DEFAULT                        INACTIVE_ACCOUNT_TIME            UNLIMITED
+
+17 rows selected.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users;
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+SYS                            OPEN                             DEFAULT
+SYSTEM                         OPEN                             DEFAULT
+XS$NULL                        EXPIRED & LOCKED                 DEFAULT
+OJVMSYS                        LOCKED                           DEFAULT
+LBACSYS                        LOCKED                           DEFAULT
+OUTLN                          LOCKED                           DEFAULT
+SYS$UMF                        LOCKED                           DEFAULT
+DBSNMP                         LOCKED                           DEFAULT
+APPQOSSYS                      LOCKED                           DEFAULT
+DBSFWUSER                      LOCKED                           DEFAULT
+GGSYS                          LOCKED                           DEFAULT
+ANONYMOUS                      EXPIRED & LOCKED                 DEFAULT
+CTXSYS                         EXPIRED & LOCKED                 DEFAULT
+DVSYS                          LOCKED                           DEFAULT
+DVF                            LOCKED                           DEFAULT
+GSMADMIN_INTERNAL              LOCKED                           DEFAULT
+MDSYS                          LOCKED                           DEFAULT
+OLAPSYS                        LOCKED                           DEFAULT
+XDB                            LOCKED                           DEFAULT
+WMSYS                          LOCKED                           DEFAULT
+GSMCATUSER                     LOCKED                           DEFAULT
+MDDATA                         LOCKED                           DEFAULT
+TEST1                          OPEN                             DEFAULT
+SYSBACKUP                      LOCKED                           DEFAULT
+REMOTE_SCHEDULER_AGENT         LOCKED                           DEFAULT
+GSMUSER                        LOCKED                           DEFAULT
+APPS                           OPEN                             DEFAULT
+TEST2                          OPEN                             DEFAULT
+SYSRAC                         LOCKED                           DEFAULT
+GSMROOTUSER                    LOCKED                           DEFAULT
+USER2                          OPEN                             DEFAULT
+HR                             OPEN                             DEFAULT
+TEST3                          OPEN                             DEFAULT
+MALLIK                         OPEN                             DEFAULT
+SI_INFORMTN_SCHEMA             LOCKED                           DEFAULT
+AUDSYS                         LOCKED                           DEFAULT
+DIP                            LOCKED                           DEFAULT
+ORDPLUGINS                     LOCKED                           DEFAULT
+SYSKM                          LOCKED                           DEFAULT
+ORDDATA                        LOCKED                           DEFAULT
+USER3                          OPEN                             DEFAULT
+ORACLE_OCM                     LOCKED                           DEFAULT
+SYSDG                          LOCKED                           DEFAULT
+ORDSYS                         LOCKED                           DEFAULT
+USER1                          OPEN                             DEFAULT
+
+45 rows selected.
+
+SQL>
+SQL>
+SQL> CREATE PROFILE DUMMY LIMIT
+PASSWORD_LIFE_TIME 45
+PASSWORD_GRACE_TIME 12
+PASSWORD_REUSE_TIME 3
+PASSWORD_REUSE_MAX 5
+FAILED_LOGIN_ATTEMPTS 4
+PASSWORD_LOCK_TIME 2
+CPU_PER_CALL 5000
+PRIVATE_SGA 250K
+LOGICAL_READS_PER_CALL 2000;  2    3    4    5    6    7    8    9   10
+
+Profile created.
+
+SQL>
+SQL> select PROFILE,RESOURCE_NAME,LIMIT from DBA_PROFILES where PROFILE='DUMMY';
+
+PROFILE                        RESOURCE_NAME                    LIMIT
+------------------------------ -------------------------------- ------------------------------
+DUMMY                          COMPOSITE_LIMIT                  DEFAULT
+DUMMY                          SESSIONS_PER_USER                DEFAULT
+DUMMY                          CPU_PER_SESSION                  DEFAULT
+DUMMY                          CPU_PER_CALL                     5000
+DUMMY                          LOGICAL_READS_PER_SESSION        DEFAULT
+DUMMY                          LOGICAL_READS_PER_CALL           2000
+DUMMY                          IDLE_TIME                        DEFAULT
+DUMMY                          CONNECT_TIME                     DEFAULT
+DUMMY                          PRIVATE_SGA                      256000
+DUMMY                          FAILED_LOGIN_ATTEMPTS            4
+DUMMY                          PASSWORD_LIFE_TIME               45
+DUMMY                          PASSWORD_REUSE_TIME              3
+DUMMY                          PASSWORD_REUSE_MAX               5
+DUMMY                          PASSWORD_VERIFY_FUNCTION         DEFAULT
+DUMMY                          PASSWORD_LOCK_TIME               2
+DUMMY                          PASSWORD_GRACE_TIME              12
+DUMMY                          INACTIVE_ACCOUNT_TIME            DEFAULT
+
+17 rows selected.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TESt1';
+
+no rows selected
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          OPEN                             DEFAULT
+
+SQL> ALTER USER TEST1 PROFILE DUMMY;
+
+User altered.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          OPEN                             DUMMY
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          LOCKED(TIMED)                    DUMMY
+
+SQL> alter user TEST1 account unlock;
+
+User altered.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          OPEN                             DUMMY
+
+SQL> ALTER PROFILE DUMMY LIMIT FAILED_LOGIN_ATTEMPTS 3;
+
+Profile altered.
+
+SQL>
+SQL>
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          OPEN                             DUMMY
+
+SQL> DROP PROFILE DUMMY CASCADE;
+
+Profile dropped.
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE from dba_users where USERNAME='TEST1';
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE
+------------------------------ -------------------------------- ------------------------------
+TEST1                          OPEN                             DEFAULT
+
+SQL> desc dba_users;
+ Name                                                                                                                                                                   Null?    Type
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ USERNAME                                                                                                                                                               NOT NULL VARCHAR2(128)
+ USER_ID                                                                                                                                                                NOT NULL NUMBER
+ PASSWORD                                                                                                                                                                VARCHAR2(4000)
+ ACCOUNT_STATUS                                                                                                                                                         NOT NULL VARCHAR2(32)
+ LOCK_DATE                                                                                                                                                               DATE
+ EXPIRY_DATE                                                                                                                                                             DATE
+ DEFAULT_TABLESPACE                                                                                                                                                     NOT NULL VARCHAR2(30)
+ TEMPORARY_TABLESPACE                                                                                                                                                   NOT NULL VARCHAR2(30)
+ LOCAL_TEMP_TABLESPACE                                                                                                                                                   VARCHAR2(30)
+ CREATED                                                                                                                                                                NOT NULL DATE
+ PROFILE                                                                                                                                                                NOT NULL VARCHAR2(128)
+ INITIAL_RSRC_CONSUMER_GROUP                                                                                                                                             VARCHAR2(128)
+ EXTERNAL_NAME                                                                                                                                                           VARCHAR2(4000)
+ PASSWORD_VERSIONS                                                                                                                                                       VARCHAR2(17)
+ EDITIONS_ENABLED                                                                                                                                                        VARCHAR2(1)
+ AUTHENTICATION_TYPE                                                                                                                                                     VARCHAR2(8)
+ PROXY_ONLY_CONNECT                                                                                                                                                      VARCHAR2(1)
+ COMMON                                                                                                                                                                  VARCHAR2(3)
+ LAST_LOGIN                                                                                                                                                              TIMESTAMP(9) WITH TIME ZONE
+ ORACLE_MAINTAINED                                                                                                                                                       VARCHAR2(1)
+ INHERITED                                                                                                                                                               VARCHAR2(3)
+ DEFAULT_COLLATION                                                                                                                                                       VARCHAR2(100)
+ IMPLICIT                                                                                                                                                                VARCHAR2(3)
+ ALL_SHARD                                                                                                                                                               VARCHAR2(3)
+ PASSWORD_CHANGE_DATE                                                                                                                                                    DATE
+
+SQL> select USERNAME,ACCOUNT_STATUS,PROFILE,DEFAULT_TABLESPACE,TEMPORARY_TABLESPACE from dba_users;
+
+USERNAME                       ACCOUNT_STATUS                   PROFILE                        DEFAULT_TABLESPACE             TEMPORARY_TABLESPACE
+------------------------------ -------------------------------- ------------------------------ ------------------------------ ------------------------------
+SYS                            OPEN                             DEFAULT                        SYSTEM                         TEMP
+SYSTEM                         OPEN                             DEFAULT                        SYSTEM                         TEMP
+XS$NULL                        EXPIRED & LOCKED                 DEFAULT                        SYSTEM                         TEMP
+OJVMSYS                        LOCKED                           DEFAULT                        SYSTEM                         TEMP
+LBACSYS                        LOCKED                           DEFAULT                        SYSTEM                         TEMP
+OUTLN                          LOCKED                           DEFAULT                        SYSTEM                         TEMP
+SYS$UMF                        LOCKED                           DEFAULT                        SYSTEM                         TEMP
+DBSNMP                         LOCKED                           DEFAULT                        SYSAUX                         TEMP
+APPQOSSYS                      LOCKED                           DEFAULT                        SYSAUX                         TEMP
+DBSFWUSER                      LOCKED                           DEFAULT                        SYSAUX                         TEMP
+GGSYS                          LOCKED                           DEFAULT                        SYSAUX                         TEMP
+ANONYMOUS                      EXPIRED & LOCKED                 DEFAULT                        SYSAUX                         TEMP
+CTXSYS                         EXPIRED & LOCKED                 DEFAULT                        SYSAUX                         TEMP
+DVSYS                          LOCKED                           DEFAULT                        SYSAUX                         TEMP
+DVF                            LOCKED                           DEFAULT                        SYSAUX                         TEMP
+GSMADMIN_INTERNAL              LOCKED                           DEFAULT                        SYSAUX                         TEMP
+MDSYS                          LOCKED                           DEFAULT                        SYSAUX                         TEMP
+OLAPSYS                        LOCKED                           DEFAULT                        SYSAUX                         TEMP
+XDB                            LOCKED                           DEFAULT                        SYSAUX                         TEMP
+WMSYS                          LOCKED                           DEFAULT                        SYSAUX                         TEMP
+GSMCATUSER                     LOCKED                           DEFAULT                        USERS                          TEMP
+MDDATA                         LOCKED                           DEFAULT                        USERS                          TEMP
+TEST1                          OPEN                             DEFAULT                        USERS                          TEMP
+SYSBACKUP                      LOCKED                           DEFAULT                        USERS                          TEMP
+REMOTE_SCHEDULER_AGENT         LOCKED                           DEFAULT                        USERS                          TEMP
+GSMUSER                        LOCKED                           DEFAULT                        USERS                          TEMP
+APPS                           OPEN                             DEFAULT                        USERS                          TEMP
+TEST2                          OPEN                             DEFAULT                        USERS                          TEMP
+SYSRAC                         LOCKED                           DEFAULT                        USERS                          TEMP
+GSMROOTUSER                    LOCKED                           DEFAULT                        USERS                          TEMP
+USER2                          OPEN                             DEFAULT                        USERS                          TEMP
+HR                             OPEN                             DEFAULT                        USERS                          TEMP
+TEST3                          OPEN                             DEFAULT                        USERS                          TEMP
+MALLIK                         OPEN                             DEFAULT                        USERS                          TEMP
+SI_INFORMTN_SCHEMA             LOCKED                           DEFAULT                        USERS                          TEMP
+AUDSYS                         LOCKED                           DEFAULT                        USERS                          TEMP
+DIP                            LOCKED                           DEFAULT                        USERS                          TEMP
+ORDPLUGINS                     LOCKED                           DEFAULT                        USERS                          TEMP
+SYSKM                          LOCKED                           DEFAULT                        USERS                          TEMP
+ORDDATA                        LOCKED                           DEFAULT                        USERS                          TEMP
+USER3                          OPEN                             DEFAULT                        USERS                          TEMP
+ORACLE_OCM                     LOCKED                           DEFAULT                        USERS                          TEMP
+SYSDG                          LOCKED                           DEFAULT                        USERS                          TEMP
+ORDSYS                         LOCKED                           DEFAULT                        USERS                          TEMP
+USER1                          OPEN                             DEFAULT                        USERS                          TEMP
+
+45 rows selected.
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_SYS_PRIVS WHERE grantee IN ('DBA');
+SELECT PRIVILEGE,TABLE_NAME FROM DBA_SYS_PRIVS WHERE grantee IN ('DBA')
+                 *
+ERROR at line 1:
+ORA-00904: "TABLE_NAME": invalid identifier
+
+
+SQL> SELECT PRIVILEGE FROM DBA_SYS_PRIVS WHERE grantee IN ('DBA');
+
+PRIVILEGE
+----------------------------------------
+CREATE ANALYTIC VIEW
+ALTER ANY CUBE BUILD PROCESS
+CREATE LOCKDOWN PROFILE
+EM EXPRESS CONNECT
+DROP ANY SQL TRANSLATION PROFILE
+UPDATE ANY CUBE DIMENSION
+DELETE ANY CUBE DIMENSION
+SELECT ANY MINING MODEL
+ALTER ANY ASSEMBLY
+MANAGE FILE GROUP
+EXECUTE ANY RULE
+GRANT ANY OBJECT PRIVILEGE
+DEBUG CONNECT ANY
+CREATE ANY CONTEXT
+CREATE DIMENSION
+UNDER ANY TABLE
+GLOBAL QUERY REWRITE
+QUERY REWRITE
+DROP ANY INDEXTYPE
+ALTER ANY OPERATOR
+ALTER ANY LIBRARY
+DROP ANY TYPE
+DROP ANY DIRECTORY
+DROP ANY TRIGGER
+AUDIT ANY
+DROP PUBLIC SYNONYM
+DROP ANY SYNONYM
+CREATE ANY TABLE
+CREATE TABLE
+ALTER USER
+CREATE TABLESPACE
+ALTER SYSTEM
+CREATE HIERARCHY
+ALTER ANY ATTRIBUTE DIMENSION
+ALTER ANY SQL TRANSLATION PROFILE
+CREATE CUBE BUILD PROCESS
+CREATE MEASURE FOLDER
+DROP ANY CUBE
+CREATE ANY MINING MODEL
+DROP ANY ASSEMBLY
+SELECT ANY TRANSACTION
+CREATE JOB
+DEBUG ANY PROCEDURE
+DROP ANY CONTEXT
+DROP ANY DIMENSION
+DROP ANY LIBRARY
+CREATE ANY MATERIALIZED VIEW
+GRANT ANY PRIVILEGE
+ALTER PROFILE
+CREATE PROFILE
+CREATE PUBLIC DATABASE LINK
+CREATE DATABASE LINK
+ALTER ANY SEQUENCE
+DROP ANY VIEW
+DROP ANY INDEX
+DELETE ANY TABLE
+LOCK ANY TABLE
+ALTER ROLLBACK SEGMENT
+CREATE USER
+ALTER SESSION
+DROP ANY ANALYTIC VIEW
+CREATE ANY ANALYTIC VIEW
+DROP ANY HIERARCHY
+CREATE ATTRIBUTE DIMENSION
+ALTER ANY MEASURE FOLDER
+LOGMINING
+CREATE ANY CREDENTIAL
+INSERT ANY MEASURE FOLDER
+DROP ANY MEASURE FOLDER
+CREATE ANY CUBE
+DROP ANY EDITION
+MANAGE ANY FILE GROUP
+MANAGE SCHEDULER
+EXECUTE ANY CLASS
+EXPORT FULL DATABASE
+CREATE ANY RULE SET
+DROP ANY EVALUATION CONTEXT
+CREATE ANY EVALUATION CONTEXT
+CREATE EVALUATION CONTEXT
+DEQUEUE ANY QUEUE
+ENQUEUE ANY QUEUE
+CREATE TYPE
+CREATE ANY DIRECTORY
+ALTER RESOURCE COST
+DROP PROFILE
+CREATE ANY PROCEDURE
+DROP ANY ROLE
+SELECT ANY SEQUENCE
+CREATE ANY SYNONYM
+UPDATE ANY TABLE
+BECOME USER
+DROP ANY ATTRIBUTE DIMENSION
+SELECT ANY CUBE BUILD PROCESS
+CREATE PLUGGABLE DATABASE
+SELECT ANY CUBE DIMENSION
+DROP ANY MINING MODEL
+READ ANY FILE GROUP
+CREATE ANY SQL PROFILE
+ADMINISTER SQL TUNING SET
+DROP ANY SQL PROFILE
+EXECUTE ANY PROGRAM
+ADVISOR
+CREATE RULE
+ALTER ANY DIMENSION
+ALTER ANY INDEXTYPE
+CREATE OPERATOR
+EXECUTE ANY LIBRARY
+CREATE ANY LIBRARY
+CREATE LIBRARY
+ALTER ANY TYPE
+ALTER ANY MATERIALIZED VIEW
+EXECUTE ANY PROCEDURE
+CREATE VIEW
+CREATE PUBLIC SYNONYM
+INSERT ANY TABLE
+RESTRICTED SESSION
+CREATE ANY HIERARCHY
+CREATE ANY ATTRIBUTE DIMENSION
+USE ANY JOB RESOURCE
+INSERT ANY CUBE DIMENSION
+COMMENT ANY MINING MODEL
+CREATE ANY ASSEMBLY
+ALTER ANY EDITION
+DROP ANY RULE SET
+ALTER ANY EVALUATION CONTEXT
+FLASHBACK ANY TABLE
+SELECT ANY DICTIONARY
+ADMINISTER RESOURCE MANAGER
+CREATE INDEXTYPE
+DROP ANY OPERATOR
+FORCE TRANSACTION
+ALTER DATABASE
+CREATE ROLE
+CREATE ANY SEQUENCE
+ALTER ANY INDEX
+CREATE CLUSTER
+SELECT ANY TABLE
+COMMENT ANY TABLE
+BACKUP ANY TABLE
+ALTER ANY TABLE
+DROP USER
+ALTER TABLESPACE
+AUDIT SYSTEM
+READ ANY TABLE
+CREATE CREDENTIAL
+USE ANY SQL TRANSLATION PROFILE
+CREATE SQL TRANSLATION PROFILE
+ADMINISTER SQL MANAGEMENT OBJECT
+UPDATE ANY CUBE BUILD PROCESS
+CREATE CUBE
+EXECUTE ASSEMBLY
+ALTER ANY SQL PROFILE
+ALTER ANY RULE
+RESUMABLE
+ADMINISTER DATABASE TRIGGER
+CREATE ANY OUTLINE
+MANAGE ANY QUEUE
+CREATE ANY DIMENSION
+EXECUTE ANY OPERATOR
+CREATE ANY OPERATOR
+ALTER ANY TRIGGER
+ALTER ANY PROCEDURE
+CREATE PROCEDURE
+ALTER ANY ROLE
+DROP ANY SEQUENCE
+CREATE ANY VIEW
+ALTER ANY CLUSTER
+CREATE SESSION
+ALTER ANY ANALYTIC VIEW
+SELECT ANY MEASURE FOLDER
+ALTER LOCKDOWN PROFILE
+CREATE ANY SQL TRANSLATION PROFILE
+DROP ANY CUBE BUILD PROCESS
+CREATE ANY MEASURE FOLDER
+UPDATE ANY CUBE
+SELECT ANY CUBE
+ALTER ANY CUBE
+ALTER ANY CUBE DIMENSION
+ALTER ANY MINING MODEL
+EXECUTE ANY ASSEMBLY
+CREATE ANY EDITION
+CREATE ANY JOB
+DROP ANY RULE
+IMPORT FULL DATABASE
+EXECUTE ANY RULE SET
+CREATE RULE SET
+ON COMMIT REFRESH
+MERGE ANY VIEW
+ALTER ANY OUTLINE
+EXECUTE ANY INDEXTYPE
+UNDER ANY TYPE
+DROP ANY MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW
+ANALYZE ANY
+CREATE ANY TRIGGER
+FORCE ANY TRANSACTION
+GRANT ANY ROLE
+DROP PUBLIC DATABASE LINK
+CREATE SEQUENCE
+CREATE ANY INDEX
+CREATE ANY CLUSTER
+CREATE ROLLBACK SEGMENT
+DROP TABLESPACE
+ALTER ANY HIERARCHY
+DROP LOCKDOWN PROFILE
+SET CONTAINER
+FLASHBACK ARCHIVE ADMINISTER
+CREATE ANY CUBE BUILD PROCESS
+DELETE ANY MEASURE FOLDER
+DROP ANY CUBE DIMENSION
+CREATE ANY CUBE DIMENSION
+CREATE CUBE DIMENSION
+CREATE MINING MODEL
+CREATE ASSEMBLY
+CREATE EXTERNAL JOB
+CHANGE NOTIFICATION
+ADMINISTER ANY SQL TUNING SET
+ANALYZE ANY DICTIONARY
+CREATE ANY RULE
+ALTER ANY RULE SET
+EXECUTE ANY EVALUATION CONTEXT
+DEBUG CONNECT SESSION
+DROP ANY OUTLINE
+UNDER ANY VIEW
+CREATE ANY INDEXTYPE
+EXECUTE ANY TYPE
+CREATE ANY TYPE
+CREATE TRIGGER
+DROP ANY PROCEDURE
+CREATE SYNONYM
+DROP ANY CLUSTER
+REDEFINE ANY TABLE
+DROP ANY TABLE
+DROP ROLLBACK SEGMENT
+MANAGE TABLESPACE
+
+235 rows selected.
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('DBA');
+
+PRIVILEGE                                TABLE_NAME
+---------------------------------------- --------------------------------------------------------------------------------------------------------------------------------
+EXECUTE                                  DBMS_AUTO_SQLTUNE
+EXECUTE                                  DBMS_GSM_FIX
+EXECUTE                                  DBMS_SERVICE_CONST
+EXECUTE                                  DBMS_SERVICE_ERR
+DELETE                                   MAP_OBJECT
+INSERT                                   MAP_OBJECT
+SELECT                                   MAP_OBJECT
+UPDATE                                   MAP_OBJECT
+INSERT                                   XSDB$SCHEMA_ACL
+SELECT                                   XSDB$SCHEMA_ACL
+UPDATE                                   XSDB$SCHEMA_ACL
+EXECUTE                                  DBMS_LOGSTDBY
+EXECUTE                                  ADR_HOME_T
+EXECUTE                                  ADR_INCIDENT_CORR_KEYS_T
+EXECUTE                                  ADR_INCIDENT_FILES_T
+EXECUTE                                  ADR_INCIDENT_INFO_T
+EXECUTE                                  ADR_INCIDENT_T
+EXECUTE                                  ADR_LOG_MSG_SUPPL_ATTR_T
+EXECUTE                                  ADR_LOG_MSG_SUPPL_ATTRS_T
+EXECUTE                                  ADR_LOG_MSG_ARG_T
+EXECUTE                                  ADR_LOG_MSG_ARGS_T
+EXECUTE                                  ADR_LOG_MSG_ECID_T
+EXECUTE                                  ADR_LOG_MSG_ERRID_T
+EXECUTE                                  ADR_LOG_MSG_T
+SELECT                                   V_$DIAG_ADR_CONTROL
+SELECT                                   V_$DIAG_ADR_INVALIDATION
+SELECT                                   V_$DIAG_INCIDENT
+SELECT                                   V_$DIAG_PROBLEM
+SELECT                                   V_$DIAG_INCCKEY
+SELECT                                   V_$DIAG_INCIDENT_FILE
+SELECT                                   V_$DIAG_SWEEPERR
+SELECT                                   V_$DIAG_PICKLEERR
+SELECT                                   V_$DIAG_VIEW
+SELECT                                   V_$DIAG_VIEWCOL
+SELECT                                   V_$DIAG_HM_RUN
+SELECT                                   V_$DIAG_HM_FINDING
+SELECT                                   V_$DIAG_HM_RECOMMENDATION
+SELECT                                   V_$DIAG_HM_FDG_SET
+SELECT                                   V_$DIAG_HM_INFO
+SELECT                                   V_$DIAG_HM_MESSAGE
+SELECT                                   V_$DIAG_DDE_USER_ACTION_DEF
+SELECT                                   V_$DIAG_DDE_USR_ACT_PARAM_DEF
+SELECT                                   V_$DIAG_DDE_USER_ACTION
+SELECT                                   V_$DIAG_DDE_USR_ACT_PARAM
+SELECT                                   V_$DIAG_DDE_USR_INC_TYPE
+SELECT                                   V_$DIAG_DDE_USR_INC_ACT_MAP
+SELECT                                   V_$DIAG_IPS_PACKAGE
+SELECT                                   V_$DIAG_IPS_PACKAGE_INCIDENT
+SELECT                                   V_$DIAG_IPS_PACKAGE_FILE
+SELECT                                   V_$DIAG_IPS_FILE_METADATA
+SELECT                                   V_$DIAG_IPS_FILE_COPY_LOG
+SELECT                                   V_$DIAG_IPS_PACKAGE_HISTORY
+SELECT                                   V_$DIAG_IPS_PKG_UNPACK_HIST
+SELECT                                   V_$DIAG_IPS_REMOTE_PACKAGE
+SELECT                                   V_$DIAG_IPS_CONFIGURATION
+SELECT                                   V_$DIAG_IPS_PROGRESS_LOG
+SELECT                                   V_$DIAG_INC_METER_SUMMARY
+SELECT                                   V_$DIAG_INC_METER_INFO
+SELECT                                   V_$DIAG_INC_METER_CONFIG
+SELECT                                   V_$DIAG_INC_METER_IMPT_DEF
+SELECT                                   V_$DIAG_INC_METER_PK_IMPTS
+SELECT                                   V_$DIAG_DIR_EXT
+SELECT                                   V_$DIAG_LOG_EXT
+SELECT                                   V_$DIAG_ALERT_EXT
+SELECT                                   V_$DIAG_RELMD_EXT
+SELECT                                   V_$DIAG_EM_USER_ACTIVITY
+SELECT                                   V_$DIAG_EM_DIAG_JOB
+SELECT                                   V_$DIAG_EM_TARGET_INFO
+SELECT                                   V_$DIAG_AMS_XACTION
+SELECT                                   V_$DIAG_DFW_CONFIG_CAPTURE
+SELECT                                   V_$DIAG_DFW_CONFIG_ITEM
+SELECT                                   V_$DIAG_DFW_PATCH_CAPTURE
+SELECT                                   V_$DIAG_DFW_PATCH_ITEM
+SELECT                                   V_$DIAG_DFW_PURGE
+SELECT                                   V_$DIAG_DFW_PURGE_ITEM
+SELECT                                   V_$DIAG_ADR_CONTROL_AUX
+SELECT                                   V_$DIAG_PDB_PROBLEM
+SELECT                                   V_$DIAG_PDB_SPACE_MGMT
+SELECT                                   V_$DIAG_VSHOWINCB
+SELECT                                   V_$DIAG_VSHOWINCB_I
+SELECT                                   V_$DIAG_V_INCFCOUNT
+SELECT                                   V_$DIAG_V_NFCINC
+SELECT                                   V_$DIAG_VSHOWCATVIEW
+SELECT                                   V_$DIAG_VINCIDENT
+SELECT                                   V_$DIAG_VINC_METER_INFO
+SELECT                                   V_$DIAG_VIPS_FILE_METADATA
+SELECT                                   V_$DIAG_VIPS_PKG_FILE
+SELECT                                   V_$DIAG_VIPS_PACKAGE_FILE
+SELECT                                   V_$DIAG_VIPS_PACKAGE_HISTORY
+SELECT                                   V_$DIAG_VIPS_FILE_COPY_LOG
+SELECT                                   V_$DIAG_VIPS_PACKAGE_SIZE
+SELECT                                   V_$DIAG_VIPS_PKG_INC_DTL1
+SELECT                                   V_$DIAG_VIPS_PKG_INC_DTL
+SELECT                                   V_$DIAG_VINCIDENT_FILE
+SELECT                                   V_$DIAG_V_INCCOUNT
+SELECT                                   V_$DIAG_V_IPSPRBCNT1
+SELECT                                   V_$DIAG_V_IPSPRBCNT
+SELECT                                   V_$DIAG_VPROBLEM_LASTINC
+SELECT                                   V_$DIAG_VPROBLEM_INT
+SELECT                                   V_$DIAG_VEM_USER_ACTLOG
+SELECT                                   V_$DIAG_VEM_USER_ACTLOG1
+SELECT                                   V_$DIAG_VPROBLEM1
+SELECT                                   V_$DIAG_VPROBLEM2
+SELECT                                   V_$DIAG_V_INC_METER_INFO_PROB
+SELECT                                   V_$DIAG_VPROBLEM
+SELECT                                   V_$DIAG_VPROBLEM_BUCKET1
+SELECT                                   V_$DIAG_VPROBLEM_BUCKET
+SELECT                                   V_$DIAG_VPROBLEM_BUCKET_COUNT
+SELECT                                   V_$DIAG_VHM_RUN
+SELECT                                   V_$DIAG_DIAGV_INCIDENT
+SELECT                                   V_$DIAG_VIPS_PACKAGE_MAIN_INT
+SELECT                                   V_$DIAG_VIPS_PKG_MAIN_PROBLEM
+SELECT                                   V_$DIAG_V_ACTINC
+SELECT                                   V_$DIAG_V_ACTPROB
+SELECT                                   V_$DIAG_V_SWPERRCOUNT
+SELECT                                   V_$DIAG_VIPS_PKG_INC_CAND
+SELECT                                   V_$DIAG_VNOT_EXIST_INCIDENT
+SELECT                                   V_$DIAG_VPDB_PROBLEM
+SELECT                                   V_$DIAG_VTEST_EXISTS
+SELECT                                   V_$DIAG_VADR_CONTROL
+SELECT                                   DBA_XS_SESSIONS
+SELECT                                   CDB_XS_SESSIONS
+SELECT                                   DBA_XS_ACTIVE_SESSIONS
+SELECT                                   CDB_XS_ACTIVE_SESSIONS
+SELECT                                   DBA_XS_SESSION_ROLES
+SELECT                                   CDB_XS_SESSION_ROLES
+SELECT                                   DBA_XS_SESSION_NS_ATTRIBUTES
+SELECT                                   CDB_XS_SESSION_NS_ATTRIBUTES
+EXECUTE                                  XS_MTCACHE_INT
+EXECUTE                                  DBMS_FLASHBACK
+EXECUTE                                  DBMS_FLASHBACK_ARCHIVE
+EXECUTE                                  DBMS_TDB
+EXECUTE                                  DBMS_RESUMABLE
+EXECUTE                                  DBMS_STORAGE_MAP
+EXECUTE                                  DBMS_SERVER_TRACE
+EXECUTE                                  DBMS_SERVICE
+EXECUTE                                  DBMS_SERVICE_PRVT
+EXECUTE                                  DBMS_RESULT_CACHE
+EXECUTE                                  DBMS_SERVER_ALERT
+EXECUTE                                  DBMS_MONITOR
+EXECUTE                                  DBMS_HM
+EXECUTE                                  DBMS_IR
+EXECUTE                                  DBMS_MANAGEMENT_BOOTSTRAP
+EXECUTE                                  DBMS_WORKLOAD_REPOSITORY
+EXECUTE                                  DBMS_AWR_WAREHOUSE_SERVER
+EXECUTE                                  DBMS_AWR_WAREHOUSE_SOURCE
+EXECUTE                                  DBMS_UMF
+EXECUTE                                  DBMS_PERF
+EXECUTE                                  DBMS_WORKLOAD_CAPTURE
+EXECUTE                                  DBMS_WORKLOAD_REPLAY
+EXECUTE                                  DBMS_WRR_STATE
+EXECUTE                                  DBMS_FEATURE_USAGE_REPORT
+EXECUTE                                  DBMS_UADV_ARR
+EXECUTE                                  DBMS_UNDO_ADV
+EXECUTE                                  LOAD_UNDO_STAT
+EXECUTE                                  RESET_UNDO_STAT
+EXECUTE                                  DBMS_RAT_MASK
+EXECUTE                                  DBMS_CACHEUTIL
+EXECUTE                                  DBMS_ILM_ADMIN
+EXECUTE                                  DBMS_DNFS
+EXECUTE                                  DBMS_ADR
+EXECUTE                                  DBMS_ADR_APP
+EXECUTE                                  DBMS_APP_CONT
+EXECUTE                                  DBMS_APP_CONT_ADMIN
+EXECUTE                                  DBMS_FS
+EXECUTE                                  DBMS_ROLLING
+EXECUTE                                  DBMS_INMEMORY_ADMIN
+EXECUTE                                  DBMS_HANG_MANAGER
+EXECUTE                                  DBMS_TNS
+EXECUTE                                  OUTLN_PKG
+EXECUTE                                  DBMS_MEMOPTIMIZE_ADMIN
+EXECUTE                                  DBMS_AUTO_INDEX
+EXECUTE                                  DBMS_AUTO_TASK_ADMIN
+EXECUTE                                  DBMS_AUTO_TASK_IMMEDIATE
+EXECUTE                                  DBMS_NETWORK_ACL_ADMIN
+EXECUTE                                  HM_SQLTK_INTERNAL
+EXECUTE                                  AS_REPLAY
+EXECUTE                                  DBMS_XS_PRINCIPALS
+DELETE                                   DBA_REGISTRY_SQLPATCH
+INSERT                                   DBA_REGISTRY_SQLPATCH
+SELECT                                   DBA_REGISTRY_SQLPATCH
+UPDATE                                   DBA_REGISTRY_SQLPATCH
+DELETE                                   DBA_REGISTRY_SQLPATCH_RU_INFO
+INSERT                                   DBA_REGISTRY_SQLPATCH_RU_INFO
+SELECT                                   DBA_REGISTRY_SQLPATCH_RU_INFO
+UPDATE                                   DBA_REGISTRY_SQLPATCH_RU_INFO
+EXECUTE                                  OJDS_CONTEXT
+EXECUTE                                  ORD_ADMIN
+EXECUTE                                  RDF_NETWORK_CREATOR_PRIVS
+EXECUTE                                  GRANT_RDF_OWNER_DR_PRIVS
+DELETE                                   XDB$H_INDEX
+INSERT                                   XDB$H_INDEX
+SELECT                                   XDB$H_INDEX
+UPDATE                                   XDB$H_INDEX
+DELETE                                   XDB$H_LINK
+INSERT                                   XDB$H_LINK
+SELECT                                   XDB$H_LINK
+UPDATE                                   XDB$H_LINK
+DELETE                                   XDB$D_LINK
+INSERT                                   XDB$D_LINK
+SELECT                                   XDB$D_LINK
+UPDATE                                   XDB$D_LINK
+DELETE                                   XDB$RESOURCE
+INSERT                                   XDB$RESOURCE
+SELECT                                   XDB$RESOURCE
+UPDATE                                   XDB$RESOURCE
+DELETE                                   XDB$NLOCKS
+INSERT                                   XDB$NLOCKS
+SELECT                                   XDB$NLOCKS
+UPDATE                                   XDB$NLOCKS
+EXECUTE                                  DBMS_XDB_ADMIN
+EXECUTE                                  DBMS_CSX_ADMIN
+DELETE                                   X$PT46MP5MDR0M04NE0KWN0SK0K1LN
+INSERT                                   X$PT46MP5MDR0M04NE0KWN0SK0K1LN
+SELECT                                   X$PT46MP5MDR0M04NE0KWN0SK0K1LN
+UPDATE                                   X$PT46MP5MDR0M04NE0KWN0SK0K1LN
+DELETE                                   XDB$ACL
+INSERT                                   XDB$ACL
+SELECT                                   XDB$ACL
+UPDATE                                   XDB$ACL
+DELETE                                   XDB$RESCONFIG
+INSERT                                   XDB$RESCONFIG
+SELECT                                   XDB$RESCONFIG
+UPDATE                                   XDB$RESCONFIG
+DELETE                                   XDB$CHECKOUTS
+INSERT                                   XDB$CHECKOUTS
+SELECT                                   XDB$CHECKOUTS
+UPDATE                                   XDB$CHECKOUTS
+DELETE                                   XDB$CONFIG
+INSERT                                   XDB$CONFIG
+SELECT                                   XDB$CONFIG
+UPDATE                                   XDB$CONFIG
+EXECUTE                                  DBMS_XDBT
+EXECUTE                                  CARTRIDGE
+
+234 rows selected.
+
+SQL> grant dba to test1;
+
+Grant succeeded.
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_SYS_PRIVS WHERE grantee IN ('SYSDBA');
+SELECT PRIVILEGE,TABLE_NAME FROM DBA_SYS_PRIVS WHERE grantee IN ('SYSDBA')
+                 *
+ERROR at line 1:
+ORA-00904: "TABLE_NAME": invalid identifier
+
+
+SQL> SELECT PRIVILEGE FROM DBA_SYS_PRIVS WHERE grantee IN ('SYSDBA');
+
+no rows selected
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('SYSDBA');
+
+no rows selected
+
+SQL> grant sysdba to test1;
+
+Grant succeeded.
+
+SQL> SELECT PRIVILEGE FROM DBA_SYS_PRIVS WHERE grantee IN ('RESOURCE');
+
+PRIVILEGE
+----------------------------------------
+CREATE TABLE
+CREATE TYPE
+CREATE OPERATOR
+CREATE INDEXTYPE
+CREATE CLUSTER
+CREATE PROCEDURE
+CREATE SEQUENCE
+CREATE TRIGGER
+
+8 rows selected.
+
+SQL> SELECT PRIVILEGE,TABLE_NAME FROM DBA_TAB_PRIVS WHERE grantee IN ('RESOURCE');
+
+no rows selected
+
+SQL>
+
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon May  8 09:08:21 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May  8 09:43:39 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:53:42 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01045: user TEST1 lacks CREATE SESSION privilege; logon denied
+
+
+Enter user-name: ^C
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:54:48 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "TEST1"
+SQL> create table TEST1 (SLNO number, NAME varchar2(15);
+create table TEST1 (SLNO number, NAME varchar2(15)
+                                                 *
+ERROR at line 1:
+ORA-00907: missing right parenthesis
+
+
+SQL> create table TEST1 (SLNO number, NAME varchar2(15));
+create table TEST1 (SLNO number, NAME varchar2(15))
+*
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> create table TEST1 (SLNO number, NAME varchar2(15));
+
+Table created.
+
+SQL> select * from TEST1;
+
+no rows selected
+
+SQL> select * from TEST2;
+select * from TEST2
+              *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> select * from TEST2.TEST2;
+select * from TEST2.TEST2
+                    *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> select * from TEST2.TEST2;
+
+no rows selected
+
+SQL>
+SQL>
+SQL> inert int^C
+
+SQL>
+SQL> insert into TEST1 values (1, 'MALLIK);
+ERROR:
+ORA-01756: quoted string not properly terminated
+
+
+SQL> insert into TEST1 values (1, 'MALLIK');
+insert into TEST1 values (1, 'MALLIK')
+            *
+ERROR at line 1:
+ORA-01950: no privileges on tablespace 'USERS'
+
+
+SQL> insert into TEST1 values (1, 'MALLIK');
+
+1 row created.
+
+SQL> show user
+USER is "TEST1"
+SQL> grant create table to TEST3;
+grant create table to TEST3
+*
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> grant create table to TEST3;
+
+Grant succeeded.
+
+SQL> select * from TEST2.TEST2;
+
+no rows selected
+
+SQL> select * from TEST2.TEST2;
+
+      SLNO NAME
+---------- ---------------
+         1 TEST2
+
+SQL> grant serelect on TEST2.TEST2. to TESt3;
+grant serelect on TEST2.TEST2. to TESt3
+      *
+ERROR at line 1:
+ORA-00990: missing or invalid privilege
+
+
+SQL> grant select on TEST2.TEST2. to TESt3;
+grant select on TEST2.TEST2. to TESt3
+                           *
+ERROR at line 1:
+ORA-00905: missing keyword
+
+
+SQL> grant select on TEST2.TEST2 to TEST3;
+grant select on TEST2.TEST2 to TEST3
+                      *
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> grant select on TEST2.TEST2 to TEST3;
+
+Grant succeeded.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:43:55 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 09:54:48 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select * from MALLIK.DEPT;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:46:19 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:43:55 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select * from MALLIK.DEPT;
+select * from MALLIK.DEPT
+                     *
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> select * from MALLIK.EMP;
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7839 KING       PRESIDENT            17-NOV-81       5000
+        10
+
+      7698 BLAKE      MANAGER         7839 01-MAY-81       2850
+        30
+
+      7782 CLARK      MANAGER         7839 09-JUN-81       2450
+        10
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7566 JONES      MANAGER         7839 02-APR-81       2975
+        20
+
+      7788 SCOTT      ANALYST         7566 19-APR-87       3000
+        20
+
+      7902 FORD       ANALYST         7566 03-DEC-81       3000
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7369 SMITH      CLERK           7902 17-DEC-80        800
+        20
+
+      7499 ALLEN      SALESMAN        7698 20-FEB-81       1600        300
+        30
+
+      7521 WARD       SALESMAN        7698 22-FEB-81       1250        500
+        30
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7654 MARTIN     SALESMAN        7698 28-SEP-81       1250       1400
+        30
+
+      7844 TURNER     SALESMAN        7698 08-SEP-81       1500          0
+        30
+
+      7876 ADAMS      CLERK           7788 23-MAY-87       1100
+        20
+
+
+     EMPNO ENAME      JOB              MGR HIREDATE         SAL       COMM
+---------- ---------- --------- ---------- --------- ---------- ----------
+    DEPTNO
+----------
+      7900 JAMES      CLERK           7698 03-DEC-81        950
+        30
+
+      7934 MILLER     CLERK           7782 23-JAN-82       1300
+        10
+
+
+14 rows selected.
+
+SQL>
+SQL>
+SQL>
+SQL> SELECT * FROM dba_role_privs WHERE grantee IN ('TEST1');
+SELECT * FROM dba_role_privs WHERE grantee IN ('TEST1')
+              *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> conn / as ^C
+
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[AYou have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:06:54 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:31:50 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "HR"
+SQL>
+SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:08:22 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 11:07:16 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test11222
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:15:04 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01017: invalid username/password; logon denied
+
+
+Enter user-name: ^C
+
+^[[A[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test11222121212
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:15:11 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01017: invalid username/password; logon denied
+
+
+Enter user-name: ^C
+
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test11222121212
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:15:16 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01017: invalid username/password; logon denied
+
+
+Enter user-name: ^C
+
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test11222121212
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:15:24 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01017: invalid username/password; logon denied
+
+
+Enter user-name: ^C
+
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:15:34 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-28000: The account is locked.
+
+
+Enter user-name: ^C
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:16:33 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:46:19 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus test1/test1
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:28:04 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 11:16:33 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> create user test4 identified by test4;
+
+User created.
+
+SQL>
+
+
+
+login as: root
+root@10.38.4.180's password:
+Access denied
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last failed login: Mon May  8 09:57:48 IST 2023 from 172.29.0.102 on ssh:notty
+There was 1 failed login attempt since the last successful login.
+Last login: Mon May  8 09:53:19 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May  8 09:53:21 IST 2023 on pts/3
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test2/test2
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:58:03 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-01045: user TEST2 lacks CREATE SESSION privilege; logon denied
+
+
+Enter user-name: ^C
+
+^[[A[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test2/test2
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 09:58:17 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> create table TEST2 (SLNO number, NAME varchar2(15));
+create table TEST2 (SLNO number, NAME varchar2(15))
+*
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> create table TEST2 (SLNO number, NAME varchar2(15));
+
+Table created.
+
+SQL> select  * from TEST2;
+
+no rows selected
+
+SQL> insert into TEST2 values (1, 'MALLIK');
+insert into TEST2 values (1, 'MALLIK')
+            *
+ERROR at line 1:
+ORA-01950: no privileges on tablespace 'USERS'
+
+
+SQL> insert into TEST2 values (1, 'TEST2');
+
+1 row created.
+
+SQL> commit;
+
+Commit complete.
+
+SQL> select * from TESt2;
+
+      SLNO NAME
+---------- ---------------
+         1 TEST2
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus test2/test2
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:43:59 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 09:58:18 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select * from MALLIK.DEPT;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test2/test2
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:46:23 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:43:59 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:07:03 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 11:06:54 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "HR"
+SQL>
+
+
+
+
+
+login as: root
+root@10.38.4.180's password:
+Access denied
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last failed login: Mon May  8 10:19:29 IST 2023 from 172.29.0.102 on ssh:notty
+There was 1 failed login attempt since the last successful login.
+Last login: Mon May  8 09:57:52 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May  8 09:57:55 IST 2023 on pts/4
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test3/test3
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:19:46 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show user
+USER is "TEST3"
+SQL> create table TEST3 (SLNO number, NAME varchar2(15));
+create table TEST3 (SLNO number, NAME varchar2(15))
+*
+ERROR at line 1:
+ORA-01031: insufficient privileges
+
+
+SQL> create table TEST3 (SLNO number, NAME varchar2(15));
+
+Table created.
+
+SQL> select * from TEST2.TEST2;
+select * from TEST2.TEST2
+                    *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> select * from TEST2.TEST2;
+
+      SLNO NAME
+---------- ---------------
+         1 TEST2
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[AYou have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus test3/test3
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:44:02 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:19:46 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select * from MALLIK.DEPT;
+
+    DEPTNO DNAME          LOC
+---------- -------------- -------------
+        10 ACCOUNTING     NEW YORK
+        20 RESEARCH       DALLAS
+        30 SALES          CHICAGO
+        40 OPERATIONS     BOSTON
+
+SQL> Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus test3/test3
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 10:46:27 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 10:44:02 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[AYou have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ sqlplus hr/hr
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon May 8 11:07:16 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Last Successful login time: Mon May 08 2023 11:07:03 +05:30
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+

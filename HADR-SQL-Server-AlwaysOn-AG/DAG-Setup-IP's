@@ -1,0 +1,112 @@
+To configure a **Distributed Availability Group (DAG)** between **two different Windows Domains**. 
+This setup requires careful planning of **IP addresses** for:
+
+* **Domain Controllers (DCs)**
+* **Windows Cluster Nodes**
+* **SQL Server Instances (replicas)**
+* **Listener(s)**
+* **Endpoints**
+
+Let’s break this down in detail.
+
+🔹 Key Considerations for Distributed Always On AG
+
+1. **Two separate Windows Failover Clusters** (one in each domain).
+2. **Two separate WSFCs are not joined**—they are independent.
+3. **No need for cross-domain trust** if DAG is used.
+4. **Each replica uses database mirroring endpoints (TCP/5022 by default)**.
+5. **Static IPs are strongly recommended** for all servers.
+
+
+🖧 Example IP Planning
+
+Let’s assume:
+
+* **Domain A** = `DomainA.local` (Home/Lab #1 network) → 192.168.1.x
+* **Domain B** = `DomainB.local` (Lab #2 network, maybe routed or in different subnet) → 192.168.2.x
+
+========================================================
+**1. Domain Controllers**
+========================================================
+* DomainA-DC01 → `192.168.1.10`
+* DomainB-DC01 → `192.168.2.10`
+
+These must have **static IPs**. They provide DNS + AD services.
+
+========================================================
+**2. Cluster Nodes (Windows Servers for SQL)**
+========================================================
+* DomainA-SQLNode1 → `192.168.1.20`
+* DomainA-SQLNode2 → `192.168.1.21`
+* DomainB-SQLNode1 → `192.168.2.20`
+* DomainB-SQLNode2 → `192.168.2.21`
+
+👉 If you’re planning **2 replicas in each domain**, that’s a typical design.
+👉 These IPs must be static, registered in DNS of their respective domains.
+
+========================================================
+**3. SQL Server Instances**
+========================================================
+Each node will host a SQL instance. Endpoints use these IPs.
+
+* Use port **5022** (default) for Database Mirroring Endpoints.
+* Example Endpoint URLs:
+
+  * `TCP://DomainA-SQLNode1.DomainA.local:5022`
+  * `TCP://DomainA-SQLNode2.DomainA.local:5022`
+  * `TCP://DomainB-SQLNode1.DomainB.local:5022`
+  * `TCP://DomainB-SQLNode2.DomainB.local:5022`
+
+========================================================
+**4. WSFC Cluster IPs**
+========================================================
+Each domain has its own WSFC. Assign a **Cluster IP** in each subnet.
+
+* DomainA-Cluster IP → `192.168.1.30`
+* DomainB-Cluster IP → `192.168.2.30`
+
+========================================================
+**5. Listener(s)**
+========================================================
+* Each AG inside its own cluster has a **listener** with static IPs.
+* Example:
+
+  * DomainA-AGListener → `192.168.1.40`
+  * DomainB-AGListener → `192.168.2.40`
+
+👉 In DAG setup, apps usually connect to the **local listener**.
+👉 The distributed AG acts as a bridge but doesn’t have a single listener across domains.
+
+========================================================
+**6. Routing Between Domains**
+========================================================
+Since you’re using **192.168.1.x** and **192.168.2.x**, ensure:
+
+* The two networks can **route traffic** (either via router/firewall rules or VPN).
+* Ports to open:
+
+  * **5022** (SQL DB Mirroring Endpoints)
+  * **1433** (SQL default instance)
+  * **59999** (Cluster internal communication, can vary)
+
+========================================================
+✅ Final IP Layout Example
+
+| Component                | Domain A (192.168.1.x) | Domain B (192.168.2.x) |
+|                          | -                      | -                      |
+| Domain Controller (DC)   | 192.168.1.10           | 192.168.2.10           |
+| SQL Node1                | 192.168.1.20           | 192.168.2.20           |
+| SQL Node2                | 192.168.1.21           | 192.168.2.21           |
+| Cluster IP (WSFC)        | 192.168.1.30           | 192.168.2.30           |
+| AG Listener              | 192.168.1.40           | 192.168.2.40           |
+| SQL Endpoint (Port 5022) | Same as node IPs       | Same as node IPs       |
+========================================================
+⚡ **Next Steps to Configure:**
+
+1. Build **Domain Controllers** in each subnet.
+2. Configure **static IPs** for all servers.
+3. Create **WSFC clusters** in each domain.
+4. Create **local AGs** inside each cluster.
+5. Configure **Distributed AG** between the two AGs.
+========================================================
+

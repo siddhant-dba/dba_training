@@ -1,0 +1,58 @@
+1. Resume & Cover letter
+ 
+2. Naming convention 
+
+Cover_Letter_Mallikarjun_13_Years_Experence_Exadaata_Admin_Infrastruture_Lead
+Resume_Mallikarjun_13_Years_Experence_Exadaata_Admin_Infrastruture_Lead
+
+3. IMP points into Resume & Cover letter
+
+a. Heading - Name bold 
+b. Certificates 
+c. Photo 
+d. Social Media/platform  
+e. Mode of communication 
+f. About you / Tech details 
+
+Certificate:
+============
+OCA - 11g/12c - 19c ADMIN 1 (1z0-082)
+OCP - 11g/12c - 19c ADMIN 2 (1z0-083)
+RAC
+
+DBA/junior DBAs 
+1 to 3 / 4 years experience - OCA/OCP
+
+Senior DBA
+4+ to 9+ / 10+ years experience - RAC (1z0-078) (Cloud)
+
+10+ to 16+ years experience - SME / Database Architect 
+GG EBS OBI PS DG OCI EXADATA ODA SUPERCLUSTER 
+MongoDB nosql Postgresql mysql 
+MSSQL DB2 SAP HANA
+
+Above 16+ - Solution Architect 
+Cloud (OCI/AWS/Azure/GCP)
+Devops
+Kubernetes
+Dockers 
+
+
+1Z0-082 --- 19c OCA (Admin1) (20K INR)
+https://education.oracle.com/oracle-database-administration-i/pexam_1Z0-082
+
+1Z0-083 --- 19c OCP (Admin2) (20K INR)
+https://education.oracle.com/oracle-database-administration-ii/pexam_1Z0-083
+
+1Z0-078 --- RAC (20K INR)
+https://education.oracle.com/oracle-database-19c-rac-asm-and-grid-infrastructure-administration/pexam_1Z0-078
+
+DUMPs
+
+
+Mock interview:
+https://mallik034.blogspot.com/
+https://docs.google.com/forms/d/e/1FAIpQLScxgf5aYbbLt98qnghbCoflcSO-ap4B-tq_IV91XzvXxmCwWw/viewform?pli=1
+
+
+

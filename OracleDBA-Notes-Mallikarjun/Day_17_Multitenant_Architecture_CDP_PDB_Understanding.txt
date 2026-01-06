@@ -1,0 +1,1918 @@
+Database Server = Database Instance + Database (Datafiles)
+
+Instance = Memory + BG Process 
+Memory = PGA + SGA
+BG Process = Mandatory & Non-Mandatory 
+
+Database = Datafiles 
+System 
+Sysaux 
+Temp
+Undo 
+User 
+
+
+
+Normal Database Architecture 
+Multitenat Architecture
+
+
+DEVDB = Instance + Database (Datafiles)
+Instance = Memory + BG Process
+Database (Datafiles) = system  sysaux temp undo
+
+
+DEVCDB - Container DB - CDB = Instance + Database (Datafiles)
+Instance = Memory + BG Process
+Database (Datafiles) = system  sysaux temp undo
+
+PDBs
+PDB1 = system  sysaux temp undo
+PDB2 = system  sysaux temp undo
+PDB3 = system  sysaux temp undo
+
+
+
+CDB - DEVCDB 
+
+DEVCDB - Main CDB
+CDB$ROOT - Container ID 1
+PDB$SEED - Container ID 2
+PDB1------ Container ID 3
+
+TESTCDB - Main CDB
+CDB$ROOT - Container ID 1
+PDB$SEED - Container ID 2
+TESTPDB--- Container ID 3
+
+
+1. Clone/create PDB2 from PDB$SEED
+create pluggable database PDB2;
+create pluggable database PDB2 admin user mallik1 identified by mallik1;
+
+2. Clone/create PDB3 from another PDB2
+create pluggable database PDB3 from PDB2;
+
+3. Clone from a Remote CDB
+
+DEVCDB		TESTCDB
+======		========
+PDB1		TESTPDB
+PDB2
+PDB3 ----------- PDB4
+
+a. Connect to TESTCDB 		
+b. create DB link on TESTCDB pointing to DEVCDB
+c. create PDB4 from PDB3@DEVCDB 
+
+CREATE DATABASE LINK TESTCDB_TO_DEVCDB
+CONNECT TO system
+IDENTIFIED BY Mallik123 
+USING 'DEVCDB';
+
+create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB; 
+
+
+4. Convert a non-CDB (Normal DB - DEVDB) to PDB
+https://mallik034.blogspot.com/2022/08/convert-non-cdb-database-as-pdb-inside.html
+
+High level Steps:
+1. Create xml file from Non-CDB (Normal DB) database in read only mode 
+2. Check plug in compatibility check for created xml file from CDB database
+3. Create or plugin Non-CDB database as PDB inside CDB database
+4. Run noncdb_to_pdb.sql sql script inside newly create PDB 
+
+  IF l_result THEN
+    DBMS_OUTPUT.PUT_LINE('compatible');
+  ELSE
+    DBMS_OUTPUT.PUT_LINE('incompatible');
+
+
+5. Unplug and Plug 
+alter pluggable database PDB2 unplug into '/u01/app/oracle/PDB2.xml'
+
+create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml';
+create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml' nocopy;
+
+create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml' nocopy TEMPFILE REUSE;
+
+./dbca
+
+CDB:
+sqlplus / as sysdba
+
+PDB:
+connect to CDB
+alter session set container = PDB1;
+
+close - MOUNTED 
+open  - READ WRITE 
+
+alter pluggable database PDB2 open;
+alter pluggable database PDB2 close;
+
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue May  2 09:00:07 2023 from 172.29.0.102
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle    2190     1  0 09:41 ?        00:00:00 ora_smon_TESTCDB
+root      2229  1241  0 09:41 pts/0    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[root@oraclelab1 ~]# cat e/orat^C
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]#
+[root@oraclelab1 ~]# cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+DEVCDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+TESTCDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle    3729     1  0 09:48 ?        00:00:00 ora_smon_TESTCDB
+root      4827  1241  0 09:50 pts/0    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[root@oraclelab1 ~]# su - oracle
+Last login: Tue May  2 11:06:57 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEVDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 09:52:34 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    3302     1  0 09:45 ?        00:00:00 ora_m001_DEVDB
+oracle    5280  4979  0 09:53 pts/0    00:00:00 grep --color=auto DEVDB
+oracle    8182     1  0 Apr26 ?        00:00:10 /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr LISTENE
+oracle   11450     1  0 Apr27 ?        00:00:30 ora_pmon_DEVDB
+oracle   11452     1  0 Apr27 ?        00:00:09 ora_clmn_DEVDB
+oracle   11454     1  0 Apr27 ?        00:00:49 ora_psp0_DEVDB
+oracle   11457     1  0 Apr27 ?        01:12:22 ora_vktm_DEVDB
+oracle   11461     1  0 Apr27 ?        00:00:20 ora_gen0_DEVDB
+oracle   11463     1  0 Apr27 ?        00:00:09 ora_mman_DEVDB
+oracle   11467     1  0 Apr27 ?        00:01:42 ora_gen1_DEVDB
+oracle   11470     1  0 Apr27 ?        00:00:15 ora_diag_DEVDB
+oracle   11472     1  0 Apr27 ?        00:00:08 ora_ofsd_DEVDB
+oracle   11475     1  0 Apr27 ?        00:03:05 ora_dbrm_DEVDB
+oracle   11477     1  0 Apr27 ?        00:05:37 ora_vkrm_DEVDB
+oracle   11479     1  0 Apr27 ?        00:00:17 ora_svcb_DEVDB
+oracle   11481     1  0 Apr27 ?        00:01:09 ora_pman_DEVDB
+oracle   11483     1  0 Apr27 ?        00:04:32 ora_dia0_DEVDB
+oracle   11485     1  0 Apr27 ?        00:00:24 ora_dbw0_DEVDB
+oracle   11487     1  0 Apr27 ?        00:00:14 ora_lgwr_DEVDB
+oracle   11489     1  0 Apr27 ?        00:01:27 ora_ckpt_DEVDB
+oracle   11491     1  0 Apr27 ?        00:00:10 ora_lg00_DEVDB
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   11495     1  0 Apr27 ?        00:00:04 ora_lg01_DEVDB
+oracle   11497     1  0 Apr27 ?        00:00:48 ora_smco_DEVDB
+oracle   11499     1  0 Apr27 ?        00:00:02 ora_reco_DEVDB
+oracle   11501     1  0 Apr27 ?        00:00:11 ora_w000_DEVDB
+oracle   11503     1  0 Apr27 ?        00:00:14 ora_lreg_DEVDB
+oracle   11505     1  0 Apr27 ?        00:00:10 ora_w001_DEVDB
+oracle   11507     1  0 Apr27 ?        00:00:08 ora_pxmn_DEVDB
+oracle   11511     1  0 Apr27 ?        00:01:47 ora_mmon_DEVDB
+oracle   11513     1  0 Apr27 ?        00:02:14 ora_mmnl_DEVDB
+oracle   11515     1  0 Apr27 ?        00:00:05 ora_d000_DEVDB
+oracle   11517     1  0 Apr27 ?        00:00:04 ora_s000_DEVDB
+oracle   11519     1  0 Apr27 ?        00:00:06 ora_tmon_DEVDB
+oracle   11533     1  0 Apr27 ?        00:00:05 ora_tt00_DEVDB
+oracle   11535     1  0 Apr27 ?        00:00:04 ora_arc0_DEVDB
+oracle   11537     1  0 Apr27 ?        00:00:03 ora_tt01_DEVDB
+oracle   11539     1  0 Apr27 ?        00:00:03 ora_arc1_DEVDB
+oracle   11541     1  0 Apr27 ?        00:00:02 ora_arc2_DEVDB
+oracle   11543     1  0 Apr27 ?        00:00:02 ora_arc3_DEVDB
+oracle   11545     1  0 Apr27 ?        00:00:15 ora_tt02_DEVDB
+oracle   11549     1  0 Apr27 ?        00:00:03 ora_aqpc_DEVDB
+oracle   11551     1  0 Apr27 ?        00:00:04 ora_qm02_DEVDB
+oracle   11555     1  0 Apr27 ?        00:00:03 ora_q002_DEVDB
+oracle   11557     1  0 Apr27 ?        00:07:40 ora_cjq0_DEVDB
+oracle   11561     1  0 Apr27 ?        00:00:11 ora_p000_DEVDB
+oracle   11563     1  0 Apr27 ?        00:00:11 ora_p001_DEVDB
+oracle   11565     1  0 Apr27 ?        00:00:11 ora_p002_DEVDB
+oracle   11567     1  0 Apr27 ?        00:00:11 ora_p003_DEVDB
+oracle   11571     1  0 Apr27 ?        00:00:10 ora_w002_DEVDB
+oracle   11763     1  0 Apr27 ?        00:00:11 ora_w003_DEVDB
+oracle   11769     1  0 Apr27 ?        00:00:11 ora_w004_DEVDB
+oracle   11788     1  0 Apr27 ?        00:00:04 ora_q003_DEVDB
+oracle   12403     1  0 Apr27 ?        00:00:10 ora_w005_DEVDB
+oracle   12407     1  0 Apr27 ?        00:00:10 ora_w006_DEVDB
+oracle   12412     1  0 Apr27 ?        00:00:10 ora_w007_DEVDB
+oracle   17255     1  0 06:01 ?        00:00:07 ora_m005_DEVDB
+oracle   19347     1  0 06:35 ?        00:00:07 ora_m004_DEVDB
+oracle   25525     1  0 08:15 ?        00:00:03 ora_m003_DEVDB
+oracle   26114     1  0 08:25 ?        00:00:03 ora_m000_DEVDB
+[oracle@oraclelab1 ~]$
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Wed May  3 09:51:40 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Wed May  3 09:52:04 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVCDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:47:03 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+         5 PDB3                           READ WRITE NO
+SQL> grant create pluggable database to system;
+
+Grant succeeded.
+
+SQL> grant sysoper to system;
+
+Grant succeeded.
+
+SQL> grant create pluggable database to system container=all;
+
+Grant succeeded.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+         5 PDB3                           READ WRITE NO
+SQL> alter pluggable database PDB2 unplug into '/u01/app/oracle/PDB2.xml'
+  2  ;
+alter pluggable database PDB2 unplug into '/u01/app/oracle/PDB2.xml'
+*
+ERROR at line 1:
+ORA-65025: Pluggable database PDB2 is not closed on all instances.
+
+
+SQL> alter pluggable database PDB2 close;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           MOUNTED
+         5 PDB3                           READ WRITE NO
+SQL> alter pluggable database PDB2 unplug into '/u01/app/oracle/PDB2.xml';
+
+Pluggable database altered.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ more /u01/app/oracle/PDB2.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<PDB>
+  <xmlversion>1</xmlversion>
+  <pdbname>PDB2</pdbname>
+  <cid>4</cid>
+  <byteorder>1</byteorder>
+  <vsn>318767104</vsn>
+  <vsns>
+    <vsnnum>19.0.0.0.0</vsnnum>
+    <cdbcompt>19.0.0.0.0</cdbcompt>
+    <pdbcompt>19.0.0.0.0</pdbcompt>
+    <vsnlibnum>0.0.0.0.24</vsnlibnum>
+    <vsnsql>24</vsnsql>
+    <vsnbsv>8.0.0.0.0</vsnbsv>
+  </vsns>
+  <dbid>3690694502</dbid>
+  <ncdb2pdb>0</ncdb2pdb>
+  <cdbid>2748584511</cdbid>
+  <guid>FAC3DDB475181E39E053B404260A5A37</guid>
+  <uscnbas>2245257</uscnbas>
+  <uscnwrp>0</uscnwrp>
+  <undoscn>280</undoscn>
+  <rdba>4194824</rdba>
+  <tablespace>
+    <name>SYSTEM</name>
+    <type>0</type>
+    <tsn>0</tsn>
+    <status>1</status>
+    <issft>0</issft>
+    <isnft>0</isnft>
+    <encts>0</encts>
+    <flags>0</flags>
+    <bmunitsize>8</bmunitsize>
+    <file>
+      <path>/u01/app/oracle/oradata/DEVCDB/FAC3DDB475181E39E053B404260A5A37/datafile/o1_mf_system_l53tb
+      <afn>13</afn>
+      <rfn>1</rfn>
+      <createscnbas>2159036</createscnbas>
+      <createscnwrp>0</createscnwrp>
+      <status>1</status>
+      <fileblocks>34560</fileblocks>
+      <blocksize>8192</blocksize>
+      <vsn>318767104</vsn>
+      <fdbid>3690694502</fdbid>
+      <fcpsb>2245248</fcpsb>
+      <fcpsw>0</fcpsw>
+      <frlsb>1920977</frlsb>
+      <frlsw>0</frlsw>
+      <frlt>1135846850</frlt>
+      <autoext>1</autoext>
+      <maxsize>4194302</maxsize>
+      <incsize>1280</incsize>
+      <plugscn>0</plugscn>
+      <plugafn>0</plugafn>
+      <plugdbid>0</plugdbid>
+    </file>
+  </tablespace>
+  <tablespace>
+    <name>SYSAUX</name>
+    <type>0</type>
+    <tsn>1</tsn>
+    <status>1</status>
+    <issft>0</issft>
+    <isnft>0</isnft>
+    <encts>0</encts>
+    <flags>0</flags>
+    <bmunitsize>8</bmunitsize>
+    <file>
+      <path>/u01/app/oracle/oradata/DEVCDB/FAC3DDB475181E39E053B404260A5A37/datafile/o1_mf_sysaux_l53tb
+      <afn>14</afn>
+      <rfn>4</rfn>
+      <createscnbas>2159040</createscnbas>
+      <createscnwrp>0</createscnwrp>
+      <status>1</status>
+      <fileblocks>43520</fileblocks>
+      <blocksize>8192</blocksize>
+      <vsn>318767104</vsn>
+      <fdbid>3690694502</fdbid>
+      <fcpsb>2245248</fcpsb>
+      <fcpsw>0</fcpsw>
+      <frlsb>1920977</frlsb>
+      <frlsw>0</frlsw>
+      <frlt>1135846850</frlt>
+      <autoext>1</autoext>
+      <maxsize>4194302</maxsize>
+      <incsize>1280</incsize>
+      <plugscn>0</plugscn>
+      <plugafn>0</plugafn>
+      <plugdbid>0</plugdbid>
+    </file>
+  </tablespace>
+  <tablespace>
+    <name>UNDOTBS1</name>
+    <type>2</type>
+    <tsn>2</tsn>
+    <status>1</status>
+    <issft>0</issft>
+    <isnft>0</isnft>
+    <encts>0</encts>
+    <flags>0</flags>
+    <bmunitsize>8</bmunitsize>
+    <file>
+      <path>/u01/app/oracle/oradata/DEVCDB/FAC3DDB475181E39E053B404260A5A37/datafile/o1_mf_undotbs1_l53
+      <afn>15</afn>
+      <rfn>9</rfn>
+      <createscnbas>2159043</createscnbas>
+      <createscnwrp>0</createscnwrp>
+      <status>1</status>
+      <fileblocks>12800</fileblocks>
+      <blocksize>8192</blocksize>
+      <vsn>318767104</vsn>
+      <fdbid>3690694502</fdbid>
+      <fcpsb>2245248</fcpsb>
+      <fcpsw>0</fcpsw>
+      <frlsb>1920977</frlsb>
+      <frlsw>0</frlsw>
+      <frlt>1135846850</frlt>
+      <autoext>1</autoext>
+      <maxsize>4194302</maxsize>
+      <incsize>640</incsize>
+      <plugscn>0</plugscn>
+      <plugafn>0</plugafn>
+      <plugdbid>0</plugdbid>
+    </file>
+  </tablespace>
+  <tablespace>
+    <name>TEMP</name>
+    <type>1</type>
+    <tsn>3</tsn>
+    <status>1</status>
+    <issft>0</issft>
+    <isnft>0</isnft>
+    <encts>0</encts>
+    <flags>0</flags>
+    <bmunitsize>128</bmunitsize>
+    <file>
+      <path>/u01/app/oracle/oradata/DEVCDB/FAC3DDB475181E39E053B404260A5A37/datafile/o1_mf_temp_l53tb5s
+      <afn>4</afn>
+      <rfn>1</rfn>
+      <createscnbas>2159037</createscnbas>
+      <createscnwrp>0</createscnwrp>
+      <status>1</status>
+      <fileblocks>4608</fileblocks>
+      <blocksize>8192</blocksize>
+      <vsn>318767104</vsn>
+      <autoext>1</autoext>
+      <maxsize>4194302</maxsize>
+      <incsize>80</incsize>
+      <plugscn>0</plugscn>
+      <plugafn>0</plugafn>
+      <plugdbid>0</plugdbid>
+    </file>
+  </tablespace>
+  <recover>0</recover>
+  <optional>
+    <ncdb2pdb>0</ncdb2pdb>
+    <csid>873</csid>
+    <ncsid>2000</ncsid>
+    <options>
+      <option>APS=19.0.0.0.0</option>
+      <option>CATALOG=19.0.0.0.0</option>
+      <option>CATJAVA=19.0.0.0.0</option>
+      <option>CATPROC=19.0.0.0.0</option>
+      <option>CONTEXT=19.0.0.0.0</option>
+      <option>DV=19.0.0.0.0</option>
+      <option>JAVAVM=19.0.0.0.0</option>
+      <option>OLS=19.0.0.0.0</option>
+      <option>ORDIM=19.0.0.0.0</option>
+      <option>OWM=19.0.0.0.0</option>
+      <option>SDO=19.0.0.0.0</option>
+      <option>XDB=19.0.0.0.0</option>
+      <option>XML=19.0.0.0.0</option>
+      <option>XOQ=19.0.0.0.0</option>
+    </options>
+    <olsoid>0</olsoid>
+    <dv>0</dv>
+    <APEX>NULL</APEX>
+    <parameters>
+      <parameter>processes=300</parameter>
+      <parameter>nls_language='AMERICAN'</parameter>
+      <parameter>nls_territory='AMERICA'</parameter>
+      <parameter>db_block_size=8192</parameter>
+      <parameter>compatible='19.0.0'</parameter>
+      <parameter>open_cursors=300</parameter>
+      <parameter>pga_aggregate_target=1225785344</parameter>
+      <parameter>enable_pluggable_database=TRUE</parameter>
+    </parameters>
+    <sqlpatches>
+      <sqlpatch>19.3.0.0.0 Release_Update 1904101227 (RU): APPLY SUCCESS</sqlpatch>
+    </sqlpatches>
+    <tzvers>
+      <tzver>primary version:32</tzver>
+      <tzver>secondary version:0</tzver>
+    </tzvers>
+    <walletkey>0</walletkey>
+    <services/>
+    <opatches>
+      <opatch>29517242</opatch>
+    </opatches>
+    <hasclob>1</hasclob>
+    <awr>
+      <loadprofile>CPU used by this session=41.759011</loadprofile>
+      <loadprofile>DB time=44.368386</loadprofile>
+      <loadprofile>db block changes=1441.116819</loadprofile>
+      <loadprofile>execute count=561.703456</loadprofile>
+      <loadprofile>logons cumulative=1.043871</loadprofile>
+      <loadprofile>parse count (hard)=16.074295</loadprofile>
+      <loadprofile>parse count (total)=304.342896</loadprofile>
+      <loadprofile>physical reads=127.892279</loadprofile>
+      <loadprofile>physical writes=1.505837</loadprofile>
+      <loadprofile>redo size=307708.801830</loadprofile>
+      <loadprofile>session logical reads=4361.164793</loadprofile>
+      <loadprofile>user calls=5.289242</loadprofile>
+      <loadprofile>user commits=2.618043</loadprofile>
+      <loadprofile>user rollbacks=0.027916</loadprofile>
+    </awr>
+    <hardvsnchk>0</hardvsnchk>
+    <localundo>1</localundo>
+    <apps/>
+    <dbedition>8</dbedition>
+    <dvopsctl>2</dvopsctl>
+    <clnupsrcpal>1</clnupsrcpal>
+  </optional>
+</PDB>
+[oracle@oraclelab1 ~]$
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   11711 10283  0 11:06 pts/3    00:00:00 grep --color=auto smon
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVCDB] ? DEVDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 11:06:42 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+SQL>
+SQL> show pdbs
+SQL> show parameter db_create
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_create_file_dest                  string      /u01/app/oracle/oradata
+db_create_online_log_dest_1          string
+db_create_online_log_dest_2          string
+db_create_online_log_dest_3          string
+db_create_online_log_dest_4          string
+db_create_online_log_dest_5          string
+SQL>
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Wed May  3 09:33:31 2023 from 172.29.0.102
+[root@oraclelab1 ~]# su - oracle
+Last login: Wed May  3 09:51:49 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVCDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEVCDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    3729     1  0 09:48 ?        00:00:00 ora_smon_TESTCDB
+oracle    5204  5139  0 09:52 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 09:52:42 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVCDB
+oracle     530     1  0 09:23 ?        00:00:00 ora_w006_DEVCDB
+oracle     535     1  0 09:23 ?        00:00:00 ora_w007_DEVCDB
+oracle    5298  5139  0 09:53 pts/2    00:00:00 grep --color=auto DEVCDB
+oracle   31952     1  0 09:13 ?        00:00:00 ora_pmon_DEVCDB
+oracle   31954     1  0 09:13 ?        00:00:00 ora_clmn_DEVCDB
+oracle   31956     1  0 09:13 ?        00:00:00 ora_psp0_DEVCDB
+oracle   31959     1  0 09:13 ?        00:00:13 ora_vktm_DEVCDB
+oracle   31963     1  0 09:13 ?        00:00:00 ora_gen0_DEVCDB
+oracle   31965     1  0 09:13 ?        00:00:00 ora_mman_DEVCDB
+oracle   31969     1  0 09:13 ?        00:00:00 ora_gen1_DEVCDB
+oracle   31972     1  0 09:13 ?        00:00:00 ora_diag_DEVCDB
+oracle   31974     1  0 09:13 ?        00:00:00 ora_ofsd_DEVCDB
+oracle   31977     1  0 09:13 ?        00:00:01 ora_dbrm_DEVCDB
+oracle   31979     1  0 09:13 ?        00:00:00 ora_vkrm_DEVCDB
+oracle   31981     1  0 09:13 ?        00:00:00 ora_svcb_DEVCDB
+oracle   31983     1  0 09:13 ?        00:00:00 ora_pman_DEVCDB
+oracle   31985     1  0 09:13 ?        00:00:01 ora_dia0_DEVCDB
+oracle   31987     1  0 09:13 ?        00:00:00 ora_dbw0_DEVCDB
+oracle   31989     1  0 09:13 ?        00:00:00 ora_lgwr_DEVCDB
+oracle   31991     1  0 09:13 ?        00:00:00 ora_ckpt_DEVCDB
+oracle   31993     1  0 09:13 ?        00:00:00 ora_lg00_DEVCDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+oracle   31997     1  0 09:13 ?        00:00:00 ora_lg01_DEVCDB
+oracle   31999     1  0 09:13 ?        00:00:00 ora_smco_DEVCDB
+oracle   32001     1  0 09:13 ?        00:00:00 ora_reco_DEVCDB
+oracle   32003     1  0 09:13 ?        00:00:00 ora_w000_DEVCDB
+oracle   32005     1  0 09:13 ?        00:00:00 ora_lreg_DEVCDB
+oracle   32007     1  0 09:13 ?        00:00:00 ora_w001_DEVCDB
+oracle   32009     1  0 09:13 ?        00:00:00 ora_pxmn_DEVCDB
+oracle   32013     1  0 09:13 ?        00:00:02 ora_mmon_DEVCDB
+oracle   32015     1  0 09:13 ?        00:00:00 ora_mmnl_DEVCDB
+oracle   32017     1  0 09:13 ?        00:00:00 ora_d000_DEVCDB
+oracle   32019     1  0 09:13 ?        00:00:00 ora_s000_DEVCDB
+oracle   32021     1  0 09:13 ?        00:00:00 ora_tmon_DEVCDB
+oracle   32027     1  0 09:13 ?        00:00:01 ora_m000_DEVCDB
+oracle   32029     1  0 09:13 ?        00:00:01 ora_m001_DEVCDB
+oracle   32035     1  0 09:13 ?        00:00:00 ora_tt00_DEVCDB
+oracle   32037     1  0 09:13 ?        00:00:00 ora_arc0_DEVCDB
+oracle   32039     1  0 09:13 ?        00:00:00 ora_tt01_DEVCDB
+oracle   32041     1  0 09:13 ?        00:00:00 ora_arc1_DEVCDB
+oracle   32043     1  0 09:13 ?        00:00:00 ora_arc2_DEVCDB
+oracle   32045     1  0 09:13 ?        00:00:00 ora_arc3_DEVCDB
+oracle   32047     1  0 09:13 ?        00:00:00 ora_tt02_DEVCDB
+oracle   32051     1  0 09:13 ?        00:00:00 ora_aqpc_DEVCDB
+oracle   32056     1  0 09:13 ?        00:00:00 ora_p000_DEVCDB
+oracle   32058     1  0 09:13 ?        00:00:00 ora_p001_DEVCDB
+oracle   32060     1  0 09:13 ?        00:00:00 ora_p002_DEVCDB
+oracle   32062     1  0 09:13 ?        00:00:00 ora_p003_DEVCDB
+oracle   32064     1  0 09:13 ?        00:00:02 ora_cjq0_DEVCDB
+oracle   32067     1  0 09:13 ?        00:00:00 ora_w002_DEVCDB
+oracle   32226     1  0 09:13 ?        00:00:00 ora_w003_DEVCDB
+oracle   32228     1  0 09:13 ?        00:00:00 ora_qm02_DEVCDB
+oracle   32234     1  0 09:13 ?        00:00:00 ora_q003_DEVCDB
+oracle   32247     1  0 09:13 ?        00:00:02 ora_m002_DEVCDB
+oracle   32249     1  0 09:13 ?        00:00:01 ora_m003_DEVCDB
+oracle   32274     1  0 09:13 ?        00:00:01 ora_m004_DEVCDB
+oracle   32276     1  0 09:13 ?        00:00:00 ora_q004_DEVCDB
+oracle   32278     1  0 09:13 ?        00:00:00 ora_w004_DEVCDB
+oracle   32351     1  0 09:14 ?        00:00:00 ora_w005_DEVCDB
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 09:59:18 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle    6346  5139  0 10:02 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVCDB] ? TESTCDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=TESTCDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:03:33 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+SQL>
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle    6590  5139  0 10:06 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [TESTCDB] ? DEVCDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as ssydba
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:16:08 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle    7335  5139  0 10:18 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle    7516  5139  0 10:21 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVCDB] ? DEVCDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ env |grep ORA
+ORACLE_SID=DEVCDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as ssydba
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 ~]$ sqlplus / as ssydba
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:22:11 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL> alter session set container = PDB1;
+
+Session altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         3 PDB1                           READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[A[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:24:58 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+SQL> create pluggable database PDB2;
+create pluggable database PDB2
+                             *
+ERROR at line 1:
+ORA-00922: missing or invalid option
+
+
+SQL> create pluggable database PDB2 admin user mallik1 identified by mallik1;
+
+Pluggable database created.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           MOUNTED
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5464     1  0 09:55 ?        00:00:00 ora_smon_TESTCDB
+oracle    7837  5139  0 10:26 pts/2    00:00:00 grep --color=auto smon
+oracle   11493     1  0 Apr27 ?        00:00:07 ora_smon_DEVDB
+oracle   31995     1  0 09:13 ?        00:00:00 ora_smon_DEVCDB
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:27:40 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           MOUNTED
+SQL> alter pluggable database PDB2 open;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+SQL> alter pluggable database PDB2 close;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           MOUNTED
+SQL> alter pluggable database PDB2 open;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+SQL> alter session set container = PDB2;
+
+Session altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         4 PDB2                           READ WRITE NO
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:30:08 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+SQL> create pluggable database PDB3 from PDB2;
+
+Pluggable database created.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+         5 PDB3                           MOUNTED
+SQL> alter pluggable database PDB3 open;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 PDB1                           READ WRITE NO
+         4 PDB2                           READ WRITE NO
+         5 PDB3                           READ WRITE NO
+SQL> alter session set container = PDB3;
+
+Session altered.
+
+SQL>
+SQL> select username from dba_users where username='MALLIk1';
+
+no rows selected
+
+SQL> select username from dba_users where username='MALLIK1';
+
+USERNAME
+--------------------------------------------------------------------------------
+MALLIK1
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$ cat /etc/oratab
+#
+
+
+
+# This file is used by ORACLE utilities.  It is created by root.sh
+# and updated by either Database Configuration Assistant while creating
+# a database or ASM Configuration Assistant while creating ASM instance.
+
+# A colon, ':', is used as the field terminator.  A new line terminates
+# the entry.  Lines beginning with a pound sign, '#', are comments.
+#
+# Entries are of the form:
+#   $ORACLE_SID:$ORACLE_HOME:<N|Y>:
+#
+# The first and second fields are the system identifier and home
+# directory of the database respectively.  The third field indicates
+# to the dbstart utility that the database should , "Y", or should not,
+# "N", be brought up at system boot time.
+#
+# Multiple entries with the same $ORACLE_SID are not allowed.
+#
+#
+DEVDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+DEVCDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+TESTCDB:/u01/app/oracle/product/19.0.0.0/dbhome_1:N
+[oracle@oraclelab1 ~]$ cd /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/
+[oracle@oraclelab1 admin]$ vi listener.ora
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ ps -ef|grep tns
+root        23     2  0 Apr26 ?        00:00:00 [netns]
+oracle    8182     1  0 Apr26 ?        00:00:10 /u01/app/oracle/product/19.0.0.0/dbhome_1/bi -inherit
+oracle    9587  5139  0 10:37 pts/2    00:00:00 grep --color=auto tns
+[oracle@oraclelab1 admin]$ kill -9 8182
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ cat listener.ora
+# listener.ora Network Configuration File: /u01/app/oracle/product/19.0.0.0/dbhome_1/network
+# Generated by Oracle configuration tools.
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = oraclelab1.localdomain.com)(PORT = 1521))
+    )
+  )
+
+ADR_BASE_LISTENER = /u01/app/oracle
+[oracle@oraclelab1 admin]$ lsnrctl start LISTENER
+
+LSNRCTL for Linux: Version 19.0.0.0.0 - Production on 03-MAY-2023 10:37:52
+
+Copyright (c) 1991, 2019, Oracle.  All rights reserved.
+
+Starting /u01/app/oracle/product/19.0.0.0/dbhome_1/bin/tnslsnr: please wait...
+
+TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+System parameter file is /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.or
+Log messages written to /u01/app/oracle/diag/tnslsnr/oraclelab1/listener/alert/log.xml
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=152
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=152
+STATUS of the LISTENER
+------------------------
+Alias                     LISTENER
+Version                   TNSLSNR for Linux: Version 19.0.0.0.0 - Production
+Start Date                03-MAY-2023 10:37:52
+Uptime                    0 days 0 hr. 0 min. 0 sec
+Trace Level               off
+Security                  ON: Local OS Authentication
+SNMP                      OFF
+Listener Parameter File   /u01/app/oracle/product/19.0.0.0/dbhome_1/network/admin/listener.o
+Listener Log File         /u01/app/oracle/diag/tnslsnr/oraclelab1/listener/alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=oraclelab1.localdomain.com)(PORT=1521)))
+The listener supports no services
+The command completed successfully
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ vi tnsnames.ora
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ . oraenv
+ORACLE_SID = [DEVCDB] ? TESTCDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ env |grep ORA
+ORACLE_SID=TESTCDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ sqlplus / as sysdbva
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 admin]$ sqlplus / as sysdbba
+
+SQL*Plus: Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Use SQL*Plus to execute SQL, PL/SQL and SQL*Plus statements.
+
+Usage 1: sqlplus -H | -V
+
+    -H             Displays the SQL*Plus version and the
+                   usage help.
+    -V             Displays the SQL*Plus version.
+
+Usage 2: sqlplus [ [<option>] [{logon | /nolog}] [<start>] ]
+
+  <option> is: [-AC] [-C <version>] [-F] [-L] [-M "<options>"] [-NOLOGINTIME]
+               [-R <level>] [-S]
+
+    -AC            Enable Application Continuity.
+    -C <version>   Sets the compatibility of affected commands to the
+                   version specified by <version>.  The version has
+                   the form "x.y[.z]".  For example, -C 10.2.0
+    -F             This option improves performance in general. It changes
+                   the default values settings.
+                   See SQL*Plus User's Guide for the detailed settings.
+    -L             Attempts to log on just once, instead of
+                   reprompting on error.
+    -M "<options>" Sets automatic HTML or CSV markup of output.  The options
+                   have the form:
+                   {HTML html_options|CSV csv_options}
+                   See SQL*Plus User's Guide for detailed HTML and CSV options.
+    -NOLOGINTIME   Don't display Last Successful Login Time.
+    -R <level>     Sets restricted mode to disable SQL*Plus commands
+                   that interact with the file system.  The level can
+                   be 1, 2 or 3.  The most restrictive is -R 3 which
+                   disables all user commands interacting with the
+                   file system.
+    -S             Sets silent mode which suppresses the display of
+                   the SQL*Plus banner, prompts, and echoing of
+                   commands.
+
+  <logon> is: {<username>[/<password>][@<connect_identifier>] | / }
+              [AS {SYSDBA | SYSOPER | SYSASM | SYSBACKUP | SYSDG
+              | SYSKM | SYSRAC}] [EDITION=value]
+
+    Specifies the database account username, password and connect
+    identifier for the database connection.  Without a connect
+    identifier, SQL*Plus connects to the default database.
+
+    The AS SYSDBA, AS SYSOPER, AS SYSASM, AS SYSBACKUP, AS SYSDG,
+    AS SYSKM and AS SYSRAC options are database administration privileges.
+
+    <connect_identifier> can be in the form of Net Service Name
+    or Easy Connect.
+
+      @[<net_service_name> | [[//]Host[:Port]/<service_name>] |
+        [[[protocol:]//]host1{,host12}[:port1]{,host2:port2}[/service_name]
+         [:server][/instance_name][?[parameter_name=value]
+         {&parameter_name=value}]]]
+
+        <net_service_name> is a simple name for a service that resolves
+        to a connect descriptor.
+
+        Example: Connect to database using Net Service Name and the
+                 database net service name is ORCL.
+
+           sqlplus myusername/mypassword@ORCL
+
+        Host specifies the host name or IP address of the database
+        server computer.
+
+        Port specifies the listening port on the database server.
+
+        <service_name> specifies the service name of the database you
+        want to access.
+
+        Example: Connect to database using Easy Connect and the
+                 Service name is ORCL.
+
+           sqlplus myusername/mypassword@Host/ORCL
+
+    The /NOLOG option starts SQL*Plus without connecting to a
+    database.
+
+    The EDITION specifies the value for Session Edition.
+
+
+  <start> is: @<URL>|<filename>[.<ext>] [<parameter> ...]
+
+    Runs the specified SQL*Plus script from a web server (URL) or the
+    local file system (filename.ext) with specified parameters that
+    will be assigned to substitution variables in the script.
+
+When SQL*Plus starts, and after CONNECT commands, the site profile
+(e.g. $ORACLE_HOME/sqlplus/admin/glogin.sql) and the user profile
+(e.g. login.sql in the working directory) are run.  The files may
+contain SQL*Plus commands.
+
+Refer to the SQL*Plus User's Guide and Reference for more information.
+[oracle@oraclelab1 admin]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:42:36 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+SQL> CREATE DATABASE LINK TESTCDB_TO_DEVCDB
+CONNECT TO system ID
+ENTIFIED BY Mallik123
+USING 'DEVCDB';  2    3    4
+CONNECT TO system ID
+                  *
+ERROR at line 2:
+ORA-00954: missing IDENTIFIED keyword
+
+
+SQL>
+SQL> CREATE DATABASE LINK TESTCDB_TO_DEVCDB
+CONNECT TO system ID
+IDENTIFIED BY Mallik123
+USING 'DEVCDB';  2    3    4
+CONNECT TO system ID
+                  *
+ERROR at line 2:
+ORA-00954: missing IDENTIFIED keyword
+
+
+SQL> CREATE DATABASE LINK TESTCDB_TO_DEVCDB
+CONNECT TO system
+IDENTIFIED BY Mallik123
+USING 'DEVCDB';  2    3    4
+
+Database link created.
+
+SQL> select * from global_name;
+
+GLOBAL_NAME
+--------------------------------------------------------------------------------
+TESTCDB
+
+SQL> select * from global_name@TESTCDB_TO_DEVCDB;
+
+GLOBAL_NAME
+--------------------------------------------------------------------------------
+DEVCDB
+
+SQL> create pluggable database PDB4 from PDB3@ESTCDB_TO_DEVCDB;
+create pluggable database PDB4 from PDB3@ESTCDB_TO_DEVCDB
+*
+ERROR at line 1:
+ORA-04054: database link ESTCDB_TO_DEVCDB does not exist
+
+
+SQL> create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB;
+create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB
+*
+ERROR at line 1:
+ORA-17628: Oracle error 1031 returned by remote Oracle server
+ORA-01031: insufficient privileges
+
+
+SQL> create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB;
+create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB
+*
+ERROR at line 1:
+ORA-17628: Oracle error 1031 returned by remote Oracle server
+ORA-01031: insufficient privileges
+
+
+SQL> create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB;
+create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB
+*
+ERROR at line 1:
+ORA-17628: Oracle error 1031 returned by remote Oracle server
+ORA-01031: insufficient privileges
+
+
+SQL> grant create pluggable database to system;
+
+Grant succeeded.
+
+SQL> grant sysoper to system;
+
+Grant succeeded.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 admin]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 10:48:10 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB;
+create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB
+*
+ERROR at line 1:
+ORA-17628: Oracle error 1031 returned by remote Oracle server
+ORA-01031: insufficient privileges
+
+
+SQL> create pluggable database PDB4 from PDB3@TESTCDB_TO_DEVCDB;
+
+Pluggable database created.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           MOUNTED
+SQL> alter pluggable database PDB4 open;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           READ WRITE NO
+SQL> alter session set container=PDB4;
+
+Session altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         4 PDB4                           READ WRITE NO
+SQL> select username from dba_users where username='MALLIK1';
+
+USERNAME
+--------------------------------------------------------------------------------
+MALLIK1
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+You have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 admin]$
+[oracle@oraclelab1 admin]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed May 3 11:00:11 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           READ WRITE NO
+SQL> create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml' nocopy;
+create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml' nocopy
+*
+ERROR at line 1:
+ORA-27038: created file already exists
+ORA-01119: error in creating database file
+'/u01/app/oracle/oradata/DEVCDB/FAC3DDB475181E39E053B404260A5A37/datafile/o1_mf_
+temp_l53tb5sf_.dbf'
+
+
+SQL> create pluggable database PDB2 using '/u01/app/oracle/PDB2.xml' nocopy TEMPFILE REUSE;
+
+Pluggable database created.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           READ WRITE NO
+         6 PDB2                           MOUNTED
+SQL> alter pluggable database PDB2 open;
+
+Pluggable database altered.
+
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           READ WRITE NO
+         6 PDB2                           READ WRITE NO
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> show pdbs
+
+    CON_ID CON_NAME                       OPEN MODE  RESTRICTED
+---------- ------------------------------ ---------- ----------
+         2 PDB$SEED                       READ ONLY  NO
+         3 TESTPDB                        READ WRITE NO
+         4 PDB4                           READ WRITE NO
+         6 PDB2                           READ WRITE NO
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 admin]$
+Network error: Software caused connection abort
+
+────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+

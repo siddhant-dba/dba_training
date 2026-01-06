@@ -1,0 +1,13 @@
+
+ssh-keygen -R github.com
+
+cd /d/GitHub/AutoMon
+
+git status
+git add 28_1_Job_Failed_last_one_day_excel.sql
+git add .
+git commit -m "Correcting Script"
+git pull origin master
+git push origin master
+git status
+On branch master

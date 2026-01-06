@@ -1,0 +1,10 @@
+
+Installation Day_3 - oraclelab1 - DEVDB
+
+Installation Day_4 - oraclelab2 - ASM & TESTDB
+
+oraclelab1.rar
+oraclelab2.rar
+
+oraclelab1_with_DB.rar
+oraclelab2_with_ASM_n_DB_with_oracle.rar

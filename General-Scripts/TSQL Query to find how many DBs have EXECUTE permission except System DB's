@@ -1,0 +1,54 @@
+--TSQL Query to find DBs have EXECUTE permission except System DB's
+
+DECLARE @sql NVARCHAR(MAX) = N'';
+DECLARE @dbName SYSNAME;
+
+-- Table to collect results
+IF OBJECT_ID('tempdb..#ExecPermissionCheck') IS NOT NULL DROP TABLE #ExecPermissionCheck;
+CREATE TABLE #ExecPermissionCheck (
+    DatabaseName SYSNAME,
+    HasExecutePermission BIT
+);
+
+-- Cursor to loop through all user databases
+DECLARE db_cursor CURSOR FOR
+SELECT name
+FROM sys.databases
+WHERE database_id > 4 -- Exclude system databases: master, model, msdb, tempdb
+  AND state_desc = 'ONLINE';
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @dbName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = '
+    USE [' + QUOTENAME(@dbName) + '];
+    IF EXISTS (
+        SELECT 1
+        FROM sys.database_permissions p
+        JOIN sys.objects o ON p.major_id = o.object_id
+        WHERE p.permission_name = ''EXECUTE''
+    )
+    BEGIN
+        INSERT INTO #ExecPermissionCheck VALUES (''' + @dbName + ''', 1);
+    END
+    ELSE
+    BEGIN
+        INSERT INTO #ExecPermissionCheck VALUES (''' + @dbName + ''', 0);
+    END
+    ';
+    EXEC sp_executesql @sql;
+    FETCH NEXT FROM db_cursor INTO @dbName;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- Final result: count of databases with EXECUTE permission
+SELECT COUNT(*) AS DatabasesWithExecutePermission
+FROM #ExecPermissionCheck
+WHERE HasExecutePermission = 1;
+
+-- Optional: see detailed list
+-- SELECT * FROM #ExecPermissionCheck;

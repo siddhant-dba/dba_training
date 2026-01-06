@@ -1,0 +1,109 @@
+Performing a planned failover from AG Primary to AG Secondary involves some pre-checks to ensure a smooth transition with zero data loss and application continuity.
+
+Here’s a structured checklist for pre-checks before a planned AG Group failover, especially when you want the AG Secondary Replica to serve as AG Primary seamlessly.
+
+ ✅ Pre-Checklist Before Planned Failover (AG Primary ➝ AG Secondary)
+
+ 1. 📊 Replica Synchronization Check
+
+Ensure the secondary replica is fully synchronized.
+
+SELECT 
+    ag.name AS AG_Name,
+    ar.replica_server_name,
+    ars.role_desc,
+    dbs.database_name,
+    dbs.synchronization_state_desc,
+    dbs.synchronization_health_desc
+FROM 
+    sys.availability_groups ag
+JOIN 
+    sys.availability_replicas ar ON ag.group_id = ar.group_id
+JOIN 
+    sys.dm_hadr_availability_replica_states ars ON ar.replica_id = ars.replica_id
+JOIN 
+    sys.dm_hadr_database_replica_states dbs ON ar.replica_id = dbs.replica_id
+WHERE 
+    ars.role_desc = 'SECONDARY';
+
+
+* ❗Must be: `SYNCHRONIZED` and `HEALTHY`
+
+
+ 2. 🧠 Understand the Type of Failover
+
+You are doing a manual/planned failover, so:
+
+* Ensure synchronous-commit mode is configured between replicas
+* Asynchronous replicas cannot be failed over with zero data loss
+
+
+ 3. 🔐 SQL Server Agent Jobs / Linked Servers
+
+* Any Agent Jobs running on Primary? These must be disabled on primary and enabled on new primary (secondary) post-failover.
+* Linked servers or external configurations should be pre-tested on the secondary server.
+
+
+ 4. 📦 Backup and Restore Job Consideration
+
+* Stop any running backup jobs on primary.
+* Ensure backup configuration is available on secondary if needed.
+
+
+ 5. 🔄 Application Connectivity Consideration
+
+* Is the application using the Always On Listener name?
+
+  * ✅ Yes → No issue. Failover will auto-redirect.
+  * ❌ No → Update connection string after failover.
+
+* Application must use:
+  Data Source=AGListenerName;MultiSubnetFailover=True;
+
+
+ 6. 🔍 Cluster and Node Health Check
+
+Run below to ensure all nodes are healthy:
+
+-- under powershell
+Get-ClusterNode
+
+Check:
+
+* Cluster node status = Up
+* No recent cluster errors in Event Viewer (`System` logs)
+
+
+ 7. 🚦 Pause the Workload (Optional but Safe)
+
+* If possible, pause critical app traffic or batch jobs during failover
+* Helps avoid mid-transaction errors
+
+ 🔄 Failover Command Options
+
+If using SSMS:
+
+* Right-click Availability Group → Failover Wizard
+* It guides you through safe failover
+
+If using T-SQL:
+
+ALTER AVAILABILITY GROUP [YourAGName] FAILOVER;
+
+Run from the secondary replica which is fully synchronized.
+
+
+ ✅ Post-Failover Checks
+
+1. Replica Role Switch Verification
+
+   SELECT replica_server_name, role_desc
+   FROM sys.dm_hadr_availability_replica_states;
+
+2. Databases are online and accessible
+
+3. SQL Agent Jobs on New Primary are active
+
+4. Application connectivity is intact (Listener DNS resolved properly)
+
+5. Monitor Synchronization from new primary to new secondary

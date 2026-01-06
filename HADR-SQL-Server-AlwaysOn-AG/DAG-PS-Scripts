@@ -1,0 +1,342 @@
+1. a ready-to-run **script bundle** (PowerShell + T-SQL) with the exact hostnames/FQDNs and IPs from our plan, ready to copy/paste and adapt;
+2. a short **printable checklist / runbook** for the lab; and
+3. a **manual-seeding variant** (backup / restore steps + T-SQL) for large DBs.
+============================================================================
+**Important — before you run anything**
+============================================================================
+* Replace `DOMAINA` / `DOMAINB` service account names, domain FQDNs, and any placeholders I mark with `<<<REPLACE>>>`.
+* Run PowerShell as **Administrator**. Run T-SQL from SSMS or sqlcmd on the intended instance.
+* Ensure SQL Server services are restarted after enabling Always On.
+* This is for lab/automation convenience — validate every step in your environment before applying to production.
+============================================================================
+# 1) Ready-to-run script bundle
+============================================================================
+Below I give 
+(A) variables / mapping you should edit, 
+(B) PowerShell for WSFC creation, 
+(C) recommended small helper PowerShell to enable AlwaysOn (it shows the GUI alternative), and 
+(D) T-SQL scripts to create endpoints, local AGs (DomainA & DomainB), listeners, and the Distributed AG. Copy into files and run step-by-step.
+
+> Edit the `Variables` block first (replace accounts, domain FQDNs, instance names, and any `<<<REPLACE>>>`).
+============================================================================
+ A — Variables (edit once at top)
+============================================================================
+powershell
+# -
+# VARIABLES - EDIT BEFORE RUN
+# -
+
+# Domains & FQDN suffixes
+$domainAName = "DomainA.local"
+$domainBName = "DomainB.local"
+
+# Domain controllers (static IPs)
+$domainA_DC1 = "192.168.1.10"
+$domainB_DC1 = "192.168.2.10"
+
+# WSFC node hostnames (short) and IPs
+$domainA_nodes = @(
+    @{Name="DomainA-SQLNode1"; IP="192.168.1.20"},
+    @{Name="DomainA-SQLNode2"; IP="192.168.1.21"}
+)
+$domainB_nodes = @(
+    @{Name="DomainB-SQLNode1"; IP="192.168.2.20"},
+    @{Name="DomainB-SQLNode2"; IP="192.168.2.21"}
+)
+
+# WSFC VIPs
+$domainA_clusterName = "DomainA-WSFC"
+$domainA_clusterIP   = "192.168.1.30"
+
+$domainB_clusterName = "DomainB-WSFC"
+$domainB_clusterIP   = "192.168.2.30"
+
+# AG Listener IPs and names
+$domainA_AGListenerName = "AG_DomainA_Listener"
+$domainA_AGListenerIP   = "192.168.1.40"
+
+$domainB_AGListenerName = "AG_DomainB_Listener"
+$domainB_AGListenerIP   = "192.168.2.40"
+
+# SQL endpoint port (use same on all)
+$hadrEndpointPort = 5022
+
+# SQL service account(s) - used to GRANT CONNECT on endpoint
+# Format DOMAIN\User or group that needs connect permission
+$sqlSvcAcount = "DOMAINA\SqlSvcAccount"   # <<<REPLACE>>>
+
+
+============================================================================
+
+ B — PowerShell: Create WSFC clusters (run on one node per cluster as Admin)
+============================================================================
+**Run on DomainA-SQLNode1 to create DomainA cluster**
+
+powershell
+Import-Module FailoverClusters
+
+# Node names - set explicitly if different from variables above
+$nodesA = @("DomainA-SQLNode1","DomainA-SQLNode2")
+New-Cluster -Name $domainA_clusterName -Node $nodesA -StaticAddress $domainA_clusterIP -NoStorage -Force
+Test-Cluster -Node $nodesA | Format-List *
+
+**Run on DomainB-SQLNode1 to create DomainB cluster**
+
+powershell
+Import-Module FailoverClusters
+
+$nodesB = @("DomainB-SQLNode1","DomainB-SQLNode2")
+New-Cluster -Name $domainB_clusterName -Node $nodesB -StaticAddress $domainB_clusterIP -NoStorage -Force
+Test-Cluster -Node $nodesB | Format-List *
+
+Notes:
+
+* If `New-Cluster` warns about DNS / AD permissions, run it with an account that has permissions to create computer objects or pre-create the cluster computer object in AD and give permission to the cluster account.
+* `-NoStorage` is typical for Always On AG-only clusters.
+
+============================================================================
+ C — Quick guidance to enable AlwaysOn (PowerShell helper & admin note)
+============================================================================
+Enabling AlwaysOn is typically done via SQL Server Configuration Manager GUI because it updates registry/WMI correctly and requires a SQL Server restart. If you prefer to script, use the SQL Server WMI provider — below is a safe guidance snippet that **prompts** you to do it manually if you prefer GUI.
+
+powershell
+Write-Host "Please enable 'AlwaysOn Availability Groups' using SQL Server Configuration Manager on each instance and restart SQL services."
+Write-Host "If you want to do it via WMI / script, I can provide a WMI script but manual GUI is recommended to avoid mistakes."
+
+(If you want the scripted WMI approach, tell me and I’ll give it — but do it carefully in production.)
+
+============================================================================
+ D — T-SQL: create database mirroring endpoints (run on ALL 4 instances)
+============================================================================
+Run each block on each instance, replacing `[Domain]` and server names with the current server.
+
+-- Run on each SQL instance (DomainA-SQLNode1, DomainA-SQLNode2, DomainB-SQLNode1, DomainB-SQLNode2)
+USE master;
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.endpoints WHERE name = N'HadrEndpoint')
+BEGIN
+    CREATE ENDPOINT [HadrEndpoint]
+        STATE = STARTED
+        AS TCP (LISTENER_PORT = 5022, LISTENER_IP = ALL)
+        FOR DATABASE_MIRRORING
+        (
+            ROLE = ALL,
+            AUTHENTICATION = WINDOWS NEGOTIATE,
+            ENCRYPTION = REQUIRED ALGORITHM AES
+        );
+    PRINT 'Endpoint created.';
+END
+ELSE
+    PRINT 'Endpoint already exists.';
+
+-- Grant connect to the SQL service account (adjust account name)
+GRANT CONNECT ON ENDPOINT::[HadrEndpoint] TO [DOMAINA\SqlSvcAccount];
+GO
+
+Repeat the GRANT for the respective domain/service account on DomainB instances (e.g., `[DOMAINB\SqlSvcAccount]`).
+
+============================================================================
+ E — T-SQL: create local Availability Group on DomainA (run on DomainA primary)
+============================================================================
+**Assumptions**: database name is `YourDB`. If multiple DBs, comma-separate. If DB large and you want manual seed, see manual-seeding section.
+
+USE master;
+GO
+
+CREATE AVAILABILITY GROUP [AG_DomainA]
+FOR DATABASE [YourDB]  -- <<-- repeat or add multiple DBs
+REPLICA ON
+    N'DomainA-SQLNode1' WITH (
+        ENDPOINT_URL = N'TCP://DomainA-SQLNode1.DomainA.local:5022',
+        AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
+        FAILOVER_MODE = AUTOMATIC,
+        SEEDING_MODE = AUTOMATIC
+    ),
+    N'DomainA-SQLNode2' WITH (
+        ENDPOINT_URL = N'TCP://DomainA-SQLNode2.DomainA.local:5022',
+        AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
+        FAILOVER_MODE = AUTOMATIC,
+        SEEDING_MODE = AUTOMATIC
+    );
+GO
+
+-- Add listener (DomainA)
+ALTER AVAILABILITY GROUP [AG_DomainA]
+    ADD LISTENER N'$($domainA_AGListenerName)' WITH (IP = (N'$($domainA_AGListenerIP)'), PORT = 1433);
+GO
+
+After creation, join secondary by running `ALTER AVAILABILITY GROUP [AG_DomainA] JOIN;` on the secondary if needed (SSMS will often do this).
+
+============================================================================
+ F — T-SQL: create local Availability Group on DomainB (run on DomainB primary)
+============================================================================
+
+USE master;
+GO
+CREATE AVAILABILITY GROUP [AG_DomainB]
+-- If you want databases pre-populated via distributed AG, you can create empty AG and let distributed AG seeding happen,
+-- else list DBs as done above for DomainA and use manual seeding.
+REPLICA ON
+    N'DomainB-SQLNode1' WITH (
+        ENDPOINT_URL = N'TCP://DomainB-SQLNode1.DomainB.local:5022',
+        AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
+        FAILOVER_MODE = AUTOMATIC,
+        SEEDING_MODE = AUTOMATIC
+    ),
+    N'DomainB-SQLNode2' WITH (
+        ENDPOINT_URL = N'TCP://DomainB-SQLNode2.DomainB.local:5022',
+        AVAILABILITY_MODE = SYNCHRONOUS_COMMIT,
+        FAILOVER_MODE = AUTOMATIC,
+        SEEDING_MODE = AUTOMATIC
+    );
+GO
+
+ALTER AVAILABILITY GROUP [AG_DomainB]
+    ADD LISTENER N'$($domainB_AGListenerName)' WITH (IP = (N'$($domainB_AGListenerIP)'), PORT = 1433);
+GO
+
+============================================================================
+ G — T-SQL: create Distributed Availability Group (run on DomainA global primary)
+============================================================================
+> Ensure both AG listeners are resolvable between domains and ports allowed.
+
+USE master;
+GO
+CREATE AVAILABILITY GROUP [DistributedAG]
+    WITH (DISTRIBUTED)
+    AVAILABILITY GROUP ON
+       'AG_DomainA' WITH
+       (
+          LISTENER_URL = 'tcp://AG_DomainA_Listener.DomainA.local:5022',
+          AVAILABILITY_MODE = ASYNCHRONOUS_COMMIT,
+          FAILOVER_MODE = MANUAL,
+          SEEDING_MODE = AUTOMATIC
+       ),
+       'AG_DomainB' WITH
+       (
+          LISTENER_URL = 'tcp://AG_DomainB_Listener.DomainB.local:5022',
+          AVAILABILITY_MODE = ASYNCHRONOUS_COMMIT,
+          FAILOVER_MODE = MANUAL,
+          SEEDING_MODE = AUTOMATIC
+       );
+GO
+
+Verify:
+-- Check distributed AG objects
+SELECT name, group_id, is_distributed FROM sys.availability_groups WHERE is_distributed = 1;
+
+-- Check replica state snapshot
+SELECT ag.name AS AGName, ar.replica_server_name, ar.endpoint_url, ar.availability_mode_desc, ar.failover_mode_desc
+FROM sys.availability_replicas ar
+JOIN sys.availability_groups ag on ar.group_id = ag.group_id
+WHERE ag.name IN ('AG_DomainA','AG_DomainB','DistributedAG');
+GO
+
+============================================================================
+# 2) Printable Checklist / Runbook (short)
+============================================================================
+Use this checklist when running the lab — print or keep as a checklist on your console.
+
+1. Preflight
+
+   * [ ] Confirm DNS A records exist for all hosts and listeners.
+   * [ ] Confirm static IPs assigned (see mapping).
+   * [ ] Ensure router/firewall allows TCP 5022, 1433, and cluster traffic.
+   * [ ] Time sync across all servers (NTP).
+   * [ ] SQL Service Accounts have required AD permissions.
+
+2. Windows cluster creation (DomainA, DomainB)
+
+   * [ ] Install Failover-Clustering feature on all nodes.
+   * [ ] Validate cluster network with `Test-Cluster`.
+   * [ ] Create cluster with `New-Cluster` and static VIP.
+   * [ ] Confirm cluster online and `Get-ClusterNode`.
+
+3. SQL Preparation
+
+   * [ ] Install SQL Server (same patch level) on all nodes.
+   * [ ] Enable AlwaysOn Availability Groups on each instance and restart SQL services.
+   * [ ] Create database mirroring endpoints on all instances (port 5022).
+   * [ ] Grant CONNECT on endpoints to SQL service accounts.
+
+4. Local AGs
+
+   * [ ] Create AG\_DomainA and AG\_DomainB (or create empty AG for forwarder).
+   * [ ] Add AG listeners and validate DNS resolves to listener IPs.
+   * [ ] Add replicas and validate synchronization state.
+
+5. Distributed AG
+
+   * [ ] Ensure AG listeners reachable cross-domain.
+   * [ ] Create Distributed AG on global primary.
+   * [ ] Validate distributed AG health (`sys.dm_hadr_*` views).
+
+6. Testing
+
+   * [ ] Failover local AG within a domain and confirm application connectivity to local listener.
+   * [ ] Test data replication across distributed AG (insert and check on remote).
+   * [ ] Test network firewall rules (simulate blocked port to confirm behavior).
+
+7. Documentation & backups
+
+   * [ ] Document exact commands used, credentials, and results.
+   * [ ] Take full backups before any production changes.
+
+
+============================================================================
+# 3) Manual-seeding variant (backup / restore) — for large DBs
+============================================================================
+If `SEEDING_MODE = MANUAL` or you prefer manual initialization:
+
+============================================================================
+ A — On primary (DomainA-SQLNode1): full backup + log backup
+============================================================================
+-- On primary
+BACKUP DATABASE [YourDB] TO DISK = N'\\backupshare\YourDB_FULL.bak' WITH FORMAT, COMPRESSION;
+GO
+BACKUP LOG [YourDB] TO DISK = N'\\backupshare\YourDB_LOG.bak';
+GO
+
+(Or backup to a location that is accessible by DomainB nodes — use SMB share with appropriate permissions or transfer the files securely.)
+============================================================================
+ B — Copy backup to DomainB node and restore with NORECOVERY
+============================================================================
+On DomainB primary (or both replicas):
+
+RESTORE DATABASE [YourDB] FROM DISK = N'C:\Temp\YourDB_FULL.bak' WITH NORECOVERY, REPLACE;
+GO
+RESTORE LOG [YourDB] FROM DISK = N'C:\Temp\YourDB_LOG.bak' WITH NORECOVERY;
+GO
+
+(If multiple log backups exist, restore them in sequence ending with `WITH NORECOVERY`.)
+============================================================================
+ C — Join the database to the availability group on DomainB
+============================================================================
+On DomainB (after restoring all necessary backups):
+
+ALTER DATABASE [YourDB] SET HADR AVAILABILITY GROUP = [AG_DomainB];
+GO
+
+On DomainA, add the database to the AG if not already added (if AG created empty): use `ALTER AVAILABILITY GROUP [AG_DomainA] ADD DATABASE [YourDB];`
+============================================================================
+ D — Confirm synchronization
+============================================================================
+-- Check states
+SELECT DB_NAME(database_id) AS [DB], synchronization_state_desc
+FROM sys.dm_hadr_database_replica_states
+WHERE group_id = (SELECT group_id FROM sys.availability_groups WHERE name='AG_DomainB');
+GO
+============================================================================
+Notes:
+* If you used copy-only backups or differential chain, ensure transaction log chain continuity is preserved.
+* Ensure backup files moved securely and restored with correct permissions.
+============================================================================
+# Quick Troubleshooting tips
+
+* If endpoints show `STOPPED` or `disabled`, check firewall and run `ALTER ENDPOINT HadrEndpoint STATE = STARTED;`
+* If AG listeners fail to come online, check DNS registration and that the WSFC cluster can create the listener computer object in AD (or pre-create it).
+* For cross-domain listener resolution issues: add entries to each domain's DNS or use hosts file temporarily for lab tests (not recommended for prod).
+============================================================================
+
+

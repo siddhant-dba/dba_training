@@ -1,0 +1,591 @@
+1. Oraclelab1 setup - without ASM DEVDB
+2. Oraclelab2 setup - with ASM    TESTDB
+
+
+Database Server - oraclelab1 & oraclelab2
+
+
+oraclelab1 = DEVDB Instance + DEVDB Database 
+oraclelab2 = TESTDB Instance + TESTDBB Database 
+
+
+Database Server = Instance + Database 
+
+Instance = Memory + BG Process 
+Database = Datafiles or storage files 
+
+
+Memory:
+SGA - 3G
+PGA - 1G
+
+BG Process:
+Mandatory - smon pmon dbwr lgwr ckpt 
+Non-Mandatory - arc0 pxmn
+
+Datafile:
+system
+sysaux
+temp
+undo
+users 
+
+
+Memory:
+SGA - 3G
+PGA - 1G
+
+Dedecated and shared connection:
+
+Dedecated: 
+
+login as: root
+root@192.168.1.101's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@192.168.1.101                                  │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue Apr 18 10:03:09 2023 from 192.168.1.7
+[root@oraclelab1 ~]# ps -ef|grep smon
+root      3320  2455  0 09:34 pts/0    00:00:00 grep --color=auto smon
+[root@oraclelab1 ~]# su - oracle
+Last login: Tue Apr 18 10:03:15 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 09:34:17 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 2365586088 bytes
+Fixed Size                  8899240 bytes
+Variable Size             520093696 bytes
+Database Buffers         1828716544 bytes
+Redo Buffers                7876608 bytes
+Database mounted.
+Database opened.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    3441     1  0 09:34 ?        00:00:00 ora_smon_DEVDB
+oracle    3938  3326  0 09:38 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ ps -ef|grep pmon
+oracle    3398     1  0 09:34 ?        00:00:00 ora_pmon_DEVDB
+oracle    3947  3326  0 09:38 pts/0    00:00:00 grep --color=auto pmon
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    3398     1  0 09:34 ?        00:00:00 ora_pmon_DEVDB
+oracle    3400     1  0 09:34 ?        00:00:00 ora_clmn_DEVDB
+oracle    3402     1  0 09:34 ?        00:00:00 ora_psp0_DEVDB
+oracle    3405     1  0 09:34 ?        00:00:01 ora_vktm_DEVDB
+oracle    3409     1  0 09:34 ?        00:00:00 ora_gen0_DEVDB
+oracle    3413     1  0 09:34 ?        00:00:00 ora_mman_DEVDB
+oracle    3415     1  0 09:34 ?        00:00:00 ora_gen1_DEVDB
+oracle    3418     1  0 09:34 ?        00:00:00 ora_diag_DEVDB
+oracle    3420     1  0 09:34 ?        00:00:00 ora_ofsd_DEVDB
+oracle    3423     1  0 09:34 ?        00:00:00 ora_dbrm_DEVDB
+oracle    3425     1  0 09:34 ?        00:00:00 ora_vkrm_DEVDB
+oracle    3427     1  0 09:34 ?        00:00:00 ora_svcb_DEVDB
+oracle    3429     1  0 09:34 ?        00:00:00 ora_pman_DEVDB
+oracle    3431     1  0 09:34 ?        00:00:00 ora_dia0_DEVDB
+oracle    3433     1  0 09:34 ?        00:00:00 ora_dbw0_DEVDB
+oracle    3435     1  0 09:34 ?        00:00:00 ora_lgwr_DEVDB
+oracle    3437     1  0 09:34 ?        00:00:00 ora_ckpt_DEVDB
+oracle    3439     1  0 09:34 ?        00:00:00 ora_lg00_DEVDB
+oracle    3441     1  0 09:34 ?        00:00:00 ora_smon_DEVDB
+oracle    3443     1  0 09:34 ?        00:00:00 ora_lg01_DEVDB
+oracle    3445     1  0 09:34 ?        00:00:00 ora_smco_DEVDB
+oracle    3447     1  0 09:34 ?        00:00:00 ora_reco_DEVDB
+oracle    3449     1  0 09:34 ?        00:00:00 ora_w000_DEVDB
+oracle    3451     1  0 09:34 ?        00:00:00 ora_lreg_DEVDB
+oracle    3453     1  0 09:34 ?        00:00:00 ora_w001_DEVDB
+oracle    3455     1  0 09:34 ?        00:00:00 ora_pxmn_DEVDB
+oracle    3460     1  0 09:34 ?        00:00:01 ora_mmon_DEVDB
+oracle    3462     1  0 09:34 ?        00:00:00 ora_mmnl_DEVDB
+oracle    3464     1  0 09:34 ?        00:00:00 ora_d000_DEVDB
+oracle    3466     1  0 09:34 ?        00:00:00 ora_s000_DEVDB
+oracle    3468     1  0 09:34 ?        00:00:00 ora_tmon_DEVDB
+oracle    3474     1  0 09:34 ?        00:00:00 ora_m000_DEVDB
+oracle    3476     1  0 09:34 ?        00:00:00 ora_m001_DEVDB
+oracle    3482     1  0 09:34 ?        00:00:00 ora_p000_DEVDB
+oracle    3484     1  0 09:34 ?        00:00:00 ora_p001_DEVDB
+oracle    3487     1  0 09:34 ?        00:00:00 ora_arc0_DEVDB
+oracle    3489     1  0 09:34 ?        00:00:00 ora_tt00_DEVDB
+oracle    3491     1  0 09:34 ?        00:00:00 ora_tt01_DEVDB
+oracle    3493     1  0 09:34 ?        00:00:00 ora_arc1_DEVDB
+oracle    3495     1  0 09:34 ?        00:00:00 ora_arc2_DEVDB
+oracle    3497     1  0 09:34 ?        00:00:00 ora_arc3_DEVDB
+oracle    3499     1  0 09:34 ?        00:00:00 ora_tt02_DEVDB
+oracle    3501     1  0 09:34 ?        00:00:00 ora_w002_DEVDB
+oracle    3504     1  0 09:34 ?        00:00:00 ora_aqpc_DEVDB
+oracle    3506     1  0 09:34 ?        00:00:00 ora_cjq0_DEVDB
+oracle    3510     1  0 09:34 ?        00:00:00 ora_p002_DEVDB
+oracle    3512     1  0 09:34 ?        00:00:00 ora_p003_DEVDB
+oracle    3664     1  0 09:34 ?        00:00:00 ora_w003_DEVDB
+oracle    3702     1  0 09:34 ?        00:00:00 ora_m002_DEVDB
+oracle    3704     1  0 09:34 ?        00:00:00 ora_m003_DEVDB
+oracle    3731     1  0 09:34 ?        00:00:00 ora_w004_DEVDB
+oracle    3737     1  0 09:34 ?        00:00:00 ora_qm02_DEVDB
+oracle    3741     1  0 09:34 ?        00:00:00 ora_q002_DEVDB
+oracle    3743     1  0 09:34 ?        00:00:00 ora_q003_DEVDB
+oracle    3961  3326  0 09:38 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 09:39:35 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name from v$dayafile;
+select name from v$dayafile
+                 *
+ERROR at line 1:
+ORA-00942: table or view does not exist
+
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l3spkofr_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l3splrkj_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l3spm7o3_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_users_l3spm8qf_.dbf
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    3398     1  0 09:34 ?        00:00:00 ora_pmon_DEVDB
+oracle    3400     1  0 09:34 ?        00:00:00 ora_clmn_DEVDB
+oracle    3402     1  0 09:34 ?        00:00:00 ora_psp0_DEVDB
+oracle    3405     1  0 09:34 ?        00:00:04 ora_vktm_DEVDB
+oracle    3409     1  0 09:34 ?        00:00:00 ora_gen0_DEVDB
+oracle    3413     1  0 09:34 ?        00:00:00 ora_mman_DEVDB
+oracle    3415     1  0 09:34 ?        00:00:00 ora_gen1_DEVDB
+oracle    3418     1  0 09:34 ?        00:00:00 ora_diag_DEVDB
+oracle    3420     1  0 09:34 ?        00:00:00 ora_ofsd_DEVDB
+oracle    3423     1  0 09:34 ?        00:00:00 ora_dbrm_DEVDB
+oracle    3425     1  0 09:34 ?        00:00:00 ora_vkrm_DEVDB
+oracle    3427     1  0 09:34 ?        00:00:00 ora_svcb_DEVDB
+oracle    3429     1  0 09:34 ?        00:00:00 ora_pman_DEVDB
+oracle    3431     1  0 09:34 ?        00:00:00 ora_dia0_DEVDB
+oracle    3433     1  0 09:34 ?        00:00:00 ora_dbw0_DEVDB
+oracle    3435     1  0 09:34 ?        00:00:00 ora_lgwr_DEVDB
+oracle    3437     1  0 09:34 ?        00:00:00 ora_ckpt_DEVDB
+oracle    3439     1  0 09:34 ?        00:00:00 ora_lg00_DEVDB
+oracle    3441     1  0 09:34 ?        00:00:00 ora_smon_DEVDB
+oracle    3443     1  0 09:34 ?        00:00:00 ora_lg01_DEVDB
+oracle    3445     1  0 09:34 ?        00:00:00 ora_smco_DEVDB
+oracle    3447     1  0 09:34 ?        00:00:00 ora_reco_DEVDB
+oracle    3449     1  0 09:34 ?        00:00:00 ora_w000_DEVDB
+oracle    3451     1  0 09:34 ?        00:00:00 ora_lreg_DEVDB
+oracle    3453     1  0 09:34 ?        00:00:00 ora_w001_DEVDB
+oracle    3455     1  0 09:34 ?        00:00:00 ora_pxmn_DEVDB
+oracle    3460     1  0 09:34 ?        00:00:01 ora_mmon_DEVDB
+oracle    3462     1  0 09:34 ?        00:00:00 ora_mmnl_DEVDB
+oracle    3464     1  0 09:34 ?        00:00:00 ora_d000_DEVDB
+oracle    3466     1  0 09:34 ?        00:00:00 ora_s000_DEVDB
+oracle    3468     1  0 09:34 ?        00:00:00 ora_tmon_DEVDB
+oracle    3474     1  0 09:34 ?        00:00:00 ora_m000_DEVDB
+oracle    3476     1  0 09:34 ?        00:00:00 ora_m001_DEVDB
+oracle    3482     1  0 09:34 ?        00:00:00 ora_p000_DEVDB
+oracle    3484     1  0 09:34 ?        00:00:00 ora_p001_DEVDB
+oracle    3487     1  0 09:34 ?        00:00:00 ora_arc0_DEVDB
+oracle    3489     1  0 09:34 ?        00:00:00 ora_tt00_DEVDB
+oracle    3491     1  0 09:34 ?        00:00:00 ora_tt01_DEVDB
+oracle    3493     1  0 09:34 ?        00:00:00 ora_arc1_DEVDB
+oracle    3495     1  0 09:34 ?        00:00:00 ora_arc2_DEVDB
+oracle    3497     1  0 09:34 ?        00:00:00 ora_arc3_DEVDB
+oracle    3499     1  0 09:34 ?        00:00:00 ora_tt02_DEVDB
+oracle    3501     1  0 09:34 ?        00:00:00 ora_w002_DEVDB
+oracle    3504     1  0 09:34 ?        00:00:00 ora_aqpc_DEVDB
+oracle    3506     1  0 09:34 ?        00:00:01 ora_cjq0_DEVDB
+oracle    3510     1  0 09:34 ?        00:00:00 ora_p002_DEVDB
+oracle    3512     1  0 09:34 ?        00:00:00 ora_p003_DEVDB
+oracle    3664     1  0 09:34 ?        00:00:00 ora_w003_DEVDB
+oracle    3731     1  0 09:34 ?        00:00:00 ora_w004_DEVDB
+oracle    3737     1  0 09:34 ?        00:00:00 ora_qm02_DEVDB
+oracle    3741     1  0 09:34 ?        00:00:00 ora_q002_DEVDB
+oracle    3743     1  0 09:34 ?        00:00:00 ora_q003_DEVDB
+oracle    4099     1  0 09:40 ?        00:00:00 ora_m003_DEVDB
+oracle    4214     1  0 09:42 ?        00:00:00 ora_m002_DEVDB
+oracle    4306  3326  0 09:44 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$ kill -9 3398
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    3400     1  0 09:34 ?        00:00:00 ora_clmn_DEVDB
+oracle    3402     1  0 09:34 ?        00:00:00 ora_psp0_DEVDB
+oracle    3405     1  0 09:34 ?        00:00:04 ora_vktm_DEVDB
+oracle    3409     1  0 09:34 ?        00:00:00 ora_gen0_DEVDB
+oracle    3413     1  0 09:34 ?        00:00:00 ora_mman_DEVDB
+oracle    3415     1  0 09:34 ?        00:00:00 ora_gen1_DEVDB
+oracle    3418     1  0 09:34 ?        00:00:00 ora_diag_DEVDB
+oracle    3420     1  0 09:34 ?        00:00:00 ora_ofsd_DEVDB
+oracle    3423     1  0 09:34 ?        00:00:00 ora_dbrm_DEVDB
+oracle    3425     1  0 09:34 ?        00:00:00 ora_vkrm_DEVDB
+oracle    3427     1  0 09:34 ?        00:00:00 ora_svcb_DEVDB
+oracle    3429     1  0 09:34 ?        00:00:00 ora_pman_DEVDB
+oracle    3431     1  0 09:34 ?        00:00:00 ora_dia0_DEVDB
+oracle    3433     1  0 09:34 ?        00:00:00 ora_dbw0_DEVDB
+oracle    3435     1  0 09:34 ?        00:00:00 ora_lgwr_DEVDB
+oracle    3437     1  0 09:34 ?        00:00:00 ora_ckpt_DEVDB
+oracle    3439     1  0 09:34 ?        00:00:00 ora_lg00_DEVDB
+oracle    3441     1  0 09:34 ?        00:00:00 ora_smon_DEVDB
+oracle    3443     1  0 09:34 ?        00:00:00 ora_lg01_DEVDB
+oracle    3445     1  0 09:34 ?        00:00:00 ora_smco_DEVDB
+oracle    3447     1  0 09:34 ?        00:00:00 ora_reco_DEVDB
+oracle    3449     1  0 09:34 ?        00:00:00 ora_w000_DEVDB
+oracle    3451     1  0 09:34 ?        00:00:00 ora_lreg_DEVDB
+oracle    3453     1  0 09:34 ?        00:00:00 ora_w001_DEVDB
+oracle    3455     1  0 09:34 ?        00:00:00 ora_pxmn_DEVDB
+oracle    3460     1  0 09:34 ?        00:00:01 ora_mmon_DEVDB
+oracle    3462     1  0 09:34 ?        00:00:00 ora_mmnl_DEVDB
+oracle    3464     1  0 09:34 ?        00:00:00 ora_d000_DEVDB
+oracle    3466     1  0 09:34 ?        00:00:00 ora_s000_DEVDB
+oracle    3468     1  0 09:34 ?        00:00:00 ora_tmon_DEVDB
+oracle    3474     1  0 09:34 ?        00:00:00 ora_m000_DEVDB
+oracle    3476     1  0 09:34 ?        00:00:00 ora_m001_DEVDB
+oracle    3482     1  0 09:34 ?        00:00:00 ora_p000_DEVDB
+oracle    3484     1  0 09:34 ?        00:00:00 ora_p001_DEVDB
+oracle    3487     1  0 09:34 ?        00:00:00 ora_arc0_DEVDB
+oracle    3489     1  0 09:34 ?        00:00:00 ora_tt00_DEVDB
+oracle    3491     1  0 09:34 ?        00:00:00 ora_tt01_DEVDB
+oracle    3493     1  0 09:34 ?        00:00:00 ora_arc1_DEVDB
+oracle    3495     1  0 09:34 ?        00:00:00 ora_arc2_DEVDB
+oracle    3497     1  0 09:34 ?        00:00:00 ora_arc3_DEVDB
+oracle    3499     1  0 09:34 ?        00:00:00 ora_tt02_DEVDB
+oracle    3501     1  0 09:34 ?        00:00:00 ora_w002_DEVDB
+oracle    3504     1  0 09:34 ?        00:00:00 ora_aqpc_DEVDB
+oracle    3506     1  0 09:34 ?        00:00:01 ora_cjq0_DEVDB
+oracle    3510     1  0 09:34 ?        00:00:00 ora_p002_DEVDB
+oracle    3512     1  0 09:34 ?        00:00:00 ora_p003_DEVDB
+oracle    3664     1  0 09:34 ?        00:00:00 ora_w003_DEVDB
+oracle    3731     1  0 09:34 ?        00:00:00 ora_w004_DEVDB
+oracle    3737     1  0 09:34 ?        00:00:00 ora_qm02_DEVDB
+oracle    3741     1  0 09:34 ?        00:00:00 ora_q002_DEVDB
+oracle    3743     1  0 09:34 ?        00:00:00 ora_q003_DEVDB
+oracle    4099     1  0 09:40 ?        00:00:00 ora_m003_DEVDB
+oracle    4214     1  0 09:42 ?        00:00:00 ora_m002_DEVDB
+oracle    4324     1  0 09:44 ?        00:00:00 ora_j000_DEVDB
+oracle    4326     1  0 09:44 ?        00:00:00 ora_j001_DEVDB
+oracle    4330  3326  0 09:44 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    4394  3326  0 09:45 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ ps -ef|grep pmon
+oracle    4807  3326  0 09:52 pts/0    00:00:00 grep --color=auto pmon
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 09:59:23 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 2365586088 bytes
+Fixed Size                  8899240 bytes
+Variable Size             520093696 bytes
+Database Buffers         1828716544 bytes
+Redo Buffers                7876608 bytes
+Database mounted.
+Database opened.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    5192     1  0 09:59 ?        00:00:00 ora_pmon_DEVDB
+oracle    5194     1  0 09:59 ?        00:00:00 ora_clmn_DEVDB
+oracle    5196     1  0 09:59 ?        00:00:00 ora_psp0_DEVDB
+oracle    5198     1  0 09:59 ?        00:00:00 ora_vktm_DEVDB
+oracle    5203     1  0 09:59 ?        00:00:00 ora_gen0_DEVDB
+oracle    5205     1  0 09:59 ?        00:00:00 ora_mman_DEVDB
+oracle    5209     1  0 09:59 ?        00:00:00 ora_gen1_DEVDB
+oracle    5212     1  0 09:59 ?        00:00:00 ora_diag_DEVDB
+oracle    5214     1  0 09:59 ?        00:00:00 ora_ofsd_DEVDB
+oracle    5217     1  0 09:59 ?        00:00:00 ora_dbrm_DEVDB
+oracle    5219     1  0 09:59 ?        00:00:00 ora_vkrm_DEVDB
+oracle    5221     1  0 09:59 ?        00:00:00 ora_svcb_DEVDB
+oracle    5223     1  0 09:59 ?        00:00:00 ora_pman_DEVDB
+oracle    5225     1  0 09:59 ?        00:00:00 ora_dia0_DEVDB
+oracle    5227     1  0 09:59 ?        00:00:00 ora_dbw0_DEVDB
+oracle    5229     1  0 09:59 ?        00:00:00 ora_lgwr_DEVDB
+oracle    5231     1  0 09:59 ?        00:00:00 ora_lg00_DEVDB
+oracle    5233     1  0 09:59 ?        00:00:00 ora_ckpt_DEVDB
+oracle    5235     1  0 09:59 ?        00:00:00 ora_lg01_DEVDB
+oracle    5237     1  0 09:59 ?        00:00:00 ora_smon_DEVDB
+oracle    5239     1  0 09:59 ?        00:00:00 ora_smco_DEVDB
+oracle    5241     1  0 09:59 ?        00:00:00 ora_reco_DEVDB
+oracle    5243     1  0 09:59 ?        00:00:00 ora_w000_DEVDB
+oracle    5245     1  0 09:59 ?        00:00:00 ora_lreg_DEVDB
+oracle    5247     1  0 09:59 ?        00:00:00 ora_w001_DEVDB
+oracle    5249     1  0 09:59 ?        00:00:00 ora_pxmn_DEVDB
+oracle    5253     1 10 09:59 ?        00:00:01 ora_mmon_DEVDB
+oracle    5255     1  0 09:59 ?        00:00:00 ora_mmnl_DEVDB
+oracle    5257     1  0 09:59 ?        00:00:00 ora_d000_DEVDB
+oracle    5259     1  0 09:59 ?        00:00:00 ora_s000_DEVDB
+oracle    5261     1  0 09:59 ?        00:00:00 ora_tmon_DEVDB
+oracle    5267     1  3 09:59 ?        00:00:00 ora_m000_DEVDB
+oracle    5274     1  0 09:59 ?        00:00:00 ora_p000_DEVDB
+oracle    5276     1  0 09:59 ?        00:00:00 ora_p001_DEVDB
+oracle    5278     1  0 09:59 ?        00:00:00 ora_arc0_DEVDB
+oracle    5280     1  0 09:59 ?        00:00:00 ora_tt00_DEVDB
+oracle    5282     1  0 09:59 ?        00:00:00 ora_tt01_DEVDB
+oracle    5284     1  0 09:59 ?        00:00:00 ora_arc1_DEVDB
+oracle    5286     1  0 09:59 ?        00:00:00 ora_arc2_DEVDB
+oracle    5288     1  0 09:59 ?        00:00:00 ora_arc3_DEVDB
+oracle    5290     1  0 09:59 ?        00:00:00 ora_tt02_DEVDB
+oracle    5292     1  0 09:59 ?        00:00:00 ora_aqpc_DEVDB
+oracle    5294     1  2 09:59 ?        00:00:00 ora_cjq0_DEVDB
+oracle    5298     1  0 09:59 ?        00:00:00 ora_p002_DEVDB
+oracle    5300     1  0 09:59 ?        00:00:00 ora_p003_DEVDB
+oracle    5303     1  0 09:59 ?        00:00:00 ora_w002_DEVDB
+oracle    5468     1  0 09:59 ?        00:00:00 ora_m001_DEVDB
+oracle    5470     1  0 09:59 ?        00:00:00 ora_m002_DEVDB
+oracle    5494     1  0 09:59 ?        00:00:00 ora_m003_DEVDB
+oracle    5496     1  0 09:59 ?        00:00:00 ora_j000_DEVDB
+oracle    5498     1  0 09:59 ?        00:00:00 ora_j001_DEVDB
+oracle    5500     1  0 09:59 ?        00:00:00 ora_j002_DEVDB
+oracle    5502     1  0 09:59 ?        00:00:00 ora_j003_DEVDB
+oracle    5505     1  0 09:59 ?        00:00:00 ora_w003_DEVDB
+oracle    5508     1  0 09:59 ?        00:00:00 ora_s001_DEVDB
+oracle    5511     1  0 09:59 ?        00:00:00 ora_w004_DEVDB
+oracle    5514  3326  0 09:59 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$ kill -9 5284
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    5192     1  0 09:59 ?        00:00:00 ora_pmon_DEVDB
+oracle    5194     1  0 09:59 ?        00:00:00 ora_clmn_DEVDB
+oracle    5196     1  0 09:59 ?        00:00:00 ora_psp0_DEVDB
+oracle    5198     1  0 09:59 ?        00:00:00 ora_vktm_DEVDB
+oracle    5203     1  0 09:59 ?        00:00:00 ora_gen0_DEVDB
+oracle    5205     1  0 09:59 ?        00:00:00 ora_mman_DEVDB
+oracle    5209     1  0 09:59 ?        00:00:00 ora_gen1_DEVDB
+oracle    5212     1  0 09:59 ?        00:00:00 ora_diag_DEVDB
+oracle    5214     1  0 09:59 ?        00:00:00 ora_ofsd_DEVDB
+oracle    5217     1  0 09:59 ?        00:00:00 ora_dbrm_DEVDB
+oracle    5219     1  0 09:59 ?        00:00:00 ora_vkrm_DEVDB
+oracle    5221     1  0 09:59 ?        00:00:00 ora_svcb_DEVDB
+oracle    5223     1  0 09:59 ?        00:00:00 ora_pman_DEVDB
+oracle    5225     1  0 09:59 ?        00:00:00 ora_dia0_DEVDB
+oracle    5227     1  0 09:59 ?        00:00:00 ora_dbw0_DEVDB
+oracle    5229     1  0 09:59 ?        00:00:00 ora_lgwr_DEVDB
+oracle    5231     1  0 09:59 ?        00:00:00 ora_lg00_DEVDB
+oracle    5233     1  0 09:59 ?        00:00:00 ora_ckpt_DEVDB
+oracle    5235     1  0 09:59 ?        00:00:00 ora_lg01_DEVDB
+oracle    5237     1  0 09:59 ?        00:00:00 ora_smon_DEVDB
+oracle    5239     1  0 09:59 ?        00:00:00 ora_smco_DEVDB
+oracle    5241     1  0 09:59 ?        00:00:00 ora_reco_DEVDB
+oracle    5243     1  0 09:59 ?        00:00:00 ora_w000_DEVDB
+oracle    5245     1  0 09:59 ?        00:00:00 ora_lreg_DEVDB
+oracle    5247     1  0 09:59 ?        00:00:00 ora_w001_DEVDB
+oracle    5249     1  0 09:59 ?        00:00:00 ora_pxmn_DEVDB
+oracle    5253     1  5 09:59 ?        00:00:01 ora_mmon_DEVDB
+oracle    5255     1  0 09:59 ?        00:00:00 ora_mmnl_DEVDB
+oracle    5257     1  0 09:59 ?        00:00:00 ora_d000_DEVDB
+oracle    5259     1  0 09:59 ?        00:00:00 ora_s000_DEVDB
+oracle    5261     1  0 09:59 ?        00:00:00 ora_tmon_DEVDB
+oracle    5267     1  1 09:59 ?        00:00:00 ora_m000_DEVDB
+oracle    5274     1  0 09:59 ?        00:00:00 ora_p000_DEVDB
+oracle    5276     1  0 09:59 ?        00:00:00 ora_p001_DEVDB
+oracle    5278     1  0 09:59 ?        00:00:00 ora_arc0_DEVDB
+oracle    5280     1  0 09:59 ?        00:00:00 ora_tt00_DEVDB
+oracle    5282     1  0 09:59 ?        00:00:00 ora_tt01_DEVDB
+oracle    5286     1  0 09:59 ?        00:00:00 ora_arc2_DEVDB
+oracle    5288     1  0 09:59 ?        00:00:00 ora_arc3_DEVDB
+oracle    5290     1  0 09:59 ?        00:00:00 ora_tt02_DEVDB
+oracle    5292     1  0 09:59 ?        00:00:00 ora_aqpc_DEVDB
+oracle    5294     1  1 09:59 ?        00:00:00 ora_cjq0_DEVDB
+oracle    5298     1  0 09:59 ?        00:00:00 ora_p002_DEVDB
+oracle    5300     1  0 09:59 ?        00:00:00 ora_p003_DEVDB
+oracle    5303     1  0 09:59 ?        00:00:00 ora_w002_DEVDB
+oracle    5468     1  0 09:59 ?        00:00:00 ora_m001_DEVDB
+oracle    5470     1  0 09:59 ?        00:00:00 ora_m002_DEVDB
+oracle    5494     1  0 09:59 ?        00:00:00 ora_m003_DEVDB
+oracle    5496     1  0 09:59 ?        00:00:00 ora_j000_DEVDB
+oracle    5498     1  0 09:59 ?        00:00:00 ora_j001_DEVDB
+oracle    5500     1  0 09:59 ?        00:00:00 ora_j002_DEVDB
+oracle    5502     1  0 09:59 ?        00:00:00 ora_j003_DEVDB
+oracle    5505     1  0 09:59 ?        00:00:00 ora_w003_DEVDB
+oracle    5508     1  0 09:59 ?        00:00:00 ora_s001_DEVDB
+oracle    5511     1  0 09:59 ?        00:00:00 ora_w004_DEVDB
+oracle    5518     1  0 09:59 ?        00:00:00 ora_qm02_DEVDB
+oracle    5520     1  0 09:59 ?        00:00:00 ora_q001_DEVDB
+oracle    5522     1  0 09:59 ?        00:00:00 ora_qm03_DEVDB
+oracle    5524     1  0 09:59 ?        00:00:00 ora_q003_DEVDB
+oracle    5544  3326  0 09:59 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 10:00:04 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$ kill -9 5192
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 10:00:44 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> exit
+Disconnected
+[oracle@oraclelab1 ~]$ ps -ef|grep DEVDB
+oracle    5611  3326  0 10:00 pts/0    00:00:00 grep --color=auto DEVDB
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    5888  3326  0 10:05 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ cd /u01/app/oracle/oradata/DEVDB/datafile/
+[oracle@oraclelab1 datafile]$ ls -otrh
+total 1.8G
+-rw-r----- 1 oracle  33M Apr 17 11:08 o1_mf_temp_l3spnxgg_.tmp
+-rw-r----- 1 oracle 891M Apr 19 09:59 o1_mf_system_l3spkofr_.dbf
+-rw-r----- 1 oracle 341M Apr 19 09:59 o1_mf_undotbs1_l3spm7o3_.dbf
+-rw-r----- 1 oracle 5.1M Apr 19 09:59 o1_mf_users_l3spm8qf_.dbf
+-rw-r----- 1 oracle 541M Apr 19 09:59 o1_mf_sysaux_l3splrkj_.dbf
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 10:05:52 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> exit
+Disconnected
+[oracle@oraclelab1 datafile]$
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+login as: root
+root@192.168.1.102's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@192.168.1.102                                  │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue Apr 18 11:02:30 2023 from 192.168.1.7
+[root@oraclelab2 ~]# ps -ef|grep smon
+oracle    3133     1  0 09:17 ?        00:00:00 asm_smon_+ASM
+oracle    3258     1  0 09:18 ?        00:00:00 ora_smon_TESTDB
+root      4664  3729  0 09:33 pts/0    00:00:00 grep --color=auto smon
+[root@oraclelab2 ~]# su - oracle
+Last login: Wed Apr 19 09:17:15 IST 2023
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? TESTDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Wed Apr 19 09:40:06 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
++DATA/TESTDB/DATAFILE/system.256.1134471751
++DATA/TESTDB/DATAFILE/sysaux.257.1134471785
++DATA/TESTDB/DATAFILE/undotbs1.258.1134471801
++DATA/TESTDB/DATAFILE/users.259.1134471803
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+^[[A[oracle@oraclelab2 ~]$ . oraenv^C
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    3133     1  0 09:17 ?        00:00:00 asm_smon_+ASM
+oracle    3258     1  0 09:18 ?        00:00:00 ora_smon_TESTDB
+oracle    5929  5031  0 09:53 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$ ps -ef|grep pmon
+oracle    3092     1  0 09:17 ?        00:00:00 asm_pmon_+ASM
+oracle    3214     1  0 09:18 ?        00:00:00 ora_pmon_TESTDB
+oracle    6079  5031  0 09:55 pts/0    00:00:00 grep --color=auto pmon
+[oracle@oraclelab2 ~]$
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+

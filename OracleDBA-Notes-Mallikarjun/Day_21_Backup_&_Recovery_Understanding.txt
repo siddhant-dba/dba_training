@@ -1,0 +1,861 @@
+RMAN:
+=====
+
+Manual method / User managed bkp 
+- Cold Backup (spfile / pfile , redo, arch datafile, ct file)
+	- shutdown DB and take bkp and start DB --------------- Consistent / No need of recpovery 
+
+- HOT bkp (spfile / pfile , redo, arch datafile, ct file)
+	- put DB in begin bkp mode and take bkp and end bkp --- In-Consistent / Need of recpovery 
+
+Automated method
+- RMAN 
+	- backup database;-------------------------------------- In-Consistent / Need of recpovery 
+
+
+BKP 
+- Consistent 
+- In-Consistent 
+
+Best Practice:
+==============
+Multiplex control files
+Multiplex redo log groups
+keep DB in archivelog mode - mount 
+regular bkp
+
+
+startup mount;
+alter database archivelog;
+alter database noarchivelog;
+archive log list
+alter database open;
+
+OMF:
+====
+db_recovery_file_dest = /u01/app/oracle/fast_recovery_area
+db_create_file_dest = /u01/app/oracle/oradata
+
+
+FRA:
+Fast Recovery Area
+Flash Recovery Area 
+
+DB_RECOVERY_FILE_DEST
+DB_RECOVERY_FILE_DEST_SIZE
+
+db_recovery_file_dest = /u01/app/oracle/fast_recovery_area
+db_recovery_file_dest_size = 8256M
+
+./dbca
+db_recovery_file_dest = /u01/app/oracle/fast_recovery_area 	CT1	R1
+db_create_file_dest = /u01/app/oracle/oradata			CT2 	R2
+
+enabled - OMF / FRA / Multiplex 
+
+FRA:
+====
+1. all archive logs will goes to FRA 
+2. all backups will goes to FRA 
+ - backup database;
+3. all flashback logs will goes to FRA
+4. multiplex CT & Redo will goes to FRA
+
+1 week strtegy 
+- 100GB * 7 = 700GB 
+- 1T + 100GB * 6 = 1.6TB 
+- NA
+- 4 GB
+
+2.5 TB 
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May  8 10:19:36 IST 2023 on pts/5
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 9 10:23:49 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name from v$controlfile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl
+
+SQL> desc v$log;
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ GROUP#                                             NUMBER
+ THREAD#                                            NUMBER
+ SEQUENCE#                                          NUMBER
+ BYTES                                              NUMBER
+ BLOCKSIZE                                          NUMBER
+ MEMBERS                                            NUMBER
+ ARCHIVED                                           VARCHAR2(3)
+ STATUS                                             VARCHAR2(16)
+ FIRST_CHANGE#                                      NUMBER
+ FIRST_TIME                                         DATE
+ NEXT_CHANGE#                                       NUMBER
+ NEXT_TIME                                          DATE
+ CON_ID                                             NUMBER
+
+SQL> select GROUP#  from v$log;
+
+    GROUP#
+----------
+         1
+         2
+         3
+
+SQL> desc v$logfile;
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ GROUP#                                             NUMBER
+ STATUS                                             VARCHAR2(7)
+ TYPE                                               VARCHAR2(7)
+ MEMBER                                             VARCHAR2(513)
+ IS_RECOVERY_DEST_FILE                              VARCHAR2(3)
+ CON_ID                                             NUMBER
+
+SQL> select GROUP#,MEMBER from v$logfile orderby GROUP#;
+select GROUP#,MEMBER from v$logfile orderby GROUP#
+                                            *
+ERROR at line 1:
+ORA-00933: SQL command not properly ended
+
+
+SQL> select GROUP#,MEMBER from v$logfile order by GROUP#;
+
+    GROUP#
+----------
+MEMBER
+--------------------------------------------------------------------------------
+         1
+/u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_1_l4ly8075_.log
+
+         1
+/u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_1_l4ly80fr_.log
+
+         2
+/u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_2_l4ly807j_.log
+
+
+    GROUP#
+----------
+MEMBER
+--------------------------------------------------------------------------------
+         2
+/u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_2_l4ly80mp_.log
+
+         3
+/u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_3_l4ly807v_.log
+
+         3
+/u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_3_l4ly80mp_.log
+
+
+6 rows selected.
+
+SQL> set pages 1000 lines 1000
+SQL> select GROUP#,MEMBER from v$logfile order by GROUP#;
+
+    GROUP# MEMBER
+---------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+         1 /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_1_l4ly8075_.log
+         1 /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_1_l4ly80fr_.log
+         2 /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_2_l4ly807j_.log
+         2 /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_2_l4ly80mp_.log
+         3 /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_3_l4ly807v_.log
+         3 /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_3_l4ly80mp_.log
+
+6 rows selected.
+
+SQL> archive log list
+Database log mode              Archive Mode
+Automatic archival             Enabled
+Archive destination            USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence     29
+Next log sequence to archive   31
+Current log sequence           31
+SQL> shut immediate;
+Database closed.
+Database dismounted.
+ORACLE instance shut down.
+SQL> startup mount;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             721420288 bytes
+Database Buffers         2952790016 bytes
+Redo Buffers                7872512 bytes
+Database mounted.
+SQL> alter database noarchivelog;
+
+Database altered.
+
+SQL> archive log list
+Database log mode              No Archive Mode
+Automatic archival             Disabled
+Archive destination            USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence     29
+Current log sequence           31
+SQL> alter database archivelog;
+
+Database altered.
+
+SQL> archive log list
+Database log mode              Archive Mode
+Automatic archival             Enabled
+Archive destination            USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence     29
+Next log sequence to archive   31
+Current log sequence           31
+SQL> alter database open;
+
+Database altered.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+You have new mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   14685     1  0 10:39 ?        00:00:00 ora_smon_DEVDB
+oracle   15186 13614  0 10:41 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ kill -9 14685
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   15218 13614  0 10:42 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 9 10:43:07 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             721420288 bytes
+Database Buffers         2952790016 bytes
+Redo Buffers                7872512 bytes
+Database mounted.
+Database opened.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 ~]$
+You have mail in /var/spool/mail/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 9 11:01:46 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> show parameter fast'
+SQL> show parameter fast
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+fast_start_io_target                 integer     0
+fast_start_mttr_target               integer     0
+fast_start_parallel_rollback         string      LOW
+SQL> arch^C
+
+SQL>
+SQL> show parameter recovery
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_recovery_file_dest                string      /u01/app/oracle/fast_recovery_
+                                                 area
+db_recovery_file_dest_size           big integer 8256M
+recovery_parallelism                 integer     0
+remote_recovery_file_dest            string
+SQL> show parameter db_
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+DBFIPS_140                           boolean     FALSE
+allow_global_dblinks                 boolean     FALSE
+autotask_max_active_pdbs             integer     2
+awr_pdb_autoflush_enabled            boolean     FALSE
+awr_pdb_max_parallel_slaves          integer     10
+cdb_cluster                          boolean     FALSE
+cdb_cluster_name                     string
+clonedb_dir                          string
+db_16k_cache_size                    big integer 0
+db_2k_cache_size                     big integer 0
+db_32k_cache_size                    big integer 0
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_4k_cache_size                     big integer 0
+db_8k_cache_size                     big integer 0
+db_big_table_cache_percent_target    string      0
+db_block_buffers                     integer     0
+db_block_checking                    string      FALSE
+db_block_checksum                    string      TYPICAL
+db_block_size                        integer     8192
+db_cache_advice                      string      ON
+db_cache_size                        big integer 0
+db_create_file_dest                  string      /u01/app/oracle/oradata
+db_create_online_log_dest_1          string
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_create_online_log_dest_2          string
+db_create_online_log_dest_3          string
+db_create_online_log_dest_4          string
+db_create_online_log_dest_5          string
+db_domain                            string
+db_file_multiblock_read_count        integer     128
+db_file_name_convert                 string
+db_files                             integer     200
+db_flash_cache_file                  string
+db_flash_cache_size                  big integer 0
+db_flashback_retention_target        integer     1440
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_index_compression_inheritance     string      NONE
+db_keep_cache_size                   big integer 0
+db_lost_write_protect                string      NONE
+db_name                              string      DEVDB
+db_performance_profile               string
+db_recovery_file_dest                string      /u01/app/oracle/fast_recovery_
+                                                 area
+db_recovery_file_dest_size           big integer 8256M
+db_recycle_cache_size                big integer 0
+db_securefile                        string      PREFERRED
+db_ultra_safe                        string      OFF
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_unique_name                       string      DEVDB
+db_unrecoverable_scn_tracking        boolean     TRUE
+db_writer_processes                  integer     1
+dbwr_io_slaves                       integer     0
+disable_pdb_feature                  big integer 0
+enabled_PDBs_on_standby              string      *
+max_pdbs                             integer     254
+noncdb_compatible                    boolean     FALSE
+one_step_plugin_for_pdb_with_tde     boolean     FALSE
+outbound_dblink_protocols            string      ALL
+pdb_file_name_convert                string
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+pdb_lockdown                         string
+pdb_os_credential                    string
+pdb_template                         string
+rdbms_server_dn                      string
+scheduler_follow_pdbtz               boolean     FALSE
+standby_db_preserve_states           string      NONE
+standby_file_management              string      MANUAL
+standby_pdb_source_file_dblink       string
+standby_pdb_source_file_directory    string
+target_pdbs                          integer     0
+xml_db_events                        string      enable
+SQL>
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+
+login as: locate alert
+mallikarjun.ramadurg@10.38.4.180's password:
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Tue May  9 09:29:04 2023 from 172.29.0.102
+[root@oraclelab1 ~]# locate alert_DEVDB.log
+/u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+[root@oraclelab1 ~]# tail -f /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log;
+29294753,29299830,29307090,29307109,29311336,29329675,29330791,29339299,
+29357821,29360467,29360775,29367971,29368725,29379299,29379381,29380527,
+29381000,29382296,29391301,29393649,29402110,29411931,29413360,29457319,
+29465047
+===========================================================
+2023-05-09T10:40:33.526398+05:30
+db_recovery_file_dest_size of 8256 MB is 0.12% used. This is a
+user-specified limit on the amount of space that will be used by this
+database for recovery-related files, and does not reflect the amount of
+space available in the underlying filesystem or ASM diskgroup.
+2023-05-09T10:42:11.059677+05:30
+PMON (ospid: ): terminating the instance due to ORA error
+2023-05-09T10:42:11.059885+05:30
+Cause - 'Instance is being terminated due to fatal process death (pid: 24, ospid: 14685, SMON)'
+2023-05-09T10:42:11.070984+05:30
+System state dump requested by (instance=1, osid=14640 (PMON)), summary=[abnormal instance termination].
+System State dumped to trace file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_diag_14660.trc
+2023-05-09T10:42:11.579432+05:30
+Dumping diagnostic data in directory=[cdmp_20230509104211], requested by (instance=1, osid=14640 (PMON)), sumination].
+2023-05-09T10:42:12.667853+05:30
+Instance terminated by PMON, pid = 14640
+2023-05-09T10:44:29.238230+05:30
+Starting ORACLE instance (normal) (OS id: 15274)
+2023-05-09T10:44:29.243434+05:30
+****************************************************
+ Sys-V shared memory will be used for creating SGA
+ ****************************************************
+2023-05-09T10:44:29.244110+05:30
+**********************************************************************
+2023-05-09T10:44:29.244184+05:30
+Dump of system resources acquired for SHARED GLOBAL AREA (SGA)
+
+2023-05-09T10:44:29.244304+05:30
+ Per process system memlock (soft) limit = 128G
+2023-05-09T10:44:29.244354+05:30
+ Expected per process system memlock (soft) limit to lock
+ instance MAX SHARED GLOBAL AREA (SGA) into memory: 3522M
+2023-05-09T10:44:29.244489+05:30
+ Available system pagesizes:
+  4K, 2048K
+2023-05-09T10:44:29.244575+05:30
+ Supported system pagesize(s):
+2023-05-09T10:44:29.244643+05:30
+  PAGESIZE  AVAILABLE_PAGES  EXPECTED_PAGES  ALLOCATED_PAGES  ERROR(s)
+2023-05-09T10:44:29.244694+05:30
+        4K       Configured               6          901126        NONE
+2023-05-09T10:44:29.244797+05:30
+     2048K                0            1761               0        NONE
+2023-05-09T10:44:29.244838+05:30
+RECOMMENDATION:
+2023-05-09T10:44:29.244886+05:30
+ 1. For optimal performance, configure system with expected number
+ of pages for every supported system pagesize prior to the next
+ instance restart operation.
+2023-05-09T10:44:29.248998+05:30
+**********************************************************************
+2023-05-09T10:44:32.287782+05:30
+LICENSE_MAX_SESSION = 0
+LICENSE_SESSIONS_WARNING = 0
+2023-05-09T10:44:32.324974+05:30
+Initial number of CPU is 2
+Number of processor cores in the system is 2
+Number of processor sockets in the system is 2
+Capability Type : Network
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Runtime Environment
+capabilities requested : 400000FF detected : 40000000 Simulated : 0
+Capability Type : Engineered Systems
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Database Test
+capabilities requested : 3 detected : 0 Simulated : 0
+Using LOG_ARCHIVE_DEST_1 parameter default value as USE_DB_RECOVERY_FILE_DEST
+Autotune of undo retention is turned on.
+IMODE=BR
+ILAT =43
+LICENSE_MAX_USERS = 0
+SYS auditing is enabled
+NOTE: remote asm mode is local (mode 0x1; from cluster type)
+NOTE: Using default ASM root directory ASM
+NOTE: remote asm mode is local (mode 0x1; from cluster type)
+NOTE: Cluster configuration type = NONE [2]
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0.
+ORACLE_HOME:    /u01/app/oracle/product/19.0.0.0/dbhome_1
+System name:    Linux
+Node name:      oraclelab1.localdomain.com
+Release:        5.4.17-2102.201.3.el7uek.x86_64
+Version:        #2 SMP Fri Apr 23 09:05:55 PDT 2021
+Machine:        x86_64
+Using parameter settings in server-side spfile /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/spfileDEVDB.ora
+System parameters with non-default values:
+  processes                = 250
+  nls_language             = "AMERICAN"
+  nls_territory            = "AMERICA"
+  service_names            = "MALLIK"
+  sga_target               = 3520M
+  control_files            = "/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl"
+  control_files            = "/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl"
+  db_block_size            = 8192
+  compatible               = "19.0.0"
+  log_archive_format       = "%t_%s_%r.dbf"
+  db_create_file_dest      = "/u01/app/oracle/oradata"
+  db_recovery_file_dest    = "/u01/app/oracle/fast_recovery_area"
+  db_recovery_file_dest_size= 8256M
+  undo_tablespace          = "UNDOTBS1"
+  remote_login_passwordfile= "EXCLUSIVE"
+  dispatchers              = "(PROTOCOL=TCP) (SERVICE=DEVDBXDB)"
+  local_listener           = "(DESCRIPTION=(ADDRESS_LIST=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.
+  audit_file_dest          = "/u01/app/oracle/admin/DEVDB/adump"
+  audit_trail              = "DB"
+  db_name                  = "DEVDB"
+  open_cursors             = 350
+  pga_aggregate_target     = 1169M
+  diagnostic_dest          = "/u01/app/oracle"
+2023-05-09T10:44:32.535457+05:30
+============================================================
+NOTE: PatchLevel of this instance 0
+============================================================
+Starting background process PMON
+2023-05-09T10:44:32.564756+05:30
+PMON started with pid=2, OS id=15364
+Starting background process CLMN
+2023-05-09T10:44:32.580640+05:30
+CLMN started with pid=3, OS id=15366
+Starting background process PSP0
+2023-05-09T10:44:32.596796+05:30
+PSP0 started with pid=4, OS id=15368
+Starting background process VKTM
+2023-05-09T10:44:33.616830+05:30
+VKTM started with pid=5, OS id=15371 at elevated (RT) priority
+2023-05-09T10:44:33.619971+05:30
+VKTM running at (1)millisec precision with DBRM quantum (100)ms
+2023-05-09T10:44:33.620262+05:30
+Starting background process GEN0
+2023-05-09T10:44:33.635622+05:30
+GEN0 started with pid=6, OS id=15375
+Starting background process MMAN
+2023-05-09T10:44:33.650209+05:30
+MMAN started with pid=7, OS id=15377
+Starting background process GEN1
+2023-05-09T10:44:33.690731+05:30
+GEN1 started with pid=9, OS id=15381_15382
+Starting background process DIAG
+2023-05-09T10:44:33.707537+05:30
+DIAG started with pid=11, OS id=15384
+Starting background process OFSD
+2023-05-09T10:44:33.728857+05:30
+OFSD started with pid=12, OS id=15386_15387
+2023-05-09T10:44:33.729839+05:30
+Oracle running with ofslib:'Oracle File Server Library' version=2
+Starting background process DBRM
+2023-05-09T10:44:33.745421+05:30
+DBRM started with pid=14, OS id=15389
+Starting background process VKRM
+2023-05-09T10:44:33.760700+05:30
+VKRM started with pid=15, OS id=15391
+Starting background process SVCB
+2023-05-09T10:44:33.777330+05:30
+SVCB started with pid=16, OS id=15393
+Starting background process PMAN
+2023-05-09T10:44:33.793571+05:30
+PMAN started with pid=17, OS id=15395
+Starting background process DIA0
+2023-05-09T10:44:33.809743+05:30
+DIA0 started with pid=18, OS id=15397
+Starting background process DBW0
+2023-05-09T10:44:33.835617+05:30
+DBW0 started with pid=19, OS id=15399
+Starting background process LGWR
+2023-05-09T10:44:33.850887+05:30
+LGWR started with pid=20, OS id=15401
+2023-05-09T10:44:33.865845+05:30
+LGWR slave LG00 created with pid=21, OS pid=15403
+Starting background process CKPT
+2023-05-09T10:44:33.878663+05:30
+CKPT started with pid=22, OS id=15405
+LGWR slave LG01 created with pid=23, OS pid=15407
+Starting background process SMON
+2023-05-09T10:44:33.979065+05:30
+SMON started with pid=24, OS id=15409
+Starting background process SMCO
+2023-05-09T10:44:34.039666+05:30
+SMCO started with pid=25, OS id=15411
+Starting background process RECO
+2023-05-09T10:44:34.055045+05:30
+RECO started with pid=26, OS id=15413
+Starting background process LREG
+2023-05-09T10:44:34.085844+05:30
+LREG started with pid=28, OS id=15417
+Starting background process PXMN
+2023-05-09T10:44:34.118911+05:30
+PXMN started with pid=30, OS id=15421
+Starting background process FENC
+2023-05-09T10:44:34.133981+05:30
+FENC started with pid=31, OS id=15423
+Starting background process MMON
+2023-05-09T10:44:34.151303+05:30
+MMON started with pid=32, OS id=15425
+Starting background process MMNL
+2023-05-09T10:44:34.176199+05:30
+MMNL started with pid=33, OS id=15427
+2023-05-09T10:44:34.176471+05:30
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 shared server(s) ...
+Starting background process TMON
+2023-05-09T10:44:34.217126+05:30
+TMON started with pid=35, OS id=15434
+Setting CPU count to 2
+ORACLE_BASE from environment = /u01/app/oracle
+2023-05-09T10:44:34.323024+05:30
+ALTER DATABASE   MOUNT
+2023-05-09T10:44:36.801105+05:30
+Using default pga_aggregate_limit of 2338 MB
+2023-05-09T10:44:38.412773+05:30
+.... (PID:15435): Redo network throttle feature is disabled at mount time
+2023-05-09T10:44:38.429256+05:30
+Successful mount of redo thread 1, with mount id 1041065362
+2023-05-09T10:44:38.430016+05:30
+Database mounted in Exclusive Mode
+Lost write protection disabled
+.... (PID:15435): Using STANDBY_ARCHIVE_DEST parameter default value as USE_DB_RECOVERY_FILE_DEST [krsd.c:181
+Completed: ALTER DATABASE   MOUNT
+2023-05-09T10:44:38.521172+05:30
+ALTER DATABASE OPEN
+Ping without log force is disabled:
+  instance mounted in exclusive mode.
+Buffer Cache Full DB Caching mode changing from FULL CACHING DISABLED to FULL CACHING ENABLED
+2023-05-09T10:44:38.539310+05:30
+Beginning crash recovery of 1 threads
+ parallel recovery started with 2 processes
+ Thread 1: Recovery starting at checkpoint rba (logseq 31 block 221517), scn 0
+2023-05-09T10:44:38.563851+05:30
+Started redo scan
+2023-05-09T10:44:38.596483+05:30
+Completed redo scan
+ read 2199 KB redo, 254 data blocks need recovery
+2023-05-09T10:44:38.602850+05:30
+Started redo application at
+ Thread 1: logseq 31, block 221517, offset 0
+2023-05-09T10:44:38.603204+05:30
+Recovery of Online Redo Log: Thread 1 Group 1 Seq 31 Reading mem 0
+  Mem# 0: /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_1_l4ly8075_.log
+  Mem# 1: /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_1_l4ly80fr_.log
+2023-05-09T10:44:38.606058+05:30
+Completed redo application of 0.98MB
+2023-05-09T10:44:38.675705+05:30
+Completed crash recovery at
+ Thread 1: RBA 31.225916.16, nab 225916, scn 0x000000000035f8d3
+ 254 data blocks read, 254 data blocks written, 2199 redo k-bytes read
+Endian type of dictionary set to little
+2023-05-09T10:44:38.721555+05:30
+LGWR (PID:15401): STARTING ARCH PROCESSES
+2023-05-09T10:44:38.738923+05:30
+TT00 (PID:15450): Gap Manager starting
+Starting background process ARC0
+2023-05-09T10:44:38.753441+05:30
+ARC0 started with pid=40, OS id=15452
+2023-05-09T10:44:38.763608+05:30
+LGWR (PID:15401): ARC0: Archival started
+LGWR (PID:15401): STARTING ARCH PROCESSES COMPLETE
+2023-05-09T10:44:38.764706+05:30
+ARC0 (PID:15452): Becoming a 'no FAL' ARCH
+ARC0 (PID:15452): Becoming the 'no SRL' ARCH
+2023-05-09T10:44:38.766956+05:30
+TMON (PID:15434): STARTING ARCH PROCESSES
+Starting background process ARC1
+2023-05-09T10:44:38.780868+05:30
+Thread 1 advanced to log sequence 32 (thread open)
+Redo log for group 2, sequence 32 is not located on DAX storage
+2023-05-09T10:44:38.783342+05:30
+ARC1 started with pid=42, OS id=15456
+Starting background process ARC2
+Thread 1 opened at log sequence 32
+  Current log# 2 seq# 32 mem# 0: /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_2_l4ly807j_.log
+  Current log# 2 seq# 32 mem# 1: /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_2_l4ly80mp_.log
+Successful open of redo thread 1
+2023-05-09T10:44:38.795768+05:30
+MTTR advisory is disabled because FAST_START_MTTR_TARGET is not set
+stopping change tracking
+2023-05-09T10:44:38.799399+05:30
+ARC2 started with pid=43, OS id=15458
+Starting background process ARC3
+2023-05-09T10:44:38.837072+05:30
+ARC3 started with pid=44, OS id=15460
+2023-05-09T10:44:38.838093+05:30
+TMON (PID:15434): ARC1: Archival started
+TMON (PID:15434): ARC2: Archival started
+TMON (PID:15434): ARC3: Archival started
+TMON (PID:15434): STARTING ARCH PROCESSES COMPLETE
+2023-05-09T10:44:38.979857+05:30
+Undo initialization recovery: err:0 start: 1161294199 end: 1161294214 diff: 15 ms (0.0 seconds)
+[15444] Successfully onlined Undo Tablespace 2.
+Undo initialization online undo segments: err:0 start: 1161294214 end: 1161294234 diff: 20 ms (0.0 seconds)
+Undo initialization finished serial:0 start:1161294199 end:1161294237 diff:38 ms (0.0 seconds)
+Verifying minimum file header compatibility for tablespace encryption..
+Verifying file header compatibility for tablespace encryption completed for pdb 0
+Database Characterset is AL32UTF8
+No Resource Manager plan active
+joxcsys_required_dirobj_exists: directory object exists with required path /u01/app/oracle/product/19.0.0.0/d5444 cid 0
+replication_dependency_tracking turned off (no async multimaster replication found)
+2023-05-09T10:44:39.381322+05:30
+ARC0 (PID:15452): Archived Log entry 55 added for T-1.S-31 ID 0x3dfb9919 LAD:1
+Starting background process AQPC
+2023-05-09T10:44:39.438674+05:30
+AQPC started with pid=46, OS id=15467
+2023-05-09T10:44:39.569429+05:30
+Starting background process CJQ0
+2023-05-09T10:44:39.585531+05:30
+CJQ0 started with pid=47, OS id=15469
+Completed: ALTER DATABASE OPEN
+2023-05-09T10:44:40.671469+05:30
+QPI: opatch file present, opatch
+QPI: qopiprep.bat file present
+2023-05-09T10:44:42.679034+05:30
+===========================================================
+Dumping current patch information
+===========================================================
+Patch Id: 29517242
+Patch Description: Database Release Update : 19.3.0.0.190416 (29517242)
+Patch Apply Time: 2019-04-18T12:51:17+05:30
+Bugs Fixed: 14735102,19697993,20313356,21965541,25806201,25883179,25986062,
+26476244,26611353,26872233,27369515,27423500,27666312,27710072,27846298,
+27957203,28064977,28072567,28129791,28181021,28210681,28279456,28313275,
+28350595,28371123,28379065,28431445,28463226,28489419,28502773,28513333,
+28534475,28561704,28569897,28572533,28572544,28587723,28593682,28594086,
+28597221,28601957,28605066,28606598,28625862,28627033,28636532,28643718,
+28644549,28645570,28646200,28646939,28649388,28655209,28663782,28673945,
+28692275,28694872,28696373,28705231,28710385,28710734,28714461,28718469,
+28730079,28740708,28760206,28772390,28774416,28777214,28789531,28791852,
+28795551,28802734,28804517,28810381,28811560,28815123,28815355,28819640,
+28824482,28833912,28835937,28862532,28863432,28873575,28876253,28876639,
+28884931,28888327,28892794,28897512,28899663,28901126,28905457,28907196,
+28912691,28915561,28917080,28918429,28919145,28922227,28922532,28922608,
+28925634,28925880,28933158,28936114,28937717,28938698,28940179,28940281,
+28941901,28942455,28945421,28945994,28951533,28952168,28954762,28955606,
+28957292,28957723,28962775,28965231,28966444,28974083,28977322,28983095,
+28983486,28986326,28986481,28988482,28989306,28993295,28994307,28996376,
+29000000,29001888,29002927,29003738,29006318,29006621,29007321,29007775,
+29008035,29011936,29013475,29014076,29015118,29017265,29018655,29019121,
+29021063,29021352,29024552,29026582,29026606,29027456,29027694,29027940,
+29031575,29031600,29032234,29032457,29032607,29033052,29033145,29033200,
+29033280,29034587,29037290,29038528,29039089,29039510,29043554,29043651,
+29043725,29044763,29044954,29047850,29048289,29048498,29048605,29050560,
+29050765,29051702,29052726,29053783,29056024,29056270,29056560,29059011,
+29061959,29062692,29062848,29062860,29062868,29110526,29110783,29110790,
+29110797,29110802,29110805,29111598,29113282,29113305,29117526,29117642,
+29119077,29120223,29122224,29122254,29123297,29123432,29123482,29124368,
+29125380,29126345,29127957,29128935,29129450,29129497,29129712,29130219,
+29131539,29132938,29134447,29136111,29138641,29141316,29141341,29141685,
+29142667,29144995,29145214,29145730,29149829,29150338,29151520,29152357,
+29155099,29157389,29158680,29158899,29159909,29159936,29160174,29162095,
+29163415,29163437,29163524,29163567,29167111,29167342,29167374,29167940,
+29168219,29168433,29169073,29169215,29171942,29172618,29172826,29173140,
+29173373,29173817,29174004,29176318,29177466,29177543,29177886,29178385,
+29180313,29180455,29180559,29180893,29181153,29181231,29181620,29181743,
+29181923,29182019,29183912,29184297,29184666,29185193,29186456,29189302,
+29189307,29189889,29190235,29190474,29190740,29191541,29192419,29192468,
+29192685,29193207,29194205,29194367,29194493,29194827,29195279,29195337,
+29195758,29196725,29199635,29199733,29200316,29200700,29201494,29201539,
+29202104,29202850,29203122,29203166,29203425,29203443,29203604,29205281,
+29205323,29205419,29205463,29205767,29205918,29206109,29206605,29207073,
+29208260,29208732,29211457,29211724,29212012,29212433,29212611,29213351,
+29213775,29213850,29213879,29214561,29214960,29216746,29216984,29217294,
+29217472,29217828,29217848,29218570,29219205,29219273,29220079,29221248,
+29221891,29222031,29222784,29223833,29223859,29223967,29224065,29224605,
+29225076,29227602,29228869,29229164,29229754,29229844,29229955,29230252,
+29230565,29231133,29232117,29232154,29234123,29237538,29240307,29241345,
+29242017,29242884,29243958,29245137,29245160,29246163,29247415,29247712,
+29247906,29248552,29248835,29248858,29249991,29250059,29251259,29253184,
+29253871,29254031,29254930,29255178,29255273,29255431,29255435,29256426,
+29259119,29259320,29261906,29262512,29262887,29265448,29266248,29266899,
+29267292,29268412,29269171,29270585,29273539,29273735,29273847,29274428,
+29274564,29274627,29275461,29278218,29279658,29279751,29279854,29282898,
+29285503,29285788,29285956,29286037,29287130,29287705,29292837,29293072,
+29297863,29297915,29298220,29299049,29299082,29299844,29301566,29302963,
+29303918,29304781,29311588,29312310,29312734,29312753,29313347,29313417,
+29313525,29314539,29318410,29319441,29321489,29323946,29324568,29325087,
+29325105,29325257,29325993,29327044,29329087,29331209,29331380,29331493,
+29332771,29333500,29337310,29338315,29338453,29338780,29338913,29339155,
+29341209,29343086,29346943,29347620,29348176,29350052,29351386,29351716,
+29351749,29352867,29353271,29355654,29356547,29356752,29358828,29360672,
+29361801,29363151,29364171,29364177,29367019,29367561,29368253,29373418,
+29373588,29374179,29377986,29378029,29379978,29382784,29385652,29386502,
+29386635,29386660,29387274,29388094,29388524,29388830,29389889,29390435,
+29394140,29394749,29397954,29398863,29399100,29399121,29405012,29405651,
+29412066,29412269,29417884,29423826,29429264,29429566,29431485,29435652,
+29438736,29439522,29450421,29451386,29452576,29452953,29457807,29460252,
+29462957,29486181,29507616,29515240,29521748,29530812,29531654,29557336,
+29558975,29601461
+
+Patch Id: 29585399
+Patch Description: OCW RELEASE UPDATE 19.3.0.0.0 (29585399)
+Patch Apply Time: 2019-04-18T12:51:33+05:30
+Bugs Fixed: 3,27222128,27572040,27604329,27760043,27877830,28302580,28470673,
+28621543,28642469,28699321,28710663,28755846,28772816,28785321,28800508,
+28808652,28815557,28847541,28847572,28870496,28871040,28874416,28877252,
+28881191,28881848,28888083,28911140,28925250,28925460,28935956,28940472,
+28942694,28951332,28963036,28968779,28980448,28995287,29003207,29003617,
+29016294,29018680,29024876,29026154,29027933,29047127,29052850,29058476,
+29111631,29112455,29117337,29123444,29125708,29125786,29129476,29131772,
+29132456,29139727,29146157,29147849,29149170,29152603,29152752,29154631,
+29154636,29154829,29159216,29159661,29160462,29161923,29169540,29169739,
+29170717,29173618,29181568,29182920,29183298,29186091,29191827,29201143,
+29201695,29209545,29210577,29210610,29210624,29210683,29213641,29219627,
+29224294,29225861,29229839,29235934,29242906,29243749,29244495,29244766,
+29244968,29248723,29249583,29251564,29255616,29260224,29261695,29271019,
+29273360,29282090,29282666,29285453,29285621,29290235,29292232,29293806,
+29294753,29299830,29307090,29307109,29311336,29329675,29330791,29339299,
+29357821,29360467,29360775,29367971,29368725,29379299,29379381,29380527,
+29381000,29382296,29391301,29393649,29402110,29411931,29413360,29457319,
+29465047
+===========================================================
+2023-05-09T10:44:43.138113+05:30
+db_recovery_file_dest_size of 8256 MB is 1.46% used. This is a
+user-specified limit on the amount of space that will be used by this
+database for recovery-related files, and does not reflect the amount of
+space available in the underlying filesystem or ASM diskgroup.
+
+Network error: Software caused connection abort
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+
+
+

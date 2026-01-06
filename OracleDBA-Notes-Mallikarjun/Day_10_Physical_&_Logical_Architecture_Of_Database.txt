@@ -1,0 +1,1196 @@
+1. Standalone - DEVDB - oraclelab1 
+2. Standalone - Oracle restart - +ASM - TESTDB - oraclelab2
+
+3. Oracle Database Server = Instance + Database 
+
+Instance = Memory + BG Process 
+
+Memory - SGA & PGA 
+PGA - 
+SGA - SP, DBC, LBC , LP, JP & SP
+
+BG Process - MOndatory & Non Mondatory 
+smon, pmon, dbwr, lgwr, ckpt 
+arch, reco 
+
+Database - Datafile
+
+
+spfile/pfile 
+CT
+Datafile - system sysaux undo temp users/apps 
+redo logs 
+archive logs 
+password file
+alert logs & trace 
+
+
+Database - Datafile
+logical & physical 
+
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+
+
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME                FILE_NAME
+------------------------------ ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+
+SQL>
+
+
+SQL> show parameter db_block_size
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_block_size                        integer     8192
+SQL>
+
+
+dba_tables 
+dba_views
+dba_segments  EMP DEPT 
+
+
+SQL> select TABLESPACE_NAME from dba_tablespaces;
+
+TABLESPACE_NAME
+------------------------------
+SYSTEM
+SYSAUX
+UNDOTBS1
+TEMP
+USERS
+
+SQL>
+
+
+Tablesspace is full? 
+=====================
+1. check DB files all are reached 32Gb or not ?
+
+
+
+AUTOEXTEND ON;
+
+
+
+SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+
+alter database
+datafile '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+resize 200M;
+
+
+
+
+
+Tablesspace is full? 
+=====================
+1. check DB files all are reached 32Gb or not ?
+--- autoexted off make it on 
+
+alter database 
+datafile '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+AUTOEXTEND ON;
+
+--- all dbfile reached 32G, add new datafile 
+ALTER TABLESPACE USERS
+ADD DATAFILE '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+size 10GB
+AUTOEXTEND ON; 
+
+ALTER TABLESPACE USERS
+ADD DATAFILE '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+size 32GB;
+
+ALTER TABLESPACE USERS
+ADD DATAFILE '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+size 32GB
+AUTOEXTEND ON;
+
+
+create tablespace:
+CREATE TABLESPACE TEST1;
+
+CREATE TABLESPACE TEST2 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test2.dbf' SIZE 10M;
+
+
+Normal TS/small files TS:
+========================
+CREATE TABLESPACE TEST3 
+DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test3.dbf' 
+SIZE 33G;
+
+
+
+Big File TS:
+============
+create bigfile tablespace TEST3
+Datafile '/u01/app/oracle/oradata/DB1/datafile/test3.dbf' 
+size 33G;
+
+
+
+Tablespaces:
+=============
+SYSTEM --- system.dbf
+SYSAUX --- sysaux.dbf
+UNDO ----- undo.dbf
+TEMP ----- temp.dbf
+USERS ---- users.dbf 
+
+TEST1/TEST2/TEST4
+
+
+
+8K
+OLTP				Dataware house 
+small file TS			Bigfile TS
+multile DFs 			single DF
+
+TEST1 (1024)			1 Datafile = 32TB 
+1.dbf
+2.dbf
+3.dbf
+
+1024 * 32 = 32,768/32TB 
+
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Fri Apr 14 13:41:22 2023 from oraclelab2.localdomain.com
+/usr/bin/xauth:  error in locking authority file /root/.Xauthority
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri Apr 14 09:22:40 IST 2023 on pts/0
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+ORACLE_HOME = [/home/oracle] ? sq^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle    3872  3804  0 09:42 pts/1    00:00:00 grep --color=auto smon
+oracle   22343     1  0 Apr14 ?        00:00:22 ora_smon_DB1
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [DEVDB] ? DB1
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 09:43:02 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+ERROR:
+ORA-09925: Unable to create audit trail file
+Linux-x86_64 Error: 28: No space left on device
+Additional information: 9925
+ORA-01075: you are currently logged on
+
+
+Enter user-name: ^C
+
+
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ ^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ df -h /
+Filesystem           Size  Used Avail Use% Mounted on
+/dev/mapper/ol-root   84G   84G   20K 100% /
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd /u01/pat-bash: cannot create temp file for here-document: No space left on device
+^C
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ cd /u01/patches
+[oracle@oraclelab1 patches]$ ls -ltrh
+total 5.5G
+drwxr-x---. 8 oracle oinstall 4.0K Oct 17  2022 34416665
+-rw-rw-r--. 1 oracle oinstall 1.7M Oct 19  2022 PatchSearch.xml
+-rw-r--r--. 1 root   root     330K Oct 26 09:50 preupgrade_19_cbuild_13_lf.zip
+-rw-r--r--. 1 oracle oinstall 4.7M Oct 27 09:13 autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 2.5G Mar  9 10:31 p34416665_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall 120M Mar 10 09:59 p6880880_190000_Linux-x86-64.zip
+-rwxr-xr-x. 1 oracle oinstall 2.9G Mar 13 22:14 V982063-01.zip
+[oracle@oraclelab1 patches]$ rm -rf 34416665
+[oracle@oraclelab1 patches]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 09:45:27 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+
+SQL> desc dba_data_files;
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ FILE_NAME                                          VARCHAR2(513)
+ FILE_ID                                            NUMBER
+ TABLESPACE_NAME                                    VARCHAR2(30)
+ BYTES                                              NUMBER
+ BLOCKS                                             NUMBER
+ STATUS                                             VARCHAR2(9)
+ RELATIVE_FNO                                       NUMBER
+ AUTOEXTENSIBLE                                     VARCHAR2(3)
+ MAXBYTES                                           NUMBER
+ MAXBLOCKS                                          NUMBER
+ INCREMENT_BY                                       NUMBER
+ USER_BYTES                                         NUMBER
+ USER_BLOCKS                                        NUMBER
+ ONLINE_STATUS                                      VARCHAR2(7)
+ LOST_WRITE_PROTECT                                 VARCHAR2(7)
+
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME
+------------------------------
+FILE_NAME
+--------------------------------------------------------------------------------
+USERS
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+
+UNDOTBS1
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+
+SYSTEM
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+
+
+TABLESPACE_NAME
+------------------------------
+FILE_NAME
+--------------------------------------------------------------------------------
+SYSAUX
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+
+
+SQL> set pages 1000 lines 1000
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME                FILE_NAME
+------------------------------ -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+
+SQL> show parameter block
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_block_buffers                     integer     0
+db_block_checking                    string      FALSE
+db_block_checksum                    string      TYPICAL
+db_block_size                        integer     8192
+db_file_multiblock_read_count        integer     128
+max_idle_blocker_time                integer     0
+SQL> show parameter db_block_size
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_block_size                        integer     8192
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 patches]$ cd $ORACLE_HOME
+[oracle@oraclelab1 dbhome_1]$ cd dbs^C
+[oracle@oraclelab1 dbhome_1]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 09:53:24 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> creta epfile from ^C
+
+SQL>
+SQL> create pfile from spfile;
+
+File created.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 dbhome_1]$ cd dbs
+[oracle@oraclelab1 dbs]$ ls -ltrh
+total 11M
+-rw-r--r--. 1 oracle oinstall 3.1K May 14  2015 init.ora
+-rw-r-----. 1 oracle oinstall   24 Mar 14 10:22 lkDB1
+-rw-r-----. 1 oracle oinstall   24 Mar 14 10:38 lkDB2
+-rw-r-----. 1 oracle oinstall 3.5K Mar 14 11:09 orapwDB2
+-rw-r-----. 1 oracle oinstall   24 Mar 15 09:55 lkDB3
+-rw-r-----. 1 oracle oinstall 3.5K Mar 15 10:31 orapwDB3
+-rw-r-----. 1 oracle oinstall  11M Mar 22 10:06 snapcf_DB2.f
+-rw-r-----. 1 oracle oinstall 3.5K Apr 14 09:23 spfileDB3.ora
+-rw-r-----. 1 oracle oinstall 1.2K Apr 14 09:43 initDB2.ora
+-rw-r-----. 1 oracle oinstall 3.5K Apr 14 10:02 spfileDB2.ora
+-rw-rw----. 1 oracle oinstall 1.6K Apr 14 10:29 hc_DB3.dat
+-rw-rw----. 1 oracle oinstall 1.6K Apr 14 10:29 hc_DB2.dat
+-rw-r-----. 1 oracle oinstall 3.5K Apr 14 10:31 spfileDB1.ora
+-rw-rw----. 1 oracle oinstall 1.6K Apr 24 09:45 hc_DB1.dat
+-rw-r--r--. 1 oracle oinstall 1.2K Apr 24 09:53 initDB1.ora
+[oracle@oraclelab1 dbs]$ cat initDB1.ora
+DB1.__data_transfer_cache_size=0
+DB1.__db_cache_size=2667577344
+DB1.__inmemory_ext_roarea=0
+DB1.__inmemory_ext_rwarea=0
+DB1.__java_pool_size=117440512
+DB1.__large_pool_size=33554432
+DB1.__oracle_base='/u01/app/oracle'#ORACLE_BASE set from environment
+DB1.__pga_aggregate_target=1241513984
+DB1.__sga_target=3690987520
+DB1.__shared_io_pool_size=184549376
+DB1.__shared_pool_size=671088640
+DB1.__streams_pool_size=0
+DB1.__unified_pga_pool_size=0
+*.audit_file_dest='/u01/app/oracle/admin/DB1/adump'
+*.audit_trail='db'
+*.compatible='12.2.0'
+*.control_files='/u01/app/oracle/oradata/DB1/controlfile/o1_mf_l0ynqdr9_.ctl','/u01/app/oracle/fast_recovery_area/DB1/DB1/cmf_l0ynqdx7_.ctl'
+*.db_block_size=8192
+*.db_create_file_dest='/u01/app/oracle/oradata'
+*.db_name='DB1'
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area/DB1'
+*.db_recovery_file_dest_size=15g
+*.diagnostic_dest='/u01/app/oracle'
+*.dispatchers='(PROTOCOL=TCP) (SERVICE=DB1XDB)'
+*.log_archive_format='%t_%s_%r.dbf'
+*.nls_language='AMERICAN'
+*.nls_territory='AMERICA'
+*.open_cursors=300
+*.pga_aggregate_target=1169m
+*.processes=300
+*.remote_login_passwordfile='EXCLUSIVE'
+*.sga_target=3507m
+*.undo_tablespace='UNDOTBS1'
+[oracle@oraclelab1 dbs]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 10:20:31 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select TABLESPACE_NAME from dba_tablespaces;
+
+TABLESPACE_NAME
+------------------------------
+SYSTEM
+SYSAUX
+UNDOTBS1
+TEMP
+USERS
+
+SQL> set pages 1000 lines 1000
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME                FILE_NAME
+------------------------------ -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+
+SQL> select name from v$datafile;
+
+NAME
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf
+/u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf
+
+SQL> col tablespace_name format a16;
+col file_name format a50;
+SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024
+FROM DBA_DATA_FILES;SQL> SQL>   2
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024
+---------------- -------------------------------------------------- ---------------
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5
+                 0ynp9yw_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035
+                 1_l0ynp8ts_.dbf
+
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910
+                 l0ynohps_.dbf
+
+
+SQL> ALTER TABLESPACE USERS
+ADD DATAFILE '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+size 10M;  2    3
+
+Tablespace altered.
+
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024
+FROM DBA_DATA_FILES;  2
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024
+---------------- -------------------------------------------------- ---------------
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5
+                 0ynp9yw_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035
+                 1_l0ynp8ts_.dbf
+
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910
+                 l0ynohps_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                 10
+
+SQL> desc dba_data_files;
+ Name                                                                                                                        Null?    Type
+ --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ FILE_NAME                                                                                                                    VARCHAR2(513)
+ FILE_ID                                                                                                                      NUMBER
+ TABLESPACE_NAME                                                                                                              VARCHAR2(30)
+ BYTES                                                                                                                        NUMBER
+ BLOCKS                                                                                                                       NUMBER
+ STATUS                                                                                                                       VARCHAR2(9)
+ RELATIVE_FNO                                                                                                                 NUMBER
+ AUTOEXTENSIBLE                                                                                                               VARCHAR2(3)
+ MAXBYTES                                                                                                                     NUMBER
+ MAXBLOCKS                                                                                                                    NUMBER
+ INCREMENT_BY                                                                                                                 NUMBER
+ USER_BYTES                                                                                                                   NUMBER
+ USER_BLOCKS                                                                                                                  NUMBER
+ ONLINE_STATUS                                                                                                                VARCHAR2(7)
+ LOST_WRITE_PROTECT                                                                                                           VARCHAR2(7)
+
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024 AUT
+---------------- -------------------------------------------------- --------------- ---
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950 YES
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910 YES
+                 l0ynohps_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035 YES
+                 1_l0ynp8ts_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5 YES
+                 0ynp9yw_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                 10 NO
+
+SQL> alter database
+datafile '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+resize 200M;  2    3
+
+Database altered.
+
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024 AUT
+---------------- -------------------------------------------------- --------------- ---
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950 YES
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910 YES
+                 l0ynohps_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035 YES
+                 1_l0ynp8ts_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5 YES
+                 0ynp9yw_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                200 NO
+
+SQL> alter database
+datafile '/u01/app/oracle/oradata/DB1/datafile/user_2.dbf'
+AUTOEXTEND ON;  2    3
+
+Database altered.
+
+SQL>
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME  FILE_NAME                                          BYTES/1024/1024 AUT
+---------------- -------------------------------------------------- --------------- ---
+SYSTEM           /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_             950 YES
+                 l0ynndm0_.dbf
+
+SYSAUX           /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_             910 YES
+                 l0ynohps_.dbf
+
+UNDOTBS1         /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs            1035 YES
+                 1_l0ynp8ts_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l               5 YES
+                 0ynp9yw_.dbf
+
+USERS            /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                200 YES
+
+SQL>
+SQL>
+SQL> 3xit
+SP2-0042: unknown command "3xit" - rest of line ignored.
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$ df -h  /u01
+Filesystem           Size  Used Avail Use% Mounted on
+/dev/mapper/ol-root   84G   81G  3.2G  97% /
+[oracle@oraclelab1 dbs]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 10:49:03 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> CREATE TABLESPACE TEST1;
+
+Tablespace created.
+
+SQL> set pages 1000 lines 1000
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME                FILE_NAME                                                                                   BYTES/1024/1024 AUT
+------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                                 950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                                 910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                              1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                                    5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                                 200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                                  100 YES
+
+6 rows selected.
+
+SQL> set pages 1000 lines 1000
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME                FILE_NAME                                                                                   BYTES/1024/1024 AUT
+------------------------------ ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                                 950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                                 910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                              1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                                    5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                                 200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                                  100 YES
+
+6 rows selected.
+
+SQL> /
+
+TABLESPACE_NAME                FILE_NAME                                                                                   BYTES/1024/1024 AUT
+------------------------------ --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- --------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                                 950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                                 910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                              1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                                    5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                                 200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                                  100 YES
+
+6 rows selected.
+
+SQL> col FILE_NAME for a70
+SQL> /
+
+TABLESPACE_NAME                FILE_NAME                                                              BYTES/1024/1024 AUT
+------------------------------ ---------------------------------------------------------------------- --------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                    950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                    910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                 1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                       5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                    200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                     100 YES
+
+6 rows selected.
+
+SQL>
+SQL>
+SQL> CREATE TABLESPACE TEST2 DATAFILE '/u01/app/oracle/oradata/DEVDB/datafile/test2.dbf' SIZE 10M;
+CREATE TABLESPACE TEST2 DATAFILE '/u01/app/oracle/oradata/DEVDB/datafile/test2.dbf' SIZE 10M
+*
+ERROR at line 1:
+ORA-01119: error in creating database file '/u01/app/oracle/oradata/DEVDB/datafile/test2.dbf'
+ORA-27040: file create error, unable to create file
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 1
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 dbs]$ ls -l /u01/app/oracle/oradata/DEVDB/datafile/
+ls: cannot access /u01/app/oracle/oradata/DEVDB/datafile/: No such file or directory
+[oracle@oraclelab1 dbs]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 10:51:01 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> CREATE TABLESPACE TEST2 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test2.dbf' SIZE 10M;
+
+Tablespace created.
+
+SQL> col FILE_NAME for a70
+SQL> set pages 1000 lines 1000
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME                FILE_NAME                                                              BYTES/1024/1024 AUT
+------------------------------ ---------------------------------------------------------------------- --------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                    950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                    910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                 1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                       5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                    200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                     100 YES
+TEST2                          /u01/app/oracle/oradata/DB1/datafile/test2.dbf                                      10 NO
+
+7 rows selected.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$
+[oracle@oraclelab1 dbs]$ cd /u01/backup/
+[oracle@oraclelab1 backup]$ ll
+total 983052
+-rw-r-----. 1 oracle oinstall 1006641152 Apr 14 10:22 system_1.dbf
+[oracle@oraclelab1 backup]$
+[oracle@oraclelab1 backup]$
+[oracle@oraclelab1 backup]$ cd /u01/patches/
+[oracle@oraclelab1 patches]$ ll
+total 5667264
+-rw-r--r--. 1 oracle oinstall    4898958 Oct 27 09:13 autoupgrade.jar
+-rw-r--r--. 1 oracle oinstall 2610825269 Mar  9 10:31 p34416665_190000_Linux-x86-64.zip
+-rw-r--r--. 1 oracle oinstall  125734641 Mar 10 09:59 p6880880_190000_Linux-x86-64.zip
+-rw-rw-r--. 1 oracle oinstall    1762911 Oct 19  2022 PatchSearch.xml
+-rw-r--r--. 1 root   root         337583 Oct 26 09:50 preupgrade_19_cbuild_13_lf.zip
+-rwxr-xr-x. 1 oracle oinstall 3059705302 Mar 13 22:14 V982063-01.zip
+[oracle@oraclelab1 patches]$
+[oracle@oraclelab1 patches]$
+[oracle@oraclelab1 patches]$ rm -rf *
+[oracle@oraclelab1 patches]$ cd /u01/app/oracle/oradata/
+[oracle@oraclelab1 oradata]$ ll
+total 0
+drwxr-x---. 5 oracle oinstall 58 Mar 13 22:14 DB1
+drwxr-x---. 5 oracle oinstall 58 Mar 13 22:24 DB2
+drwxr-x---. 5 oracle oinstall 58 Mar 13 22:32 DB3
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$ rm -r^C
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$ ps -ef|grep smon
+oracle    9470  3804  0 10:54 pts/1    00:00:00 grep --color=auto smon
+oracle   22343     1  0 Apr14 ?        00:00:22 ora_smon_DB1
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$
+[oracle@oraclelab1 oradata]$ rm -rf DB2 DB3
+[oracle@oraclelab1 oradata]$ cd ../fast_recovery_area/
+[oracle@oraclelab1 fast_recovery_area]$ ll
+total 0
+drwxr-x---. 3 oracle oinstall 17 Mar 13 22:12 DB1
+drwxr-x---. 3 oracle oinstall 17 Mar 13 22:23 DB2
+drwxr-x---. 3 oracle oinstall 17 Mar 13 22:31 DB3
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$ rm -rf DB2 DB3
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$ df -h /
+Filesystem           Size  Used Avail Use% Mounted on
+/dev/mapper/ol-root   84G   51G   34G  60% /
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$ cd /u01/patches/^C
+[oracle@oraclelab1 fast_recovery_area]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 10:56:15 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> CREATE TABLESPACE TEST3 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test3.dbf' SIZE 33G;
+CREATE TABLESPACE TEST3 DATAFILE '/u01/app/oracle/oradata/DB1/datafile/test3.dbf' SIZE 33G
+*
+ERROR at line 1:
+ORA-01144: File size (4325376 blocks) exceeds maximum of 4194303 blocks
+
+
+SQL> create bigfile tablespace TEST3
+Datafile '/u01/app/oracle/oradata/DB1/datafile/test3.dbf'
+size 33G;  2    3
+
+Tablespace created.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 fast_recovery_area]$ ^C
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$
+[oracle@oraclelab1 fast_recovery_area]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 11:06:06 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> desc dba_tablespace;
+ERROR:
+ORA-04043: object dba_tablespace does not exist
+
+
+SQL> desc dba_tablespaces;
+ Name                                      Null?    Type
+ ----------------------------------------- -------- ----------------------------
+ TABLESPACE_NAME                           NOT NULL VARCHAR2(30)
+ BLOCK_SIZE                                NOT NULL NUMBER
+ INITIAL_EXTENT                                     NUMBER
+ NEXT_EXTENT                                        NUMBER
+ MIN_EXTENTS                               NOT NULL NUMBER
+ MAX_EXTENTS                                        NUMBER
+ MAX_SIZE                                           NUMBER
+ PCT_INCREASE                                       NUMBER
+ MIN_EXTLEN                                         NUMBER
+ STATUS                                             VARCHAR2(9)
+ CONTENTS                                           VARCHAR2(21)
+ LOGGING                                            VARCHAR2(9)
+ FORCE_LOGGING                                      VARCHAR2(3)
+ EXTENT_MANAGEMENT                                  VARCHAR2(10)
+ ALLOCATION_TYPE                                    VARCHAR2(9)
+ PLUGGED_IN                                         VARCHAR2(3)
+ SEGMENT_SPACE_MANAGEMENT                           VARCHAR2(6)
+ DEF_TAB_COMPRESSION                                VARCHAR2(8)
+ RETENTION                                          VARCHAR2(11)
+ BIGFILE                                            VARCHAR2(3)
+ PREDICATE_EVALUATION                               VARCHAR2(7)
+ ENCRYPTED                                          VARCHAR2(3)
+ COMPRESS_FOR                                       VARCHAR2(30)
+ DEF_INMEMORY                                       VARCHAR2(8)
+ DEF_INMEMORY_PRIORITY                              VARCHAR2(8)
+ DEF_INMEMORY_DISTRIBUTE                            VARCHAR2(15)
+ DEF_INMEMORY_COMPRESSION                           VARCHAR2(17)
+ DEF_INMEMORY_DUPLICATE                             VARCHAR2(13)
+ SHARED                                             VARCHAR2(13)
+ DEF_INDEX_COMPRESSION                              VARCHAR2(8)
+ INDEX_COMPRESS_FOR                                 VARCHAR2(13)
+ DEF_CELLMEMORY                                     VARCHAR2(14)
+ DEF_INMEMORY_SERVICE                               VARCHAR2(12)
+ DEF_INMEMORY_SERVICE_NAME                          VARCHAR2(1000)
+ LOST_WRITE_PROTECT                                 VARCHAR2(7)
+ CHUNK_TABLESPACE                                   VARCHAR2(1)
+
+SQL> select TABLESPACE_NAME,BIGFILE from dba_tablespaces;
+
+TABLESPACE_NAME                BIG
+------------------------------ ---
+SYSTEM                         NO
+SYSAUX                         NO
+UNDOTBS1                       NO
+TEMP                           NO
+USERS                          NO
+TEST1                          NO
+TEST2                          NO
+TEST3                          YES
+
+8 rows selected.
+
+SQL> col FILE_NAME for a70
+SQL> set pages 1000 lines 1000
+SQL> SELECT TABLESPACE_NAME, FILE_NAME, BYTES/1024/1024,AUTOEXTENSIBLE FROM DBA_DATA_FILES;
+
+TABLESPACE_NAME                FILE_NAME                                                              BYTES/1024/1024 AUT
+------------------------------ ---------------------------------------------------------------------- --------------- ---
+SYSTEM                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_system_l0ynndm0_.dbf                    950 YES
+SYSAUX                         /u01/app/oracle/oradata/DB1/datafile/o1_mf_sysaux_l0ynohps_.dbf                    910 YES
+UNDOTBS1                       /u01/app/oracle/oradata/DB1/datafile/o1_mf_undotbs1_l0ynp8ts_.dbf                 1035 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_users_l0ynp9yw_.dbf                       5 YES
+USERS                          /u01/app/oracle/oradata/DB1/datafile/user_2.dbf                                    200 YES
+TEST1                          /u01/app/oracle/oradata/DB1/datafile/o1_mf_test1_l4d4bbbh_.dbf                     100 YES
+TEST2                          /u01/app/oracle/oradata/DB1/datafile/test2.dbf                                      10 NO
+TEST3                          /u01/app/oracle/oradata/DB1/datafile/test3.dbf                                   33792 NO
+
+8 rows selected.
+
+SQL> show parameter undo
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+temp_undo_enabled                    boolean     FALSE
+undo_management                      string      AUTO
+undo_retention                       integer     900
+undo_tablespace                      string      UNDOTBS1
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL>
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+cd [oracle@oraclelab1 fast_recovery_area]$ cd /u01/app/oracle/diag/rdbms/db^C
+[oracle@oraclelab1 fast_recovery_area]$ grep add ale^C
+[oracle@oraclelab1 fast_recovery_area]$ cd /u01/app/oracle/diag/rdbms/db1/DB1/
+alert/         hm/            incpkg/        lck/           metadata/      metadata_pv/   sweep/
+cdump/         incident/      ir/            log/           metadata_dgif/ stage/         trace/
+[oracle@oraclelab1 fast_recovery_area]$ cd /u01/app/oracle/diag/rdbms/db1/DB1/trace/
+[oracle@oraclelab1 trace]$ df -h /^C
+[oracle@oraclelab1 trace]$ grep add alert_DB1.log
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+Requested to grow by 97 records; added 3 blocks of records
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+Requested to grow by 97 records; added 3 blocks of records
+         been restored.  It may be necessary to add files to these
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+Archived Log entry 1 added for T-1.S-1 ID 0x66d53484 LAD:1
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+-- adding 19.0.0.0.0 NLS parameters.
+ARC1 (PID:27496): Archived Log entry 2 added for T-1.S-2 ID 0x66d53484 LAD:1
+ARC2 (PID:27498): Archived Log entry 3 added for T-1.S-3 ID 0x66d53484 LAD:1
+ARC3 (PID:27500): Archived Log entry 4 added for T-1.S-4 ID 0x66d53484 LAD:1
+ARC0 (PID:27490): Archived Log entry 5 added for T-1.S-5 ID 0x66d53484 LAD:1
+ARC1 (PID:27496): Archived Log entry 6 added for T-1.S-6 ID 0x66d53484 LAD:1
+ARC2 (PID:27498): Archived Log entry 7 added for T-1.S-7 ID 0x66d53484 LAD:1
+ARC3 (PID:27500): Archived Log entry 8 added for T-1.S-8 ID 0x66d53484 LAD:1
+ARC0 (PID:27490): Archived Log entry 9 added for T-1.S-9 ID 0x66d53484 LAD:1
+ARC1 (PID:27496): Archived Log entry 10 added for T-1.S-10 ID 0x66d53484 LAD:1
+ARC2 (PID:27498): Archived Log entry 11 added for T-1.S-11 ID 0x66d53484 LAD:1
+ARC3 (PID:27500): Archived Log entry 12 added for T-1.S-12 ID 0x66d53484 LAD:1
+ARC0 (PID:27490): Archived Log entry 13 added for T-1.S-13 ID 0x66d53484 LAD:1
+ARC1 (PID:27496): Archived Log entry 14 added for T-1.S-14 ID 0x66d53484 LAD:1
+ARC2 (PID:27498): Archived Log entry 15 added for T-1.S-15 ID 0x66d53484 LAD:1
+ARC3 (PID:27500): Archived Log entry 16 added for T-1.S-16 ID 0x66d53484 LAD:1
+ARC0 (PID:27490): Archived Log entry 17 added for T-1.S-17 ID 0x66d53484 LAD:1
+ARC1 (PID:27496): Archived Log entry 18 added for T-1.S-18 ID 0x66d53484 LAD:1
+ARC2 (PID:27498): Archived Log entry 19 added for T-1.S-19 ID 0x66d53484 LAD:1
+ARC3 (PID:27500): Archived Log entry 20 added for T-1.S-20 ID 0x66d53484 LAD:1
+ARC0 (PID:27490): Archived Log entry 21 added for T-1.S-21 ID 0x66d53484 LAD:1
+ARC1 (PID:27496): Archived Log entry 22 added for T-1.S-22 ID 0x66d53484 LAD:1
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+ARC1 (PID:5914): Archived Log entry 23 added for T-1.S-23 ID 0x66d53484 LAD:1
+ARC2 (PID:5916): Archived Log entry 24 added for T-1.S-24 ID 0x66d53484 LAD:1
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+ARC1 (PID:14124): Archived Log entry 25 added for T-1.S-25 ID 0x66d53484 LAD:1
+ARC2 (PID:14126): Archived Log entry 26 added for T-1.S-26 ID 0x66d53484 LAD:1
+ARC3 (PID:14128): Archived Log entry 27 added for T-1.S-27 ID 0x66d53484 LAD:1
+ARC0 (PID:14120): Archived Log entry 28 added for T-1.S-28 ID 0x66d53484 LAD:1
+Requested to grow by 28 records; added 1 blocks of records
+ARC1 (PID:14124): Archived Log entry 29 added for T-1.S-29 ID 0x66d53484 LAD:1
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+ARC1 (PID:16988): Archived Log entry 30 added for T-1.S-30 ID 0x66d53484 LAD:1
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+ARC0 (PID:22392): Archived Log entry 31 added for T-1.S-31 ID 0x66d53484 LAD:1
+ARC1 (PID:22396): Archived Log entry 32 added for T-1.S-32 ID 0x66d53484 LAD:1
+ARC0 (PID:22392): Archived Log entry 33 added for T-1.S-33 ID 0x66d53484 LAD:1
+ARC2 (PID:22398): Archived Log entry 34 added for T-1.S-34 ID 0x66d53484 LAD:1
+ARC1 (PID:22396): Archived Log entry 35 added for T-1.S-35 ID 0x66d53484 LAD:1
+[oracle@oraclelab1 trace]$ vi alert_DB1.log
+[oracle@oraclelab1 trace]$
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon Apr 24 09:32:40 2023 from 172.29.0.102
+[root@oraclelab1 ~]# cd /u01/app/oracle/oradata/DB1/datafile/
+[root@oraclelab1 datafile]# ls -l
+total 3093744
+-rw-r-----. 1 oracle oinstall  954212352 Apr 24 09:45 o1_mf_sysaux_l0ynohps_.dbf
+-rw-r-----. 1 oracle oinstall  996155392 Apr 24 09:45 o1_mf_system_l0ynndm0_.dbf
+-rw-r-----. 1 oracle oinstall  137371648 Apr 24 09:45 o1_mf_temp_l0ynqv0d_.tmp
+-rw-r-----. 1 oracle oinstall 1085284352 Apr 24 09:45 o1_mf_undotbs1_l0ynp8ts_.dbf
+-rw-r-----. 1 oracle oinstall    5251072 Apr 24 09:45 o1_mf_users_l0ynp9yw_.dbf
+[root@oraclelab1 datafile]# su - oracle
+Last login: Mon Apr 24 09:42:43 IST 2023 on pts/1
+
+
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DB1
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 10:58:58 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL>
+
+
+login as: root
+root@10.38.4.179's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.179                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Fri Apr 14 23:17:55 2023 from 10.38.4.183
+[root@oraclelab2 ~]# su - oracle
+Last login: Fri Apr 14 23:32:34 IST 2023
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? +ASM
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ asmcmd
+ASMCMD> lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  Vame
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    10820                0           10820              0   ATA/
+MOUNTED  EXTERN  N         512             512   4096  1048576      2046     1982                0            1982              0   GROUPC/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236      332                0             332              0   ECO/
+ASMCMD> lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline_disks  V
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    10820                0           10820              0
+MOUNTED  EXTERN  N         512             512   4096  1048576      2046     1982                0            1982              0
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236      332                0             332              0
+ASMCMD> cd DATA/
+ASMCMD> pwd
++DATA
+ASMCMD> exit
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ ps -ef|grep smon
+oracle    4193     1  0 Apr14 ?        00:00:10 asm_smon_+ASM
+oracle    4427     1  0 Apr14 ?        00:00:10 ora_smon_TESTDB
+oracle   16343 15985  0 09:42 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [+ASM] ? TESTDB
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab2 ~]$ sql-lus / as ^C
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$
+[oracle@oraclelab2 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Mon Apr 24 09:43:02 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
++RECO/TESTDB/DATAFILE/system.275.1128855501
++DATA/TESTDB/DATAFILE/sysaux.259.1122370411
++DATA/TESTDB/DATAFILE/undotbs1.295.1122370435
++DATA/TESTDB/DATAFILE/users.296.1122370437
+
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME
+------------------------------
+FILE_NAME
+--------------------------------------------------------------------------------
+SYSTEM
++RECO/TESTDB/DATAFILE/system.275.1128855501
+
+SYSAUX
++DATA/TESTDB/DATAFILE/sysaux.259.1122370411
+
+USERS
++DATA/TESTDB/DATAFILE/users.296.1122370437
+
+
+TABLESPACE_NAME
+------------------------------
+FILE_NAME
+--------------------------------------------------------------------------------
+UNDOTBS1
++DATA/TESTDB/DATAFILE/undotbs1.295.1122370435
+
+
+SQL> set pages 1000 lines 1000
+SQL> select TABLESPACE_NAME,FILE_NAME from dba_data_files;
+
+TABLESPACE_NAME                FILE_NAME
+------------------------------ ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SYSTEM                         +RECO/TESTDB/DATAFILE/system.275.1128855501
+SYSAUX                         +DATA/TESTDB/DATAFILE/sysaux.259.1122370411
+USERS                          +DATA/TESTDB/DATAFILE/users.296.1122370437
+UNDOTBS1                       +DATA/TESTDB/DATAFILE/undotbs1.295.1122370435
+
+SQL>
+Network error: Software caused connection abort
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+
+
+login as: root
+root@10.38.4.179's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.179                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Mon Apr 24 09:32:15 2023 from 172.29.0.102
+[root@oraclelab2 ~]# su - oracle
+Last login: Mon Apr 24 09:39:19 IST 2023 on pts/0
+[oracle@oraclelab2 ~]$ . oraenv
+ORACLE_SID = [oracle] ? +ASM
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab2 ~]$ asmcmd -p
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offlineame
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    10820                0           10820         ATA/
+MOUNTED  EXTERN  N         512             512   4096  1048576      2046     1982                0            1982         GROUPC/
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236      332                0             332         ECO/
+ASMCMD [+] > lsdg
+State    Type    Rebal  Sector  Logical_Sector  Block       AU  Total_MB  Free_MB  Req_mir_free_MB  Usable_file_MB  Offline
+MOUNTED  EXTERN  N         512             512   4096  4194304     20476    10820                0           10820
+MOUNTED  EXTERN  N         512             512   4096  1048576      2046     1982                0            1982
+MOUNTED  EXTERN  N         512             512   4096  4194304     10236      332                0             332
+ASMCMD [+] > cd +DATA/TESTDB/DATAFILE/
+ASMCMD [+DATA/TESTDB/DATAFILE] > ls -l
+Type      Redund  Striped  Time             Sys  Name
+DATAFILE  UNPROT  COARSE   APR 14 23:00:00  Y    SYSAUX.259.1122370411
+DATAFILE  UNPROT  COARSE   APR 14 23:00:00  Y    UNDOTBS1.295.1122370435
+DATAFILE  UNPROT  COARSE   APR 14 23:00:00  Y    USERS.296.1122370437
+ASMCMD [+DATA/TESTDB/DATAFILE] > asmcmd^C
+ASMCMD [+DATA/TESTDB/DATAFILE] >
+ASMCMD [+DATA/TESTDB/DATAFILE] >
+ASMCMD [+DATA/TESTDB/DATAFILE] >
+ASMCMD [+DATA/TESTDB/DATAFILE] > exit
+[oracle@oraclelab2 ~]$ asmcmd
+ASMCMD>

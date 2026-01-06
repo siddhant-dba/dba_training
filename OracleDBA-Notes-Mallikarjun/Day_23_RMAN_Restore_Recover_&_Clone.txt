@@ -1,0 +1,1982 @@
+1. take bkp and copy it to target server 
+run {
+allocate channel ch1 device type disk;
+crosscheck backup;
+crosscheck archivelog all;
+backup as backupset database format '/u01/backup/Fullback_%T_%U'
+plus archivelog format '/u01/backup/Archive_%T_%U';
+backup current controlfile format '/u01/backup/Controlback_%T_%U';
+backup spfile format '/u01/backup/spfile_%T_%U';
+release channel ch1;
+}
+
+
+oraclelab1 - DEVDB
+
+oraclelab3 - 
+
+
+2. option 1: RR (Restore & recover) - DEVDB
+
+sqlplus / as sysdba
+
+startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora';
+rman target /
+restore controlfile from '/u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp';
+alter database mount;
+catalog start with '/u01/backup/';
+run {
+restore database;
+recover database;
+}
+
+alter database open resetlogs;
+
+modify pfile and add required parameter 
+/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+
+create spfile from pfile; 
+
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+*.db_name=DEVDB
+*.db_unique_name=DEVDB
+*.audit_file_dest='/u01/app/oracle/admin/DEVDB/adump'
+*.db_create_file_dest='/u01/app/oracle/oradata/'
+*.db_create_online_log_dest_1='/u01/app/oracle/oradata'
+*.db_create_online_log_dest_2='/u01/app/oracle/fast_recovery_area/'
+*.control_files='/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl','/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+
+*.db_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u03/app/oracle/oradata/DEVDB/'
+*.log_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u01/app/oracle/oradata/TESTDB/','/u01/app/oracle/fast_recovery_area/DEVDB/','/u01/app/oracle/fast_recovery_area/TESTDB/'
+
+3. option 2: RMAN Clone / RMAN duplicate - DEVDB
+
+sqlplus / as sysdba
+
+startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora';
+
+rman auxiliary /
+duplicate target database to TESTDB backup location '/u01/backup' nofilenamecheck;
+
+
+
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+*.db_name=TESTDB
+*.db_unique_name=TESTDB
+*.audit_file_dest='/u01/app/oracle/admin/TESTDB/adump'
+*.db_create_file_dest='/u01/app/oracle/oradata/'
+*.db_create_online_log_dest_1='/u01/app/oracle/oradata'
+*.db_create_online_log_dest_2='/u01/app/oracle/fast_recovery_area'
+*.db_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u01/app/oracle/oradata/TESTDB/'
+*.log_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u01/app/oracle/oradata/TESTDB/','/u01/app/oracle/fast_recovery_area/DEVDB/','/u01/app/oracle/fast_recovery_area/TESTDB/'
+*.control_files='/u01/app/oracle/oradata/TESTDB//controlfile/control01.ctl','/u01/app/oracle/fast_recovery_area/TESTDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area/'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+
+remove spfile;
+
+modify pfile and add required parameter 
+/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+
+create spfile from pfile; 
+
+
+
+
+
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+*.db_name=DEVDB
+*.db_unique_name=DEVDB
+*.audit_file_dest='/u01/app/oracle/admin/DEVDB/adump'
+*.db_create_file_dest='+DATA'
+*.db_create_online_log_dest_1='+DATA'
+*.db_create_online_log_dest_2='+RECO'
+*.control_files='+DATA/DEVDB/controlfile/control01.ctl','+RECO/DEVDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='+RECO'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+
+
+DATA - DATAC
+RECO - RECOC
+DEVDB - TESTDB
+
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+*.db_name=TESTDB
+*.db_unique_name=TESTDB
+*.audit_file_dest='/u01/app/oracle/admin/TESTDB/adump'
+*.db_create_file_dest='+DATAC'
+*.db_create_online_log_dest_1='+DATAC'
+*.db_create_online_log_dest_2='+RECOC'
+*.db_file_name_convert='+DATA/DEVDB/','+DATAC/TESTDB/'
+*.log_file_name_convert='+DATA/DEVDB/','+DATAC/TESTDB/','+RECO/DEVDB/','RECOC/TESTDB/'
+*.control_files='+DATAC/TESTDB//controlfile/control01.ctl','+RECOC/TESTDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area/'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+
+
+FS to ASM
+==========
+oraclelab1 - DEVDB (FS)
+oraclelab2 - ASM & TESTDB (ASM)
+
+
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+*.db_name=TESTDB
+*.db_unique_name=TESTDB
+*.audit_file_dest='/u01/app/oracle/admin/TESTDB/adump'
+*.db_create_file_dest='+DATA'
+*.db_create_online_log_dest_1='+DATA'
+*.db_create_online_log_dest_2='/+RECO'
+*.db_file_name_convert='/u01/app/oracle/oradata/DEVDB/','+DATA/TESTDB/'
+*.log_file_name_convert='/u01/app/oracle/oradata/DEVDB/','+DATA/TESTDB/','/u01/app/oracle/fast_recovery_area/DEVDB/','+RECO/TESTDB/'
+*.control_files='+DATA/TESTDB//controlfile/control01.ctl','+RECO/TESTDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area/'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+
+
+PIT:
+=========
+
+sqlplus / as sysdba
+
+startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora';
+rman target /
+
+restore controlfile from '/u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp' until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+
+run {
+set until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+restore controlfile from '/u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp';
+}
+
+alter database mount;
+catalog start with '/u01/backup/';
+
+run { 
+restore database until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+recover database until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+}
+
+run { 
+set until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+restore database;
+recover database;
+}
+
+3. option 2: RMAN Clone / RMAN duplicate - DEVDB
+
+sqlplus / as sysdba
+
+startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora';
+
+rman auxiliary /
+
+duplicate target database to TESTDB backup location '/u01/backup' nofilenamecheck until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+
+run {
+set until time "to_date('11-may-2023 10:00:00', 'dd-mon-rrrr hh24:mi:ss')";
+duplicate target database to TESTDB backup location '/u01/backup' nofilenamecheck;
+}
+
+
+
+restore database until sequence 19;
+
+
+
+[oracle@oraclelab1 archivelog]$ cd
+[oracle@oraclelab1 ~]$ clear
+[oracle@oraclelab1 ~]$ ps -ef|grep smon
+oracle   15409     1  0 May09 ?        00:00:03 ora_smon_DEVDB
+oracle   25052 23027  0 09:27 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 ~]$ rman target /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 09:44:02 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to target database: DEVDB (DBID=1039854224)
+
+RMAN> run {
+2> allocate channel ch1 device type disk;
+3> crosscheck backup;
+4> crosscheck archivelog all;
+backup as backupset database format '/u01/backup/Fullback_%T_%U'
+5> 6> plus archivelog format '/u01/backup/Archive_%T_%U';
+7> backup current controlfile format '/u01/backup/Controlback_%T_%U';
+backup spfile format '/u01/backup/spfile_%T_%U';
+release channel ch1;
+}8> 9> 10>
+
+using target database control file instead of recovery catalog
+allocated channel: ch1
+channel ch1: SID=236 device type=DISK
+
+specification does not match any backup in the repository
+
+validation succeeded for archived log
+archived log file name=/u01/app/oracle/fast_recovery_area/DEVDB/archivelog/2023_05_12/o1_mf_1_50_l5v7ghkz_.arc RECID=74 STAMP=1136619048
+Crosschecked 1 objects
+
+
+
+Starting backup at 12-MAY-23
+current log archived
+channel ch1: starting archived log backup set
+channel ch1: specifying archived log(s) in backup set
+input archived log thread=1 sequence=50 RECID=74 STAMP=1136619048
+input archived log thread=1 sequence=51 RECID=75 STAMP=1136627062
+channel ch1: starting piece 1 at 12-MAY-23
+channel ch1: finished piece 1 at 12-MAY-23
+piece handle=/u01/backup/Archive_20230512_7i1rv3bm_1_1 tag=TAG20230512T094422 comment=NONE
+channel ch1: backup set complete, elapsed time: 00:00:01
+Finished backup at 12-MAY-23
+
+Starting backup at 12-MAY-23
+channel ch1: starting full datafile backup set
+channel ch1: specifying datafile(s) in backup set
+input datafile file number=00003 name=/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+input datafile file number=00001 name=/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+input datafile file number=00004 name=/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+input datafile file number=00007 name=/u01/app/oracle/oradata/DEVDB/datafile/users.dbf
+channel ch1: starting piece 1 at 12-MAY-23
+channel ch1: finished piece 1 at 12-MAY-23
+piece handle=/u01/backup/Fullback_20230512_7j1rv3bn_1_1 tag=TAG20230512T094423 comment=NONE
+channel ch1: backup set complete, elapsed time: 00:00:07
+Finished backup at 12-MAY-23
+
+Starting backup at 12-MAY-23
+current log archived
+channel ch1: starting archived log backup set
+channel ch1: specifying archived log(s) in backup set
+input archived log thread=1 sequence=52 RECID=76 STAMP=1136627070
+channel ch1: starting piece 1 at 12-MAY-23
+channel ch1: finished piece 1 at 12-MAY-23
+piece handle=/u01/backup/Archive_20230512_7k1rv3bv_1_1 tag=TAG20230512T094431 comment=NONE
+channel ch1: backup set complete, elapsed time: 00:00:01
+Finished backup at 12-MAY-23
+
+Starting backup at 12-MAY-23
+channel ch1: starting full datafile backup set
+channel ch1: specifying datafile(s) in backup set
+including current control file in backup set
+channel ch1: starting piece 1 at 12-MAY-23
+channel ch1: finished piece 1 at 12-MAY-23
+piece handle=/u01/backup/Controlback_20230512_7l1rv3c0_1_1 tag=TAG20230512T094432 comment=NONE
+channel ch1: backup set complete, elapsed time: 00:00:01
+Finished backup at 12-MAY-23
+
+Starting backup at 12-MAY-23
+channel ch1: starting full datafile backup set
+channel ch1: specifying datafile(s) in backup set
+including current SPFILE in backup set
+channel ch1: starting piece 1 at 12-MAY-23
+channel ch1: finished piece 1 at 12-MAY-23
+piece handle=/u01/backup/spfile_20230512_7m1rv3c2_1_1 tag=TAG20230512T094434 comment=NONE
+channel ch1: backup set complete, elapsed time: 00:00:01
+Finished backup at 12-MAY-23
+
+Starting Control File and SPFILE Autobackup at 12-MAY-23
+piece handle=/u01/app/oracle/fast_recovery_area/DEVDB/autobackup/2023_05_12/o1_mf_s_1136627075_l5vh9clr_.bkp comment=NONE
+Finished Control File and SPFILE Autobackup at 12-MAY-23
+
+released channel: ch1
+
+RMAN> exit
+
+
+Recovery Manager complete.
+[oracle@oraclelab1 ~]$ cd /u01/backup/
+[oracle@oraclelab1 backup]$ ls -ltrh
+total 1.9G
+-rw-r-----. 1 oracle oinstall 179M May 12 09:44 Archive_20230512_7i1rv3bm_1_1
+-rw-r-----. 1 oracle oinstall 1.7G May 12 09:44 Fullback_20230512_7j1rv3bn_1_1
+-rw-r-----. 1 oracle oinstall 9.0K May 12 09:44 Archive_20230512_7k1rv3bv_1_1
+-rw-r-----. 1 oracle oinstall  11M May 12 09:44 Controlback_20230512_7l1rv3c0_1_1
+-rw-r-----. 1 oracle oinstall 112K May 12 09:44 spfile_20230512_7m1rv3c2_1_1
+[oracle@oraclelab1 backup]$ scp * oracle@10.38.4.105:/u01/backup/.
+oracle@10.38.4.105's password:
+Archive_20230512_7i1rv3bm_1_1                                                                                   100%  179MB 157.9MB/s   00:01
+Archive_20230512_7k1rv3bv_1_1                                                                                   100% 9216    11.2MB/s   00:00
+Controlback_20230512_7l1rv3c0_1_1                                                                               100%   10MB  80.2MB/s   00:00
+Fullback_20230512_7j1rv3bn_1_1                                                                                  100% 1679MB 152.6MB/s   00:11
+spfile_20230512_7m1rv3c2_1_1                                                                                    100%  112KB  44.0MB/s   00:00
+[oracle@oraclelab1 backup]$
+[oracle@oraclelab1 backup]$ scp /u01/app/oracle/fast_recovery_area/DEVDB/autobackup/2023_05_12/o1_mf_s_1136627075_l5vh9clr_.bkp oracle@10.38.4.105:/u01/backup/.
+oracle@10.38.4.105's password:
+o1_mf_s_1136627075_l5vh9clr_.bkp                                                                                100%   10MB  94.6MB/s   00:00
+[oracle@oraclelab1 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:00:28 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name, open_mode, dbid from v$database;
+
+NAME      OPEN_MODE                  DBID
+--------- -------------------- ----------
+DEVDB     READ WRITE           1039854224
+
+SQL> select name from v$datafile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+/u01/app/oracle/oradata/DEVDB/datafile/users.dbf
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 backup]$ cd /u01/app/oracle/oradata/DEVDB/datafile/
+[oracle@oraclelab1 datafile]$ ls -ltrh
+total 2.4G
+-rw-r-----. 1 oracle oinstall  21M May 11 22:00 o1_mf_temp_l4ly8981_.tmp
+-rw-r-----. 1 oracle oinstall 5.1M May 12 09:49 users.dbf
+-rw-r-----. 1 oracle oinstall 931M May 12 10:19 o1_mf_system_l4ly6vb3_.dbf
+-rw-r-----. 1 oracle oinstall 346M May 12 10:25 o1_mf_undotbs1_l4ly6vbb_.dbf
+-rw-r-----. 1 oracle oinstall 1.1G May 12 10:25 o1_mf_sysaux_l4ly6vb7_.dbf
+[oracle@oraclelab1 datafile]$ rm -rf *
+[oracle@oraclelab1 datafile]$ ll
+total 0
+[oracle@oraclelab1 datafile]$ ps -ef|grep smon
+oracle   15409     1  0 May09 ?        00:00:03 ora_smon_DEVDB
+oracle   28805 23027  0 10:28 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 datafile]$ kill -9 15409
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:29:11 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             721420288 bytes
+Database Buffers         2952790016 bytes
+Redo Buffers                7872512 bytes
+Database mounted.
+ORA-01157: cannot identify/lock data file 1 - see DBWR trace file
+ORA-01110: data file 1:
+'/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf'
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 datafile]$ rman target /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 10:31:24 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to target database: DEVDB (DBID=1039854224, not open)
+
+RMAN> restore database;
+
+Starting restore at 12-MAY-23
+using target database control file instead of recovery catalog
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=221 device type=DISK
+
+channel ORA_DISK_1: starting datafile backup set restore
+channel ORA_DISK_1: specifying datafile(s) to restore from backup set
+channel ORA_DISK_1: restoring datafile 00001 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+channel ORA_DISK_1: restoring datafile 00003 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+channel ORA_DISK_1: restoring datafile 00004 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+channel ORA_DISK_1: restoring datafile 00007 to /u01/app/oracle/oradata/DEVDB/datafile/users.dbf
+channel ORA_DISK_1: reading from backup piece /u01/backup/Fullback_20230512_7j1rv3bn_1_1
+channel ORA_DISK_1: piece handle=/u01/backup/Fullback_20230512_7j1rv3bn_1_1 tag=TAG20230512T094423
+channel ORA_DISK_1: restored backup piece 1
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:07
+Finished restore at 12-MAY-23
+
+RMAN> recover database;
+
+Starting recover at 12-MAY-23
+using channel ORA_DISK_1
+
+starting media recovery
+media recovery complete, elapsed time: 00:00:00
+
+Finished recover at 12-MAY-23
+
+RMAN> alter database open;
+
+Statement processed
+
+RMAN> exit
+
+
+Recovery Manager complete.
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:32:49 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name, open_mode, dbid from v$database;
+
+NAME      OPEN_MODE                  DBID
+--------- -------------------- ----------
+DEVDB     READ WRITE           1039854224
+
+SQL> archive log list
+Database log mode              Archive Mode
+Automatic archival             Enabled
+Archive destination            USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence     52
+Next log sequence to archive   54
+Current log sequence           54
+SQL> select name from v$controlfile;
+
+NAME
+--------------------------------------------------------------------------------
+/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 datafile]$ rm /u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+[oracle@oraclelab1 datafile]$ ps -ef|grep smon
+oracle   28892     1  0 10:29 ?        00:00:00 ora_smon_DEVDB
+oracle   29563 23027  0 10:35 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 datafile]$ kill -9 28892
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$
+[oracle@oraclelab1 datafile]$ ps -ef|grep smon
+oracle   29571 23027  0 10:35 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:35:54 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             721420288 bytes
+Database Buffers         2952790016 bytes
+Redo Buffers                7872512 bytes
+ORA-00205: error in identifying control file, check alert log for more info
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 datafile]$ ps -ef|grep smon
+oracle   29639     1  0 10:36 ?        00:00:00 ora_smon_DEVDB
+oracle   29866 23027  0 10:37 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 datafile]$ cp /u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl /u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:37:41 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> alter database mount;
+
+Database altered.
+
+SQL> alter database open;
+
+Database altered.
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 datafile]$ ps -ef|grep smon
+oracle   29639     1  0 10:36 ?        00:00:00 ora_smon_DEVDB
+oracle   30177 23027  0 10:38 pts/2    00:00:00 grep --color=auto smon
+[oracle@oraclelab1 datafile]$ kill -9 29639
+[oracle@oraclelab1 datafile]$ mv /u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl /u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl_backup
+[oracle@oraclelab1 datafile]$ mv /u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl /u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl_backup
+[oracle@oraclelab1 datafile]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:39:01 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup;
+ORACLE instance started.
+
+Total System Global Area 3690985856 bytes
+Fixed Size                  8903040 bytes
+Variable Size             721420288 bytes
+Database Buffers         2952790016 bytes
+Redo Buffers                7872512 bytes
+ORA-00205: error in identifying control file, check alert log for more info
+
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab1 datafile]$ rman target /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 10:40:07 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to target database: DEVDB (not mounted)
+
+RMAN> restore controlfile from autobackup;
+
+Starting restore at 12-MAY-23
+using target database control file instead of recovery catalog
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=219 device type=DISK
+
+recovery area destination: /u01/app/oracle/fast_recovery_area
+database name (or database unique name) used for search: DEVDB
+channel ORA_DISK_1: AUTOBACKUP /u01/app/oracle/fast_recovery_area/DEVDB/autobackup/2023_05_12/o1_mf_s_1136627075_l5vh9clr_.bkp found in the recovery area
+AUTOBACKUP search with format "%F" not attempted because DBID was not set
+channel ORA_DISK_1: restoring control file from AUTOBACKUP /u01/app/oracle/fast_recovery_area/DEVDB/autobackup/2023_05_12/o1_mf_s_1136627075_l5vh9clr_.bkp
+channel ORA_DISK_1: control file restore from AUTOBACKUP complete
+output file name=/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+output file name=/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl
+Finished restore at 12-MAY-23
+
+RMAN> alter database mount;
+
+released channel: ORA_DISK_1
+Statement processed
+
+RMAN> recover database;
+
+Starting recover at 12-MAY-23
+Starting implicit crosscheck backup at 12-MAY-23
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=24 device type=DISK
+Crosschecked 5 objects
+Finished implicit crosscheck backup at 12-MAY-23
+
+Starting implicit crosscheck copy at 12-MAY-23
+using channel ORA_DISK_1
+Finished implicit crosscheck copy at 12-MAY-23
+
+searching for all files in the recovery area
+cataloging files...
+cataloging done
+
+List of Cataloged Files
+=======================
+File Name: /u01/app/oracle/fast_recovery_area/DEVDB/archivelog/2023_05_12/o1_mf_1_53_l5vl371x_.arc
+File Name: /u01/app/oracle/fast_recovery_area/DEVDB/archivelog/2023_05_12/o1_mf_1_54_l5vlfryp_.arc
+File Name: /u01/app/oracle/fast_recovery_area/DEVDB/autobackup/2023_05_12/o1_mf_s_1136627075_l5vh9clr_.bkp
+
+using channel ORA_DISK_1
+RMAN-00571: ===========================================================
+RMAN-00569: =============== ERROR MESSAGE STACK FOLLOWS ===============
+RMAN-00571: ===========================================================
+RMAN-03002: failure of recover command at 05/12/2023 10:41:59
+RMAN-06094: datafile 1 must be restored
+
+RMAN> 
+
+
+
+
+[oracle@oraclelab3 TESTDB]$ cd
+[oracle@oraclelab3 ~]$ clear
+[oracle@oraclelab3 ~]$ ps -ef|grep smon
+oracle   13754 10846  0 09:43 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab3 ~]$ cd /u01/backup/
+[oracle@oraclelab3 backup]$ ls -ltrh
+total 1.9G
+-rw-r-----. 1 oracle oinstall 179M May 12 09:45 Archive_20230512_7i1rv3bm_1_1
+-rw-r-----. 1 oracle oinstall 9.0K May 12 09:45 Archive_20230512_7k1rv3bv_1_1
+-rw-r-----. 1 oracle oinstall  11M May 12 09:45 Controlback_20230512_7l1rv3c0_1_1
+-rw-r-----. 1 oracle oinstall 1.7G May 12 09:46 Fullback_20230512_7j1rv3bn_1_1
+-rw-r-----. 1 oracle oinstall 112K May 12 09:46 spfile_20230512_7m1rv3c2_1_1
+-rw-r-----. 1 oracle oinstall  11M May 12 09:46 o1_mf_s_1136627075_l5vh9clr_.bkp
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+*.db_name=DEVDB
+*.db_unique_name=DEVDB
+*.audit_file_dest='/u01/app/oracle/admin/DEVDB/adump'
+*.db_create_file_dest='/u01/app/oracle/oradata/'
+*.db_create_online_log_dest_1='/u01/app/oracle/oradata'
+*.db_create_online_log_dest_2='/u01/app/oracle/fast_recovery_area/'
+*.control_files='/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl','/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+[oracle@oraclelab3 backup]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+ORACLE_HOME = [/home/oracle] ?
+ORACLE_BASE environment variable is not being set since this
+information is not available for the current user ID oracle.
+You can set ORACLE_BASE manually if it is required.
+Resetting ORACLE_BASE to its previous value or ORACLE_HOME
+The Oracle base has been set to /home/oracle
+[oracle@oraclelab3 backup]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+ORACLE_HOME = [/home/oracle] ? /u01/app/oracle/product/19.0.0.0/dbhome_1
+The Oracle base has been changed from /home/oracle to /u01/app/oracle
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ env |grep ORA
+ORACLE_SID=DEVDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 09:50:09 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora';
+ORACLE instance started.
+
+Total System Global Area  268434280 bytes
+Fixed Size                  8895336 bytes
+Variable Size             201326592 bytes
+Database Buffers           50331648 bytes
+Redo Buffers                7880704 bytes
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$ rman target /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 09:51:46 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to target database: DEVDB (not mounted)
+
+RMAN> restore controlfile from '/u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp';
+
+Starting restore at 12-MAY-23
+using target database control file instead of recovery catalog
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=21 device type=DISK
+
+channel ORA_DISK_1: restoring control file
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:01
+output file name=/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl
+output file name=/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl
+Finished restore at 12-MAY-23
+
+RMAN> alter database mount;
+
+released channel: ORA_DISK_1
+Statement processed
+
+RMAN> catalog start with '/u01/backup/';
+
+Starting implicit crosscheck backup at 12-MAY-23
+allocated channel: ORA_DISK_1
+channel ORA_DISK_1: SID=24 device type=DISK
+Crosschecked 5 objects
+Finished implicit crosscheck backup at 12-MAY-23
+
+Starting implicit crosscheck copy at 12-MAY-23
+using channel ORA_DISK_1
+Finished implicit crosscheck copy at 12-MAY-23
+
+searching for all files in the recovery area
+cataloging files...
+no files cataloged
+
+searching for all files that match the pattern /u01/backup/
+
+List of Files Unknown to the Database
+=====================================
+File Name: /u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp
+
+Do you really want to catalog the above files (enter YES or NO)? YES
+cataloging files...
+cataloging done
+
+List of Cataloged Files
+=======================
+File Name: /u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp
+
+RMAN>
+
+RMAN>
+
+RMAN> restore database;
+
+Starting restore at 12-MAY-23
+using channel ORA_DISK_1
+
+channel ORA_DISK_1: starting datafile backup set restore
+channel ORA_DISK_1: specifying datafile(s) to restore from backup set
+channel ORA_DISK_1: restoring datafile 00001 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+channel ORA_DISK_1: restoring datafile 00003 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+channel ORA_DISK_1: restoring datafile 00004 to /u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+channel ORA_DISK_1: restoring datafile 00007 to /u01/app/oracle/oradata/DEVDB/datafile/users.dbf
+channel ORA_DISK_1: reading from backup piece /u01/backup/Fullback_20230512_7j1rv3bn_1_1
+channel ORA_DISK_1: piece handle=/u01/backup/Fullback_20230512_7j1rv3bn_1_1 tag=TAG20230512T094423
+channel ORA_DISK_1: restored backup piece 1
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:15
+Finished restore at 12-MAY-23
+
+RMAN> recover database;
+
+Starting recover at 12-MAY-23
+using channel ORA_DISK_1
+
+starting media recovery
+
+channel ORA_DISK_1: starting archived log restore to default destination
+channel ORA_DISK_1: restoring archived log
+archived log thread=1 sequence=52
+channel ORA_DISK_1: reading from backup piece /u01/backup/Archive_20230512_7k1rv3bv_1_1
+channel ORA_DISK_1: piece handle=/u01/backup/Archive_20230512_7k1rv3bv_1_1 tag=TAG20230512T094431
+channel ORA_DISK_1: restored backup piece 1
+channel ORA_DISK_1: restore complete, elapsed time: 00:00:01
+archived log file name=/u01/app/oracle/fast_recovery_area/DEVDB/archivelog/2023_05_12/o1_mf_1_52_l5vj19cy_.arc thread=1 sequence=52
+channel default: deleting archived log(s)
+archived log file name=/u01/app/oracle/fast_recovery_area/DEVDB/archivelog/2023_05_12/o1_mf_1_52_l5vj19cy_.arc RECID=77 STAMP=1136627841
+unable to find archived log
+archived log thread=1 sequence=53
+RMAN-00571: ===========================================================
+RMAN-00569: =============== ERROR MESSAGE STACK FOLLOWS ===============
+RMAN-00571: ===========================================================
+RMAN-03002: failure of recover command at 05/12/2023 09:57:22
+RMAN-06054: media recovery requesting unknown archived log for thread 1 with sequence 53 and starting SCN of 3859687
+
+RMAN> alter database open resetlogs;
+
+Statement processed
+
+RMAN> exit
+
+
+Recovery Manager complete.
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 09:59:44 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name, open_mode, dbid from v$database;
+
+NAME      OPEN_MODE                  DBID
+--------- -------------------- ----------
+DEVDB     READ WRITE           1039854224
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+*.db_name=TESTDB
+*.db_unique_name=TESTDB
+*.audit_file_dest='/u01/app/oracle/admin/TESTDB/adump'
+*.db_create_file_dest='/u01/app/oracle/oradata/'
+*.db_create_online_log_dest_1='/u01/app/oracle/oradata'
+*.db_create_online_log_dest_2='/u01/app/oracle/fast_recovery_area'
+*.db_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u01/app/oracle/oradata/TESTDB/'
+*.log_file_name_convert='/u01/app/oracle/oradata/DEVDB/','/u01/app/oracle/oradata/TESTDB/','/u01/app/oracle/fast_recovery_area/DEVDB/','/u01/app/oracle/fast_recovery_area/TESTDB/'
+*.control_files='/u01/app/oracle/oradata/TESTDB//controlfile/control01.ctl','/u01/app/oracle/fast_recovery_area/TESTDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area/'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+[oracle@oraclelab3 backup]$ . oraenv
+ORACLE_SID = [DEVDB] ? TESTDB
+ORACLE_HOME = [/home/oracle] ? /u01/app/oracle/product/19.0.0.0/dbhome_1
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ env |grep ORA
+ORACLE_SID=TESTDB
+ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+[oracle@oraclelab3 backup]$ rman auxiliary /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 10:12:35 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to auxiliary database (not started)
+
+RMAN> exit
+
+
+Recovery Manager complete.
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:12:57 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+Connected to an idle instance.
+
+SQL> startup nomount pfile='/u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora';
+ORACLE instance started.
+
+Total System Global Area  268434280 bytes
+Fixed Size                  8895336 bytes
+Variable Size             201326592 bytes
+Database Buffers           50331648 bytes
+Redo Buffers                7880704 bytes
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$ rman auxiliary /
+
+Recovery Manager: Release 19.0.0.0.0 - Production on Fri May 12 10:13:17 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle and/or its affiliates.  All rights reserved.
+
+connected to auxiliary database: TESTDB (not mounted)
+
+RMAN> duplicate target database to TESTDB backup location '/u01/backup' nofilenamecheck;
+
+Starting Duplicate Db at 12-MAY-23
+searching for database ID
+found backup of database ID 1039854224
+
+contents of Memory Script:
+{
+   sql clone "create spfile from memory";
+}
+executing Memory Script
+
+sql statement: create spfile from memory
+
+contents of Memory Script:
+{
+   shutdown clone immediate;
+   startup clone nomount;
+}
+executing Memory Script
+
+Oracle instance shut down
+
+connected to auxiliary database (not started)
+Oracle instance started
+
+Total System Global Area     268434280 bytes
+
+Fixed Size                     8895336 bytes
+Variable Size                201326592 bytes
+Database Buffers              50331648 bytes
+Redo Buffers                   7880704 bytes
+
+contents of Memory Script:
+{
+   sql clone "alter system set  db_name =
+ ''DEVDB'' comment=
+ ''Modified by RMAN duplicate'' scope=spfile";
+   sql clone "alter system set  db_unique_name =
+ ''TESTDB'' comment=
+ ''Modified by RMAN duplicate'' scope=spfile";
+   shutdown clone immediate;
+   startup clone force nomount
+   restore clone primary controlfile from  '/u01/backup/o1_mf_s_1136627075_l5vh9clr_.bkp';
+   alter clone database mount;
+}
+executing Memory Script
+
+sql statement: alter system set  db_name =  ''DEVDB'' comment= ''Modified by RMAN duplicate'' scope=spfile
+
+sql statement: alter system set  db_unique_name =  ''TESTDB'' comment= ''Modified by RMAN duplicate'' scope=spfile
+
+Oracle instance shut down
+
+Oracle instance started
+
+Total System Global Area     268434280 bytes
+
+Fixed Size                     8895336 bytes
+Variable Size                201326592 bytes
+Database Buffers              50331648 bytes
+Redo Buffers                   7880704 bytes
+
+Starting restore at 12-MAY-23
+allocated channel: ORA_AUX_DISK_1
+channel ORA_AUX_DISK_1: SID=178 device type=DISK
+
+channel ORA_AUX_DISK_1: restoring control file
+channel ORA_AUX_DISK_1: restore complete, elapsed time: 00:00:01
+output file name=/u01/app/oracle/oradata/TESTDB/controlfile/control01.ctl
+output file name=/u01/app/oracle/fast_recovery_area/TESTDB/controlfile/control02.ctl
+Finished restore at 12-MAY-23
+
+database mounted
+released channel: ORA_AUX_DISK_1
+allocated channel: ORA_AUX_DISK_1
+channel ORA_AUX_DISK_1: SID=178 device type=DISK
+
+contents of Memory Script:
+{
+   set until scn  3859687;
+   set newname for datafile  1 to
+ "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_system_l4ly6vb3_.dbf";
+   set newname for datafile  3 to
+ "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf";
+   set newname for datafile  4 to
+ "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf";
+   set newname for datafile  7 to
+ "/u01/app/oracle/oradata/TESTDB/datafile/users.dbf";
+   restore
+   clone database
+   ;
+}
+executing Memory Script
+
+executing command: SET until clause
+
+executing command: SET NEWNAME
+
+executing command: SET NEWNAME
+
+executing command: SET NEWNAME
+
+executing command: SET NEWNAME
+
+Starting restore at 12-MAY-23
+using channel ORA_AUX_DISK_1
+
+channel ORA_AUX_DISK_1: starting datafile backup set restore
+channel ORA_AUX_DISK_1: specifying datafile(s) to restore from backup set
+channel ORA_AUX_DISK_1: restoring datafile 00001 to /u01/app/oracle/oradata/TESTDB/datafile/o1_mf_system_l4ly6vb3_.dbf
+channel ORA_AUX_DISK_1: restoring datafile 00003 to /u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf
+channel ORA_AUX_DISK_1: restoring datafile 00004 to /u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf
+channel ORA_AUX_DISK_1: restoring datafile 00007 to /u01/app/oracle/oradata/TESTDB/datafile/users.dbf
+channel ORA_AUX_DISK_1: reading from backup piece /u01/backup/Fullback_20230512_7j1rv3bn_1_1
+channel ORA_AUX_DISK_1: piece handle=/u01/backup/Fullback_20230512_7j1rv3bn_1_1 tag=TAG20230512T094423
+channel ORA_AUX_DISK_1: restored backup piece 1
+channel ORA_AUX_DISK_1: restore complete, elapsed time: 00:00:15
+Finished restore at 12-MAY-23
+
+contents of Memory Script:
+{
+   switch clone datafile all;
+}
+executing Memory Script
+
+datafile 1 switched to datafile copy
+input datafile copy RECID=5 STAMP=1136628908 file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_system_l5vk25kh_.dbf
+datafile 3 switched to datafile copy
+input datafile copy RECID=6 STAMP=1136628908 file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l5vk25kb_.dbf
+datafile 4 switched to datafile copy
+input datafile copy RECID=7 STAMP=1136628908 file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l5vk25kl_.dbf
+datafile 7 switched to datafile copy
+input datafile copy RECID=8 STAMP=1136628908 file name=/u01/app/oracle/oradata/TESTDB/datafile/users.dbf
+
+contents of Memory Script:
+{
+   set until scn  3859687;
+   recover
+   clone database
+    delete archivelog
+   ;
+}
+executing Memory Script
+
+executing command: SET until clause
+
+Starting recover at 12-MAY-23
+using channel ORA_AUX_DISK_1
+
+starting media recovery
+
+channel ORA_AUX_DISK_1: starting archived log restore to default destination
+channel ORA_AUX_DISK_1: restoring archived log
+archived log thread=1 sequence=52
+channel ORA_AUX_DISK_1: reading from backup piece /u01/backup/Archive_20230512_7k1rv3bv_1_1
+channel ORA_AUX_DISK_1: piece handle=/u01/backup/Archive_20230512_7k1rv3bv_1_1 tag=TAG20230512T094431
+channel ORA_AUX_DISK_1: restored backup piece 1
+channel ORA_AUX_DISK_1: restore complete, elapsed time: 00:00:01
+archived log file name=/u01/app/oracle/fast_recovery_area/TESTDB/archivelog/2023_05_12/o1_mf_1_52_l5vk2o0l_.arc thread=1 sequence=52
+channel clone_default: deleting archived log(s)
+archived log file name=/u01/app/oracle/fast_recovery_area/TESTDB/archivelog/2023_05_12/o1_mf_1_52_l5vk2o0l_.arc RECID=1 STAMP=1136628909
+media recovery complete, elapsed time: 00:00:00
+Finished recover at 12-MAY-23
+Oracle instance started
+
+Total System Global Area     268434280 bytes
+
+Fixed Size                     8895336 bytes
+Variable Size                201326592 bytes
+Database Buffers              50331648 bytes
+Redo Buffers                   7880704 bytes
+
+contents of Memory Script:
+{
+   sql clone "alter system set  db_name =
+ ''TESTDB'' comment=
+ ''Reset to original value by RMAN'' scope=spfile";
+   sql clone "alter system reset  db_unique_name scope=spfile";
+}
+executing Memory Script
+
+sql statement: alter system set  db_name =  ''TESTDB'' comment= ''Reset to original value by RMAN'' scope=spfile
+
+sql statement: alter system reset  db_unique_name scope=spfile
+Oracle instance started
+
+Total System Global Area     268434280 bytes
+
+Fixed Size                     8895336 bytes
+Variable Size                201326592 bytes
+Database Buffers              50331648 bytes
+Redo Buffers                   7880704 bytes
+sql statement: CREATE CONTROLFILE REUSE SET DATABASE "TESTDB" RESETLOGS ARCHIVELOG
+  MAXLOGFILES     16
+  MAXLOGMEMBERS      3
+  MAXDATAFILES      100
+  MAXINSTANCES     8
+  MAXLOGHISTORY      292
+ LOGFILE
+  GROUP     1 ( '/u01/app/oracle/oradata/TESTDB/onlinelog/o1_mf_1_l4ly8075_.log', '/u01/app/oracle/fast_recovery_area/TESTDB/onlinelog/o1_mf_1_l4ly80fr_.log' ) SIZE 200 M  REUSE,
+  GROUP     2 ( '/u01/app/oracle/oradata/TESTDB/onlinelog/o1_mf_2_l4ly807j_.log', '/u01/app/oracle/fast_recovery_area/TESTDB/onlinelog/o1_mf_2_l4ly80mp_.log' ) SIZE 200 M  REUSE,
+  GROUP     3 ( '/u01/app/oracle/oradata/TESTDB/onlinelog/o1_mf_3_l4ly807v_.log', '/u01/app/oracle/fast_recovery_area/TESTDB/onlinelog/o1_mf_3_l4ly80mp_.log' ) SIZE 200 M  REUSE
+ DATAFILE
+  '/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_system_l5vk25kh_.dbf'
+ CHARACTER SET AL32UTF8
+
+
+contents of Memory Script:
+{
+   set newname for tempfile  1 to
+ "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_temp_l4ly8981_.tmp";
+   switch clone tempfile all;
+   catalog clone datafilecopy  "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l5vk25kb_.dbf",
+ "/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l5vk25kl_.dbf",
+ "/u01/app/oracle/oradata/TESTDB/datafile/users.dbf";
+   switch clone datafile all;
+}
+executing Memory Script
+
+executing command: SET NEWNAME
+
+renamed tempfile 1 to /u01/app/oracle/oradata/TESTDB/datafile/o1_mf_temp_l4ly8981_.tmp in control file
+
+cataloged datafile copy
+datafile copy file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l5vk25kb_.dbf RECID=1 STAMP=1136628935
+cataloged datafile copy
+datafile copy file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l5vk25kl_.dbf RECID=2 STAMP=1136628935
+cataloged datafile copy
+datafile copy file name=/u01/app/oracle/oradata/TESTDB/datafile/users.dbf RECID=3 STAMP=1136628935
+
+datafile 3 switched to datafile copy
+input datafile copy RECID=1 STAMP=1136628935 file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_sysaux_l5vk25kb_.dbf
+datafile 4 switched to datafile copy
+input datafile copy RECID=2 STAMP=1136628935 file name=/u01/app/oracle/oradata/TESTDB/datafile/o1_mf_undotbs1_l5vk25kl_.dbf
+datafile 7 switched to datafile copy
+input datafile copy RECID=3 STAMP=1136628935 file name=/u01/app/oracle/oradata/TESTDB/datafile/users.dbf
+
+contents of Memory Script:
+{
+   Alter clone database open resetlogs;
+}
+executing Memory Script
+
+database opened
+Cannot remove created server parameter file
+Finished Duplicate Db at 12-MAY-23
+
+RMAN> exit
+
+
+Recovery Manager complete.
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:16:24 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> select name, open_mode, dbid from v$database;
+
+NAME      OPEN_MODE                  DBID
+--------- -------------------- ----------
+TESTDB    READ WRITE           2919957062
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$ ps -ef|grep smon
+oracle   14361     1  0 09:51 ?        00:00:00 ora_smon_DEVDB
+oracle   16499     1  0 10:15 ?        00:00:00 ora_smon_TESTDB
+oracle   17255 10846  0 10:23 pts/0    00:00:00 grep --color=auto smon
+[oracle@oraclelab3 backup]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+[oracle@oraclelab3 backup]$ cat /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initDEVDB.ora
+*.db_name=DEVDB
+*.db_unique_name=DEVDB
+*.audit_file_dest='/u01/app/oracle/admin/DEVDB/adump'
+*.db_create_file_dest='/u01/app/oracle/oradata/'
+*.db_create_online_log_dest_1='/u01/app/oracle/oradata'
+*.db_create_online_log_dest_2='/u01/app/oracle/fast_recovery_area/'
+*.control_files='/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl','/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl'
+*.db_recovery_file_dest_size=8931M
+*.db_recovery_file_dest='/u01/app/oracle/fast_recovery_area'
+*.log_archive_dest_1='LOCATION=USE_DB_RECOVERY_FILE_DEST'
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ vi /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/initTESTDB.ora
+[oracle@oraclelab3 backup]$ . oraenv
+ORACLE_SID = [TESTDB] ? DEVDB
+ORACLE_HOME = [/home/oracle] ?
+ORACLE_BASE environment variable is not being set since this
+information is not available for the current user ID oracle.
+You can set ORACLE_BASE manually if it is required.
+Resetting ORACLE_BASE to its previous value or ORACLE_HOME
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab3 backup]$ . oraenv
+ORACLE_SID = [DEVDB] ?
+ORACLE_HOME = [/home/oracle] ? /u01/app/oracle/product/19.0.0.0/dbhome_1
+The Oracle base remains unchanged with value /u01/app/oracle
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:33:19 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> archive log list
+Database log mode              Archive Mode
+Automatic archival             Enabled
+Archive destination            USE_DB_RECOVERY_FILE_DEST
+Oldest online log sequence     1
+Next log sequence to archive   1
+Current log sequence           1
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$
+[oracle@oraclelab3 backup]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Fri May 12 10:34:54 2023
+Version 19.3.0.0.0
+
+Copyright (c) 1982, 2019, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+
+SQL> exit
+Disconnected from Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0
+[oracle@oraclelab3 backup]$
+
+
+
+
+login as: root
+root@10.38.4.180's password:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                 • MobaXterm Personal Edition v21.2 •                 │
+    │               (SSH client, X server and network tools)               │
+    │                                                                      │
+    │ ➤ SSH session to root@10.38.4.180                                    │
+    │   • Direct SSH      :  ✔                                             │
+    │   • SSH compression :  ✔                                             │
+    │   • SSH-browser     :  ✔                                             │
+    │   • X11-forwarding  :  ✔  (remote display is forwarded through SSH)  │
+    │                                                                      │
+    │ ➤ For more info, ctrl+click on help or visit our website.            │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Last login: Fri May 12 08:53:32 2023 from 172.29.0.102
+[root@oraclelab1 ~]# locate alert_DEVDB.log
+/u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+[root@oraclelab1 ~]# tail -100f /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+Starting background process VKTM
+2023-05-12T10:36:04.880238+05:30
+VKTM started with pid=5, OS id=29600 at elevated (RT) priority
+2023-05-12T10:36:04.880619+05:30
+Starting background process GEN0
+2023-05-12T10:36:04.881992+05:30
+VKTM running at (1)millisec precision with DBRM quantum (100)ms
+2023-05-12T10:36:04.894950+05:30
+GEN0 started with pid=6, OS id=29605
+Starting background process MMAN
+2023-05-12T10:36:04.909018+05:30
+MMAN started with pid=7, OS id=29607
+Starting background process GEN1
+2023-05-12T10:36:04.944840+05:30
+GEN1 started with pid=9, OS id=29611_29612
+Starting background process DIAG
+2023-05-12T10:36:04.958642+05:30
+DIAG started with pid=11, OS id=29614
+Starting background process OFSD
+2023-05-12T10:36:04.977125+05:30
+OFSD started with pid=12, OS id=29616_29617
+2023-05-12T10:36:04.977988+05:30
+Oracle running with ofslib:'Oracle File Server Library' version=2
+Starting background process DBRM
+2023-05-12T10:36:04.991750+05:30
+DBRM started with pid=14, OS id=29619
+Starting background process VKRM
+2023-05-12T10:36:05.006275+05:30
+VKRM started with pid=15, OS id=29621
+Starting background process SVCB
+2023-05-12T10:36:05.020975+05:30
+SVCB started with pid=16, OS id=29623
+Starting background process PMAN
+2023-05-12T10:36:05.035876+05:30
+PMAN started with pid=17, OS id=29625
+Starting background process DIA0
+2023-05-12T10:36:05.051429+05:30
+DIA0 started with pid=18, OS id=29627
+Starting background process DBW0
+2023-05-12T10:36:05.074127+05:30
+DBW0 started with pid=19, OS id=29629
+Starting background process LGWR
+2023-05-12T10:36:05.088131+05:30
+LGWR started with pid=20, OS id=29631
+2023-05-12T10:36:05.103710+05:30
+LGWR slave LG00 created with pid=21, OS pid=29633
+Starting background process CKPT
+2023-05-12T10:36:05.117004+05:30
+CKPT started with pid=22, OS id=29635
+LGWR slave LG01 created with pid=23, OS pid=29637
+Starting background process SMON
+2023-05-12T10:36:05.145872+05:30
+SMON started with pid=24, OS id=29639
+Starting background process SMCO
+2023-05-12T10:36:05.160465+05:30
+SMCO started with pid=25, OS id=29641
+Starting background process RECO
+2023-05-12T10:36:05.190647+05:30
+RECO started with pid=27, OS id=29645
+Starting background process LREG
+2023-05-12T10:36:05.219139+05:30
+LREG started with pid=29, OS id=29649
+Starting background process PXMN
+2023-05-12T10:36:05.236133+05:30
+PXMN started with pid=30, OS id=29651
+Starting background process FENC
+2023-05-12T10:36:05.250752+05:30
+FENC started with pid=31, OS id=29653
+Starting background process MMON
+2023-05-12T10:36:05.267161+05:30
+MMON started with pid=32, OS id=29655
+Starting background process MMNL
+2023-05-12T10:36:05.282061+05:30
+MMNL started with pid=33, OS id=29657
+2023-05-12T10:36:05.283383+05:30
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 shared server(s) ...
+Starting background process TMON
+2023-05-12T10:36:05.336651+05:30
+TMON started with pid=36, OS id=29663
+Setting CPU count to 2
+ORACLE_BASE from environment = /u01/app/oracle
+2023-05-12T10:36:05.460719+05:30
+ALTER DATABASE   MOUNT
+2023-05-12T10:36:05.566108+05:30
+ORA-00210: cannot open the specified control file
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+ORA-205 signalled during: ALTER DATABASE   MOUNT...
+2023-05-12T10:36:05.603561+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_29667.trc:
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+Checker run found 1 new persistent data failures
+2023-05-12T10:36:08.003570+05:30
+Using default pga_aggregate_limit of 2338 MB
+^C
+[root@oraclelab1 ~]# su - oracle
+Last login: Fri May 12 08:56:19 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ rman target /^C
+[oracle@oraclelab1 ~]$ tail -100f /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/alert_DEVDB.log
+MMAN started with pid=7, OS id=29607
+Starting background process GEN1
+2023-05-12T10:36:04.944840+05:30
+GEN1 started with pid=9, OS id=29611_29612
+Starting background process DIAG
+2023-05-12T10:36:04.958642+05:30
+DIAG started with pid=11, OS id=29614
+Starting background process OFSD
+2023-05-12T10:36:04.977125+05:30
+OFSD started with pid=12, OS id=29616_29617
+2023-05-12T10:36:04.977988+05:30
+Oracle running with ofslib:'Oracle File Server Library' version=2
+Starting background process DBRM
+2023-05-12T10:36:04.991750+05:30
+DBRM started with pid=14, OS id=29619
+Starting background process VKRM
+2023-05-12T10:36:05.006275+05:30
+VKRM started with pid=15, OS id=29621
+Starting background process SVCB
+2023-05-12T10:36:05.020975+05:30
+SVCB started with pid=16, OS id=29623
+Starting background process PMAN
+2023-05-12T10:36:05.035876+05:30
+PMAN started with pid=17, OS id=29625
+Starting background process DIA0
+2023-05-12T10:36:05.051429+05:30
+DIA0 started with pid=18, OS id=29627
+Starting background process DBW0
+2023-05-12T10:36:05.074127+05:30
+DBW0 started with pid=19, OS id=29629
+Starting background process LGWR
+2023-05-12T10:36:05.088131+05:30
+LGWR started with pid=20, OS id=29631
+2023-05-12T10:36:05.103710+05:30
+LGWR slave LG00 created with pid=21, OS pid=29633
+Starting background process CKPT
+2023-05-12T10:36:05.117004+05:30
+CKPT started with pid=22, OS id=29635
+LGWR slave LG01 created with pid=23, OS pid=29637
+Starting background process SMON
+2023-05-12T10:36:05.145872+05:30
+SMON started with pid=24, OS id=29639
+Starting background process SMCO
+2023-05-12T10:36:05.160465+05:30
+SMCO started with pid=25, OS id=29641
+Starting background process RECO
+2023-05-12T10:36:05.190647+05:30
+RECO started with pid=27, OS id=29645
+Starting background process LREG
+2023-05-12T10:36:05.219139+05:30
+LREG started with pid=29, OS id=29649
+Starting background process PXMN
+2023-05-12T10:36:05.236133+05:30
+PXMN started with pid=30, OS id=29651
+Starting background process FENC
+2023-05-12T10:36:05.250752+05:30
+FENC started with pid=31, OS id=29653
+Starting background process MMON
+2023-05-12T10:36:05.267161+05:30
+MMON started with pid=32, OS id=29655
+Starting background process MMNL
+2023-05-12T10:36:05.282061+05:30
+MMNL started with pid=33, OS id=29657
+2023-05-12T10:36:05.283383+05:30
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 shared server(s) ...
+Starting background process TMON
+2023-05-12T10:36:05.336651+05:30
+TMON started with pid=36, OS id=29663
+Setting CPU count to 2
+ORACLE_BASE from environment = /u01/app/oracle
+2023-05-12T10:36:05.460719+05:30
+ALTER DATABASE   MOUNT
+2023-05-12T10:36:05.566108+05:30
+ORA-00210: cannot open the specified control file
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+ORA-205 signalled during: ALTER DATABASE   MOUNT...
+2023-05-12T10:36:05.603561+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_29667.trc:
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+Checker run found 1 new persistent data failures
+2023-05-12T10:36:08.003570+05:30
+Using default pga_aggregate_limit of 2338 MB
+2023-05-12T10:37:46.384847+05:30
+alter database mount
+2023-05-12T10:37:50.449822+05:30
+.... (PID:29884): Redo network throttle feature is disabled at mount time
+2023-05-12T10:37:50.489721+05:30
+Successful mount of redo thread 1, with mount id 1041385338
+2023-05-12T10:37:50.490079+05:30
+Database mounted in Exclusive Mode
+Lost write protection disabled
+.... (PID:29884): Using STANDBY_ARCHIVE_DEST parameter default value as USE_DB_RECOVERY_FILE_DEST [krsd.c:18157]
+Completed: alter database mount
+2023-05-12T10:38:08.599163+05:30
+alter database open
+2023-05-12T10:38:08.603884+05:30
+Ping without log force is disabled:
+  instance mounted in exclusive mode.
+Buffer Cache Full DB Caching mode changing from FULL CACHING DISABLED to FULL CACHING ENABLED
+2023-05-12T10:38:08.626708+05:30
+Beginning crash recovery of 1 threads
+ parallel recovery started with 2 processes
+ Thread 1: Recovery starting at checkpoint rba (logseq 54 block 3), scn 0
+2023-05-12T10:38:08.648859+05:30
+Started redo scan
+2023-05-12T10:38:08.666238+05:30
+Completed redo scan
+ read 1796 KB redo, 187 data blocks need recovery
+2023-05-12T10:38:08.669266+05:30
+Started redo application at
+ Thread 1: logseq 54, block 3, offset 0
+2023-05-12T10:38:08.669845+05:30
+Recovery of Online Redo Log: Thread 1 Group 3 Seq 54 Reading mem 0
+  Mem# 0: /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_3_l4ly807v_.log
+  Mem# 1: /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_3_l4ly80mp_.log
+2023-05-12T10:38:08.672753+05:30
+Completed redo application of 0.65MB
+2023-05-12T10:38:08.807178+05:30
+Completed crash recovery at
+ Thread 1: RBA 54.3596.16, nab 3596, scn 0x00000000003dfb70
+ 187 data blocks read, 187 data blocks written, 1796 redo k-bytes read
+Endian type of dictionary set to little
+2023-05-12T10:38:08.867978+05:30
+LGWR (PID:29631): STARTING ARCH PROCESSES
+Starting background process ARC0
+2023-05-12T10:38:08.883293+05:30
+TT00 (PID:29922): Gap Manager starting
+2023-05-12T10:38:08.897128+05:30
+ARC0 started with pid=40, OS id=29924
+2023-05-12T10:38:08.907966+05:30
+LGWR (PID:29631): ARC0: Archival started
+LGWR (PID:29631): STARTING ARCH PROCESSES COMPLETE
+2023-05-12T10:38:08.908991+05:30
+ARC0 (PID:29924): Becoming a 'no FAL' ARCH
+ARC0 (PID:29924): Becoming the 'no SRL' ARCH
+2023-05-12T10:38:08.913626+05:30
+TMON (PID:29663): STARTING ARCH PROCESSES
+Starting background process ARC1
+2023-05-12T10:38:08.927778+05:30
+ARC1 started with pid=42, OS id=29928
+Starting background process ARC2
+Starting background process ARC3
+2023-05-12T10:38:08.942721+05:30
+ARC2 started with pid=43, OS id=29930
+2023-05-12T10:38:08.950263+05:30
+Thread 1 advanced to log sequence 55 (thread open)
+Redo log for group 1, sequence 55 is not located on DAX storage
+2023-05-12T10:38:08.957224+05:30
+ARC3 started with pid=44, OS id=29932
+2023-05-12T10:38:08.957266+05:30
+TMON (PID:29663): ARC1: Archival started
+TMON (PID:29663): ARC2: Archival started
+TMON (PID:29663): ARC3: Archival started
+TMON (PID:29663): STARTING ARCH PROCESSES COMPLETE
+2023-05-12T10:38:08.970735+05:30
+Thread 1 opened at log sequence 55
+  Current log# 1 seq# 55 mem# 0: /u01/app/oracle/oradata/DEVDB/onlinelog/o1_mf_1_l4ly8075_.log
+  Current log# 1 seq# 55 mem# 1: /u01/app/oracle/fast_recovery_area/DEVDB/onlinelog/o1_mf_1_l4ly80fr_.log
+Successful open of redo thread 1
+2023-05-12T10:38:08.977183+05:30
+MTTR advisory is disabled because FAST_START_MTTR_TARGET is not set
+stopping change tracking
+2023-05-12T10:38:08.993906+05:30
+ARC1 (PID:29928): Archived Log entry 78 added for T-1.S-54 ID 0x3dfb9919 LAD:1
+2023-05-12T10:38:09.092184+05:30
+Undo initialization recovery: err:0 start: 1420104313 end: 1420104326 diff: 13 ms (0.0 seconds)
+[29884] Successfully onlined Undo Tablespace 2.
+Undo initialization online undo segments: err:0 start: 1420104326 end: 1420104346 diff: 20 ms (0.0 seconds)
+Undo initialization finished serial:0 start:1420104313 end:1420104349 diff:36 ms (0.0 seconds)
+Verifying minimum file header compatibility for tablespace encryption..
+Verifying file header compatibility for tablespace encryption completed for pdb 0
+Database Characterset is AL32UTF8
+No Resource Manager plan active
+joxcsys_required_dirobj_exists: directory object exists with required path /u01/app/oracle/product/19.0.0.0/dbhome_1/javavm/admin/, pid 29884 cid 0
+replication_dependency_tracking turned off (no async multimaster replication found)
+Starting background process AQPC
+2023-05-12T10:38:09.503064+05:30
+AQPC started with pid=46, OS id=29939
+2023-05-12T10:38:09.636329+05:30
+Starting background process CJQ0
+2023-05-12T10:38:09.652273+05:30
+CJQ0 started with pid=47, OS id=29941
+Completed: alter database open
+2023-05-12T10:38:10.688276+05:30
+QPI: opatch file present, opatch
+QPI: qopiprep.bat file present
+2023-05-12T10:38:12.624860+05:30
+===========================================================
+Dumping current patch information
+===========================================================
+Patch Id: 29517242
+Patch Description: Database Release Update : 19.3.0.0.190416 (29517242)
+Patch Apply Time: 2019-04-18T12:51:17+05:30
+Bugs Fixed: 14735102,19697993,20313356,21965541,25806201,25883179,25986062,
+26476244,26611353,26872233,27369515,27423500,27666312,27710072,27846298,
+27957203,28064977,28072567,28129791,28181021,28210681,28279456,28313275,
+28350595,28371123,28379065,28431445,28463226,28489419,28502773,28513333,
+28534475,28561704,28569897,28572533,28572544,28587723,28593682,28594086,
+28597221,28601957,28605066,28606598,28625862,28627033,28636532,28643718,
+28644549,28645570,28646200,28646939,28649388,28655209,28663782,28673945,
+28692275,28694872,28696373,28705231,28710385,28710734,28714461,28718469,
+28730079,28740708,28760206,28772390,28774416,28777214,28789531,28791852,
+28795551,28802734,28804517,28810381,28811560,28815123,28815355,28819640,
+28824482,28833912,28835937,28862532,28863432,28873575,28876253,28876639,
+28884931,28888327,28892794,28897512,28899663,28901126,28905457,28907196,
+28912691,28915561,28917080,28918429,28919145,28922227,28922532,28922608,
+28925634,28925880,28933158,28936114,28937717,28938698,28940179,28940281,
+28941901,28942455,28945421,28945994,28951533,28952168,28954762,28955606,
+28957292,28957723,28962775,28965231,28966444,28974083,28977322,28983095,
+28983486,28986326,28986481,28988482,28989306,28993295,28994307,28996376,
+29000000,29001888,29002927,29003738,29006318,29006621,29007321,29007775,
+29008035,29011936,29013475,29014076,29015118,29017265,29018655,29019121,
+29021063,29021352,29024552,29026582,29026606,29027456,29027694,29027940,
+29031575,29031600,29032234,29032457,29032607,29033052,29033145,29033200,
+29033280,29034587,29037290,29038528,29039089,29039510,29043554,29043651,
+29043725,29044763,29044954,29047850,29048289,29048498,29048605,29050560,
+29050765,29051702,29052726,29053783,29056024,29056270,29056560,29059011,
+29061959,29062692,29062848,29062860,29062868,29110526,29110783,29110790,
+29110797,29110802,29110805,29111598,29113282,29113305,29117526,29117642,
+29119077,29120223,29122224,29122254,29123297,29123432,29123482,29124368,
+29125380,29126345,29127957,29128935,29129450,29129497,29129712,29130219,
+29131539,29132938,29134447,29136111,29138641,29141316,29141341,29141685,
+29142667,29144995,29145214,29145730,29149829,29150338,29151520,29152357,
+29155099,29157389,29158680,29158899,29159909,29159936,29160174,29162095,
+29163415,29163437,29163524,29163567,29167111,29167342,29167374,29167940,
+29168219,29168433,29169073,29169215,29171942,29172618,29172826,29173140,
+29173373,29173817,29174004,29176318,29177466,29177543,29177886,29178385,
+29180313,29180455,29180559,29180893,29181153,29181231,29181620,29181743,
+29181923,29182019,29183912,29184297,29184666,29185193,29186456,29189302,
+29189307,29189889,29190235,29190474,29190740,29191541,29192419,29192468,
+29192685,29193207,29194205,29194367,29194493,29194827,29195279,29195337,
+29195758,29196725,29199635,29199733,29200316,29200700,29201494,29201539,
+29202104,29202850,29203122,29203166,29203425,29203443,29203604,29205281,
+29205323,29205419,29205463,29205767,29205918,29206109,29206605,29207073,
+29208260,29208732,29211457,29211724,29212012,29212433,29212611,29213351,
+29213775,29213850,29213879,29214561,29214960,29216746,29216984,29217294,
+29217472,29217828,29217848,29218570,29219205,29219273,29220079,29221248,
+29221891,29222031,29222784,29223833,29223859,29223967,29224065,29224605,
+29225076,29227602,29228869,29229164,29229754,29229844,29229955,29230252,
+29230565,29231133,29232117,29232154,29234123,29237538,29240307,29241345,
+29242017,29242884,29243958,29245137,29245160,29246163,29247415,29247712,
+29247906,29248552,29248835,29248858,29249991,29250059,29251259,29253184,
+29253871,29254031,29254930,29255178,29255273,29255431,29255435,29256426,
+29259119,29259320,29261906,29262512,29262887,29265448,29266248,29266899,
+29267292,29268412,29269171,29270585,29273539,29273735,29273847,29274428,
+29274564,29274627,29275461,29278218,29279658,29279751,29279854,29282898,
+29285503,29285788,29285956,29286037,29287130,29287705,29292837,29293072,
+29297863,29297915,29298220,29299049,29299082,29299844,29301566,29302963,
+29303918,29304781,29311588,29312310,29312734,29312753,29313347,29313417,
+29313525,29314539,29318410,29319441,29321489,29323946,29324568,29325087,
+29325105,29325257,29325993,29327044,29329087,29331209,29331380,29331493,
+29332771,29333500,29337310,29338315,29338453,29338780,29338913,29339155,
+29341209,29343086,29346943,29347620,29348176,29350052,29351386,29351716,
+29351749,29352867,29353271,29355654,29356547,29356752,29358828,29360672,
+29361801,29363151,29364171,29364177,29367019,29367561,29368253,29373418,
+29373588,29374179,29377986,29378029,29379978,29382784,29385652,29386502,
+29386635,29386660,29387274,29388094,29388524,29388830,29389889,29390435,
+29394140,29394749,29397954,29398863,29399100,29399121,29405012,29405651,
+29412066,29412269,29417884,29423826,29429264,29429566,29431485,29435652,
+29438736,29439522,29450421,29451386,29452576,29452953,29457807,29460252,
+29462957,29486181,29507616,29515240,29521748,29530812,29531654,29557336,
+29558975,29601461
+
+Patch Id: 29585399
+Patch Description: OCW RELEASE UPDATE 19.3.0.0.0 (29585399)
+Patch Apply Time: 2019-04-18T12:51:33+05:30
+Bugs Fixed: 3,27222128,27572040,27604329,27760043,27877830,28302580,28470673,
+28621543,28642469,28699321,28710663,28755846,28772816,28785321,28800508,
+28808652,28815557,28847541,28847572,28870496,28871040,28874416,28877252,
+28881191,28881848,28888083,28911140,28925250,28925460,28935956,28940472,
+28942694,28951332,28963036,28968779,28980448,28995287,29003207,29003617,
+29016294,29018680,29024876,29026154,29027933,29047127,29052850,29058476,
+29111631,29112455,29117337,29123444,29125708,29125786,29129476,29131772,
+29132456,29139727,29146157,29147849,29149170,29152603,29152752,29154631,
+29154636,29154829,29159216,29159661,29160462,29161923,29169540,29169739,
+29170717,29173618,29181568,29182920,29183298,29186091,29191827,29201143,
+29201695,29209545,29210577,29210610,29210624,29210683,29213641,29219627,
+29224294,29225861,29229839,29235934,29242906,29243749,29244495,29244766,
+29244968,29248723,29249583,29251564,29255616,29260224,29261695,29271019,
+29273360,29282090,29282666,29285453,29285621,29290235,29292232,29293806,
+29294753,29299830,29307090,29307109,29311336,29329675,29330791,29339299,
+29357821,29360467,29360775,29367971,29368725,29379299,29379381,29380527,
+29381000,29382296,29391301,29393649,29402110,29411931,29413360,29457319,
+29465047
+===========================================================
+2023-05-12T10:38:13.104423+05:30
+db_recovery_file_dest_size of 8256 MB is 0.15% used. This is a
+user-specified limit on the amount of space that will be used by this
+database for recovery-related files, and does not reflect the amount of
+space available in the underlying filesystem or ASM diskgroup.
+2023-05-12T10:38:45.351898+05:30
+PMON (ospid: ): terminating the instance due to ORA error
+2023-05-12T10:38:45.352056+05:30
+Cause - 'Instance is being terminated due to fatal process death (pid: 24, ospid: 29639, SMON)'
+2023-05-12T10:38:45.357779+05:30
+System state dump requested by (instance=1, osid=29594 (PMON)), summary=[abnormal instance termination].
+System State dumped to trace file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_diag_29614.trc
+2023-05-12T10:38:45.806035+05:30
+Dumping diagnostic data in directory=[cdmp_20230512103845], requested by (instance=1, osid=29594 (PMON)), summary=[abnormal instance termination].
+2023-05-12T10:38:46.895622+05:30
+Instance terminated by PMON, pid = 29594
+2023-05-12T10:39:05.727431+05:30
+Starting ORACLE instance (normal) (OS id: 30202)
+2023-05-12T10:39:05.732631+05:30
+****************************************************
+ Sys-V shared memory will be used for creating SGA
+ ****************************************************
+2023-05-12T10:39:05.733305+05:30
+**********************************************************************
+2023-05-12T10:39:05.733360+05:30
+Dump of system resources acquired for SHARED GLOBAL AREA (SGA)
+
+2023-05-12T10:39:05.733461+05:30
+ Per process system memlock (soft) limit = 128G
+2023-05-12T10:39:05.733514+05:30
+ Expected per process system memlock (soft) limit to lock
+ instance MAX SHARED GLOBAL AREA (SGA) into memory: 3522M
+2023-05-12T10:39:05.733631+05:30
+ Available system pagesizes:
+  4K, 2048K
+2023-05-12T10:39:05.733748+05:30
+ Supported system pagesize(s):
+2023-05-12T10:39:05.733807+05:30
+  PAGESIZE  AVAILABLE_PAGES  EXPECTED_PAGES  ALLOCATED_PAGES  ERROR(s)
+2023-05-12T10:39:05.733868+05:30
+        4K       Configured               6          901126        NONE
+2023-05-12T10:39:05.733980+05:30
+     2048K                0            1761               0        NONE
+2023-05-12T10:39:05.734037+05:30
+RECOMMENDATION:
+2023-05-12T10:39:05.734093+05:30
+ 1. For optimal performance, configure system with expected number
+ of pages for every supported system pagesize prior to the next
+ instance restart operation.
+2023-05-12T10:39:05.737910+05:30
+**********************************************************************
+2023-05-12T10:39:08.774960+05:30
+LICENSE_MAX_SESSION = 0
+LICENSE_SESSIONS_WARNING = 0
+2023-05-12T10:39:08.812694+05:30
+Initial number of CPU is 2
+Number of processor cores in the system is 2
+Number of processor sockets in the system is 2
+Capability Type : Network
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Runtime Environment
+capabilities requested : 400000FF detected : 40000000 Simulated : 0
+Capability Type : Engineered Systems
+capabilities requested : 7 detected : 0 Simulated : 0
+Capability Type : Database Test
+capabilities requested : 3 detected : 0 Simulated : 0
+Using LOG_ARCHIVE_DEST_1 parameter default value as USE_DB_RECOVERY_FILE_DEST
+Autotune of undo retention is turned on.
+IMODE=BR
+ILAT =43
+LICENSE_MAX_USERS = 0
+SYS auditing is enabled
+NOTE: remote asm mode is local (mode 0x1; from cluster type)
+NOTE: Using default ASM root directory ASM
+NOTE: remote asm mode is local (mode 0x1; from cluster type)
+NOTE: Cluster configuration type = NONE [2]
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.3.0.0.0.
+ORACLE_HOME:    /u01/app/oracle/product/19.0.0.0/dbhome_1
+System name:    Linux
+Node name:      oraclelab1.localdomain.com
+Release:        5.4.17-2102.201.3.el7uek.x86_64
+Version:        #2 SMP Fri Apr 23 09:05:55 PDT 2021
+Machine:        x86_64
+Using parameter settings in server-side spfile /u01/app/oracle/product/19.0.0.0/dbhome_1/dbs/spfileDEVDB.ora
+System parameters with non-default values:
+  processes                = 250
+  nls_language             = "AMERICAN"
+  nls_territory            = "AMERICA"
+  service_names            = "MALLIK"
+  sga_target               = 3520M
+  control_files            = "/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl"
+  control_files            = "/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl"
+  db_block_size            = 8192
+  compatible               = "19.0.0"
+  log_archive_format       = "%t_%s_%r.dbf"
+  db_create_file_dest      = "/u01/app/oracle/oradata"
+  db_recovery_file_dest    = "/u01/app/oracle/fast_recovery_area"
+  db_recovery_file_dest_size= 8256M
+  undo_tablespace          = "UNDOTBS1"
+  remote_login_passwordfile= "EXCLUSIVE"
+  dispatchers              = "(PROTOCOL=TCP) (SERVICE=DEVDBXDB)"
+  local_listener           = "(DESCRIPTION=(ADDRESS_LIST=(ADDRESS=(PROTOCOL=TCP)(HOST=oraclelab1.localdomain.com)(PORT=1522))))"
+  audit_file_dest          = "/u01/app/oracle/admin/DEVDB/adump"
+  audit_trail              = "DB"
+  db_name                  = "DEVDB"
+  open_cursors             = 350
+  pga_aggregate_target     = 1169M
+  diagnostic_dest          = "/u01/app/oracle"
+2023-05-12T10:39:09.007533+05:30
+============================================================
+NOTE: PatchLevel of this instance 0
+============================================================
+Starting background process PMON
+2023-05-12T10:39:09.029157+05:30
+PMON started with pid=2, OS id=30220
+Starting background process CLMN
+2023-05-12T10:39:09.043591+05:30
+CLMN started with pid=3, OS id=30222
+Starting background process PSP0
+2023-05-12T10:39:09.058030+05:30
+PSP0 started with pid=4, OS id=30224
+Starting background process VKTM
+2023-05-12T10:39:10.095113+05:30
+VKTM started with pid=5, OS id=30227 at elevated (RT) priority
+2023-05-12T10:39:10.095131+05:30
+Starting background process GEN0
+2023-05-12T10:39:10.097375+05:30
+VKTM running at (1)millisec precision with DBRM quantum (100)ms
+2023-05-12T10:39:10.108224+05:30
+GEN0 started with pid=6, OS id=30231
+Starting background process MMAN
+2023-05-12T10:39:10.121726+05:30
+MMAN started with pid=7, OS id=30233
+Starting background process GEN1
+2023-05-12T10:39:10.158783+05:30
+GEN1 started with pid=9, OS id=30237_30238
+Starting background process DIAG
+2023-05-12T10:39:10.174171+05:30
+DIAG started with pid=11, OS id=30240
+Starting background process OFSD
+2023-05-12T10:39:10.195268+05:30
+OFSD started with pid=12, OS id=30242_30243
+Starting background process DBRM
+2023-05-12T10:39:10.197089+05:30
+Oracle running with ofslib:'Oracle File Server Library' version=2
+2023-05-12T10:39:10.211472+05:30
+DBRM started with pid=14, OS id=30245
+Starting background process VKRM
+2023-05-12T10:39:10.226985+05:30
+VKRM started with pid=15, OS id=30247
+Starting background process SVCB
+2023-05-12T10:39:10.243792+05:30
+SVCB started with pid=16, OS id=30249
+Starting background process PMAN
+2023-05-12T10:39:10.259532+05:30
+PMAN started with pid=17, OS id=30251
+Starting background process DIA0
+2023-05-12T10:39:10.274330+05:30
+DIA0 started with pid=18, OS id=30253
+Starting background process DBW0
+2023-05-12T10:39:10.297921+05:30
+DBW0 started with pid=19, OS id=30255
+Starting background process LGWR
+2023-05-12T10:39:10.312678+05:30
+LGWR started with pid=20, OS id=30257
+Starting background process CKPT
+2023-05-12T10:39:10.327087+05:30
+CKPT started with pid=21, OS id=30259
+2023-05-12T10:39:10.342921+05:30
+LGWR slave LG00 created with pid=22, OS pid=30261
+Starting background process SMON
+2023-05-12T10:39:10.357135+05:30
+SMON started with pid=23, OS id=30263
+LGWR slave LG01 created with pid=24, OS pid=30265
+Starting background process SMCO
+2023-05-12T10:39:10.391791+05:30
+SMCO started with pid=25, OS id=30267
+Starting background process RECO
+2023-05-12T10:39:10.406537+05:30
+RECO started with pid=26, OS id=30269
+Starting background process LREG
+2023-05-12T10:39:10.434612+05:30
+LREG started with pid=28, OS id=30273
+Starting background process PXMN
+2023-05-12T10:39:10.463528+05:30
+PXMN started with pid=30, OS id=30277
+Starting background process FENC
+2023-05-12T10:39:10.477052+05:30
+FENC started with pid=31, OS id=30279
+Starting background process MMON
+2023-05-12T10:39:10.493383+05:30
+MMON started with pid=32, OS id=30281
+Starting background process MMNL
+2023-05-12T10:39:10.507568+05:30
+MMNL started with pid=33, OS id=30283
+2023-05-12T10:39:10.508043+05:30
+starting up 1 dispatcher(s) for network address '(ADDRESS=(PARTIAL=YES)(PROTOCOL=TCP))'...
+starting up 1 shared server(s) ...
+Starting background process TMON
+2023-05-12T10:39:10.559441+05:30
+TMON started with pid=36, OS id=30289
+Setting CPU count to 2
+ORACLE_BASE from environment = /u01/app/oracle
+2023-05-12T10:39:10.793603+05:30
+ALTER DATABASE   MOUNT
+2023-05-12T10:39:10.844796+05:30
+ORA-00210: cannot open the specified control file
+ORA-00202: control file: '/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+ORA-00210: cannot open the specified control file
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+ORA-205 signalled during: ALTER DATABASE   MOUNT...
+2023-05-12T10:39:10.872063+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30294.trc:
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+2023-05-12T10:39:10.975296+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30294.trc:
+ORA-00202: control file: '/u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+ORA-00210: cannot open the specified control file
+ORA-00202: control file: '/u01/app/oracle/oradata/DEVDB/controlfile/control01.ctl'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+Checker run found 1 new persistent data failures
+2023-05-12T10:39:13.217786+05:30
+Using default pga_aggregate_limit of 2338 MB
+2023-05-12T10:40:25.511750+05:30
+No controlfile conversion
+No controlfile conversion
+2023-05-12T10:41:24.949915+05:30
+alter database mount
+2023-05-12T10:41:28.974727+05:30
+.... (PID:30391): RT: Role transition work is not done
+.... (PID:30391): Redo network throttle feature is disabled at mount time
+2023-05-12T10:41:28.988980+05:30
+Successful mount of redo thread 1, with mount id 1041343572
+2023-05-12T10:41:28.989427+05:30
+Database mounted in Exclusive Mode
+Lost write protection disabled
+.... (PID:30391): Using STANDBY_ARCHIVE_DEST parameter default value as USE_DB_RECOVERY_FILE_DEST [krsd.c:18157]
+Completed: alter database mount
+2023-05-12T10:41:44.575224+05:30
+TMON (PID:30289): STARTING ARCH PROCESSES
+Starting background process ARC0
+2023-05-12T10:41:44.590333+05:30
+ARC0 started with pid=37, OS id=30496
+Starting background process ARC1
+2023-05-12T10:41:44.608947+05:30
+ARC1 started with pid=39, OS id=30498
+Starting background process ARC2
+2023-05-12T10:41:44.622999+05:30
+ARC2 started with pid=40, OS id=30500
+Starting background process ARC3
+TMON (PID:30289): ARC0: Archival started
+2023-05-12T10:41:44.640909+05:30
+ARC3 started with pid=41, OS id=30502
+TMON (PID:30289): ARC1: Archival started
+TMON (PID:30289): ARC2: Archival started
+2023-05-12T10:41:44.641182+05:30
+ARC0 (PID:30496): Becoming a 'no FAL' ARCH
+ARC0 (PID:30496): Becoming the 'no SRL' ARCH
+2023-05-12T10:41:44.651330+05:30
+TMON (PID:30289): ARC3: Archival started
+TMON (PID:30289): STARTING ARCH PROCESSES COMPLETE
+2023-05-12T10:41:44.669481+05:30
+TT00 (PID:30504): Gap Manager starting
+2023-05-12T10:41:59.290391+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_ora_30481.trc:
+ORA-19620: /u01/app/oracle/fast_recovery_area/DEVDB/controlfile/control02.ctl_backup is not of backup control file type
+2023-05-12T10:41:59.433824+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30521.trc:
+ORA-01110: data file 1: '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf'
+ORA-01565: error in identifying file '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_system_l4ly6vb3_.dbf'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+2023-05-12T10:41:59.533740+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30521.trc:
+ORA-01110: data file 3: '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf'
+ORA-01565: error in identifying file '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_sysaux_l4ly6vb7_.dbf'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+2023-05-12T10:41:59.632676+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30521.trc:
+ORA-01110: data file 4: '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf'
+ORA-01565: error in identifying file '/u01/app/oracle/oradata/DEVDB/datafile/o1_mf_undotbs1_l4ly6vbb_.dbf'
+ORA-27037: unable to obtain file status
+Linux-x86_64 Error: 2: No such file or directory
+Additional information: 7
+2023-05-12T10:41:59.738524+05:30
+Errors in file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_mz00_30521.trc:
+ORA-01110: data file 7: '/u01/app/oracle/oradata/DEVDB/datafile/users.dbf'
+Checker run found 1 new persistent data failures
+2023-05-12T10:54:16.341389+05:30
+db_recovery_file_dest_size of 8256 MB is 0.15% used. This is a
+user-specified limit on the amount of space that will be used by this
+database for recovery-related files, and does not reflect the amount of
+space available in the underlying filesystem or ASM diskgroup.
+2023-05-12T13:43:27.091563+05:30
+PMON (ospid: ): terminating the instance due to ORA error
+2023-05-12T13:43:27.091818+05:30
+Cause - 'Instance is being terminated due to fatal process death (pid: 23, ospid: 30263, SMON)'
+2023-05-12T13:43:27.094567+05:30
+System state dump requested by (instance=1, osid=30220 (PMON)), summary=[abnormal instance termination].
+System State dumped to trace file /u01/app/oracle/diag/rdbms/devdb/DEVDB/trace/DEVDB_diag_30240.trc
+2023-05-12T13:43:27.201773+05:30
+Dumping diagnostic data in directory=[cdmp_20230512134327], requested by (instance=1, osid=30220 (PMON)), summary=[abnormal instance termination].
+2023-05-12T13:43:28.241630+05:30
+Instance terminated by PMON, pid = 30220
+
+
+
+

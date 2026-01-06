@@ -1,0 +1,84 @@
+run {
+recover table MALLIK.EMP of pluggable database PDB1
+until time "to_date('30-05-2023 10:00:00','mm/dd/yyyy hh24:mi:ss')"
+auxiliary destination '/oradata/PDB1/aux';
+}
+
+
+run {
+recover table MALLIK.EMP
+until time "to_date('30-05-2023 10:00:00','mm/dd/yyyy hh24:mi:ss')"
+auxiliary destination '/oradata/AUX';
+}
+
+
+11g:
+====
+PGA - pga_aggregate_target - 1G
+pga_aggregate_limit        - 2G 
+
+
+
+automatic indexing - exadata, autonomount DB, OCI 
+no at on - primises 
+
+autoupgrade --- DB upgrade 
+
+
+
+[root@oraclelab1 ~]# clear
+[root@oraclelab1 ~]# ps -ef|grep smon
+oracle   21690     1  0 May26 ?        00:00:05 ora_smon_DEVDB
+root     31511 31438  0 09:34 pts/2    00:00:00 grep --color=auto smon
+[root@oraclelab1 ~]# su - oracle
+Last login: Mon May 29 13:24:43 IST 2023 on pts/2
+[oracle@oraclelab1 ~]$ . oraenv
+ORACLE_SID = [oracle] ? DEVDB
+The Oracle base has been set to /u01/app/oracle
+[oracle@oraclelab1 ~]$
+[oracle@oraclelab1 ~]$ sqlplus / as sysdba
+
+SQL*Plus: Release 19.0.0.0.0 - Production on Tue May 30 10:15:53 2023
+Version 19.17.0.0.0
+
+Copyright (c) 1982, 2022, Oracle.  All rights reserved.
+
+
+Connected to:
+Oracle Database 19c Enterprise Edition Release 19.0.0.0.0 - Production
+Version 19.17.0.0.0
+
+SQL> show parameter pga
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+pga_aggregate_limit                  big integer 2338M
+pga_aggregate_target                 big integer 1169M
+SQL> EXEC DBMS_AUTO_INDEX.CONFIGURE('AUTO_INDEX_MODE','IMPLEMENT');
+BEGIN DBMS_AUTO_INDEX.CONFIGURE('AUTO_INDEX_MODE','IMPLEMENT'); END;
+
+*
+ERROR at line 1:
+ORA-40216: feature not supported
+ORA-06512: at "SYS.DBMS_SYS_ERROR", line 79
+ORA-06512: at "SYS.DBMS_AUTO_INDEX_INTERNAL", line 10364
+ORA-06512: at "SYS.DBMS_AUTO_INDEX", line 301
+ORA-06512: at line 1
+
+
+SQL> show parameter optimizer_real_time_statistics
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+optimizer_real_time_statistics       boolean     FALSE
+SQL>
+Network error: Software caused connection abort
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Session stopped
+    - Press <return> to exit tab
+    - Press R to restart session
+    - Press S to save terminal output to file
+
+

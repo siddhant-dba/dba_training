@@ -1,0 +1,522 @@
+#!/usr/bin/env bash
+# Author: Vitaliy Kukharik (vitabaks@gmail.com)
+# Title: pg_auto_reindexer - Automatic reindexing of B-tree indexes
+
+version=1.6
+
+# ========================
+# === Help information ===
+# ========================
+function help() {
+cat <<EOF
+pg_auto_reindexer - Automatic reindexing of B-tree indexes
+
+Usage:
+  pg_auto_reindexer [OPTIONS]
+
+Connection options:
+  -h, --host=HOSTNAME               PostgreSQL host (default: /var/run/postgresql)
+  -p, --port=PORT                   PostgreSQL port (default: 5432)
+  -U, --username=USERNAME           PostgreSQL user (default: postgres)
+  -d, --dbname=DBNAME               PostgreSQL database for reindexing (default: all databases)
+
+Reindexing options:
+  -b, --index-bloat=PERCENT         Index bloat threshold in percent (default: 30)
+  -m, --index-minsize=MB            Minimum index size in MB (default: 1)
+  -M, --index-maxsize=MB            Maximum index size in MB (default: 1000000)
+  -s, --maintenance-start=HHMM      Maintenance window start (24h format)
+  -S, --maintenance-stop=HHMM       Maintenance window stop (24h format)
+  -t, --bloat-search-method=METHOD  Bloat detection method: estimate | pgstattuple (default: estimate)
+  -l, --failed-reindex-limit=N      Max reindex failures before skipping DB (default: 0)
+  -j, --jobs=N                      Number of parallel workers for reindex (default: 1)
+  -o, --sorting-order=(asc|desc)    Defines the sorting order of indexes by size (default: asc)
+
+Other options:
+  -v, --version                     Show version information and exit
+  -?, --help                        Show this help message and exit
+
+Example:
+  pg_auto_reindexer --index-bloat=40 --maintenance-start=0100 --maintenance-stop=0600
+EOF
+exit
+}
+
+# ========================
+# === Argument parsing ===
+# ========================
+for arg in "$@"; do
+  if [[ "${arg}" == --*=* ]]; then
+    opt="${arg%%=*}"
+    val="${arg#*=}"
+    newargs+=("${opt}" "${val}")
+  else
+    newargs+=("${arg}")
+  fi
+done
+set -- "${newargs[@]}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--host)                  PGHOST="$2"; shift 2;;
+    -p|--port)                  PGPORT="$2"; shift 2;;
+    -d|--dbname)                DBNAME="$2"; shift 2;;
+    -U|--username)              DBUSER="$2"; shift 2;;
+    -b|--index-bloat)           INDEX_BLOAT="$2"; shift 2;;
+    -m|--index-minsize)         INDEX_MINSIZE="$2"; shift 2;;
+    -M|--index-maxsize)         INDEX_MAXSIZE="$2"; shift 2;;
+    -s|--maintenance-start)     MAINTENANCE_START="$2"; shift 2;;
+    -S|--maintenance-stop)      MAINTENANCE_STOP="$2"; shift 2;;
+    -t|--bloat-search-method)   BLOAT_SEARCH_METHOD="$2"; shift 2;;
+    -l|--failed-reindex-limit)  FAILED_REINDEX_LIMIT="$2"; shift 2;;
+    -j|--jobs)                  PARALLEL_JOBS="$2"; shift 2;;
+    -o|--sorting-order)         SORTING_ORDER="$2"; shift 2;;
+    -v|--version)               echo "pg_auto_reindexer v${version}"; exit;;
+    -?|--help)                  help;;
+    *)
+      echo "Unknown option: $1"
+      help
+      ;;
+  esac
+done
+
+# =========================
+# === Default variables ===
+# =========================
+if [[ -z "${PGHOST}" ]]; then PGHOST="/var/run/postgresql"; fi
+if [[ -z "${PGPORT}" ]]; then PGPORT="5432"; fi
+if [[ -z "${DBUSER}" ]]; then DBUSER="postgres"; fi
+if [[ -z "${INDEX_BLOAT}" ]]; then INDEX_BLOAT="30"; fi
+if [[ -z "${BLOAT_SEARCH_METHOD}" ]]; then BLOAT_SEARCH_METHOD="estimate"; fi
+if [[ -z "${INDEX_MINSIZE}" ]]; then INDEX_MINSIZE="1"; fi
+if [[ -z "${INDEX_MAXSIZE}" ]]; then INDEX_MAXSIZE="1000000"; fi
+if [[ -z "${FAILED_REINDEX_LIMIT}" ]]; then FAILED_REINDEX_LIMIT="0"; fi
+if [[ -z "${SORTING_ORDER}" ]]; then SORTING_ORDER="asc"; fi
+
+if [[ "${SORTING_ORDER}" != "asc" && "${SORTING_ORDER}" != "desc" ]]; then
+  echo "Invalid sorting order: ${SORTING_ORDER}. Allowed values: asc, desc."
+  exit 1
+fi
+
+_PSQL="psql -h ${PGHOST} -p ${PGPORT} -U ${DBUSER}"
+
+if [[ -z "${DBNAME}" ]]; then
+  if ! DBNAME=$(${_PSQL} -d postgres -tAXc "select datname from pg_database where not datistemplate"); then
+    echo "Unable to connect to database postgres on ${PGHOST}:${PGPORT}"
+    exit 1
+  fi
+fi
+
+PG_VERSION=$(
+  $_PSQL \
+    -d "$(echo "${DBNAME}" | awk 'NR==1')" \
+    -tAXc "select setting::integer/10000 from pg_settings where name = 'server_version_num'"
+)
+
+# Disable statement_timeout and set lock_timeout
+PGOPTIONS="-c statement_timeout=0 -c lock_timeout=1s"
+
+# Configure the number of parallel workers for maintenance operations.
+# Note: The actual number of workers may be less than requested due to system limits (max_parallel_workers).
+# Setting this value to 0 (default) disables the use of parallel workers.
+if [[ "${PG_VERSION}" -ge 11 ]]; then
+  if [[ -z "${PARALLEL_JOBS}" ]]; then
+    PGOPTIONS+=" -c max_parallel_maintenance_workers=0"
+  else
+    PGOPTIONS+=" -c max_parallel_maintenance_workers=$((PARALLEL_JOBS - 1))"
+  fi
+else
+  if [[ -n "${PARALLEL_JOBS}" ]]; then
+    echo "Parallel workers option (-j/--jobs) is not supported for PostgreSQL ${PG_VERSION}."
+    exit 1
+  fi
+fi
+
+# Index bloat detection query
+if [[ "${BLOAT_SEARCH_METHOD}" = "pgstattuple" ]]; then
+# Based on https://github.com/dataegret/pg-utils/blob/master/sql/index_bloat.sql
+INDEX_BLOAT_SQL="
+with indexes as (
+  select * from pg_stat_user_indexes
+)
+select format('%I.%I', schemaname, indexrelname) as index_full_name
+from (
+  select schemaname, indexrelname,
+  (select (case when avg_leaf_density = 'NaN' then 0
+    else greatest(ceil(index_size * (1 - avg_leaf_density / (
+      coalesce((select (regexp_matches(reloptions::text, E'.*fillfactor=(\\d+).*'))[1]),'90')::real)))::bigint, 0)
+    end)
+    from pgstatindex(p.indexrelid::regclass::text)
+  ) as free_space,
+  pg_relation_size(p.indexrelid) as index_size
+  from indexes p
+  join pg_class c on p.indexrelid = c.oid
+  join pg_index i on i.indexrelid = p.indexrelid
+  where pg_get_indexdef(p.indexrelid) like '%USING btree%'
+    and i.indisvalid
+    and c.relpersistence = 'p'
+    and schemaname <> 'pg_catalog'
+) t
+where round((free_space*100/index_size)::numeric, 1) >= ${INDEX_BLOAT}
+  and index_size::bigint/1024/1024 between ${INDEX_MINSIZE} and ${INDEX_MAXSIZE}
+order by index_size ${SORTING_ORDER};
+"
+elif [[ "${BLOAT_SEARCH_METHOD}" = "estimate" ]]; then
+# Based on https://github.com/ioguix/pgsql-bloat-estimation/blob/master/btree/btree_bloat.sql
+INDEX_BLOAT_SQL="
+with bloat_indexes as (
+  select format('%I.%I', nspname, idxname) as index_full_name,
+    bs*(relpages)::bigint as index_size,
+    round((100 * (relpages-est_pages_ff)::float / relpages)::numeric, 1) as bloat_ratio
+  from (
+    select
+      coalesce(1 + ceil(reltuples/floor((bs-pageopqdata-pagehdr)/(4+nulldatahdrwidth)::float)), 0) as est_pages,
+      coalesce(1 + ceil(reltuples/floor((bs-pageopqdata-pagehdr)*fillfactor/(100*(4+nulldatahdrwidth)::float))), 0) as est_pages_ff,
+      bs, nspname, tblname, idxname, relpages, fillfactor, is_na
+    from (
+      select maxalign, bs, nspname, tblname, idxname, reltuples, relpages, idxoid, fillfactor,
+        ( index_tuple_hdr_bm +
+          maxalign - case
+            when index_tuple_hdr_bm%maxalign = 0 then maxalign
+            else index_tuple_hdr_bm%maxalign
+          end
+        + nulldatawidth + maxalign - case
+            when nulldatawidth = 0 then 0
+            when nulldatawidth::integer%maxalign = 0 then maxalign
+            else nulldatawidth::integer%maxalign
+          end
+        )::numeric as nulldatahdrwidth, pagehdr, pageopqdata, is_na
+      from (
+        select n.nspname, i.tblname, i.idxname, i.reltuples, i.relpages,
+          i.idxoid, i.fillfactor, current_setting('block_size')::numeric as bs,
+          case
+            when version() ~ 'mingw32' or version() ~ '64-bit|x86_64|ppc64|ia64|amd64' then 8
+            else 4
+          end as maxalign,
+          24 as pagehdr,
+          16 as pageopqdata,
+          case when max(coalesce(s.null_frac,0)) = 0
+            then 8
+            else 8 + (( 32 + 8 - 1 ) / 8)
+          end as index_tuple_hdr_bm,
+          sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 1024)) as nulldatawidth,
+          max( case when i.atttypid = 'pg_catalog.name'::regtype then 1 else 0 end ) > 0 as is_na
+        from (
+          select ct.relname as tblname, ct.relnamespace, ic.idxname, ic.attpos, ic.indkey,
+            ic.indkey[ic.attpos], ic.reltuples, ic.relpages, ic.tbloid, ic.idxoid, ic.fillfactor,
+            coalesce(a1.attnum, a2.attnum) as attnum, coalesce(a1.attname, a2.attname) as attname,
+            coalesce(a1.atttypid, a2.atttypid) as atttypid,
+            case when a1.attnum is null then ic.idxname else ct.relname end as attrelname
+          from (
+            select idxname, reltuples, relpages, tbloid, idxoid, fillfactor, indkey,
+              pg_catalog.generate_series(1,indnatts) as attpos
+            from (
+              select ci.relname as idxname, ci.reltuples, ci.relpages, i.indrelid as tbloid,
+                i.indexrelid as idxoid,
+                coalesce(substring(
+                  array_to_string(ci.reloptions, ' ')
+                  from 'fillfactor=([0-9]+)')::smallint, 90) as fillfactor,
+                i.indnatts,
+                pg_catalog.string_to_array(pg_catalog.textin(
+                  pg_catalog.int2vectorout(i.indkey)),' ')::int[] as indkey
+              from pg_catalog.pg_index i
+              join pg_catalog.pg_class ci on ci.oid = i.indexrelid
+              where ci.relam=(select oid from pg_am where amname = 'btree')
+                and ci.relpages > 0
+                and i.indisvalid
+            ) as idx_data
+          ) as ic
+          join pg_catalog.pg_class ct on ct.oid = ic.tbloid
+          left join pg_catalog.pg_attribute a1 on
+            ic.indkey[ic.attpos] <> 0
+            and a1.attrelid = ic.tbloid
+            and a1.attnum = ic.indkey[ic.attpos]
+          left join pg_catalog.pg_attribute a2 on
+            ic.indkey[ic.attpos] = 0
+            and a2.attrelid = ic.idxoid
+            and a2.attnum = ic.attpos
+        ) i
+        join pg_catalog.pg_namespace n on n.oid = i.relnamespace
+        join pg_catalog.pg_stats s on s.schemaname = n.nspname
+          and s.tablename = i.attrelname
+          and s.attname = i.attname
+        where schemaname <> 'pg_catalog'
+        group by 1,2,3,4,5,6,7,8,9,10,11
+      ) as rows_data_stats
+    ) as rows_hdr_pdg_stats
+  ) as relation_stats
+)
+select index_full_name from bloat_indexes
+where bloat_ratio >= ${INDEX_BLOAT}
+  and index_size::bigint/1024/1024 between ${INDEX_MINSIZE} and ${INDEX_MAXSIZE}
+order by index_size ${SORTING_ORDER};
+"
+fi
+
+# =================
+# === Functions ===
+# =================
+function info(){
+  if [[ -n "$1" ]]; then
+    msg="$1"
+  else
+    read -r msg
+    msg="  ${msg}"
+  fi
+  echo -e "$(date "+%F %T.%3N") INFO: ${msg}"
+  logger -p user.notice -t "$(basename "$0")" "${msg}"
+}
+
+function warnmsg(){
+  if [[ -n "$1" ]]; then
+    msg="$1"
+  else
+    read -r msg
+    msg="  ${msg}"
+    if [[ ${msg} == "  " ]]; then
+      return 0
+    fi
+  fi
+  echo -e "$(date "+%F %T.%3N") WARN: ${msg}"
+  logger -p user.notice -t "$(basename "$0")" "${msg}"
+  return 1
+}
+
+function errmsg(){
+  if [[ -n "$1" ]]; then
+    msg="$1"
+  else
+    read -r msg
+    msg="  ${msg}"
+  fi
+  echo -e "$(date "+%F %T.%3N") ERROR: ${msg}"
+  logger -p user.error -t "$(basename "$0")" "${msg}"
+  exit 1
+}
+
+function pg_isready(){
+  if ! ${_PSQL} -d "$(echo "${DBNAME}" | awk 'NR==1')" -tAXc "select 1" 1> /dev/null; then
+    errmsg "PostgreSQL server ${PGHOST}:${PGPORT} no response"
+  else
+  # in recovery mode?
+  state=$(${_PSQL} -d "$(echo "${DBNAME}" | awk 'NR==1')" -tAXc 'select pg_is_in_recovery()') 2>/dev/null
+    if [[ "${state}" = "t" ]]; then
+      warnmsg "This server is in recovery mode. Index maintenance will not be performed on that server."
+      exit
+    fi
+  fi
+}
+
+function create_extension_pgstattuple(){
+  ${_PSQL} -d "${db}" -tAXc "create extension if not exists pgstattuple;" &>/dev/null
+}
+
+function create_extension_pg_repack(){
+  ${_PSQL} -d "${db}" -tAXc "create extension if not exists pg_repack" &>/dev/null
+}
+
+function check_index_size(){
+  ${_PSQL} -d "${db}" -tAXc "select pg_relation_size('$1')/1024/1024"
+}
+
+function maintenance_window(){
+  if [[ -n "${MAINTENANCE_START}" ]] && [[ -n "${MAINTENANCE_STOP}" ]]; then
+    currentTime=$((10#$(date "+%H%M")))
+    start=$((10#${MAINTENANCE_START}))
+    stop=$((10#${MAINTENANCE_STOP}))
+    out_of_window=false
+
+    if [[ "${start}" -le "${stop}" ]]; then
+      # Window does NOT cross midnight
+      if [[ "${currentTime}" -lt "${start}" || "${currentTime}" -gt "${stop}" ]]; then
+        out_of_window=true
+      fi
+    else
+      # Window CROSSES midnight
+      if [[ "${currentTime}" -gt "${stop}" && "${currentTime}" -lt "${start}" ]]; then
+        out_of_window=true
+      fi
+    fi
+
+    if [[ "${out_of_window}" == true ]]; then
+      warnmsg "Current time: $(date "+%R %Z"). This is outside of the maintenance window: $(date --date="${MAINTENANCE_START}" "+%R")-$(date --date="${MAINTENANCE_STOP}" "+%R"). Exit."
+      exit
+    fi
+  fi
+}
+
+drop_invalid_index() {
+  local index="$1"
+  local status="$2"
+  local invalid_index_name
+
+  if [[ ${PG_VERSION} -le 11 ]]; then
+    invalid_index_name="index_${index}"
+  else
+    invalid_index_name="${index}_cc(new|old)[0-9]*$"
+  fi
+
+  invalid_indexes=$(${_PSQL} -d "${db}" -tAXc "
+    select format('%I.%I', schemaname, indexrelname)
+    from pg_stat_user_indexes
+    join pg_index using (indexrelid)
+    where not indisvalid
+      and format('%I.%I', schemaname, indexrelname) ~ '${invalid_index_name}'
+  ")
+
+  if [[ -n "${invalid_indexes}" ]]; then
+    while IFS= read -r invalid_index; do
+      info " Invalid index detected: ${invalid_index}. Dropping."
+      if ! output=$(${_PSQL} -d "${db}" -tAXc "DROP INDEX CONCURRENTLY ${invalid_index}" 2>&1); then
+        warnmsg " Failed to drop invalid index ${invalid_index}: ${output}"
+      fi
+      if [[ "${status}" == false ]] && [[ "$(echo "$invalid_indexes" | wc -w)" -eq 1 ]]; then
+        if [[ "${invalid_index}" == *_ccold ]]; then
+          info " Invalid index has a name with the suffix \"_ccold\". Stopping the reindex attempt."
+          ccold_index=true
+        else
+          ccold_index=false
+        fi
+      fi
+    done <<< "${invalid_indexes}"
+  fi
+}
+
+run_repack() {
+  local index=$1
+
+  if ! output=$(PGOPTIONS="${PGOPTIONS}" pg_repack -h "${PGHOST}" -p "${PGPORT}" -U "${DBUSER}" -d "${db}" -i "${index}" --elevel=WARNING 2>&1); then
+    warnmsg "${output}"
+    success=false
+    return 1
+  else
+    success=true
+    return 0
+  fi
+}
+
+run_reindex() {
+  local index=$1
+
+  if ! output=$(PGOPTIONS="${PGOPTIONS}" ${_PSQL} -d "${db}" -tAXc "REINDEX INDEX CONCURRENTLY ${index}" 2>&1); then
+    warnmsg "${output}"
+    success=false
+    return 1
+  else
+    success=true
+    return 0
+  fi
+}
+
+process_reindex() {
+  local index=$1
+  local retry_n=0
+  local delays=(0 10 30 60)
+
+  # Drop INVALID ccnew/ccold indexes (if any) before starting REINDEX
+  drop_invalid_index "${index}" 
+
+  for delay in "${delays[@]}"; do
+    sleep "${delay}"
+
+    if (( retry_n > 0 )); then
+      info " [retry ${retry_n}/3] reindex index ${index}"
+    fi
+
+    if [[ ${PG_VERSION} -le 11 ]]; then
+      run_repack "${index}"
+    else
+      run_reindex "${index}"
+    fi
+
+    if [[ "${success}" == true ]]; then
+      return 0
+    else
+      drop_invalid_index "${index}" "${success}"
+      if [[ "${ccold_index}" == true ]]; then
+        return 0
+      else
+        retry_n=$((retry_n + 1))
+      fi
+    fi
+
+    if [[ "${delay}" -eq 60 ]]; then
+      failed_reindex_count=$((failed_reindex_count + 1))
+      warnmsg " Failed to reindex index \"${index}\" after all attempts. Skipping."
+      return 1
+    fi
+  done
+}
+
+# ==================
+# === Main logic ===
+# ==================
+
+# Check current time
+maintenance_window
+
+# Perform reindexing
+total_maintenance_benefit=0
+db_count=0
+
+while IFS= read -r db; do
+  db_count=$((db_count + 1))
+  db_maintenance_benefit=0
+
+  if pg_isready; then
+    info "Started index maintenance for database: ${db}"
+
+    if [[ "${PG_VERSION}" -le 11 ]]; then
+      create_extension_pg_repack
+    fi
+
+    if [[ "${BLOAT_SEARCH_METHOD}" = "pgstattuple" ]]; then
+      create_extension_pgstattuple
+    fi
+
+    bloat_indexes=$(${_PSQL} -d "${db}" -tAXc "${INDEX_BLOAT_SQL}")
+    if [[ -n "${bloat_indexes}" ]]; then
+      index_count=$(echo "$bloat_indexes"|wc -l)
+      info "${index_count} indexes have been found for reindexing"
+      i=1
+      while IFS= read -r index; do
+        pg_isready
+        maintenance_window
+
+        index_size_before=$(check_index_size "${index}")
+        info "[$i/${index_count}] reindex index ${index} (current size: ${index_size_before} MB)"
+
+        process_reindex "${index}"
+
+        if [[ "${success}" == true ]]; then
+          index_size_after=$(check_index_size "${index}")
+          if (( index_size_before > 0 )); then
+            saved_percent=$(( (index_size_before - index_size_after) * 100 / index_size_before ))
+          else
+            saved_percent=0
+          fi
+          info "[$i/${index_count}] completed reindex ${index} (new size: ${index_size_after} MB, reduced: ${saved_percent}%)"
+        fi
+
+        db_maintenance_benefit=$((db_maintenance_benefit + index_size_before - index_size_after))
+        ((i++))
+      done < <(echo "${bloat_indexes}")
+    else
+      info " no bloat indexes were found"
+    fi
+
+    if [[ "${FAILED_REINDEX_LIMIT}" -ne 0 && "${failed_reindex_count}" -ge "${FAILED_REINDEX_LIMIT}" ]]; then
+      warnmsg "Exceeded ${FAILED_REINDEX_LIMIT} failed attempts. Skipping database ${db}."
+      break
+    else
+      info "Completed index maintenance for database: ${db} (released: ${db_maintenance_benefit} MB)"
+    fi
+
+    total_maintenance_benefit=$((total_maintenance_benefit + db_maintenance_benefit))
+  fi
+done < <(echo "${DBNAME}")
+
+if (( db_count > 1 )); then
+  info "Total amount released during maintenance: ${total_maintenance_benefit} MB"
+fi
+
+exit

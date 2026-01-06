@@ -1,0 +1,43 @@
+Oracle ReadyMade Labs Information: 
+
+oraclelab1.rar
+- This is empty VM without any database 
+- Hostname – oraclelab1.localdomain.com
+- Guest additional ISO image is installed
+
+oraclelab2.rar
+- This is empty VM without any database 
+- Hostname – oraclelab2.localdomain.com
+- Guest additional ISO image is installed
+
+oraclelab3.rar
+- This is empty VM without any database 
+- Hostname – oraclelab3.localdomain.com
+- Guest additional ISO image is installed
+
+oraclelab1_with_DB_with_oracle.rar
+- Ready VM with 19c DEVDB Database installed on file system
+- Hostname - oraclelab1.localdomain.com
+- DB Name: DEVDB
+- Oracle Home: /u01/app/oracle/product/19.0.0.0/dbhome_1 (19c Oracle Home)
+ 
+oraclelab2_with_ASM_n_DB_with_oracle.rar
+- Ready VM with 19c TESTCDB Database installed on ASM Disk Group
+- Hostname – oraclelab2.localdomain.com
+- VM shared disks sizes:
+	/dev/sdb – 1GB
+	/dev/sdc – 20GB
+	/dev/sdd – 10GB
+
+- ASM : +ASM (19c ASM)
+- ASM Home: /u01/app/19.0.0.0/grid (19c ASM Home)
+- ASM diskgroups:
+	/dev/sdb – 1GB	   - DISK1 (asmdisk) - +OCR (Diskgroup) 
+	/dev/sdc – 20GB  - DISK2 (asmdisk) - +DATA (Diskgroup)
+	/dev/sdd – 10GB  - DISK3 (asmdisk) - +RECO (Diskgroup)
+
+- DB Name: TESTCDB (19c DB)
+	CDB: TESTCDB
+	PDB: TESTPDB
+- Oracle Home: /u01/app/oracle/product/19.0.0.0/dbhome_1 (19c Oracle Home)
+

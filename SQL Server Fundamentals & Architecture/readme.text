@@ -1,0 +1,2861 @@
+MODULE 1: SQL SERVER FUNDAMENTALS & ARCHITECTURE ═══════════════════════════════
+│
+├── 1️⃣ ARCHITECTURE ROOT
+│   ├── Client → TDS Protocol → Database Engine
+│   ├── Relational Engine: Parser → Algebrizer → Optimizer → Executor
+│   └── Storage Engine: Access Methods, Buffer Mgr, Transaction Mgr, Lock Mgr, Log Mgr
+│
+├── 2️⃣ SQLOS & MEMORY
+│   ├── SQLOS: Memory Mgmt, Schedulers/Workers, I/O, Exception Handling
+│   └── Memory: Buffer Cache, Plan Cache, Memory Clerks, Resource Semaphores
+│
+├── 3️⃣ DATABASE STRUCTURE
+│   ├── System DBs: master, model, msdb, tempdb, Resource DB
+│   └── User Databases
+│
+├── 4️⃣ PHYSICAL STORAGE
+│   ├── Files: .mdf, .ndf, .ldf | Filegroups: PRIMARY, User-Defined
+│   ├── Allocation: GAM, SGAM, IAM, PFS, DCM, BCM
+│   └── Organization: Pages (8KB) → Extents (64KB) → Rows
+│
+├── 5️⃣ DATA ACCESS & PERFORMANCE
+│   ├── Indexes: Clustered, Nonclustered, Columnstore, Filtered, XML, Spatial
+│   ├── Statistics: Histogram, Density
+│   ├── Execution Plans: Estimated, Actual, Cached, Query Store
+│   └── Optimization: Seek/Scan, Joins (NL/Merge/Hash), Parallelism
+│
+├── 6️⃣ TRANSACTIONS & SAFETY
+│   ├── ACID: Atomicity, Consistency, Isolation (Levels: RU/RC/RR/S/Snapshot), Durability
+│   ├── Locking: S, X, U, Intent, Schema | Deadlocks
+│   ├── Transaction Log: LSN, VLFs, Flush, Truncation
+│   ├── Recovery Models: Simple, Full, Bulk-Logged
+│   ├── Checkpoints: Auto, Indirect, Dirty Pages
+│   └── Backup/Restore: Full, Diff, Log, File/Filegroup, PITR
+│
+├── 7️⃣ MAINTENANCE & CONFIG
+│   ├── Space: Autogrow/Shrink, Manual Sizing
+│   ├── Collation: Server/DB/Column levels
+│   ├── Index Maintenance: Rebuild/Reorganize, Fragmentation
+│   ├── DBCC: CHECKDB, CHECKTABLE, CHECKALLOC
+│   ├── Monitoring: DMVs (wait_stats, query_stats, index_stats), Extended Events
+│   └── Config: Max Memory, MAXDOP, Cost Threshold, Compat Level, IFI, TempDB
+│
+└── 8️⃣ ADVANCED FEATURES
+    ├── HA/DR: AG, FCI, Log Shipping, Replication
+    ├── In-Memory: OLTP, Columnstore
+    ├── Security: TDE, Always Encrypted, RLS, Masking
+    └── Partitioning, Service Broker, CLR, JSON/XML
+│
+│
+MODULE 2: INSTALLATION, CONFIGURATION & SETUP ══════════════════════════════════
+│
+├── Pre-Installation Planning
+│   ├── Hardware: CPU, RAM, Disk (RAID 10), Network
+│   ├── OS: Windows Server versions, Service Packs, Updates
+│   ├── SQL Version/Edition: Enterprise, Standard, Developer, Express
+│   ├── Service Accounts: Domain vs Local, Least Privilege
+│   └── Ports: 1433 (default), Dynamic Ports, Named Instances
+│
+├── Installation Process
+│   ├── Setup: Standalone, Failover Cluster, Availability Group node
+│   ├── Features: Database Engine, SSRS, SSIS, SSAS, Management Tools
+│   ├── Instance Config: Default vs Named, Instance ID, Root Directory
+│   ├── Server Config: Service accounts, Collation, Startup type
+│   ├── Database Engine Config: Auth mode, SA password, Data/Log directories
+│   └── TempDB Config: Multiple files (1 per core, max 8), Equal sizing
+│
+├── Post-Installation Configuration
+│   ├── SQL Server Configuration Manager: Services, Network Protocols (TCP/IP)
+│   ├── sp_configure: Max Memory, MAXDOP, Cost Threshold, Backup Compression
+│   ├── Instant File Initialization (IFI): SE_MANAGE_VOLUME_NAME privilege
+│   ├── Lock Pages in Memory: Group Policy for service account
+│   ├── Database Mail: SMTP configuration, Test emails
+│   ├── SQL Agent: Start mode, Job history retention
+│   └── Linked Servers: Remote connections, Security mapping
+│
+├── Instance Configuration Best Practices
+│   ├── Max Server Memory: Leave 4GB + (4GB per 16GB RAM) for OS
+│   ├── MAXDOP: 1 per core (max 8), OLTP vs DW workloads
+│   ├── Cost Threshold for Parallelism: 50 (default 5 too low)
+│   ├── Optimize for Ad Hoc Workloads: Enable for OLTP
+│   ├── TempDB: Equal-sized files, Fixed growth, Separate from user data
+│   └── Trace Flags: 1117, 1118 (pre-2016), 3226 (suppress backup logs)
+│
+└── Validation & Documentation
+    ├── SQL Error Log review
+    ├── Windows Event Viewer check
+    ├── Test Connections: SSMS, sqlcmd, Application
+    ├── Document: Instance name, Version, Edition, Collation, Service accounts
+    └── Baseline: DMV snapshots, PerfMon counters
+│
+│
+MODULE 3: DATABASE ADMINISTRATION FUNDAMENTALS ═════════════════════════════════
+│
+├── Database Creation & Management
+│   ├── CREATE DATABASE: File sizing, Growth, Filegroups
+│   ├── ALTER DATABASE: Add files, Modify options, Set properties
+│   ├── Database Options: Recovery model, Compatibility level, Auto options
+│   ├── Database Properties: Owner, Collation, State (Online/Offline/Suspect)
+│   └── Database Snapshots: Point-in-time read-only copy
+│
+├── File & Filegroup Management
+│   ├── Primary Data File (.mdf): System tables, user objects
+│   ├── Secondary Data Files (.ndf): Distribution across disks
+│   ├── Log Files (.ldf): Transaction log, sequential writes
+│   ├── Filegroups: PRIMARY, User-defined, Default, Read-only
+│   ├── File Growth: Fixed increment (MB) vs Percentage (avoid), Autogrow monitoring
+│   └── Space Management: sys.dm_db_file_space_usage, DBCC SHRINKFILE (use cautiously)
+│
+├── System Database Administration
+│   ├── master: Instance metadata, Logins, Linked servers, sp_configure
+│   ├── model: Template for new DBs, Default options/size
+│   ├── msdb: SQL Agent jobs, Backup/restore history, Database Mail
+│   ├── tempdb: Temp tables, Table variables, Version store, Sort operations
+│   │   └── Best Practices: Multiple files, Equal size, Fixed growth, Separate disk
+│   └── Resource DB (mssqlsystemresource): Hidden, System objects, Backup with master
+│
+├── User Database Operations
+│   ├── Detach/Attach: Moving databases, Version compatibility
+│   ├── Take Offline/Bring Online: Maintenance, Emergency recovery
+│   ├── Set SINGLE_USER/MULTI_USER: Exclusive access for operations
+│   ├── Database Rename: sp_renamedb vs ALTER DATABASE
+│   └── Database State: ONLINE, OFFLINE, RESTORING, RECOVERING, SUSPECT, EMERGENCY
+│
+├── Database Integrity & Consistency
+│   ├── DBCC CHECKDB: Full integrity check (allocation + logical)
+│   ├── DBCC CHECKTABLE: Single table check
+│   ├── DBCC CHECKALLOC: Allocation structure check
+│   ├── DBCC CHECKCATALOG: Catalog consistency
+│   ├── Consistency Check Scheduling: Weekly full, Daily critical tables
+│   └── Corruption Response: Emergency mode, Page restore, REPAIR_ALLOW_DATA_LOSS (last resort)
+│
+├── Table & Index Management
+│   ├── Heap vs Clustered: Storage structure decision
+│   ├── Clustered Index: Physical row order, One per table, Key selection
+│   ├── Nonclustered Index: Logical pointers, Multiple per table, INCLUDE columns
+│   ├── Index Creation: ONLINE vs OFFLINE, SORT_IN_TEMPDB, FILLFACTOR
+│   ├── Index Maintenance: Rebuild (>30% frag), Reorganize (10-30% frag)
+│   └── Statistics: Auto-create/update, UPDATE STATISTICS, Histogram analysis
+│
+├── Data Management Operations
+│   ├── Bulk Operations: BULK INSERT, bcp utility, SSIS
+│   ├── Partitioning: Partition functions, Schemes, Sliding window
+│   ├── Compression: Row, Page, Columnstore (space + CPU trade-off)
+│   ├── Data Types: VARCHAR vs NVARCHAR, INT vs BIGINT, GUID impact
+│   └── Constraints: PK, FK, CHECK, DEFAULT, UNIQUE
+│
+└── Database Monitoring Basics
+    ├── Database Size: sys.databases, sys.master_files
+    ├── Space Usage: sp_spaceused, sys.dm_db_partition_stats
+    ├── Last Backup: msdb.dbo.backupset
+    ├── Recovery Status: sys.database_recovery_status
+    └── Active Connections: sys.dm_exec_sessions, sp_who2
+│
+│
+MODULE 4: BASIC SECURITY & AUTHENTICATION ══════════════════════════════════════
+│
+├── Authentication Modes
+│   ├── Windows Authentication (Integrated): AD integration, Recommended
+│   ├── SQL Server Authentication: Username/password, Mixed mode
+│   ├── Mixed Mode: Both methods enabled
+│   └── Azure AD Authentication: Cloud identity integration
+│
+├── Principals (Who)
+│   ├── Server-Level Principals
+│   │   ├── Logins: Windows, SQL Server, Certificate, Asymmetric Key
+│   │   ├── Server Roles: sysadmin, serveradmin, securityadmin, processadmin, etc.
+│   │   └── Credentials: Windows credentials for proxy accounts
+│   │
+│   └── Database-Level Principals
+│       ├── Users: Mapped from logins, Orphaned users (sp_change_users_login)
+│       ├── Database Roles: db_owner, db_datareader, db_datawriter, db_ddladmin, etc.
+│       └── Application Roles: Password-based, Activated via sp_setapprole
+│
+├── Securables (What)
+│   ├── Server-Level: Endpoints, Logins, Databases, Availability Groups
+│   ├── Database-Level: Schemas, Tables, Views, Stored Procedures, Functions
+│   └── Schema-Level: Objects within schemas
+│
+├── Permissions (Actions)
+│   ├── GRANT: Explicit permission
+│   ├── DENY: Explicit denial (overrides GRANT)
+│   ├── REVOKE: Remove permission
+│   ├── Permission Hierarchy: Server → Database → Schema → Object
+│   └── Common Permissions: SELECT, INSERT, UPDATE, DELETE, EXECUTE, ALTER, CONTROL
+│
+├── Security Best Practices
+│   ├── Least Privilege: Minimal permissions required
+│   ├── Disable SA account: Use named accounts with sysadmin
+│   ├── Strong Passwords: Complexity, Expiration (SQL Auth)
+│   ├── Audit Login Failures: Both failed and successful logins
+│   ├── Service Account Security: Domain accounts, No sysadmin rights on OS
+│   └── Remove Guest user: From user databases (except master, tempdb, msdb)
+│
+├── Common Security Tasks
+│   ├── Create Login: CREATE LOGIN, Windows vs SQL
+│   ├── Create User: CREATE USER, Map to login
+│   ├── Grant Permissions: GRANT SELECT ON dbo.Table TO User
+│   ├── Role Membership: sp_addrolemember, ALTER ROLE ADD MEMBER
+│   ├── View Permissions: sys.database_permissions, sys.server_permissions
+│   └── Troubleshoot Access: sp_helprotect, Has_perms_by_name()
+│
+└── Security Monitoring
+    ├── Failed Login Attempts: SQL Error Log, Event Viewer
+    ├── Permission Changes: DDL Triggers, Server Audit
+    ├── Orphaned Users: After restore, sp_change_users_login
+    └── Excessive Privileges: Audit sysadmin role members
+│
+│
+MODULE 5: BACKUP & RECOVERY MASTERY ════════════════════════════════════════════
+│
+├── Backup Types
+│   ├── Full Backup: Complete database, Base for all restores
+│   ├── Differential Backup: Changes since last full, Cumulative
+│   ├── Transaction Log Backup: Point-in-time recovery, Log truncation
+│   ├── File/Filegroup Backup: Partial backups, Large DB strategy
+│   ├── Copy-Only Backup: Out-of-band, Doesn't break backup chain
+│   └── Tail-Log Backup: Before restore, Capture uncommitted transactions
+│
+├── Recovery Models
+│   ├── Simple
+│   │   ├── Log auto-truncates at checkpoint
+│   │   ├── No point-in-time recovery
+│   │   └── Use: Dev/Test, Data warehouses, Non-critical DBs
+│   │
+│   ├── Full
+│   │   ├── All transactions logged
+│   │   ├── Point-in-time recovery possible
+│   │   ├── Requires log backups to truncate log
+│   │   └── Use: Production OLTP, Critical systems
+│   │
+│   └── Bulk-Logged
+│       ├── Minimal logging for bulk operations
+│       ├── Log backups still required
+│       ├── Point-in-time recovery limited during bulk ops
+│       └── Use: Large data loads, Index rebuilds
+│
+├── Backup Strategy
+│   ├── RPO (Recovery Point Objective): Max acceptable data loss
+│   ├── RTO (Recovery Time Objective): Max acceptable downtime
+│   ├── Backup Schedule Examples
+│   │   ├── OLTP: Full (weekly) + Diff (daily) + Log (every 15-30 min)
+│   │   ├── DW: Full (weekly) + Diff (daily), Simple recovery
+│   │   └── Critical: Full (daily) + Log (every 5-15 min)
+│   │
+│   └── Backup Verification: RESTORE VERIFYONLY, Test restores
+│
+├── Backup Implementation
+│   ├── T-SQL Commands: BACKUP DATABASE, BACKUP LOG
+│   ├── Backup Options
+│   │   ├── COMPRESSION: Reduce size (CPU overhead)
+│   │   ├── CHECKSUM: Detect corruption
+│   │   ├── INIT vs NOINIT: Overwrite vs Append
+│   │   ├── COPY_ONLY: Independent backup
+│   │   └── WITH NORECOVERY: Prepare for log restores
+│   │
+│   ├── Backup Destinations
+│   │   ├── Local Disk: Fast, Limited retention
+│   │   ├── Network Share: Central storage
+│   │   ├── Tape: Long-term archival
+│   │   ├── Azure Blob Storage: Cloud backup (URL)
+│   │   └── Backup to multiple destinations: Redundancy
+│   │
+│   └── Maintenance Plans: Automated backup schedules
+│
+├── Transaction Log Management
+│   ├── Log Architecture: VLFs (Virtual Log Files), Active/Inactive portions
+│   ├── Log Growth: Fixed size increments, Monitor growth events
+│   ├── Log Truncation: After checkpoint (Simple), After log backup (Full/Bulk)
+│   ├── Log Full Issues
+│   │   ├── Causes: No log backups, Long transaction, Replication delay
+│   │   ├── Resolution: Take log backup, Kill long transaction, Check replication
+│   │   └── Emergency: Switch to Simple (data loss risk), Shrink log
+│   │
+│   └── Log Monitoring: sys.dm_db_log_space_usage, DBCC LOGINFO
+│
+├── Backup Monitoring & Maintenance
+│   ├── Last Backup Check: msdb.dbo.backupset, sp_BackupHistory
+│   ├── Backup History Retention: msdb cleanup, sp_delete_backuphistory
+│   ├── Failed Backup Alerts: SQL Agent alerts, Email notifications
+│   ├── Backup File Management: Retention policy, Archive to tape/cloud
+│   └── Backup Testing: Regular restore drills, Document procedures
+│
+└── Backup Troubleshooting
+    ├── Backup Failures: Disk space, Permissions, Network issues
+    ├── Slow Backups: Compression, Multiple files, Backup to SSD
+    ├── Suspect Backup Files: RESTORE HEADERONLY, RESTORE VERIFYONLY
+    └── Backup Chain Breaks: COPY_ONLY backups, Recovery model changes
+│
+│
+MODULE 6: DATABASE RESTORE OPERATIONS ══════════════════════════════════════════
+│
+├── Restore Types
+│   ├── Complete Restore: Full + Diff + Logs
+│   ├── Point-in-Time Restore: STOPAT specific time
+│   ├── Page Restore: Corrupt page recovery (Enterprise only)
+│   ├── Piecemeal Restore: Filegroup-by-filegroup (large DBs)
+│   └── File/Filegroup Restore: Partial restore scenarios
+│
+├── Restore Scenarios
+│   ├── Database Refresh: Dev/Test from Production backups
+│   ├── Disaster Recovery: Complete database loss
+│   ├── Point-in-Time Recovery: User error, Data corruption at known time
+│   ├── Corrupted Object: Restore to temp DB, Copy object
+│   └── System Database Restore: master (single-user mode), model, msdb
+│
+├── Restore Process
+│   ├── Pre-Restore Checks
+│   │   ├── Verify backup files exist and are valid
+│   │   ├── Check disk space: Data + Log files
+│   │   ├── Identify backup chain: Full → Diff → Logs
+│   │   ├── Kill active connections: WITH REPLACE, Set SINGLE_USER
+│   │   └── Tail-log backup (if source DB accessible)
+│   │
+│   ├── Restore Execution
+│   │   ├── RESTORE DATABASE: Full backup with NORECOVERY
+│   │   ├── RESTORE DATABASE: Differential (if exists) with NORECOVERY
+│   │   ├── RESTORE LOG: Each log backup in sequence with NORECOVERY
+│   │   └── RESTORE DATABASE: Final step with RECOVERY (brings DB online)
+│   │
+│   └── Post-Restore Tasks
+│       ├── DBCC CHECKDB: Verify integrity
+│       ├── Update Statistics: sp_updatestats
+│       ├── Fix Orphaned Users: sp_change_users_login 'Auto_Fix'
+│       ├── Verify Logins: Restore SQL Agent jobs if needed
+│       └── Test Application Connectivity
+│
+├── Restore Options & Techniques
+│   ├── WITH REPLACE: Overwrite existing database
+│   ├── WITH MOVE: Relocate files to different paths
+│   ├── WITH RECOVERY: Bring database online (default)
+│   ├── WITH NORECOVERY: Keep in restoring state for more backups
+│   ├── WITH STANDBY: Read-only access between log restores
+│   ├── STOPAT: Point-in-time restore to specific datetime
+│   ├── STOPATMARK/STOPBEFOREMARK: LSN-based restore
+│   └── PARTIAL Restore: Primary filegroup first, others later
+│
+├── System Database Restores
+│   ├── master Database
+│   │   ├── Start SQL in single-user mode: sqlservr.exe -m
+│   │   ├── RESTORE DATABASE master
+│   │   ├── Service restarts automatically after restore
+│   │   └── Rebuild master (last resort): Setup.exe /ACTION=REBUILDDATABASE
+│   │
+│   ├── model Database: Restore like user database
+│   ├── msdb Database: Restore like user database, SQL Agent history restored
+│   └── tempdb: Cannot restore, Rebuilt on every restart
+│
+├── Advanced Restore Scenarios
+│   ├── Cross-Version Restore: Backup from older version, Restore to newer
+│   ├── Cross-Server Restore: Different server name, Orphaned user issues
+│   ├── Partial Restore: Large DB, restore critical filegroups first
+│   ├── Page Restore: Enterprise Edition, Online operation (CHECKDB identifies pages)
+│   └── Snapshot Revert: RESTORE DATABASE FROM DATABASE_SNAPSHOT
+│
+├── Restore Troubleshooting
+│   ├── Insufficient Space: Check data/log file sizes in backup
+│   ├── Backup Chain Break: Missing differential or log backups
+│   ├── Wrong Restore Order: Full → Diff → Logs sequence
+│   ├── Access Denied: SQL service account permissions on backup files
+│   ├── Corrupted Backup: RESTORE VERIFYONLY, Try alternate backup
+│   └── Orphaned Users: sp_change_users_login, ALTER USER with SID
+│
+└── Restore Validation & Documentation
+    ├── RESTORE HEADERONLY: View backup metadata
+    ├── RESTORE FILELISTONLY: List files in backup
+    ├── RESTORE VERIFYONLY: Verify backup integrity
+    ├── Document Restore Procedures: DR runbook
+    └── Practice Restore Drills: Quarterly testing, Time restoration
+│
+│
+MODULE 7: DATABASE MAINTENANCE & AUTOMATION ════════════════════════════════════
+│
+├── Index Maintenance
+│   ├── Index Fragmentation
+│   │   ├── Logical Fragmentation: Page order disorder
+│   │   ├── Extent Fragmentation: Physical disk scatter
+│   │   ├── Detection: sys.dm_db_index_physical_stats
+│   │   └── Thresholds: <10% (ignore), 10-30% (reorg), >30% (rebuild)
+│   │
+│   ├── Maintenance Operations
+│   │   ├── ALTER INDEX REBUILD
+│   │   │   ├── Recreates index, Removes fragmentation, Updates statistics
+│   │   │   ├── ONLINE option (Enterprise), Requires 2x space temporarily
+│   │   │   └── SORT_IN_TEMPDB: Offload sort operations
+│   │   │
+│   │   ├── ALTER INDEX REORGANIZE
+│   │   │   ├── Online operation, Minimal impact
+│   │   │   ├── Logical defrag only, Compacts LOB pages
+│   │   │   └── Less resource intensive than rebuild
+│   │   │
+│   │   └── Statistics Update: UPDATE STATISTICS, Auto-update settings
+│   │
+│   └── Maintenance Strategy
+│       ├── Schedule: Off-peak hours, Weekly/monthly based on fragmentation rate
+│       ├── Prioritize: Critical tables, High-usage indexes first
+│       ├── Monitor: Index usage (sys.dm_db_index_usage_stats), Remove unused indexes
+│       └── Fill Factor: 80-90 for heavy writes, 100 for read-only
+│
+├── Statistics Maintenance
+│   ├── Statistics Importance: Query optimizer decisions
+│   ├── Auto Create/Update: Enabled by default, May lag on large tables
+│   ├── Manual Updates: UPDATE STATISTICS, sp_updatestats
+│   ├── Full Scan vs Sample: Accuracy vs Performance trade-off
+│   └── Statistics Aging: sp_autostats, Check last update date
+│
+├── Database Integrity Checks
+│   ├── DBCC CHECKDB
+│   │   ├── Full integrity check: Allocation + logical consistency
+│   │   ├── Schedule: Weekly for production, After corruption events
+│   │   ├── Options: PHYSICAL_ONLY (faster), DATA_PURITY, EXTENDED_LOGICAL_CHECKS
+│   │   └── Run with: SQL Agent job, Notify on failure
+│   │
+│   ├── DBCC CHECKTABLE: Single table validation
+│   ├── DBCC CHECKALLOC: Allocation structure only (faster)
+│   └── DBCC CHECKCATALOG: System catalog consistency
+│
+├── SQL Server Agent Jobs
+│   ├── Job Components
+│   │   ├── Steps: T-SQL, SSIS package, PowerShell, CmdExec, etc.
+│   │   ├── Schedules: One-time, Recurring (daily/weekly), On SQL Agent start
+│   │   ├── Alerts: Respond to errors, Performance conditions
+│   │   └── Notifications: Email operators on success/failure
+│   │
+│   ├── Job Management
+│   │   ├── Create Jobs: SSMS GUI, sp_add_job
+│   │   ├── Job History: msdb.dbo.sysjobhistory, Retention settings
+│   │   ├── Job Ownership: Change owner for cross-database jobs
+│   │   └── Job Troubleshooting: History review, Step output files
+│   │
+│   └── Common Jobs
+│       ├── Backup Jobs: Full, Differential, Log backups
+│       ├── Maintenance Jobs: Index rebuild/reorg, CHECKDB
+│       ├── Monitoring Jobs: Space usage, Log size, Failed logins
+│       └── Cleanup Jobs: Backup history, Job history, Old backups
+│
+├── Maintenance Plans
+│   ├── Built-in Maintenance Tasks
+│   │   ├── Backup Database: Full, Differential, Log
+│   │   ├── Check Database Integrity: CHECKDB, CHECKALLOC
+│   │   ├── Rebuild/Reorganize Index: Fragmentation thresholds
+│   │   ├── Update Statistics: Sample percent, Full scan
+│   │   ├── Shrink Database: Avoid in production (causes fragmentation)
+│   │   ├── Cleanup: History, Old backups
+│   │   └── Execute SQL Server Agent Job: Chain plans
+│   │
+│   ├── Maintenance Plan Design
+│   │   ├── Single Plan vs Multiple Plans: Flexibility vs Complexity
+│   │   ├── Subplans: Parallel tasks, Conditional execution
+│   │   ├── Precedence Constraints: Success/Failure/Completion paths
+│   │   └── Scheduling: Stagger heavy operations, Avoid overlaps
+│   │
+│   └── Ola Hallengren Scripts
+│       ├── Industry-standard maintenance solution (free)
+│       ├── Intelligent: Fragmentation-based, Adaptive
+│       ├── Comprehensive: Backup, Integrity, Index, Statistics
+│       └── Customizable: Parameters for all scenarios
+│
+├── Automated Monitoring
+│   ├── SQL Agent Alerts
+│   │   ├── Error Number Alerts: Severity 16+ errors
+│   │   ├── Performance Condition Alerts: CPU, Disk, Memory thresholds
+│   │   └── WMI Event Alerts: Windows events
+│   │
+│   ├── Database Mail
+│   │   ├── Setup: Mail profile, SMTP configuration
+│   │   ├── Test: sp_send_dbmail
+│   │   └── Notifications: Job failures, Alert triggers
+│   │
+│   └── Custom Monitoring Scripts
+│       ├── Space Monitoring: Alert when <10% free
+│       ├── Backup Age: Alert if no backup in 24h
+│       ├── Long-running Queries: sp_WhoIsActive
+│       └── Blocking: Alert on blocks >5 min
+│
+└── Maintenance Best Practices
+    ├── Document Maintenance Windows: Communicate with stakeholders
+    ├── Test Before Production: Validate scripts in dev/test
+    ├── Monitor Job Duration: Detect performance degradation
+    ├── Retain History: 90 days backup history, 30 days job history
+    ├── Review Failed Jobs: Daily review, Root cause analysis
+    └── Automate Cleanup: Old backups, Temp files, Error logs
+│
+│
+MODULE 8: SECURITY & COMPLIANCE MANAGEMENT ═════════════════════════════════════
+│
+├── Advanced Authentication & Authorization
+│   ├── Contained Databases: User auth at DB level, No server login required
+│   ├── Certificate-Based Authentication: PKI integration
+│   ├── Azure AD Integration: Cloud identity for hybrid scenarios
+│   └── Multi-Factor Authentication: Azure AD, Third-party solutions
+│
+├── Data Encryption
+│   ├── Transparent Data Encryption (TDE)
+│   │   ├── Encrypts data at rest: MDF, NDF, LDF files
+│   │   ├── Certificate/Key hierarchy: Service Master Key → DB Master Key → Certificate → DEK
+│   │   ├── Minimal performance impact (3-5% CPU)
+│   │   ├── Backup encryption: Backup files also encrypted
+│   │   └── Key Management: Backup certificates, Store securely offsite
+│   │
+│   ├── Always Encrypted
+│   │   ├── Client-side encryption: Data encrypted in app, Server never sees plaintext
+│   │   ├── Column-level encryption: Sensitive columns (SSN, CC numbers)
+│   │   ├── Two key types: Column Encryption Key (CEK), Column Master Key (CMK)
+│   │   └── Deterministic vs Randomized: Equality search vs No search
+│   │
+│   ├── Column-Level Encryption
+│   │   ├── Manual encryption: EncryptByKey, DecryptByKey functions
+│   │   ├── Certificate or Symmetric Key based
+│   │   └── Application manages encryption/decryption
+│   │
+│   └── Backup Encryption
+│       ├── Encrypted backups: Protect backup files
+│       ├── Algorithms: AES 128/192/256, Triple DES
+│       └── Certificate or Asymmetric Key required
+│
+├── Row-Level Security (RLS)
+│   ├── Filter Predicate: Controls read access per row
+│   ├── Block Predicate: Controls write operations (INSERT/UPDATE/DELETE)
+│   ├── Security Policies: Apply predicates to tables
+│   └── Use Cases: Multi-tenant SaaS, Restrict by user/role/department
+│
+├── Dynamic Data Masking (DDM)
+│   ├── Masks data for non-privileged users
+│   ├── Masking Functions: Default, Email, Random, Custom string
+│   ├── No data encryption: Presentation-layer masking only
+│   └── Bypass: UNMASK permission
+│
+├── Auditing & Compliance
+│   ├── SQL Server Audit
+│   │   ├── Server Audit: Instance-level audit object
+│   │   ├── Database Audit Specification: DB-level actions to audit
+│   │   ├── Server Audit Specification: Server-level actions
+│   │   ├── Audit Targets: File, Application Log, Security Log
+│   │   └── Audit Actions: Login, Schema changes, Data access (SELECT/INSERT/UPDATE/DELETE)
+│   │
+│   ├── Change Tracking
+│   │   ├── Tracks DML changes: Which rows changed, not data values
+│   │   ├── Lightweight: Minimal overhead
+│   │   └── Use: Data sync, ETL incremental loads
+│   │
+│   ├── Change Data Capture (CDC)
+│   │   ├── Captures DML changes: Full before/after values
+│   │   ├── Uses Transaction Log: Asynchronous capture
+│   │   ├── Historical data: Query change history
+│   │   └── Overhead: Additional log reads, Change tablesContinue12:38 PMin DB
+│   │
+│   └── Temporal Tables (System-Versioned)
+│       ├── Automatic history tracking: All changes stored
+│       ├── Current + History table: Point-in-time queries
+│       ├── FOR SYSTEM_TIME AS OF: Query historical data
+│       └── Use: Audit trails, Trend analysis
+│
+├── Compliance Frameworks
+│   ├── GDPR (General Data Protection Regulation)
+│   │   ├── Data residency, Right to be forgotten, Data portability
+│   │   └── Encryption, Access logs, Breach notification
+│   │
+│   ├── HIPAA (Health Insurance Portability and Accountability Act)
+│   │   ├── PHI protection, Access controls, Audit trails
+│   │   └── Encryption at rest and in transit
+│   │
+│   ├── PCI-DSS (Payment Card Industry Data Security Standard)
+│   │   ├── Cardholder data encryption, Access restrictions
+│   │   └── Quarterly scans, Audit logs
+│   │
+│   └── SOX (Sarbanes-Oxley Act)
+│       ├── Financial data integrity, Change controls
+│       └── Audit trails, Separation of duties
+│
+├── Security Best Practices
+│   ├── Principle of Least Privilege: Minimal permissions
+│   ├── Separation of Duties: No single user has full control
+│   ├── Regular Access Reviews: Quarterly audits of permissions
+│   ├── Strong Password Policy: Complexity, Expiration, History
+│   ├── Service Account Management: Domain accounts, Managed Service Accounts
+│   ├── Network Security: Firewall rules, SQL Server ports
+│   ├── SSL/TLS Encryption: Encrypted connections (Force Encryption)
+│   └── Vulnerability Management: Patching, Security updates
+│
+├── Security Monitoring & Response
+│   ├── Failed Login Monitoring: Error log, Event Viewer, Audit
+│   ├── Permission Change Alerts: DDL triggers, Audit specifications
+│   ├── Suspicious Activity: After-hours access, Excessive data retrieval
+│   ├── SQL Injection Detection: Application logs, Extended Events
+│   └── Incident Response: Playbook, Communication plan, Forensics
+│
+└── Security Assessment Tools
+├── SQL Server Configuration Manager: Network, Services
+├── Policy-Based Management: Enforce security policies
+├── SQL Vulnerability Assessment: Built-in security scanner
+├── Microsoft Baseline Security Analyzer (MBSA): Deprecated, use VA
+└── Third-Party Tools: Nessus, Qualys, Rapid7
+│
+│
+MODULE 9: PERFORMANCE TUNING & QUERY OPTIMIZATION ══════════════════════════════
+│
+├── Performance Methodology
+│   ├── Establish Baseline: Capture normal performance metrics
+│   ├── Identify Bottleneck: CPU, Memory, Disk I/O, Network
+│   ├── Analyze Root Cause: Queries, Indexes, Configuration, Hardware
+│   ├── Implement Fix: Targeted changes, One at a time
+│   └── Measure Impact: Compare before/after metrics
+│
+├── Wait Statistics Analysis
+│   ├── sys.dm_os_wait_stats: Top waits by wait_time_ms
+│   ├── Common Wait Types
+│   │   ├── CXPACKET/CXCONSUMER: Parallelism waits (adjust MAXDOP, Cost Threshold)
+│   │   ├── PAGEIOLATCH_: Disk I/O waits (slow disk, missing indexes)
+│   │   ├── LCK_: Locking waits (long transactions, missing indexes, blocking)
+│   │   ├── SOS_SCHEDULER_YIELD: CPU pressure (high CPU queries, insufficient CPU)
+│   │   ├── WRITELOG: Transaction log writes (slow log disk, large transactions)
+│   │   ├── PAGELATCH_*: Tempdb contention, Buffer pool contention
+│   │   ├── ASYNC_NETWORK_IO: Client not consuming results fast enough
+│   │   └── RESOURCE_SEMAPHORE: Memory grant waits (insufficient memory, large queries)
+│   │
+│   └── Wait Analysis Tools: sp_WhoIsActive, Adam Machanic script, Ola Hallengren
+│
+├── Query Performance Analysis
+│   ├── Execution Plans
+│   │   ├── Estimated Plan: Pre-execution, Based on statistics
+│   │   ├── Actual Plan: Post-execution, Real row counts
+│   │   ├── Cached Plan: sys.dm_exec_cached_plans, sys.dm_exec_query_plan
+│   │   └── Query Store: Historical plans, Plan forcing, Regression detection
+│   │
+│   ├── Plan Operators (High Cost)
+│   │   ├── Table Scan / Clustered Index Scan: Full table read (add indexes)
+│   │   ├── Key Lookup: RID/Key lookup after nonclustered seek (covering index)
+│   │   ├── Sort: Expensive operation (index on ORDER BY columns)
+│   │   ├── Hash Match: Join/aggregate operation (statistics, indexes)
+│   │   ├── Parallelism: CXPACKET waits (adjust MAXDOP, Cost Threshold)
+│   │   └── Implicit Conversions: Data type mismatch (yellow exclamation)
+│   │
+│   ├── DMVs for Query Analysis
+│   │   ├── sys.dm_exec_query_stats: Cached query performance
+│   │   ├── sys.dm_exec_requests: Currently executing queries
+│   │   ├── sys.dm_exec_sessions: Active sessions
+│   │   ├── sys.dm_exec_sql_text: Query text from handle
+│   │   └── sys.dm_exec_query_plan: Execution plan XML
+│   │
+│   └── Query Store
+│       ├── Historical query performance: Automatic capture
+│       ├── Plan regression detection: Compare plans over time
+│       ├── Plan forcing: Override optimizer choice
+│       └── Wait statistics per query: Detailed wait analysis
+│
+├── Index Optimization
+│   ├── Index Strategy
+│   │   ├── Clustered Index: Choose narrow, unique, sequential key
+│   │   ├── Nonclustered Index: Filter columns + Sort columns + INCLUDE lookups
+│   │   ├── Covering Index: All query columns in index (eliminates lookups)
+│   │   ├── Filtered Index: WHERE clause, Smaller index for subset
+│   │   └── Columnstore: Analytics, DW workloads, Batch mode
+│   │
+│   ├── Missing Index DMVs
+│   │   ├── sys.dm_db_missing_index_details: Suggested indexes
+│   │   ├── sys.dm_db_missing_index_groups: Group indexes by impact
+│   │   ├── sys.dm_db_missing_index_group_stats: Usage statistics
+│   │   └── Caution: Don't blindly create all, Evaluate overlap
+│   │
+│   ├── Index Usage Analysis
+│   │   ├── sys.dm_db_index_usage_stats: Seeks, Scans, Lookups, Updates
+│   │   ├── Unused Indexes: No seeks/scans, High update cost
+│   │   ├── Duplicate Indexes: Same key columns, Remove redundant
+│   │   └── Overlapping Indexes: Consolidate where possible
+│   │
+│   └── Index Tuning Advisor: Automated recommendations (Database Engine Tuning Advisor)
+│
+├── Statistics Optimization
+│   ├── Statistics Purpose: Cardinality estimation for optimizer
+│   ├── Outdated Statistics: >20% changes, Run UPDATE STATISTICS
+│   ├── Auto Update: Async update (2016+), May still lag on large tables
+│   ├── Statistics Sampling: Full Scan vs Sample, Accuracy vs Speed
+│   └── Histogram Analysis: DBCC SHOW_STATISTICS, Skewed data detection
+│
+├── Query Optimization Techniques
+│   ├── Rewrite Queries
+│   │   ├── Avoid Functions on Columns: WHERE YEAR(DateCol) = 2024 → DateCol >= '2024-01-01'
+│   │   ├── Avoid SELECT : Specify needed columns only
+│   │   ├── Use EXISTS vs IN: Better performance for subqueries
+│   │   ├── Avoid Cursors: Set-based operations instead
+│   │   └── Minimize Correlated Subqueries: JOIN or CTE instead
+│   │
+│   ├── Parameterization
+│   │   ├── Plan Reuse: Parameterized queries cache plans
+│   │   ├── Forced Parameterization: Database option, Auto-parameterize
+│   │   ├── Parameter Sniffing: First execution parameters cached, May be suboptimal
+│   │   └── OPTIMIZE FOR: Query hint for specific parameter values
+│   │
+│   ├── Parallelism Tuning
+│   │   ├── MAXDOP: 1 per core (max 8), OLTP vs DW
+│   │   ├── Cost Threshold for Parallelism: Default 5 too low, Set 50
+│   │   ├── OPTION (MAXDOP N): Query-level override
+│   │   └── CXPACKET Waits: Adjust MAXDOP, Cost Threshold
+│   │
+│   └── Query Hints
+│       ├── RECOMPILE: Fresh plan each execution
+│       ├── OPTIMIZE FOR: Specific parameter value
+│       ├── FORCE ORDER: Join order control
+│       ├── USE PLAN: Force specific execution plan
+│       └── MAXDOP: Query-level parallelism control
+│
+├── Blocking & Deadlock Resolution
+│   ├── Blocking Detection
+│   │   ├── sp_who2: Active sessions, BlkBy column
+│   │   ├── sys.dm_exec_requests: blocking_session_id
+│   │   ├── sp_WhoIsActive: Comprehensive blocking analysis
+│   │   └── Extended Events: blocked_process_report
+│   │
+│   ├── Blocking Resolution
+│   │   ├── Identify Head Blocker: Top of blocking chain
+│   │   ├── Analyze Query: Long-running, Missing index
+│   │   ├── Kill Session: KILL SPID (last resort)
+│   │   └── Long-term Fix: Indexes, Query optimization, Isolation level
+│   │
+│   ├── Deadlock Detection
+│   │   ├── Deadlock Graph: Extended Events, Error log (1205)
+│   │   ├── Trace Flag 1222: Detailed deadlock info in error log
+│   │   └── sys.dm_xe_sessions: Capture deadlock_xml
+│   │
+│   └── Deadlock Prevention
+│       ├── Access Objects in Same Order: Consistent lock order
+│       ├── Keep Transactions Short: Minimize lock duration
+│       ├── Use Proper Indexes: Reduce lock escalation
+│       ├── Lower Isolation Level: READ COMMITTED SNAPSHOT, SNAPSHOT
+│       └── Retry Logic: Application handles deadlock victim gracefully
+│
+├── Memory Optimization
+│   ├── Buffer Pool: Data pages, Index pages
+│   ├── Plan Cache: Compiled plans, Ad hoc queries
+│   ├── Memory Pressure: PLE (Page Life Expectancy) < 300 sec
+│   ├── Memory Grants: RESOURCE_SEMAPHORE waits, Large sorts/hashes
+│   └── In-Memory OLTP: Memory-optimized tables, No locking/latching
+│
+└── Performance Monitoring Tools
+├── SQL Server Management Studio: Activity Monitor, Execution Plans
+├── Extended Events: Lightweight tracing, Replace Profiler
+├── Dynamic Management Views: Real-time performance data
+├── Performance Monitor (PerfMon): OS + SQL counters
+├── sp_WhoIsActive: Active session analysis (Adam Machanic)
+├── Query Store: Built-in query performance history
+└── Third-Party: SolarWinds DPA, Redgate SQL Monitor, SentryOne
+│
+│
+MODULE 10: MONITORING, ALERTING & PROACTIVE MANAGEMENT ═════════════════════════
+│
+├── Monitoring Strategy
+│   ├── Proactive Monitoring: Prevent issues before impact
+│   ├── Reactive Monitoring: Detect and respond to incidents
+│   ├── Capacity Planning: Forecast resource needs
+│   └── Performance Baselining: Establish normal metrics
+│
+├── Key Performance Indicators (KPIs)
+│   ├── Availability: Uptime percentage, Planned vs Unplanned downtime
+│   ├── Performance: Response time, Query execution time, Throughput (TPS)
+│   ├── Resource Utilization: CPU, Memory, Disk I/O, Network
+│   ├── Backup Success Rate: Failed backups, Backup duration
+│   └── Database Growth: Data file size, Log file size, Growth rate
+│
+├── Critical Monitoring Areas
+│   ├── Database Availability
+│   │   ├── SQL Server Service: Status, Unexpected restarts
+│   │   ├── SQL Agent Service: Job execution, Schedule health
+│   │   ├── Database Status: ONLINE, OFFLINE, SUSPECT, RECOVERING
+│   │   └── Connection Failures: Failed logins, Network errors
+│   │
+│   ├── Resource Utilization
+│   │   ├── CPU Usage: >80% sustained, High CPU queries
+│   │   ├── Memory: Buffer cache hit ratio, PLE, Memory grants
+│   │   ├── Disk I/O: Latency >20ms, PAGEIOLATCH waits
+│   │   ├── Disk Space: <10% free, Autogrow events
+│   │   └── Network: Async_Network_IO waits, Network latency
+│   │
+│   ├── Query Performance
+│   │   ├── Long-Running Queries: >threshold duration
+│   │   ├── Blocking: Blocking chains, Wait time
+│   │   ├── Deadlocks: Frequency, Victim queries
+│   │   └── Query Timeouts: Application errors
+│   │
+│   ├── Backup & Recovery
+│   │   ├── Backup Age: Last full, Last log backup
+│   │   ├── Backup Failures: Job failures, Backup errors
+│   │   ├── Transaction Log: Log full events, Growth
+│   │   └── Restore Testing: Last successful restore test
+│   │
+│   └── Security & Compliance
+│       ├── Failed Logins: Brute force attempts
+│       ├── Permission Changes: Elevated privileges
+│       ├── Audit Failures: Audit log full, Disabled auditing
+│       └── Vulnerability Scans: Security assessment results
+│
+├── Monitoring Tools & Methods
+│   ├── SQL Server Agent Alerts
+│   │   ├── Severity-Based Alerts: 16+ severity errors
+│   │   ├── Error Number Alerts: Specific error codes (823, 824, 825)
+│   │   ├── Performance Condition Alerts: CPU >80%, Disk space <10%
+│   │   └── WMI Event Alerts: Windows service status
+│   │
+│   ├── Dynamic Management Views (DMVs)
+│   │   ├── sys.dm_os_wait_stats: Wait type analysis
+│   │   ├── sys.dm_exec_requests: Active queries
+│   │   ├── sys.dm_exec_sessions: User connections
+│   │   ├── sys.dm_exec_query_stats: Query performance stats
+│   │   ├── sys.dm_db_index_physical_stats: Index fragmentation
+│   │   ├── sys.dm_os_performance_counters: SQL performance counters
+│   │   ├── sys.dm_io_virtual_file_stats: File I/O statistics
+│   │   └── sys.dm_db_log_space_usage: Transaction log usage
+│   │
+│   ├── Extended Events
+│   │   ├── Lightweight Tracing: Replace SQL Profiler
+│   │   ├── Predefined Sessions: system_health, AlwaysOn_health
+│   │   ├── Custom Sessions: Deadlocks, Long queries, Errors
+│   │   └── Analysis: Live data viewer, Target files (XEL)
+│   │
+│   ├── Query Store
+│   │   ├── Query Performance History: Automatic capture
+│   │   ├── Plan Regression: Identify performance degradation
+│   │   ├── Top Resource Consumers: CPU, Duration, Executions
+│   │   └── Wait Statistics: Per-query wait analysis
+│   │
+│   ├── Performance Monitor (PerfMon)
+│   │   ├── SQL Server Counters: Buffer cache hit ratio, Page life expectancy
+│   │   ├── OS Counters: CPU, Memory, Disk queue, Network
+│   │   ├── Data Collector: Built-in collection sets
+│   │   └── Baseline: Capture during normal operations
+│   │
+│   └── SQL Server Management Studio
+│       ├── Activity Monitor: Live view of processes, waits, I/O
+│       ├── Standard Reports: Disk usage, Memory consumption, Backup history
+│       ├── Custom Reports: Build RDL reports for specific needs
+│       └── Live Query Statistics: Real-time execution plan
+│
+├── Alerting & Notification
+│   ├── Database Mail Configuration
+│   │   ├── Mail Profile: SMTP settings, Authentication
+│   │   ├── Accounts: Multiple accounts for redundancy
+│   │   ├── Test: sp_send_dbmail
+│   │   └── SQL Agent: Configure for job/alert notifications
+│   │
+│   ├── Alert Design
+│   │   ├── Severity Levels
+│   │   │   ├── Critical: Immediate action (Sev 19-25, Downtime, Data loss)
+│   │   │   ├── Warning: Proactive response (Disk space, Performance degradation)
+│   │   │   └── Informational: Awareness only (Successful backups, Job completion)
+│   │   │
+│   │   ├── Alert Fatigue: Avoid over-alerting, Tune thresholds
+│   │   ├── Escalation: Critical alerts to on-call, Warnings to team
+│   │   └── Notification Methods: Email, SMS, Ticketing system integration
+│   │
+│   └── Common Alerts
+│       ├── SQL Server Service Down: WMI alert, Immediate notification
+│       ├── Backup Failure: Job failure alert, Daily review
+│       ├── Disk Space Low: <10% free, Proactive cleanup
+│       ├── High CPU: >80% for 5+ min, Investigate queries
+│       ├── Long-Running Queries: >threshold, Potential blocking
+│       ├── Transaction Log Full: Error 9002, Take log backup
+│       ├── Deadlocks: Frequency threshold, Analyze patterns
+│       └── Failed Logins: Security concern, Brute force detection
+│
+├── Proactive Maintenance Scripts
+│   ├── Daily Health Checks
+│   │   ├── Database Status: All ONLINE, No SUSPECT
+│   │   ├── Backup Age: Last full <24h, Last log <1h
+│   │   ├── Job Failures: Review failed jobs, Rerun if needed
+│   │   ├── Disk Space: Data/Log files, Backup location
+│   │   ├── Error Log: Review for errors, Warnings
+│   │   └── Blocking: Active blocks, Long-running queries
+│   │
+│   ├── Weekly Reviews
+│   │   ├── Wait Statistics: Top waits, Trends
+│   │   ├── Top Resource Queries: CPU, Duration, I/O
+│   │   ├── Index Fragmentation: Schedule maintenance
+│   │   ├── Database Growth: Trend analysis, Capacity planning
+│   │   └── Security Audit: Failed logins, Permission changes
+│   │
+│   └── Monthly Reviews
+│       ├── Capacity Planning: Forecast disk/memory needs
+│       ├── Unused Indexes: sys.dm_db_index_usage_stats
+│       ├── Index Maintenance Effectiveness: Fragmentation trends
+│       ├── Backup Strategy: Adjust based on growth
+│       └── Performance Baseline: Update baselines
+│
+├── Automation & Scripting
+│   ├── PowerShell for SQL Server
+│   │   ├── SQL Server PowerShell Module: SqlServer (dbatools)
+│   │   ├── Health Check Scripts: Automated daily checks
+│   │   ├── Reporting Scripts: Email HTML reports
+│   │   └── Maintenance Tasks: Backup cleanup, File management
+│   │
+│   ├── T-SQL Automation
+│   │   ├── Monitoring Queries: DMV-based health checks
+│   │   ├── SQL Agent Jobs: Schedule recurring tasks
+│   │   ├── sp_send_dbmail: Email notifications
+│   │   └── Dynamic SQL: Flexible maintenance scripts
+│   │
+│   └── Third-Party Monitoring Tools
+│       ├── SolarWinds Database Performance Analyzer (DPA)
+│       ├── Redgate SQL Monitor
+│       ├── SentryOne (now SolarWinds)
+│       ├── Idera SQL Diagnostic Manager
+│       └── Open Source: Zabbix, Nagios, Grafana + Prometheus
+│
+└── Monitoring Best Practices
+├── Establish Baselines: Normal vs Abnormal behavior
+├── Set Meaningful Thresholds: Avoid false positives
+├── Document Alert Response: Runbooks for each alert type
+├── Regular Review: Tune alerts, Update thresholds
+├── Centralized Monitoring: Dashboard for all instances
+├── Historical Data Retention: Trend analysis, Capacity planning
+└── Test Alerts: Verify notifications reach correct recipients
+│
+│
+MODULE 11: TROUBLESHOOTING & PRODUCTION SUPPORT ════════════════════════════════
+│
+├── Troubleshooting Methodology
+│   ├── Gather Information: Symptoms, Error messages, Timeline
+│   ├── Identify Scope: Single DB, Instance, Server, Application
+│   ├── Isolate Root Cause: Logs, DMVs, Wait stats, Recent changes
+│   ├── Implement Solution: Targeted fix, Test in dev if possible
+│   ├── Verify Resolution: Metrics return to normal, No side effects
+│   └── Document: Incident details, Root cause, Resolution, Prevention
+│
+├── Common Performance Issues
+│   ├── High CPU Usage
+│   │   ├── Symptoms: Slow queries, Application timeouts, SOS_SCHEDULER_YIELD waits
+│   │   ├── Investigation
+│   │   │   ├── Top CPU Queries: sys.dm_exec_query_stats ORDER BY total_worker_time DESC
+│   │   │   ├── Execution Plans: Missing indexes, Scans, Parameter sniffing
+│   │   │   ├── Parallelism: Excessive CXPACKET, Adjust MAXDOP/Cost Threshold
+│   │   │   └── Recompilations: sys.dm_exec_query_optimizer_info
+│   │   │
+│   │   └── Resolution
+│   │       ├── Optimize Queries: Add indexes, Rewrite inefficient queries
+│   │       ├── Update Statistics: Outdated stats cause bad plans
+│   │       ├── Adjust MAXDOP: Per query or instance level
+│   │       └── Scale Up: Add CPU cores if sustained high usage
+│   │
+│   ├── Memory Pressure
+│   │   ├── Symptoms: RESOURCE_SEMAPHORE waits, Low PLE (<300), Page faults
+│   │   ├── Investigation
+│   │   │   ├── Buffer Cache Hit Ratio: <90% indicates memory pressure
+│   │   │   ├── Page Life Expectancy: sys.dm_os_performance_counters
+│   │   │   ├── Memory Grants: sys.dm_exec_query_memory_grants
+│   │   │   ├── Memory Clerks: sys.dm_os_memory_clerks
+│   │   │   └── OS Memory: Available memory, Paging
+│   │   │
+│   │   └── Resolution
+│   │       ├── Increase Max Server Memory: Leave 4GB+ for OS
+│   │       ├── Optimize Queries: Reduce memory grants (sorts, hashes)
+│   │       ├── Add Physical Memory: If sustained pressure
+│   │       └── Clear Plan Cache: DBCC FREEPROCCACHE (temporary, use carefully)
+│   │
+│   ├── Slow Disk I/O
+│   │   ├── Symptoms: PAGEIOLATCH waits, Slow queries, High disk latency (>20ms)
+│   │   ├── Investigation
+│   │   │   ├── File I/O Stats: sys.dm_io_virtual_file_stats (io_stall_read_ms)
+│   │   │   ├── Wait Stats: PAGEIOLATCH_SH/EX indicates disk reads
+│   │   │   ├── PerfMon: Avg Disk sec/Read, Avg Disk Queue Length
+│   │   │   ├── Missing Indexes: Excessive table scans
+│   │   │   └── TempDB Contention: PAGELATCH waits
+│   │   │
+│   │   └── Resolution
+│   │       ├── Add Indexes: Reduce physical reads
+│   │       ├── Separate Files: Data, Log, TempDB on different disks
+│   │       ├── Upgrade Storage: SSD, Faster RAID configuration
+│   │       ├── TempDB Config: Multiple files (1 per core), Equal size
+│   │       └── Archive Old Data: Reduce database size
+│   │
+│   ├── Blocking & Locking
+│   │   ├── Symptoms: Application timeouts, LCK_M_ waits, User complaints
+│   │   ├── Investigation
+│   │   │   ├── sp_who2: BlkBy column, Identify head blocker
+│   │   │   ├── sp_WhoIsActive: @get_locks = 1, Blocking tree
+│   │   │   ├── sys.dm_tran_locks: Detailed lock information
+│   │   │   ├── sys.dm_exec_requests: blocking_session_id
+│   │   │   └── Blocker Query: sys.dm_exec_sql_text (blocker SPID)
+│   │   │
+│   │   └── Resolution
+│   │       ├── Optimize Blocker Query: Add indexes, Reduce transaction time
+│   │       ├── Kill Blocking Session: KILL <SPID> (last resort, emergency only)
+│   │       ├── Adjust Isolation Level: READ COMMITTED SNAPSHOT (RCSI), SNAPSHOT
+│   │       ├── Application Changes: Keep transactions short, Commit frequently
+│   │       └── Index Tuning: Reduce lock escalation
+│   │
+│   ├── Deadlocks
+│   │   ├── Symptoms: Error 1205, Transaction rollback, Application retries
+│   │   ├── Investigation
+│   │   │   ├── Deadlock Graph: Extended Events (system_health session)
+│   │   │   ├── Trace Flag 1222: Error log detailed deadlock info
+│   │   │   ├── Victim Query: Which transaction was rolled back
+│   │   │   └── Lock Resources: Tables, Indexes, Keys involved
+│   │   │
+│   │   └── Resolution
+│   │       ├── Consistent Access Order: Access tables in same order across queries
+│   │       ├── Add Indexes: Reduce lock range, Use covering indexes
+│   │       ├── Keep Transactions Short: Minimize lock duration
+│   │       ├── Lower Isolation Level: RCSI to avoid shared locks
+│   │       └── Application Retry Logic: Handle deadlock gracefully
+│   │
+│   └── TempDB Contention
+│       ├── Symptoms: PAGELATCH_UP waits on 2:1:1 or 2:1:3 pages, High tempdb I/O
+│       ├── Investigation
+│       │   ├── Wait Stats: PAGELATCH_UP on allocation pages (PFS, GAM, SGAM)
+│       │   ├── TempDB Files: sys.dm_db_file_space_usage
+│       │   ├── TempDB Usage: Temp tables, Table variables, Sort operations
+│       │   └── Version Store: Snapshot isolation, Online index rebuilds
+│       │
+│       └── Resolution
+│           ├── Multiple TempDB Files: 1 per core (max 8 initially), Equal size
+│           ├── Trace Flag 1117/1118: Pre-2016 (auto in 2016+)
+│           ├── Reduce TempDB Usage: Optimize queries, Avoid temp tables
+│           └── SSD for TempDB: Faster I/O reduces contention
+│
+├── Connection & Login Issues
+│   ├── Connection Failures
+│   │   ├── Symptoms: Cannot connect to server, Timeout errors
+│   │   ├── Investigation
+│   │   │   ├── SQL Server Service: Running? Use SQL Configuration Manager
+│   │   │   ├── Network Protocols: TCP/IP enabled? Port 1433 open?
+│   │   │   ├── Firewall: Windows Firewall, Network firewalls
+│   │   │   ├── Error Log: Connection errors, Authentication failures
+│   │   │   └── Named Pipes/Shared Memory: Enabled for local connections?
+│   │   │
+│   │   └── Resolution
+│   │       ├── Start SQL Server Service: Services.msc, SQL Configuration Manager
+│   │       ├── Enable TCP/IP: SQL Configuration Manager, Restart service
+│   │       ├── Firewall Rule: Allow SQL Server port (1433 default)
+│   │       ├── Connection String: Verify server name, Instance name, Port
+│   │       └── Test Connectivity: telnet, sqlcmd, UDL file
+│   │
+│   ├── Login Failures
+│   │   ├── Symptoms: Error 18456 (Login failed), Access denied
+│   │   ├── Investigation
+│   │   │   ├── Error Log: State number indicates failure reason
+│   │   │   ├── Authentication Mode: Windows vs Mixed mode
+│   │   │   ├── Login Exists: sys.server_principals
+│   │   │   ├── Login Enabled: Is_disabled column
+│   │   │   └── Password Expiration: Check_expiration, Check_policy
+│   │   │
+│   │   └── Resolution
+│   │       ├── Enable Mixed Mode: Instance properties, Restart required
+│   │       ├── Create Login: CREATE LOGIN, Map to database user
+│   │       ├── Enable Login: ALTER LOGIN ENABLE
+│   │       ├── Reset Password: ALTER LOGIN WITH PASSWORD
+│   │       └── Grant Connect Permission: GRANT CONNECT SQL TO [login]
+│   │
+│   └── Orphaned Users
+│       ├── Symptoms: User exists in DB but cannot log in after restore
+│       ├── Investigation: sys.database_principals vs sys.server_principals (SID mismatch)
+│       └── Resolution
+│           ├── sp_change_users_login 'Auto_Fix': Auto-map users
+│           ├── ALTER USER: WITH LOGIN = [login_name]
+│           └── DROP/CREATE USER: Last resort if SID cannot match
+│
+├── Database Corruption
+│   ├── Detection
+│   │   ├── Symptoms: Error 824 (I/O error), 823 (disk), 825 (read retry)
+│   │   ├── Suspect Database: Database marked SUSPECT
+│   │   ├── DBCC CHECKDB: Consistency errors
+│   │   └── Application Errors: Data retrieval failures
+│   │
+│   ├── Immediate Response
+│   │   ├── DO NOT RESTART: May worsen corruption
+│   │   ├── Take Tail-Log Backup: Capture recent transactions (if possible)
+│   │   ├── Assess Severity: Run DBCC CHECKDB PHYSICAL_ONLY (faster)
+│   │   └── Notify Stakeholders: Communicate impact, ETA
+│   │
+│   └── See MODULE 12 for detailed corruption recovery procedures
+│
+├── SQL Server Service Issues
+│   ├── Service Won't Start
+│   │   ├── Investigation
+│   │   │   ├──Continue12:41 PMError Log: SQL Server ERRORLOG file (newest)
+│   │   │   ├── Windows Event Viewer: Application/System logs
+│   │   │   ├── Service Account: Permissions, Password expired?
+│   │   │   ├── Master Database: Corrupt? Move master.mdf to test
+│   │   │   └── Startup Parameters: -d, -l, -e paths correct?
+│   │   │
+│   │   └── Resolution
+│   │       ├── Service Account Password: Update in SQL Configuration Manager
+│   │       ├── File Permissions: Service account needs access to data/log files
+│   │       ├── Rebuild Master: Setup.exe /ACTION=REBUILDDATABASE (last resort)
+│   │       ├── Restore Master: Start in single-user mode (-m), Restore backup
+│   │       └── Startup Trace Flags: Remove problematic trace flags
+│   │
+│   └── Service Crashes
+│       ├── Investigation: SQL ERRORLOG, Windows minidump files
+│       ├── Stack Dump: Indicates crash location
+│       └── Resolution: Apply patches, Contact Microsoft Support, Review recent changes
+│
+├── Application Performance Issues
+│   ├── Slow Application Response
+│   │   ├── Investigation
+│   │   │   ├── Is it SQL? Application logs, APM tools
+│   │   │   ├── Long Queries: sys.dm_exec_requests, sp_WhoIsActive
+│   │   │   ├── Blocking: Blocking chains cause cascading delays
+│   │   │   ├── Network Latency: ASYNC_NETWORK_IO waits
+│   │   │   └── Application Code: Inefficient loops, N+1 queries
+│   │   │
+│   │   └── Resolution
+│   │       ├── Optimize Queries: Indexes, Rewrite queries
+│   │       ├── Resolve Blocking: See blocking resolution above
+│   │       ├── Network: Check latency, Bandwidth
+│   │       └── Application Changes: Batch operations, Connection pooling
+│   │
+│   └── Connection Pool Exhaustion
+│       ├── Symptoms: "Timeout expired", "Max pool size reached"
+│       ├── Investigation: Application connection string (max pool size), Unclosed connections
+│       └── Resolution: Fix connection leaks, Increase pool size, Connection lifetime
+│
+└── Production Support Best Practices
+├── Runbooks: Document common issues, Step-by-step resolution
+├── Escalation Matrix: When to escalate, Contact information
+├── Communication: Notify stakeholders early, Provide updates
+├── Change Log: Document all changes made during incident
+├── Post-Mortem: Root cause analysis, Preventive measures
+├── Knowledge Base: Centralized repository of solutions
+└── On-Call Readiness: Remote access, Tools configured, Runbooks accessible
+│
+│
+MODULE 12: DATABASE CORRUPTION & EMERGENCY RECOVERY ════════════════════════════
+│
+├── Corruption Detection
+│   ├── Proactive Detection
+│   │   ├── DBCC CHECKDB: Weekly scheduled integrity checks
+│   │   ├── Page Verify: CHECKSUM (default 2005+), Detects torn pages
+│   │   ├── Error 823/824/825: Alerts configured for these errors
+│   │   └── Suspect Database: Auto-detected by SQL Server
+│   │
+│   └── Reactive Detection
+│       ├── User Reports: Application errors, Missing data
+│       ├── Errors During Queries: "Page X could not be read"
+│       ├── Database SUSPECT: Automatic status change
+│       └── Failed Backups: BACKUP WITH CHECKSUM failure
+│
+├── Corruption Types
+│   ├── Logical Corruption: Index inconsistencies, Constraint violations
+│   ├── Physical Corruption: Torn pages, Checksum failures, I/O errors
+│   ├── Allocation Corruption: IAM, GAM, SGAM, PFS pages
+│   └── System Catalog Corruption: System tables damaged
+│
+├── Emergency Response Procedures
+│   ├── Step 1: DO NOT PANIC (Critical)
+│   │   ├── Remain calm: Hasty actions can worsen situation
+│   │   ├── DO NOT restart SQL Server: May propagate corruption
+│   │   ├── DO NOT run REPAIR_ALLOW_DATA_LOSS: Last resort only
+│   │   └── DO NOT detach database: May prevent recovery options
+│   │
+│   ├── Step 2: Assess Situation
+│   │   ├── Database Status: ONLINE, SUSPECT, EMERGENCY?
+│   │   ├── User Impact: How many users/applications affected?
+│   │   ├── Data Criticality: Production? Financial data?
+│   │   └── Time Constraints: SLA, Business impact
+│   │
+│   ├── Step 3: Isolate & Contain
+│   │   ├── Set Database OFFLINE: Prevent further damage (if accessible)
+│   │   ├── Notify Stakeholders: Incident declared, ETA unknown at this stage
+│   │   ├── Review Recent Changes: Patches, Hardware, Schema changes
+│   │   └── Check Disk Health: chkdsk, SMART status, Storage admin
+│   │
+│   ├── Step 4: Determine Recovery Path
+│   │   ├── Option A: Restore from Backup (PREFERRED)
+│   │   │   ├── Last Good Backup Available? Check msdb.dbo.backupset
+│   │   │   ├── Data Loss Acceptable? RPO vs Current time
+│   │   │   ├── Tail-Log Backup Possible? Attempt WITH CONTINUE_AFTER_ERROR
+│   │   │   └── Timeline: Faster than repair? Consider restore time
+│   │   │
+│   │   ├── Option B: Repair (If no backup)
+│   │   │   ├── EMERGENCY Mode Access
+│   │   │   ├── REPAIR_REBUILD: No data loss, Limited scope
+│   │   │   ├── REPAIR_ALLOW_DATA_LOSS: Last resort, Irreversible
+│   │   │   └── Data Loss Expected: Communicate to stakeholders
+│   │   │
+│   │   └── Option C: Extract Data (If repair fails)
+│   │       ├── EMERGENCY mode: Read-only access
+│   │       ├── Export critical tables: bcp, SSIS
+│   │       └── Rebuild database: Import data to new DB
+│   │
+│   └── Step 5: Execute Recovery
+│       └── See detailed procedures below
+│
+├── Corruption Assessment (DBCC CHECKDB)
+│   ├── Basic Check
+│   │   ├── DBCC CHECKDB (DatabaseName): Full integrity check
+│   │   ├── WITH PHYSICAL_ONLY: Faster, Hardware issues only
+│   │   ├── WITH NO_INFOMSGS: Suppress informational messages
+│   │   └── WITH ESTIMATEONLY: Estimate tempdb space needed
+│   │
+│   ├── Interpret Results
+│   │   ├── Allocation Errors: GAM, SGAM, IAM, PFS issues
+│   │   ├── Consistency Errors: Page linkage, Index/data mismatch
+│   │   ├── Repair Levels: REPAIR_REBUILD (no data loss), REPAIR_ALLOW_DATA_LOSS
+│   │   └── Error Count: Severity of corruption (few pages vs many)
+│   │
+│   └── Advanced Options
+│       ├── DBCC CHECKTABLE: Single table only
+│       ├── DBCC CHECKALLOC: Allocation structures only
+│       ├── DBCC PAGE: Examine specific page (2 = data page, 1 = header)
+│       └── DBCC TRACEON (3604): Send DBCC output to console
+│
+├── Recovery Path A: Restore from Backup (PREFERRED)
+│   ├── Prerequisites
+│   │   ├── Valid Backup Chain: Full + Diff + Logs
+│   │   ├── Sufficient Disk Space: Data + Log files
+│   │   ├── Tail-Log Backup: WITH CONTINUE_AFTER_ERROR if DB accessible
+│   │   └── Downtime Window: Restore time + validation
+│   │
+│   ├── Restore Procedure
+│   │   ├── Take Tail-Log (if possible)
+│   │   │   └── BACKUP LOG DB WITH CONTINUE_AFTER_ERROR, NO_TRUNCATE
+│   │   │
+│   │   ├── Set Database OFFLINE or SINGLE_USER
+│   │   │   └── ALTER DATABASE DB SET OFFLINE WITH ROLLBACK IMMEDIATE
+│   │   │
+│   │   ├── Restore Full Backup
+│   │   │   └── RESTORE DATABASE DB FROM DISK WITH NORECOVERY, REPLACE
+│   │   │
+│   │   ├── Restore Differential (if exists)
+│   │   │   └── RESTORE DATABASE DB FROM DISK WITH NORECOVERY
+│   │   │
+│   │   ├── Restore Log Backups (in sequence)
+│   │   │   └── RESTORE LOG DB FROM DISK WITH NORECOVERY
+│   │   │
+│   │   ├── Restore Tail-Log (if captured)
+│   │   │   └── RESTORE LOG DB FROM DISK WITH NORECOVERY
+│   │   │
+│   │   └── Recover Database
+│   │       └── RESTORE DATABASE DB WITH RECOVERY
+│   │
+│   ├── Post-Restore Validation
+│   │   ├── DBCC CHECKDB: Verify integrity of restored database
+│   │   ├── Row Counts: Compare with production (if known)
+│   │   ├── Application Testing: Critical transactions
+│   │   └── User Access: Restore logins, Fix orphaned users
+│   │
+│   └── Data Loss
+│       ├── Calculate Loss: Time between last backup and corruption
+│       ├── Communicate: Inform stakeholders of lost transactions
+│       └── Document: Backup times, Restore time, Data loss window
+│
+├── Recovery Path B: Repair (NO BACKUP AVAILABLE)
+│   ├── WARNING
+│   │   ├── REPAIR_ALLOW_DATA_LOSS: Irreversible, Deletes corrupt data
+│   │   ├── Not Guaranteed: May not fix all corruption
+│   │   ├── Database Must Be in SINGLE_USER: ALTER DATABASE SET SINGLE_USER
+│   │   └── Get Management Approval: Document decision
+│   │
+│   ├── Attempt REPAIR_REBUILD First (No Data Loss)
+│   │   ├── ALTER DATABASE DB SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+│   │   ├── DBCC CHECKDB (DB, REPAIR_REBUILD)
+│   │   ├── Check Results: If successful, no data loss
+│   │   └── ALTER DATABASE DB SET MULTI_USER
+│   │
+│   ├── REPAIR_ALLOW_DATA_LOSS (Last Resort)
+│   │   ├── Backup Current State: Even if corrupt, for forensics
+│   │   ├── ALTER DATABASE DB SET EMERGENCY
+│   │   ├── ALTER DATABASE DB SET SINGLE_USER
+│   │   ├── DBCC CHECKDB (DB, REPAIR_ALLOW_DATA_LOSS)
+│   │   ├── Review Output: Pages deallocated, Rows deleted
+│   │   └── ALTER DATABASE DB SET MULTI_USER
+│   │
+│   └── Post-Repair Actions
+│       ├── DBCC CHECKDB Again: Verify all corruption resolved
+│       ├── Identify Lost Data: Compare row counts, Check critical tables
+│       ├── Rebuild Indexes: All indexes, Update statistics
+│       ├── Full Backup: Establish new backup chain
+│       └── Application Testing: Verify functionality
+│
+├── Recovery Path C: EMERGENCY Mode Access
+│   ├── When to Use
+│   │   ├── Database SUSPECT: Cannot bring ONLINE
+│   │   ├── Repair Failed: REPAIR_ALLOW_DATA_LOSS didn't resolve
+│   │   ├── Critical Data Extraction: Need specific tables immediately
+│   │   └── No Backup: Last option to access data
+│   │
+│   ├── EMERGENCY Mode Procedure
+│   │   ├── Set EMERGENCY Mode
+│   │   │   └── ALTER DATABASE DB SET EMERGENCY
+│   │   │
+│   │   ├── Set SINGLE_USER (if needed for repair)
+│   │   │   └── ALTER DATABASE DB SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+│   │   │
+│   │   ├── Database is READ_ONLY: Can SELECT but not modify
+│   │   │
+│   │   ├── Extract Critical Data
+│   │   │   ├── bcp out critical tables
+│   │   │   ├── SSIS export
+│   │   │   ├── INSERT INTO NewDB.dbo.Table SELECT * FROM EmergencyDB.dbo.Table
+│   │   │   └── Focus on undamaged tables/pages
+│   │   │
+│   │   └── Attempt Repair (if needed)
+│   │       └── DBCC CHECKDB (DB, REPAIR_ALLOW_DATA_LOSS)
+│   │
+│   └── Rebuild Strategy
+│       ├── Create New Database: Fresh structure
+│       ├── Recreate Schema: Tables, Indexes, Constraints
+│       ├── Import Extracted Data: Validate as you import
+│       └── Restore Missing Data: From backups, Re-entry if necessary
+│
+├── Suspect Database Recovery
+│   ├── Causes
+│   │   ├── Corruption: Master database file metadata
+│   │   ├── Incomplete Recovery: Crash during recovery process
+│   │   ├── File Missing: Data or log file not accessible
+│   │   └── Disk Full: During startup recovery
+│   │
+│   ├── Recovery Steps
+│   │   ├── Check Error Log: Identify reason for SUSPECT status
+│   │   ├── SET EMERGENCY: ALTER DATABASE DB SET EMERGENCY
+│   │   ├── Run CHECKDB: Assess extent of corruption
+│   │   ├── Attempt Repair: REPAIR_ALLOW_DATA_LOSS if needed
+│   │   └── Restore: If repair fails, restore from backup
+│   │
+│   └── Special Cases
+│       ├── Log File Missing: Attach with FOR ATTACH_REBUILD_LOG (data loss)
+│       ├── Data File Missing: Restore from backup only
+│       └── Master DB Corruption: Restore master, Rebuild if necessary
+│
+├── Page-Level Restore (Enterprise Edition)
+│   ├── Advantages
+│   │   ├── Database Stays Online: Minimal downtime
+│   │   ├── Restore Specific Pages: Only corrupt pages
+│   │   └── Fast Recovery: Seconds instead of hours
+│   │
+│   ├── Prerequisites
+│   │   ├── Enterprise Edition: Required feature
+│   │   ├── Full Recovery Model: Need log chain
+│   │   ├── Page List: sys.dm_db_suspect_pages, DBCC CHECKDB output
+│   │   └── Valid Backups: Full + Diff + Logs
+│   │
+│   ├── Page Restore Procedure
+│   │   ├── Identify Corrupt Pages
+│   │   │   └── SELECT * FROM msdb.dbo.suspect_pages
+│   │   │
+│   │   ├── Restore Pages
+│   │   │   └── RESTORE DATABASE DB PAGE = '1:453, 1:789' FROM DISK WITH NORECOVERY
+│   │   │
+│   │   ├── Restore Logs (bring current)
+│   │   │   └── RESTORE LOG DB FROM DISK WITH RECOVERY
+│   │   │
+│   │   └── Verify
+│   │       └── DBCC CHECKDB: Check specific tables affected
+│   │
+│   └── Limitations
+│       ├── Cannot Restore: System pages, GAM/SGAM/PFS, File header, Boot page
+│       ├── Maximum Pages: 1000 pages per restore operation
+│       └── Transaction Log: Must be available and intact
+│
+├── Prevention Strategies
+│   ├── Proactive Measures
+│   │   ├── Regular CHECKDB: Weekly minimum, More frequent for critical DBs
+│   │   ├── PAGE_VERIFY = CHECKSUM: Detect torn pages (default)
+│   │   ├── Hardware Monitoring: Disk health, RAID status, SMART errors
+│   │   ├── Backup Testing: Regular restore drills
+│   │   └── Redundancy: RAID, SAN replication, Availability Groups
+│   │
+│   ├── Hardware Best Practices
+│   │   ├── Quality Hardware: Enterprise-grade disks, Controllers
+│   │   ├── Battery-Backed Cache: Protect against power loss
+│   │   ├── Monitoring: Disk errors, RAID degradation
+│   │   └── Firmware Updates: Stay current with vendor patches
+│   │
+│   └── SQL Server Configuration
+│       ├── Backup Strategy: Frequent backups, Test restores
+│       ├── Instant File Initialization: Faster recovery
+│       ├── TempDB on Separate Disk: Reduce contention
+│       └── Error Alerts: 823, 824, 825 configured for immediate notification
+│
+└── Corruption Response Checklist
+├── [ ] DO NOT restart SQL Server unless advised
+├── [ ] Assess impact: Users affected, Data criticality
+├── [ ] Run DBCC CHECKDB: Document all errors
+├── [ ] Check disk health: chkdsk, SMART, Storage admin
+├── [ ] Attempt tail-log backup: WITH CONTINUE_AFTER_ERROR
+├── [ ] Determine recovery path: Restore vs Repair vs Extract
+├── [ ] Get approvals: Management sign-off for data loss
+├── [ ] Execute recovery: Follow documented procedures
+├── [ ] Validate: DBCC CHECKDB, Row counts, Application testing
+├── [ ] Root cause analysis: Hardware? Software? Human error?
+├── [ ] Preventive measures: Address root cause
+└── [ ] Documentation: Incident report, Lessons learned
+│
+│
+MODULE 13: ALWAYS ON AVAILABILITY GROUPS ═══════════════════════════════════════
+│
+├── AlwaysOn AG Concepts
+│   ├── High Availability: Automatic failover, Minimal downtime
+│   ├── Disaster Recovery: Geographic distribution, Async replicas
+│   ├── Read Scale-Out: Offload read workloads to secondaries
+│   └── Database Level: Granular HA (vs FCI instance-level)
+│
+├── AG Architecture
+│   ├── Primary Replica: Read-write, Main production server
+│   ├── Secondary Replicas: Read-only (if configured), Automatic/Manual failover
+│   ├── Listener: Virtual network name, Client connection endpoint
+│   ├── Availability Database: Unit of failover (grouped databases)
+│   └── Windows Server Failover Cluster (WSFC): Required infrastructure
+│
+├── Prerequisites & Requirements
+│   ├── SQL Server Edition: Enterprise (Standard = 1 secondary, basic AG)
+│   ├── Windows Server: Failover Clustering feature installed
+│   ├── Domain: All nodes in same Active Directory domain
+│   ├── Service Accounts: Domain accounts with appropriate permissions
+│   ├── Endpoints: TCP port for database mirroring (default 5022)
+│   ├── Full Recovery Model: Required for all AG databases
+│   └── Initial Full Backup: Must exist before joining AG
+│
+├── WSFC Configuration
+│   ├── Cluster Creation
+│   │   ├── Install Failover Clustering feature (all nodes)
+│   │   ├── Validate Configuration: Hardware, Network, Storage tests
+│   │   ├── Create Cluster: Failover Cluster Manager, Cluster name
+│   │   └── Quorum Configuration: Node majority, File share witness, Disk witness
+│   │
+│   ├── Network Configuration
+│   │   ├── Heartbeat Network: Dedicated network for cluster communication
+│   │   ├── Public Network: Client connectivity
+│   │   ├── Multiple Subnets: Cross-site AG support
+│   │   └── DNS: Cluster name registration
+│   │
+│   └── Cluster Validation
+│       ├── Validate Cluster Wizard: Run all tests
+│       ├── Review Warnings: Address critical issues
+│       └── Quorum Status: Verify quorum health
+│
+├── AG Setup & Configuration
+│   ├── Enable AlwaysOn Feature
+│   │   ├── SQL Server Configuration Manager: AlwaysOn High Availability
+│   │   ├── Restart SQL Service: Required after enabling
+│   │   └── All Replicas: Enable on each participating instance
+│   │
+│   ├── Database Preparation
+│   │   ├── Full Recovery Model: ALTER DATABASE SET RECOVERY FULL
+│   │   ├── Full Backup: BACKUP DATABASE (establishes log chain)
+│   │   ├── Log Backup: BACKUP LOG (if needed)
+│   │   └── Validation: No open transactions, Database in normal state
+│   │
+│   ├── Create Availability Group
+│   │   ├── SSMS Wizard or T-SQL: CREATE AVAILABILITY GROUP
+│   │   ├── Group Name: Unique identifier
+│   │   ├── Select Databases: Multiple databases can be grouped
+│   │   ├── Replica Configuration
+│   │   │   ├── Availability Mode: Synchronous (no data loss), Asynchronous (distance)
+│   │   │   ├── Failover Mode: Automatic (sync replicas), Manual
+│   │   │   ├── Readable Secondary: Read-intent only, All, None
+│   │   │   ├── Backup Priority: 0-100 (100 = highest, Backup preference)
+│   │   │   └── Session Timeout: Default 10 seconds
+│   │   │
+│   │   ├── Endpoint Configuration: Create/Use existing endpoint (port 5022)
+│   │   │
+│   │   └── Initial Data Synchronization
+│   │       ├── Automatic Seeding (2016+): No manual restore needed
+│   │       ├── Full: Backup on primary, Restore on secondary WITH NORECOVERY
+│   │       ├── Join Only: Manual backup/restore already done
+│   │       └── Skip: Database already in sync
+│   │
+│   ├── Listener Configuration
+│   │   ├── Listener Name: Virtual network name (VNN)
+│   │   ├── IP Address: Static IP per subnet
+│   │   ├── Port: 1433 (default) or custom
+│   │   ├── Network Mode: DHCP or Static
+│   │   └── DNS Registration: Automatic (verify in DNS)
+│   │
+│   └── Connection Strings
+│       ├── Read-Write: Server=ListenerName; (connects to primary)
+│       ├── Read-Intent: Server=ListenerName; ApplicationIntent=ReadOnly;
+│       └── MultiSubnetFailover: =True (faster cross-subnet failover)
+│
+├── Synchronization Modes
+│   ├── Synchronous Commit
+│   │   ├── Zero Data Loss: Transaction commits after secondary acknowledgment
+│   │   ├── Performance Impact: Slight latency (RTT to secondary)
+│   │   ├── Automatic Failover: Eligible (if configured)
+│   │   └── Use Case: Local HA, Low-latency networks
+│   │
+│   └── Asynchronous Commit
+│       ├── Data Loss Possible: Transaction commits before secondary acknowledgment
+│       ├── No Performance Impact: Primary doesn't wait for secondary
+│       ├── Manual Failover Only: Cannot be automatic
+│       └── Use Case: DR, Long-distance replication
+│
+├── Failover Operations
+│   ├── Automatic Failover
+│   │   ├── Triggers: Primary failure, Health detection timeout
+│   │   ├── Prerequisites: Synchronous commit, Automatic failover mode, Healthy quorum
+│   │   ├── Process: WSFC detects failure → Elect new primary → Redirect connections
+│   │   ├── Typical Downtime: 30-120 seconds (health check + recovery)
+│   │   └── Application: MultiSubnetFailover=True for faster reconnect
+│   │
+│   ├── Manual Failover (Planned)
+│   │   ├── Zero Data Loss: Synchronous replicas only
+│   │   ├── Process: SSMS right-click → Failover, or T-SQL
+│   │   ├── Use Cases: Maintenance, Testing, Load balancing
+│   │   └── Command: ALTER AVAILABILITY GROUP [AGName] FAILOVER
+│   │
+│   ├── Forced Failover (Unplanned)
+│   │   ├── Data Loss Possible: Forces asynchronous replica to primary
+│   │   ├── Emergency Only: Primary unavailable, Cannot wait for sync
+│   │   ├── Command: ALTER AVAILABILITY GROUP [AGName] FORCE_FAILOVER_ALLOW_DATA_LOSS
+│   │   └── Post-Failover: Review unsent log records, Communicate data loss
+│   │
+│   └── Failover Best Practices
+│       ├── Test Regularly: Quarterly failover drills
+│       ├── Monitor Lag: Synchronization health dashboard
+│       ├── Document Procedures: Runbook for emergency failover
+│       └── Application Readiness: Connection retry logic, MultiSubnetFailover
+│
+├── Monitoring & Management
+│   ├── AG Dashboard (SSMS)
+│   │   ├── Health Status: Primary, Secondary replicas
+│   │   ├── Synchronization State: SYNCHRONIZED, SYNCHRONIZING, NOT SYNCHRONIZING
+│   │   ├── Failover Readiness: Automatic vs Manual
+│   │   ├── Data Loss Exposure: Estimated data loss (async replicas)
+│   │   └── Connection Status: Connected, Disconnected
+│   │
+│   ├── DMVs for AG Monitoring
+│   │   ├── sys.availability_groups: AG configuration
+│   │   ├── sys.availability_replicas: Replica settings
+│   │   ├── sys.dm_hadr_availability_replica_states: Current replica state
+│   │   ├── sys.dm_hadr_database_replica_states: Per-database sync state
+│   │   ├── sys.dm_hadr_availability_group_states: AG health
+│   │   └── sys.dm_hadr_auto_page_repair: Automatic page repair history
+│   │
+│   ├── Key Metrics
+│   │   ├── Log Send Queue: KB waiting to be sent (primary → secondary)
+│   │   ├── Redo Queue: KB waiting to be applied (secondary)
+│   │   ├── Synchronization Lag: Time behind primary
+│   │   ├── Estimated Data Loss: Potential data loss in seconds (async)
+│   │   └── Connection Timeout: Replica marked disconnected
+│   │
+│   └── Alerts & Notifications
+│       ├── Synchronization Health: CRITICAL if NOT SYNCHRONIZED
+│       ├── Failover: Notify on automatic failover events
+│       ├── High Lag: Alert if redo queue >threshold
+│       ├── Connection Issues: Replica disconnected
+│       └── Quorum Loss: WSFC quorum unhealthy
+│
+├── Readable Secondary Configuration
+│   ├── Read-Intent Routing
+│   │   ├── Replica Setting: Allow connections = Read-intent only / All
+│   │   ├── Connection String: ApplicationIntent=ReadOnly
+│   │   ├── Read-Only Routing List: Order of secondary replicas to use
+│   │   └── Routing URL: Per replica, Listener redirects
+│   │
+│   ├── Use Cases
+│   │   ├── Reporting: Offload heavy reports from production
+│   │   ├── ETL Reads: Data extraction from secondary
+│   │   ├── Backups: Prefer secondary for backups
+│   │   └── Application Reads: Read-only application tier
+│   │
+│   └── Considerations
+│       ├── Snapshot Isolation: ALLOW_SNAPSHOT_ISOLATION required for consistency
+│       ├── Data Latency: Async replicas may lag
+│       ├── Statistics: Read-only, No automatic updates (run on primary)
+│       └── Locking: Redo can be blocked by long-running queries (set READ_COMMITTED_SNAPSHOT)
+│
+├── Backup Strategy with AG
+│   ├── Backup Preferences
+│   │   ├── Prefer Secondary: Offload backup I/O from primary
+│   │   ├── Secondary Only: Only take backups on secondary
+│   │   ├── Primary: Always backup on primary
+│   │   └── Any Replica: Flexible, Based on backup priority
+│   │
+│   ├── Backup Types
+│   │   ├── Full: Any replica (verify replica in msdb.dbo.backupset)
+│   │   ├── Differential: Must be same replica as last full (limitation)
+│   │   ├── Log: Any replica, Log chain maintained
+│   │   └── Copy-Only: Does not affect backup chain
+│   │
+│   ├── Backup Scripts
+│   │   ├── Check Preferred Replica: sys.fn_hadr_backup_is_preferred_replica()
+│   │   ├── Conditional Backup: Only run if preferred replica
+│   │   └── Ola Hallengren Scripts: AG-aware backup solution
+│   │
+│   └── Restore from AG Backups
+│       ├── Replica Information: msdb.dbo.backupset (replica_id)
+│       ├── Restore Order: Full → Diff → Logs (standard)
+│       └── Consistency: Backups from any replica can be mixed
+│
+├── Troubleshooting AG Issues
+│   ├── Synchronization Problems
+│   │   ├── Symptoms: High log send queue, Redo queue, NOT SYNCHRONIZED
+│   │   ├── Causes
+│   │   │   ├── Network Latency: Slow connection between replicas
+│   │   │   ├── Secondary Load: CPU/Disk bottleneck on secondary
+│   │   │   ├── Long Transaction: Large transaction on primary
+│   │   │   └── Redo Blocked: Long query on readable secondary
+│   │   │
+│   │   └── Resolution
+│   │       ├── Network: Check bandwidth, Latency tests
+│   │       ├── Secondary Performance: Add resources, Offload reads
+│   │       ├── Redo Block: Identify blocking query on secondary
+│   │       └── Change to Async: Temporary (if sync causing issues)
+│   │
+│   ├── Connection Failures
+│   │   ├── Symptoms: Replica shows DISCONNECTED
+│   │   ├── Causes: Network outage, Firewall, Endpoint issue, SQL Service down
+│   │   └── Resolution
+│   │       ├── Endpoint: Test connectivity (telnet <IP> 5022)
+│   │       ├── Firewall: Allow port 5022 (both directions)
+│   │       ├── Certificates: Verify endpoint certificates (if used)
+│   │       └── Restart Endpoint: ALTER ENDPOINT ... STATE = STOPPED/STARTED
+│   │
+│   ├── Failover Issues
+│   │   ├── Symptoms: Failover fails, Long failover time, Split-brain
+│   │   ├── Causes
+│   │   │   ├── Quorum Loss: Insufficient votes to form quorum
+│   │   │   ├── Unsynchronized: Secondary not SYNCHRONIZED
+│   │   │   ├── Timeout: Health check timeout too short
+│   │   │   └── Application: Connection string issues
+│   │   │
+│   │   └── Resolution
+│   │       ├── Quorum: Force quorum (NodeWeight), Add witness
+│   │       ├── Sync Status: Wait for SYNCHRONIZED, Or forced failover
+│   │       ├── Timeout: Increase HealthCheckTimeout (default 30s)
+│   │       └── Application: Use MultiSubnetFailover=True
+│   │
+│   └── Listener Issues
+│       ├── Symptoms: Cannot resolve listener name, Connections fail
+│       ├── Causes: DNS issue, TTL, Firewall, Listener offline
+│       └── Resolution
+│           ├── DNS: nslookup, ipconfig /flushdns, Verify DNS registration
+│           ├── TTLContinue12:44 PM: RegisterAllProvidersIP=1, HostRecordTTL=300
+│           ├── Firewall: Allow listener IP and port
+│           └── Listener Status: Bring online in Failover Cluster Manager
+│
+└── AG Best Practices
+├── Design: 2-3 synchronous local replicas, 1+ asynchronous DR replica
+├── Quorum: Always use witness (file share or disk), Prevents split-brain
+├── Network: Dedicated network for heartbeat, High bandwidth for sync
+├── Monitoring: Dashboard + Alerts for synchronization lag
+├── Testing: Regular failover drills, Validate application behavior
+├── Backup: Use secondary for backups, Test restore procedures
+├── Patching: Rolling upgrades (secondary → primary), Minimal downtime
+└── Documentation: Network diagram, Failover procedures, Contact list
+│
+│
+MODULE 14: WINDOWS SERVER FAILOVER CLUSTERING ══════════════════════════════════
+│
+├── WSFC Fundamentals
+│   ├── Purpose: Provide high availability at OS/hardware level
+│   ├── Cluster: Group of servers (nodes) acting as single system
+│   ├── Quorum: Voting mechanism for cluster decisions
+│   └── Shared Storage: SAN, iSCSI (for FCI), Not required for AG
+│
+├── WSFC Architecture
+│   ├── Nodes: Physical or virtual servers in cluster
+│   ├── Networks: Public (client), Private (heartbeat), Storage
+│   ├── Cluster Service: Windows service managing cluster
+│   ├── Resource Groups: Logical container for cluster resources
+│   └── Cluster Resources: IP, Network Name, Disk, SQL Server
+│
+├── Quorum Models
+│   ├── Node Majority
+│   │   ├── Odd Number of Nodes: N/2 + 1 votes required
+│   │   ├── Use Case: 3, 5, 7+ nodes without shared storage
+│   │   └── No Witness: Node votes only
+│   │
+│   ├── Node and Disk Majority
+│   │   ├── Shared Disk: Quorum disk has vote
+│   │   ├── Use Case: Even number of nodes with SAN
+│   │   └── Disk Failure: Cluster survives if nodes healthy
+│   │
+│   ├── Node and File Share Majority
+│   │   ├── File Share Witness: Remote SMB share has vote
+│   │   ├── Use Case: Even nodes, Multi-site, No shared storage
+│   │   ├── Recommended: AG deployments (most common)
+│   │   └── Witness Server: Independent, Not cluster node
+│   │
+│   └── No Majority (Disk Witness Only)
+│       ├── Single Node + Disk: Disk witness determines quorum
+│       ├── Use Case: 2-node cluster (legacy, Not recommended)
+│       └── Risk: Disk failure = cluster down
+│
+├── WSFC Installation & Configuration
+│   ├── Prerequisites
+│   │   ├── Windows Server: Same OS version/patch level (all nodes)
+│   │   ├── Domain: All nodes in same AD domain
+│   │   ├── Network: Multiple NICs (public, heartbeat)
+│   │   ├── Service Accounts: Cluster service, SQL Service (domain accounts)
+│   │   └── Firewall: Cluster ports open (dynamic RPC, 3343, 445, 135)
+│   │
+│   ├── Install Failover Clustering Feature
+│   │   ├── Server Manager: Add Roles and Features
+│   │   ├── Select Feature: Failover Clustering (all nodes)
+│   │   ├── Management Tools: Failover Cluster Manager GUI
+│   │   └── PowerShell: Install-WindowsFeature Failover-Clustering, RSAT-Clustering
+│   │
+│   ├── Validate Cluster Configuration
+│   │   ├── Failover Cluster Manager: Validate Configuration Wizard
+│   │   ├── Tests: Inventory, Network, Storage, System Config
+│   │   ├── Review Report: Address critical errors, Review warnings
+│   │   └── Certification: Full validation required for Microsoft support
+│   │
+│   ├── Create Cluster
+│   │   ├── Failover Cluster Manager: Create Cluster Wizard
+│   │   ├── Cluster Name: Unique AD name, DNS registration
+│   │   ├── IP Address: Static IP for cluster management
+│   │   ├── Add Nodes: All participating servers
+│   │   └── Storage: Add shared disks (if any, Not for AG)
+│   │
+│   └── Configure Quorum
+│       ├── More Actions → Configure Cluster Quorum Settings
+│       ├── Select Quorum Model: Based on node count, Storage availability
+│       ├── File Share Witness: \FileServer\Share, Permissions (Cluster name object)
+│       └── Verify: Quorum Configuration summary
+│
+├── WSFC Networking
+│   ├── Network Roles
+│   │   ├── Public (Client): Application connectivity, Client access
+│   │   ├── Private (Heartbeat): Cluster communication, Node health
+│   │   ├── Storage (if applicable): iSCSI, SAN traffic
+│   │   └── Network Isolation: Separate VLANs/subnets for each role
+│   │
+│   ├── Network Configuration
+│   │   ├── Static IPs: Preferred for all networks
+│   │   ├── Metric: Set lowest metric on heartbeat (prefer this network)
+│   │   ├── Network Role: Configure in cluster (Cluster/Client/None)
+│   │   └── Cluster Networks: View in Failover Cluster Manager
+│   │
+│   └── Heartbeat
+│       ├── Purpose: Node availability detection
+│       ├── Frequency: Every 1 second (default)
+│       ├── Timeout: 5 missed heartbeats = Node down (default)
+│       └── Tuning: SameSubnetThreshold, CrossSubnetThreshold (PowerShell)
+│
+├── Cluster Resources & Dependencies
+│   ├── Resource Types
+│   │   ├── IP Address: Virtual IP for cluster
+│   │   ├── Network Name: Virtual computer name (VNN)
+│   │   ├── Physical Disk: Shared storage (FCI)
+│   │   ├── File Share: SMB shares
+│   │   └── SQL Server: Database engine resource (FCI)
+│   │
+│   ├── Resource Dependencies
+│   │   ├── Dependency Chain: E.g., SQL → Disk → Network Name → IP
+│   │   ├── Failure Impact: Dependent resources fail if dependency fails
+│   │   └── View: Resource properties → Dependencies tab
+│   │
+│   ├── Resource States
+│   │   ├── Online: Resource active and available
+│   │   ├── Offline: Resource intentionally stopped
+│   │   ├── Failed: Resource failed to start/stay online
+│   │   └── Pending: Transitioning between states
+│   │
+│   └── Failover Policies
+│       ├── Affect the Resource: Restart locally
+│       ├── Affect the Group: Move group (failover)
+│       ├── Maximum Restarts: Threshold before failover (default 3)
+│       └── Period: Time window for restart count (default 15 min)
+│
+├── Cluster Management
+│   ├── Failover Cluster Manager (GUI)
+│   │   ├── Cluster Summary: Node status, Quorum, Resource groups
+│   │   ├── Nodes: Add/Remove, Pause/Resume, Evict
+│   │   ├── Storage: Shared disks (if applicable)
+│   │   ├── Networks: Configure roles, View topology
+│   │   └── Roles: SQL FCI, AG listener, Generic services
+│   │
+│   ├── PowerShell Management
+│   │   ├── Get-Cluster: Cluster info
+│   │   ├── Get-ClusterNode: Node status
+│   │   ├── Get-ClusterResource: Resource status
+│   │   ├── Move-ClusterGroup: Manual failover
+│   │   ├── Test-Cluster: Validation tests
+│   │   └── Set-ClusterQuorum: Configure quorum
+│   │
+│   └── Cluster Logs
+│       ├── Location: C:\Windows\Cluster\Reports
+│       ├── Generate: Get-ClusterLog (PowerShell)
+│       ├── Analysis: Search for errors, Warnings, Failover events
+│       └── Retention: Automatic cleanup (default 7 days)
+│
+├── WSFC for SQL Server FCI
+│   ├── Shared Storage Requirement
+│   │   ├── SAN: Fiber Channel, iSCSI
+│   │   ├── SMB 3.0 File Share: Windows 2012+, SQL 2012+
+│   │   ├── Storage Spaces Direct (S2D): Windows 2016+
+│   │   └── Disk Configuration: Shared disk visible to all nodes
+│   │
+│   ├── FCI Installation
+│   │   ├── WSFC First: Cluster must exist before SQL install
+│   │   ├── SQL Setup: New SQL Server Failover Cluster Installation
+│   │   ├── Network Name: Virtual SQL Server name
+│   │   ├── IP Address: Virtual IP for SQL Server
+│   │   ├── Shared Disks: Select for data, log, tempdb
+│   │   └── Add Nodes: After primary install, Run setup on other nodes
+│   │
+│   └── FCI Failover
+│       ├── Automatic: SQL Service failure, Node failure
+│       ├── Manual: Right-click role → Move → Select Node
+│       ├── Downtime: Typically 30-60 seconds (shutdown + startup)
+│       └── Limitation: All databases fail over together (instance-level)
+│
+├── WSFC Monitoring
+│   ├── Health Checks
+│   │   ├── Cluster Service: Running on all nodes?
+│   │   ├── Quorum: Healthy quorum status
+│   │   ├── Node Status: Online, Paused, Down
+│   │   ├── Resource Status: All online?
+│   │   └── Network: Heartbeat operational
+│   │
+│   ├── Event Logs
+│   │   ├── Failover Clustering Events: Event Viewer → Applications and Services
+│   │   ├── Key Events: Node join/leave, Failover, Quorum loss, Resource failures
+│   │   └── Filter: Event IDs 1069 (resource failure), 1135 (node removed)
+│   │
+│   └── Alerts
+│       ├── Node Down: Critical alert
+│       ├── Quorum Loss: Cluster cannot function
+│       ├── Resource Failure: Investigate failed resource
+│       └── Network Issues: Heartbeat failures
+│
+├── WSFC Troubleshooting
+│   ├── Node Cannot Join Cluster
+│   │   ├── Symptoms: Add Node fails, Node shows Down
+│   │   ├── Causes: Network, Firewall, Permissions, Different OS version
+│   │   └── Resolution
+│   │       ├── Firewall: Disable temporarily to test
+│   │       ├── Cluster Service Account: Verify permissions
+│   │       ├── Event Logs: Check for specific errors
+│   │       └── Validation: Run Test-Cluster
+│   │
+│   ├── Quorum Loss
+│   │   ├── Symptoms: Cluster offline, Resources unavailable
+│   │   ├── Causes: Majority nodes down, Witness unavailable
+│   │   └── Resolution
+│   │       ├── Start Nodes: Bring sufficient nodes online
+│   │       ├── Force Quorum: Start-ClusterNode -ForceQuorum (emergency)
+│   │       ├── Fix Witness: Restore file share/disk witness
+│   │       └── Adjust NodeWeight: Set-ClusterNode -NodeWeight 0 (exclude from quorum)
+│   │
+│   ├── Resource Failures
+│   │   ├── Symptoms: Resource in Failed state, Group offline
+│   │   ├── Investigation: Resource properties → Events, Cluster log
+│   │   └── Resolution
+│   │       ├── Dependencies: Verify all dependencies online
+│   │       ├── Bring Online: Right-click resource → Bring Online
+│   │       ├── Reset Failure Count: Remove temporary failures
+│   │       └── Move Group: Failover to another node
+│   │
+│   └── Network Partitioning (Split-Brain)
+│       ├── Symptoms: Cluster divided, Multiple primaries possible
+│       ├── Cause: Heartbeat network failure
+│       └── Prevention
+│           ├── Redundant Networks: Multiple heartbeat paths
+│           ├── Witness: Provides tiebreaker vote
+│           ├── Dynamic Quorum: Automatic vote adjustment (Windows 2012+)
+│           └── Lower Thresholds: More tolerant to brief outages
+│
+└── WSFC Best Practices
+├── Design: 2-3 nodes for HA, Odd number or use witness
+├── Quorum: File Share Witness for AG, Regularly test witness
+├── Networking: Redundant NICs, Separate heartbeat network
+├── Patching: Stagger updates (one node at a time), Test in dev
+├── Monitoring: Proactive alerts for node/quorum issues
+├── Documentation: Network diagram, Failover procedures
+└── Testing: Regular failover drills, Simulate node failures
+│
+│
+MODULE 15: LOG SHIPPING & DATABASE MIRRORING ═══════════════════════════════════
+│
+├── Log Shipping Overview
+│   ├── Purpose: Disaster recovery, Standby database, Reporting
+│   ├── Method: Automated backup → Copy → Restore log backups
+│   ├── Data Latency: Minutes to hours (configurable)
+│   ├── Manual Failover: No automatic failover capability
+│   └── SQL Versions: All editions, All versions
+│
+├── Log Shipping Architecture
+│   ├── Primary Server: Production database, Transaction log backups
+│   ├── Secondary Server(s): Standby databases, Restores log backups
+│   ├── Monitor Server (Optional): Centralized monitoring, Alerts
+│   ├── Backup Jobs: Primary server, Scheduled backups
+│   ├── Copy Jobs: Secondary server(s), Copy backup files
+│   └── Restore Jobs: Secondary server(s), Apply log backups
+│
+├── Log Shipping Configuration
+│   ├── Prerequisites
+│   │   ├── Full Recovery Model: Required on primary
+│   │   ├── Full Backup: Initial backup to seed secondary
+│   │   ├── Network Share: Accessible to primary and secondary
+│   │   ├── Service Accounts: Permissions on share, SQL permissions
+│   │   └── Backup Schedule: Frequent enough for RPO requirements
+│   │
+│   ├── Setup Steps
+│   │   ├── 1. Enable Log Shipping (Primary)
+│   │   │   └── Right-click DB → Properties → Transaction Log Shipping
+│   │   │
+│   │   ├── 2. Configure Backup Settings
+│   │   │   ├── Backup Folder: Network share path (UNC)
+│   │   │   ├── Backup Job Name: Descriptive name
+│   │   │   ├── Schedule: Every 15-60 minutes (based on RPO)
+│   │   │   ├── Compression: Enable for faster transfers
+│   │   │   └── Alert if no backup: Threshold in minutes
+│   │   │
+│   │   ├── 3. Add Secondary Server
+│   │   │   ├── Connect to Secondary: Instance and authentication
+│   │   │   ├── Initialize Secondary: Restore full backup, or No initialization
+│   │   │   ├── Restore Mode: NORECOVERY (cannot query), STANDBY (read-only)
+│   │   │   ├── Copy Files: Destination folder on secondary
+│   │   │   ├── Copy Job Schedule: Slightly after backup (5-10 min delay)
+│   │   │   ├── Restore Job Schedule: After copy (another 5-10 min)
+│   │   │   └── Disconnect Users: Required for STANDBY mode restores
+│   │   │
+│   │   ├── 4. Configure Monitor Server (Optional)
+│   │   │   ├── Monitor Instance: Can be primary, secondary, or separate
+│   │   │   ├── Monitor Job: Checks backup/copy/restore history
+│   │   │   ├── Alert Thresholds: Backup age, Copy age, Restore age
+│   │   │   └── Alert Recipients: Database Mail operators
+│   │   │
+│   │   └── 5. Initialize Secondary Database
+│   │       ├── Restore Full Backup: WITH NORECOVERY/STANDBY
+│   │       ├── Restore Recent Logs: Catch up to current
+│   │       └── Verify: Check restore history, Database state
+│   │
+│   └── Configuration via T-SQL
+│       ├── sp_add_log_shipping_primary_database
+│       ├── sp_add_log_shipping_primary_secondary
+│       ├── sp_add_log_shipping_secondary_primary
+│       └── sp_add_log_shipping_secondary_database
+│
+├── Log Shipping Modes
+│   ├── NORECOVERY Mode
+│   │   ├── Database State: RESTORING, Not accessible
+│   │   ├── Use Case: Pure DR, No reporting needs
+│   │   ├── Advantage: Continuous log restore, Minimal lag
+│   │   └── Limitation: Cannot query database
+│   │
+│   └── STANDBY Mode
+│       ├── Database State: READ_ONLY, Accessible between restores
+│       ├── Use Case: DR + Reporting, Query standby database
+│       ├── Undo File: .tuf file stores uncommitted transactions
+│       ├── Restore Interruption: Users disconnected during restore
+│       └── Trade-off: Slight restore delay vs query capability
+│
+├── Log Shipping Failover
+│   ├── Planned Failover (Manual)
+│   │   ├── 1. Backup Tail-Log on Primary
+│   │   │   └── BACKUP LOG WITH NORECOVERY (primary becomes unavailable)
+│   │   │
+│   │   ├── 2. Copy Tail-Log to Secondary
+│   │   │   └── Manually copy file, Or wait for copy job
+│   │   │
+│   │   ├── 3. Restore All Pending Logs on Secondary
+│   │   │   └── Including tail-log, WITH RECOVERY (final step)
+│   │   │
+│   │   ├── 4. Bring Secondary Online
+│   │   │   └── RESTORE DATABASE [DB] WITH RECOVERY
+│   │   │
+│   │   ├── 5. Redirect Applications
+│   │   │   └── Change connection strings, DNS update, Or alias
+│   │   │
+│   │   └── 6. Disable Log Shipping Jobs
+│   │       └── On old primary, Monitor server
+│   │
+│   ├── Unplanned Failover (Emergency)
+│   │   ├── Primary Unavailable: Cannot take tail-log backup
+│   │   ├── Data Loss: Transactions since last log backup lost
+│   │   ├── Restore Secondary: WITH RECOVERY (no tail-log)
+│   │   ├── Assess Loss: Compare last backup time vs failure time
+│   │   └── Communicate: Inform stakeholders of data loss
+│   │
+│   └── Failback to Primary
+│       ├── Repair Primary: Resolve original issue
+│       ├── Reverse Log Shipping: Setup secondary → primary direction
+│       ├── OR Fresh Setup: Full backup from new primary, Reconfigure
+│       └── Testing: Validate before production use
+│
+├── Log Shipping Monitoring
+│   ├── Monitor Server Tables (msdb)
+│   │   ├── log_shipping_monitor_primary: Primary backup history
+│   │   ├── log_shipping_monitor_secondary: Secondary restore history
+│   │   ├── log_shipping_monitor_history_detail: Detailed history
+│   │   └── log_shipping_monitor_error_detail: Error log
+│   │
+│   ├── Key Metrics
+│   │   ├── Last Backup: Time since last successful backup
+│   │   ├── Last Copy: Time since last successful copy
+│   │   ├── Last Restore: Time since last successful restore
+│   │   ├── Latency: Total time lag (backup + copy + restore)
+│   │   └── Restore Threshold: Alert if exceeds threshold
+│   │
+│   ├── SQL Agent Jobs
+│   │   ├── LSBackup_: Backup job on primary
+│   │   ├── LSCopy_: Copy job on secondary
+│   │   ├── LSRestore_: Restore job on secondary
+│   │   └── LSAlert_: Monitor job (if monitor server configured)
+│   │
+│   └── Alerts
+│       ├── Backup Failure: Job failure, File system issues
+│       ├── Copy Failure: Network issues, Permissions
+│       ├── Restore Failure: Corrupt backup, Disk space
+│       └── High Latency: Exceeds acceptable RPO
+│
+├── Log Shipping Troubleshooting
+│   ├── Backup Job Failures
+│   │   ├── Disk Space: Full disk on primary or backup location
+│   │   ├── Permissions: SQL Service account cannot write to share
+│   │   └── Long Transactions: Backup cannot complete
+│   │
+│   ├── Copy Job Failures
+│   │   ├── Network Issues: UNC path inaccessible
+│   │   ├── Permissions: Secondary service account cannot read share
+│   │   └── Disk Space: Secondary copy location full
+│   │
+│   ├── Restore Job Failures
+│   │   ├── Corrupt Backup: File damaged during transfer
+│   │   ├── Out of Sequence: Missing log backup in chain
+│   │   ├── Disk Space: Secondary data/log disk full
+│   │   └── Active Users: STANDBY mode, Users prevent restore
+│   │
+│   └── High Latency
+│       ├── Network Bandwidth: Slow file transfer
+│       ├── Backup Size: Large transaction logs
+│       ├── Job Frequency: Infrequent backups/restores
+│       └── Secondary Load: Restore taking too long
+│
+├── Database Mirroring (DEPRECATED)
+│   ├── Status: Deprecated in SQL 2012, Use AlwaysOn AG instead
+│   ├── Purpose: High availability, Automatic failover
+│   ├── Modes
+│   │   ├── High-Safety: Synchronous, Automatic failover (with witness)
+│   │   ├── High-Performance: Asynchronous, Manual failover
+│   │   └── Witness Server: Third server for automatic failover
+│   │
+│   ├── Architecture
+│   │   ├── Principal: Primary database, Read-write
+│   │   ├── Mirror: Standby database, Synchronized copy
+│   │   └── Witness: Quorum server (optional), Automatic failover
+│   │
+│   ├── Why Deprecated
+│   │   ├── Database-Level Only: Single database limitation
+│   │   ├── No Read Access: Mirror cannot be queried (snapshot workaround)
+│   │   ├── Limited Scalability: One mirror only
+│   │   └── AlwaysOn Better: Multiple replicas, Readable secondaries, Groups
+│   │
+│   └── Migration Path
+│       ├── Remove Mirroring: ALTER DATABASE SET PARTNER OFF
+│       ├── Setup AlwaysOn AG: Configure availability group
+│       ├── Testing: Validate failover, Application connectivity
+│       └── Cutover: Switch during maintenance window
+│
+└── Log Shipping vs Mirroring vs AlwaysOn
+├── Log Shipping
+│   ├── Pros: Simple, All editions, Multiple secondaries, Flexible schedules
+│   ├── Cons: Manual failover, Minutes latency, Separate databases
+│   └── Use: Budget DR solution, Reporting (STANDBY mode)
+│
+├── Database Mirroring (Deprecated)
+│   ├── Pros: Automatic failover, Synchronous option
+│   ├── Cons: Single database, No read access, Deprecated
+│   └── Use: Legacy systems only, Migrate to AG
+│
+└── AlwaysOn AG
+├── Pros: Multiple replicas, Readable secondaries, Groups of databases, Automatic failover
+├── Cons: Enterprise edition (Standard = 1 secondary), Complex setup
+└── Use: Modern HA/DR solution, Preferred for new deployments
+│
+│
+MODULE 16: REPLICATION (TRANSACTIONAL, SNAPSHOT) ═══════════════════════════════
+│
+├── Replication Overview
+│   ├── Purpose: Data distribution, Reporting, Load balancing
+│   ├── Method: Publish-Subscribe model
+│   ├── Latency: Near real-time (transactional) to scheduled (snapshot)
+│   └── Use Cases: DW ETL, Reporting, Data consolidation
+│
+├── Replication Components
+│   ├── Publisher: Source database, Articles to replicate
+│   ├── Subscriber: Destination database(s), Receives replicated data
+│   ├── Distributor: Middleman, Stores replication metadata, Distributes changes
+│   ├── Publication: Collection of articles to replicate
+│   ├── Article: Table, Stored procedure, View, or Function
+│   └── Subscription: Subscriber's registration to a publication
+│
+├── Replication Types
+│   ├── Snapshot Replication
+│   │   ├── Method: Full copy at scheduled intervals
+│   │   ├── Use Case: Infrequent changes, Reference data, Full refresh acceptable
+│   │   ├── Pros: Simple, No continuous overhead
+│   │   ├── Cons: High latency, Network/CPU spike during snapshot
+│   │   └── Agents: Snapshot Agent, Distribution Agent
+│   │
+│   ├── Transactional Replication
+│   │   ├── Method: Initial snapshot + Continuous transaction replication
+│   │   ├── Use Case: Near real-time, OLTP to DW, Reporting
+│   │   ├── Pros: Low latency, Continuous sync
+│   │   ├── Cons: Overhead on publisher, Complex troubleshooting
+│   │   └── Agents: Snapshot, Log Reader, Distribution Agents
+│   │
+│   └── Merge Replication
+│       ├── Method: Bidirectional synchronization
+│       ├── Use Case: Mobile users, Occasionally connected, Conflict resolution
+│       ├── Pros: Bidirectional, Offline support
+│       ├── Cons: Complex, Conflict handling, Performance overhead
+│       └── Agents: Snapshot, Merge Agents
+│
+├── Replication Agents
+│   ├── Snapshot Agent
+│   │   ├── Purpose: Generate initial snapshot (schema + data)
+│   │   ├── Runs: At publication creation, Or on-demand/scheduled
+│   │   ├── Output: .sch (schema), .bcp (data) files in snapshot folder
+│   │   └── Impact: Locks tables briefly during snapshot
+│   │
+│   ├── Log Reader Agent
+│   │   ├── Purpose: Reads transaction log (publisher), Identifies replicated transactions
+│   │   ├── Runs: Continuously (transactional replication)
+│   │   ├── Marks: Sets replication flag in log (allows log truncation)
+│   │   └── Stores: Commands in distribution database
+│   │
+│   ├── Distribution Agent
+│   │   ├── Purpose: Applies changes to subscriber
+│   │   ├── Runs: Continuously (push) or on-demand (pull)
+│   │   ├── Reads: Distribution database commands
+│   │   └── Applies: INSERT/UPDATE/DELETE to subscriber tables
+│   │
+│   └── Merge Agent
+│       ├── Purpose: Synchronizes changes bidirectionally
+│       ├── Conflict Detection: Identifies conflicting changes
+│       ├── Conflict Resolution: Applies resolution policy
+│       └── Runs: On schedule or on-demand
+│
+├── Distributor Configuration
+│   ├── Local Distributor
+│   │   ├── Same Instance as Publisher: Simple setup
+│   │   ├── Pros: No additional server needed
+│   │   ├── Cons: Additional load on publisher
+│   │   └── Use: Small-scale replication, Dev/Test
+│   │
+│   ├── Remote Distributor
+│   │   ├── Separate Instance: Offload distribution work
+│   │   ├── Pros: Reduced publisher load, Better scalability
+│   │   ├── Cons: Additional server, Network dependency
+│   │   └── Use: Production, High-volume replication
+│   │
+│   └── Setup Steps
+│       ├── Configure Distributor: SSMS → Replication → Configure Distribution
+│       ├── Distribution Database: msdb, Default or custom name
+│       ├── Snapshot Folder: UNC path accessible to agents
+│       ├── Publishers: Register publishers using this distributor
+│       └── Distributor Properties: Retention periods, Agent profiles
+│
+├── Transactional Replication Setup
+│   ├── Prerequisites
+│   │   ├── Full Recovery Model: Required on publisher database
+│   │   ├── Primary Keys: All replicated tables must have PK
+│   │   ├── Distributor Configured: Local or remote
+│   │   ├── Permissions: Sysadmin or db_owner on all servers
+│   │   └── Snapshot Folder: Network share with appropriate permissions
+│   │
+│   ├── Create Publication
+│   │   ├── New Publication Wizard: SSMS → Replication → Local Publications
+│   │   ├── Publication Database: Select source database
+│   │   ├── Publication Type: Transactional
+│   │   ├── Articles: Select tables, SPs, views, functions
+│   │   ├── Filter Rows: Optional WHERE clause per table
+│   │   ├── Snapshot Agent: Schedule immediate or recurring
+│   │   ├── Agent Security: Service accounts or specific credentials
+│   │   └── Publication Name: Descriptive identifier
+│   │
+│   ├── Create Subscription
+│   │   ├── New Subscription Wizard: Right-click Publication
+│   │   ├── Subscription Type
+│   │   │   ├── Push: Distribution Agent runs on distributor
+│   │   │   └── Pull: Distribution Agent runs on subscriber
+│   │   │
+│   │   ├── Subscribers: Select destination instance and database
+│   │   ├── Synchronization Schedule: Continuous or scheduled
+│   │   ├── Initialize: Immediately or at first sync
+│   │   └── Agent Security: Credentials for subscriber connection
+│   │
+│   └── Initialize Subscription
+│       ├── Snapshot Applied: Schema + Data copied to subscriber
+│       ├── Replication Starts: Log Reader and Distribution Agents active
+│       └── Verify: Check replication monitor, Test data changes
+│
+├── Replication Monitoring
+│   ├── Replication Monitor (SSMS)
+│   │   ├── Launch: SSMS → Replication → Launch Replication Monitor
+│   │   ├── Publishers: Add publishers to monitor
+│   │   ├── Publication Status: Active, Errors, Warnings
+│   │   ├── Subscription Status: Synchronized, Pending, Errors
+│   │   ├── Agent Details: Last run, Duration, Commands delivered
+│   │   └── Tracer Tokens: Measure latency (publisher → subscriber)
+│   │
+│   ├── Distribution Database
+│   │   ├── MSrepl_commands: Pending commands
+│   │   ├── MSrepl_transactions: Transactions in queue
+│   │   ├── MSdistribution_history: Agent execution history
+│   │   └── MSdistribution_agents: Agent information
+│   │
+│   ├── Key Metrics
+│   │   ├── Latency: Time between publisher commit and subscriber apply
+│   │   ├── Undistributed Commands: Backlog in distribution database
+│   │── Delivery Rate: Commands per second
+│   │   ├── Agent Uptime: Is agent running continuously?
+│   │   └── Error Count: Recent agent failures
+│   │
+│   └── Alerts
+│       ├── Replication Failure: Agent down, Publication suspended
+│       ├── High Latency: Exceeds threshold (e.g., >5 minutes)
+│       ├── Large Backlog: Undistributed commands >threshold
+│       └── Expired Subscription: Subscriber out of retention period
+│
+├── Replication Troubleshooting
+│   ├── High Latency
+│   │   ├── Symptoms: Subscriber data significantly behind publisher
+│   │   ├── Causes
+│   │   │   ├── Network Bandwidth: Slow connection
+│   │   │   ├── Subscriber Load: High CPU/Disk on subscriber
+│   │   │   ├── Large Transactions: Bulk operations on publisher
+│   │   │   └── Agent Delay: Distribution Agent not running continuously
+│   │   │
+│   │   └── Resolution
+│   │       ├── Network: Increase bandwidth, Check packet loss
+│   │       ├── Subscriber Performance: Add resources, Optimize indexes
+│   │       ├── Batch Size: Adjust -CommitBatchSize, -PollingInterval
+│   │       └── Filter Articles: Replicate only necessary tables
+│   │
+│   ├── Log Reader Agent Failures
+│   │   ├── Symptoms: Transaction log growing, Replication stopped
+│   │   ├── Causes
+│   │   │   ├── Permissions: Agent account lacks access
+│   │   │   ├── Corrupt Log: Damaged transaction log
+│   │   │   └── Schema Changes: DDL on replicated objects
+│   │   │
+│   │   └── Resolution
+│   │       ├── Check Agent History: Replication Monitor → Agent Details
+│   │       ├── Permissions: Verify db_owner or replication role
+│   │       ├── Restart Agent: Replication Monitor → Start
+│   │       └── Schema Changes: Use sp_repldone carefully (last resort)
+│   │
+│   ├── Subscriber Apply Failures
+│   │   ├── Symptoms: Distribution Agent errors, Commands not applied
+│   │   ├── Causes
+│   │   │   ├── Constraint Violations: PK/FK conflicts
+│   │   │   ├── Data Type Mismatch: Schema drift
+│   │   │   ├── Disk Full: Subscriber out of space
+│   │   │   └── Lock Timeout: Subscriber table locked by query
+│   │   │
+│   │   └── Resolution
+│   │       ├── Review Error: Distribution Agent history
+│   │       ├── Skip Transaction: sp_MSrepl_skiperror (data loss risk)
+│   │       ├── Reinitialize: Generate new snapshot, Resync subscriber
+│   │       └── Schema Sync: Ensure publisher and subscriber schemas match
+│   │
+│   └── Transaction Log Won't Truncate
+│       ├── Symptoms: Log file growing despite log backups
+│       ├── Cause: Log Reader Agent hasn't marked transactions as replicated
+│       ├── Investigation
+│       │   └── DBCC LOGINFO, sys.databases (log_reuse_wait_desc = 'REPLICATION')
+│       │
+│       └── Resolution
+│           ├── Start Log Reader Agent: Verify it's running
+│           ├── Check Latency: Replication Monitor
+│           ├── Emergency: sp_repldone (marks all as replicated, DATA LOSS RISK)
+│           └── Remove Replication: If no longer needed
+│
+├── Replication Best Practices
+│   ├── Design: Remote distributor for production, Filter articles (minimize data)
+│   ├── Primary Keys: Mandatory on all replicated tables
+│   ├── Indexing: Proper indexes on subscribers (apply performance)
+│   ├── Monitoring: Replication Monitor dashboard, Tracer tokens weekly
+│   ├── Maintenance: Regular snapshot refreshes, Cleanup old distribution history
+│   ├── Avoid: DDL changes during replication (use sp_replcmds alternatives)
+│   └── Testing: Test failover, Reinitialize procedures in dev/test
+│
+└── Replication vs Other HA/DR Solutions
+├── Replication
+│   ├── Pros: Flexible (table-level), Multiple subscribers, Read-write on subscriber
+│   ├── Cons: Complex troubleshooting, Overhead, Not true HA (no auto-failover)
+│   └── Use: Reporting, Data consolidation, Partial data distribution
+│
+├── Log Shipping
+│   ├── Pros: Simple, Database-level, Disaster recovery
+│   ├── Cons: Manual failover, Read-only (STANDBY), Higher latency
+│   └── Use: DR solution, Budget-friendly HA
+│
+└── AlwaysOn AG
+├── Pros: Automatic failover, Multiple replicas, Readable secondaries
+├── Cons: Enterprise edition, Database-level (not table)
+└── Use: True HA/DR, Modern solution
+│
+│
+MODULE 17: CAPACITY PLANNING & STORAGE MANAGEMENT ══════════════════════════════
+│
+├── Capacity Planning Fundamentals
+│   ├── Purpose: Forecast resource needs, Prevent outages, Budget planning
+│   ├── Key Metrics: CPU, Memory, Disk Space, Disk I/O, Network
+│   ├── Planning Horizon: 6-12 months typical, 3-5 years for major investments
+│   └── Review Frequency: Quarterly reviews, Monthly for fast-growing systems
+│
+├── Baseline & Trend Analysis
+│   ├── Establish Baseline
+│   │   ├── Capture Current State: CPU, Memory, Disk, I/O during normal operations
+│   │   ├── Performance Counters: PerfMon collection (30-day minimum)
+│   │   ├── Database Sizes: sys.master_files, Weekly snapshots
+│   │   ├── Workload: Query stats, Transactions per second, Connections
+│   │   └── Peak vs Average: Identify peak usage periods
+│   │
+│   ├── Trend Analysis
+│   │   ├── Historical Data: 6-12 months of metrics
+│   │   ├── Growth Rate: Calculate monthly/quarterly growth percentage
+│   │   │   └── Formula: (Current - Previous) / Previous * 100
+│   │   │
+│   │   ├── Forecasting: Linear regression, Exponential (if accelerating)
+│   │   └── Seasonality: Account for business cycles (year-end, holidays)
+│   │
+│   └── Key Indicators
+│       ├── Database Growth Rate: MB/day, GB/month
+│       ├── Transaction Growth: TPS increase over time
+│       ├── User Growth: Active connections trend
+│       ├── Query Complexity: Average execution time trends
+│       └── Backup Size Growth: Storage capacity planning
+│
+├── Storage Capacity Planning
+│   ├── Database Size Forecasting
+│   │   ├── Current Size: sys.master_files (size * 8 KB / 1024 / 1024)
+│   │   ├── Growth Rate: Historical data (6+ months)
+│   │   ├── Forecast: Current Size + (Growth Rate * Time Period)
+│   │   ├── Buffer: Add 20-30% buffer for unexpected growth
+│   │   └── Index Space: Factor in index rebuild space (2x largest index)
+│   │
+│   ├── Transaction Log Sizing
+│   │   ├── Workload-Based: Measure log generation rate (MB/hour)
+│   │   ├── Backup Frequency: Higher frequency = smaller log
+│   │   ├── Formula: Log Rate * Backup Interval * 2 (safety margin)
+│   │   ├── Monitor: sys.dm_db_log_space_usage, VLF count
+│   │   └── Best Practice: Fixed size, Prevent excessive autogrow
+│   │
+│   ├── TempDB Sizing
+│   │   ├── Workload-Dependent: Sorts, Hash joins, Temp tables, Version store
+│   │   ├── Baseline: Monitor sys.dm_db_file_space_usage during peak
+│   │   ├── Formula: Peak Usage * 1.5 (growth buffer)
+│   │   ├── Multiple Files: 1 per core (max 8 initially), Equal size
+│   │   └── Separate Disk: Fast I/O, Isolated from user databases
+│   │
+│   ├── Backup Storage
+│   │   ├── Full Backup Size: Typically 30-60% of database size (compression)
+│   │   ├── Differential: 10-30% of full backup (cumulative)
+│   │   ├── Log Backups: Sum of log generation between backups
+│   │   ├── Retention: Days/weeks of retention * Daily backup size
+│   │   └── Formula: (Full * Retention Days/7) + (Diff * Retention Days) + (Log * Retention * Frequency)
+│   │
+│   └── Storage Alerts
+│       ├── Data Files: <15% free space
+│       ├── Log Files: <20% free space
+│       ├── Backup Location: <20% free space
+│       └── TempDB: <20% free space
+│
+├── Disk I/O Capacity Planning
+│   ├── I/O Performance Metrics
+│   │   ├── IOPS: Input/Output Operations Per Second
+│   │   ├── Latency: Avg Disk sec/Read, Avg Disk sec/Write (<20ms target)
+│   │   ├── Throughput: MB/sec read and write
+│   │   └── Queue Length: Avg Disk Queue Length (<2 per spindle)
+│   │
+│   ├── Calculate IOPS Requirements
+│   │   ├── Baseline: Current IOPS (PerfMon: Disk Transfers/sec)
+│   │   ├── Read/Write Ratio: Separate read and write IOPS
+│   │   ├── Growth Factor: Apply database growth rate
+│   │   ├── Peak Load: 2-3x average for peak periods
+│   │   └── Disk Type
+│   │       ├── HDD (7200 RPM): ~75-100 IOPS
+│   │       ├── HDD (15K RPM): ~175-210 IOPS
+│   │       ├── SSD (SATA): ~5,000-10,000 IOPS
+│   │       └── SSD (NVMe): ~50,000-500,000 IOPS
+│   │
+│   ├── Storage Configuration
+│   │   ├── RAID Levels
+│   │   │   ├── RAID 1: 50% usable, Good read performance
+│   │   │   ├── RAID 5: 75% usable (4 disks), Slow writes (parity)
+│   │   │   ├── RAID 10: 50% usable, Best performance (recommended)
+│   │   │   └── RAID 6: 67% usable (6 disks), Double parity
+│   │   │
+│   │   ├── Disk Separation
+│   │   │   ├── OS: Separate volume for Windows
+│   │   │   ├── Data Files: Dedicated volume (RAID 10)
+│   │   │   ├── Log Files: Separate volume (RAID 10), Sequential writes
+│   │   │   ├── TempDB: Separate volume (RAID 10 or SSD)
+│   │   │   └── Backups: Separate volume (RAID 5/6 acceptable)
+│   │   │
+│   │   └── SAN vs Local Storage
+│   │       ├── SAN: Centralized, Scalable, Expensive
+│   │       ├── Local (DAS): Performance, Cost-effective, Limited scalability
+│   │       └── Cloud (Azure/AWS): Elastic, Pay-per-use, Variable performance
+│   │
+│   └── I/O Monitoring
+│       ├── sys.dm_io_virtual_file_stats: Per-file I/O statistics
+│       ├── PerfMon: Disk counters (PhysicalDisk object)
+│       ├── Wait Stats: PAGEIOLATCH_*, WRITELOG waits
+│       └── Alerts: Latency >20ms, Queue length >disk count * 2
+│
+├── CPU Capacity Planning
+│   ├── CPU Utilization Baseline
+│   │   ├── Average CPU: Target 40-60% during normal operations
+│   │   ├── Peak CPU: <80% during peak periods
+│   │   ├── Sustained High CPU: >80% for extended periods = Problem
+│   │   └── Reserve Capacity: 20-30% headroom for growth/spikes
+│   │
+│   ├── CPU Forecasting
+│   │   ├── Current Usage: PerfMon (\Processor(_Total)% Processor Time)
+│   │   ├── Query Growth: More queries = More CPU
+│   │   ├── Parallelism: MAXDOP settings impact CPU usage
+│   │   └── Forecast: If growing 5%/month, when will reach 80%?
+│   │
+│   ├── Scaling Options
+│   │   ├── Scale Up: Add cores to existing server (vertical scaling)
+│   │   ├── Scale Out: Add read replicas (AG secondaries, Replication)
+│   │   ├── Optimize Queries: Reduce CPU before hardware upgrade
+│   │   └── Offload Workloads: Reporting to secondary, ETL to off-hours
+│   │
+│   └── CPU Monitoring
+│       ├── sys.dm_os_schedulers: CPU utilization per scheduler
+│       ├── sys.dm_exec_query_stats: Top CPU queries
+│       ├── Wait Stats: SOS_SCHEDULER_YIELD (CPU pressure)
+│       └── PerfMon: % Processor Time, Processor Queue Length
+│
+├── Memory Capacity Planning
+│   ├── Memory Requirements
+│   │   ├── Buffer Pool: Data/index pages (largest consumer)
+│   │   ├── Plan Cache: Compiled query plans
+│   │   ├── OS: 4GB + (4GB per 16GB RAM) reserved for OS
+│   │   ├── Other Apps: SSRS, SSIS, Third-party on same server
+│   │   └── Formula: Database Size * 0.7 (70% in memory) + OS + Apps
+│   │
+│   ├── Memory Metrics
+│   │   ├── Page Life Expectancy (PLE): >300 seconds target
+│   │   ├── Buffer Cache Hit Ratio: >90% target
+│   │   ├── Memory Grants Pending: Should be 0 (memory pressure if >0)
+│   │   ├── Target vs Total Server Memory: Should be equal (stable)
+│   │   └── Available MBytes: OS counter, >1GB comfortable
+│   │
+│   ├── Memory Forecasting
+│   │   ├── Database Growth: More data = More memory needed
+│   │   ├── PLE Trend: Declining PLE = Memory pressure developing
+│   │   ├── Plan Cache Growth: More queries = More plans
+│   │   └── Forecast: When will PLE drop below 300 consistently?
+│   │
+│   └── Scaling Memory
+│       ├── Increase Max Server Memory: Up to (Total RAM - OS - Apps)
+│       ├── Add Physical RAM: If currently maxed out
+│       ├── Offload Workloads: Reporting to secondary
+│       └── Optimize Queries: Reduce memory grants (sorts, hashes)
+│
+├── Storage Management
+│   ├── File Management
+│   │   ├── Pre-Allocate Space: Avoid autogrow fragmentation
+│   │   ├── Fixed Growth: MB increments (not percentage)
+│   │   ├── Monitor Growth: Alert on autogrow events
+│   │   ├── Separate Filegroups: HOT data vs archival
+│   │   └── Multiple Files: Parallel I/O (data files), 1 per core for tempdb
+│   │
+│   ├── Space Reclamation
+│   │   ├── Index Maintenance: Rebuild reclaims fragmented space
+│   │   ├── DBCC SHRINKFILE: Use sparingly (causes fragmentation)
+│   │   ├── Archive Old Data: Move to archival tables/databases
+│   │   ├── Drop Unused Objects: Old temp tables, Unused indexes
+│   │   └── Partitioning: Archive/drop old partitions
+│   │
+│   ├── File Placement Strategy
+│   │   ├── HOT Tables: Place on fastest storage
+│   │   ├── Read-Only Data: Separate filegroup, Less critical storage
+│   │   ├── Archival Data: Compressed, Slow storage acceptable
+│   │   └── Partitioning: Range-partition by date, Slide old data to archive filegroup
+│   │
+│   └── Space Monitoring
+│       ├── sys.dm_db_file_space_usage: Per-file usage
+│       ├── sp_spaceused: Database and table space
+│       ├── sys.dm_db_partition_stats: Per-table/index size
+│       └── Custom Scripts: Alert thresholds, Historical trends
+│
+└── Capacity Planning Best Practices
+├── Document Assumptions: Growth rate basis, Business drivers
+├── Regular Reviews: Quarterly capacity reviews, Annual major planning
+├── Budget Alignment: Coordinate with finance, Forecast costs
+├── Stakeholder Communication: Proactive notifications, No surprises
+├── Test Forecasts: Validate predictions vs actual quarterly
+├── Automation: Automated data collection, Trending dashboards
+└── Contingency: 20-30% buffer in all estimates, Emergency procurement plans
+│
+│
+MODULE 18: MIGRATION & UPGRADE PROJECTS ════════════════════════════════════════
+│
+├── Migration Planning
+│   ├── Migration Types
+│   │   ├── Version Upgrade: SQL 2014 → 2019, In-place or side-by-side
+│   │   ├── Platform Migration: On-prem → Cloud (Azure SQL, AWS RDS)
+│   │   ├── Server Migration: Physical → Virtual, Or new hardware
+│   │   └── Consolidation: Multiple instances → Single instance/server
+│   │
+│   ├── Planning Phase
+│   │   ├── Inventory: Document all databases, Jobs, Logins, Linked servers
+│   │   ├── Compatibility: Check version compatibility, Deprecated features
+│   │   ├── Dependencies: Applications, SSIS packages, Reports, Linked servers
+│   │   ├── Downtime Window: Business-approved maintenance window
+│   │   ├── Rollback Plan: How to revert if migration fails
+│   │   └── Success Criteria: Define measurable success (performance, uptime)
+│   │
+│   ├── Risk Assessment
+│   │   ├── Application Compatibility: Test apps against new version
+│   │   ├── Performance: New optimizer may change plans
+│   │   ├── Security: Authentication, Permissions changes
+│   │   ├── Features: Deprecated features no longer available
+│   │   └── Mitigation: Testing in dev/QA, Phased rollout
+│   │
+│   └── Communication Plan
+│       ├── Stakeholders: IT management, Application owners, End users
+│       ├── Timeline: Key dates, Go/No-Go decision points
+│       ├── Risks: Potential issues, Mitigations
+│       └── Support: Post-migration support plan, Contact info
+│
+├── Pre-Migration Assessment
+│   ├── SQL Server Upgrade Advisor
+│   │   ├── Microsoft Tool: Scans databases for compatibility issues
+│   │   ├── Output: Report of deprecated features, Breaking changes
+│   │   └── Action: Address issues before migration
+│   │
+│   ├── Compatibility Level Check
+│   │   ├── Current Level: sys.databases (compatibility_level)
+│   │   ├── Target Level: New server version default
+│   │   ├── Strategy: Keep old compat level initially, Upgrade after testing
+│   │   └── Query Store: Enable before changing compat level (2016+)
+│   │
+│   ├── Database Inventory
+│   │   ├── Databases: Names, Sizes, Recovery models, Owners
+│   │   ├── SQL Agent Jobs: Export all jobs, Dependencies
+│   │   ├── Logins: Script all logins with SIDs, Passwords
+│   │   ├── Linked Servers: Connection details, Credentials
+│   │   ├── SSIS Packages: Catalog or msdb stored packages
+│   │   ├── SSRS Reports: Export RDL files
+│   │   └── Custom Objects: Server-level triggers, Startup SPs
+│   │
+│   ├── Performance Baseline
+│   │   ├── Capture Metrics: CPU, Memory, Disk I/O, Query performance
+│   │   ├── Top Queries: Execution time, CPU, I/O before migration
+│   │   ├── Wait Statistics: Baseline for comparison
+│   │   └── Purpose: Compare post-migration performance
+│   │
+│   └── Application Testing Plan
+│       ├── Test Environments: Dev, QA mirrors of production
+│       ├── Test Cases: Critical business processes, Reports, Batch jobs
+│       ├── Performance Tests: Load testing, Stress testing
+│       └── Sign-Off: Application owners approve testing results
+│
+├── Migration Methods
+│   ├── In-Place Upgrade
+│   │   ├── Process: Upgrade existing SQL Server installation
+│   │   ├── Pros: Same server, No data copy, Faster
+│   │   ├── Cons: Cannot rollback easily, Downtime during upgrade
+│   │   ├── Steps
+│   │   │   ├── 1. Full backup of all databases
+│   │   │   ├── 2. Run SQL Setup, Choose Upgrade
+│   │   │   ├── 3. Upgrade completes (30min - 2hours)
+│   │   │   ├── 4. Test databases, Applications
+│   │   │   └── 5. Update compatibility levels (after testing)
+│   │   │
+│   │   └── Use Case: Non-critical environments, Short downtime acceptable
+│   │
+│   ├── Side-by-Side Migration
+│   │   ├── Process: New server, Backup/restore or detach/attach databases
+│   │   ├── Pros: Easy rollback, Test before cutover, Old server available
+│   │   ├── Cons: Requires additional server, Data copy time
+│   │   ├── Steps
+│   │   │   ├── 1. Install SQL on new server
+│   │   │   ├── 2. Restore databases from backups (WITH MOVE if needed)
+│   │   │   ├── 3. Migrate logins (sp_help_revlogin or scripts)
+│   │   │   ├── 4. Recreate jobs, Linked servers, SSIS packages
+│   │   │   ├── 5. Test thoroughly on new server
+│   │   │   ├── 6. Cutover: Redirect applications, DNS/alias change
+│   │   │   └── 7. Monitor post-migration
+│   │   │
+│   │   └── Use Case: Production systems, Prefer minimal risk
+│   │
+│   ├── Log Shipping Migration
+│   │   ├── Process: Setup log shipping old → new, Failover when ready
+│   │   ├── Pros: Minimal downtime, Data stays in sync, Easy rollback
+│   │   ├── Cons: Complex setup, Both servers running during transition
+│   │   ├── Steps
+│   │   │   ├── 1. Setup log shipping (old as primary, New as secondary)
+│   │   │   ├── 2. Let synchronization stabilize (monitor lag)
+│   │   │   ├── 3. During cutover: Stop log shipping jobs
+│   │   │   ├── 4. Apply final logs WITH RECOVERY on new server
+│   │   │   ├── 5. Redirect applications
+│   │   │   └── 6. Old server becomes standby (reverse log shipping if needed)
+│   │   │
+│   │   └── Use Case: Large databases, Minimal downtime requirements
+│   │
+│   ├── AlwaysOn AG Migration
+│   │   ├── Process: Add new server as AG replica, Failover
+│   │   ├── Pros: Near-zero downtime, Automatic failover possible
+│   │   ├── Cons: Enterprise edition, Complexity, WSFC required
+│   │   ├── Steps
+│   │   │   ├── 1. Add new server to existing WSFC (or create new cluster)
+│   │   │   ├── 2. Install SQL on new server, Enable AlwaysOn
+│   │   │   ├── 3. Add as secondary replica to existing AG (or create new AG)
+│   │   │   ├── 4. Let synchronization complete (SYNCHRONIZED state)
+│   │   │   ├── 5. Failover to new server (manual or automatic)
+│   │   │   ├── 6. Remove old server from AG after validation
+│   │   │   └── 7. Decommission old server
+│   │   │
+│   │   └── Use Case: Mission-critical, High availability required
+│   │
+│   └── Backup/Restore Migration
+│       ├── Process: Full backup on old server, Restore on new server
+│       ├── Pros: Simplest method, No special setup
+│       ├── Cons: Downtime during backup/restore/testing
+│       ├── Steps
+│       │   ├── 1. Full backup all databases on old server
+│       │   ├── 2. Copy backup files to new server (network or media)
+│       │   ├── 3. Restore WITH MOVE (if paths different)
+│       │   ├── 4. Fix orphaned users (sp_change_users_login)
+│       │   ├── 5. Recreate jobs, Logins, Linked servers
+│       │   ├── 6. Test applications
+│       │   └── 7. Cutover during maintenance window
+│       │
+│       └── Use Case: Small databases, Acceptable downtime
+│
+├── Post-Migration Tasks
+│   ├── Immediate (Day 1)
+│   │   ├── Fix Orphaned Users: sp_change_users_login 'Auto_Fix'
+│   │   ├── Update Statistics: sp_updatestats (all databases)
+│   │   ├── Rebuild Indexes: Address fragmentation from restore
+│   │   ├── Verify Jobs: All SQL Agent jobs recreated and enabled
+│   │   ├── Test Backups: Run full backup, Verify success
+│   │   ├── Application Testing: Critical business processes
+│   │   └── Monitor Performance: Compare to pre-migration baseline
+│   │
+│   ├── Short-Term (Week 1)
+│   │   ├── Performance Tuning: Address any regressions
+│   │   ├── Query Store Analysis: Review plan changes (if enabled)
+│   │   ├── Compatibility Level: Consider upgrading (after validation)
+│   │   ├── Security Audit: Verify logins, Permissions correct
+│   │   ├── Linked Server Testing: Verify connectivity
+│   │   ├── SSIS Package Validation: All packages run successfully
+│   │   └── User Feedback: Gather reports of issues
+│   │
+│   ├── Long-Term (Month 1)
+│   │   ├── Decommission Old Server: After rollback window expires
+│   │   ├── Documentation Update: Update diagrams, Runbooks
+│   │   ├── Leverage New Features: Evaluate SQL 2019+ features
+│   │   ├── Performance Baseline: New normal baseline
+│   │   └── Lessons Learned: Post-mortem, Improve future migrations
+│   │
+│   └── Rollback Plan
+│       ├── Side-by-Side: Simply redirect back to old server
+│       ├── In-Place: Restore from pre-upgrade backups (full restore)
+│       ├── Time Window: Define rollback decision point (e.g., 4 hours post-migration)
+│       └── Test Rollback: Practice rollback procedure in dev/QA
+│
+├── Cloud Migration (Azure SQL/AWS RDS)
+│   ├── Assessment
+│   │   ├── Azure Database Migration Service (DMS): Assessment tool
+│   │   ├── AWS Schema Conversion Tool (SCT): Compatibility check
+│   │   ├── Feature Parity: Some features unavailable in PaaS
+│   │   └── Sizing: DTU/vCore calculation based on current usage
+│   │
+│   ├── Migration Options
+│   │   ├── Online Migration: DMS, Minimal downtime
+│   │   ├── Offline Migration: Backup/restore via Azure Blob
+│   │   ├── Transactional Replication: On-prem → Cloud (during transition)
+│   │   └── Hybrid: Azure Data Sync for bidirectional sync
+│   │
+│   ├── Post-Migration
+│   │   ├── Connection Strings: Update applications
+│   │   ├── Firewall Rules: Configure Azure SQL firewall
+│   │   ├── Monitoring: Azure Monitor, Query Performance Insight
+│   │   └── Cost Optimization: Right-size DTUs/vCores based on usage
+│   │
+│   └── Considerations
+│       ├── Latency: Application-to-database latency (if hybrid)
+│       ├── SQL Agent: Use Elastic Jobs or Azure Automation
+│       ├── SSIS: Azure Data Factory SSIS Integration Runtime
+│       └── Licensing: License mobility, Azure Hybrid Benefit
+│
+├── Version Upgrade Considerations
+│   ├── SQL Server 2012 → 2016+
+│   │   ├── Query Store: Major new feature, Enable post-migration
+│   │   ├── Live Query Statistics: Real-time execution plan
+│   │   ├── Temporal Tables: Consider for audit requirements
+│   │   └── PolyBase: External data queries
+│   │
+│   ├── SQL Server 2016 → 2019
+│   │   ├── Intelligent Query Processing: Automatic optimizations
+│   │   ├── Accelerated Database Recovery: Faster rollback
+│   │   ├── UTF-8 Support: New collations
+│   │   └── Big Data Clusters: If Hadoop/Spark integration needed
+│   │
+│   └── Deprecated Features to Address
+│       ├── Database Mail (XPs): Still supported but plan migration
+│       ├── SQL Mail: Removed, Use Database Mail
+│       ├── 80 Compatibility Level: Minimum 100 (SQL 2008) in SQL 2019
+│       └── Backup to Tape: Consider disk/cloud alternatives
+│
+└── Migration Best Practices
+├── Test, Test, Test: Multiple dry runs in dev/QA
+├── Automate: Script everything (logins, jobs, deployments)
+├── Communicate: Frequent updates to stakeholders
+├── Monitor Closely: Post-migration vigilance (24-48 hours)
+├── Document: Every step, Every issue, Every resolution
+├── Rollback Readiness: Clear criteria, Tested procedure
+└── Phased Approach: Migrate non-critical first, Learn, Then critical
+│
+│
+MODULE 19: POWERSHELL FOR SQL SERVER DBAs ══════════════════════════════════════
+│
+├── PowerShell Fundamentals for DBAs
+│   ├── Why PowerShell
+│   │   ├── Automation: Repeat tasks across multiple servers
+│   │   ├── Consistency: Standardized operations, Less human error
+│   │   ├── Scalability: Manage 10, 100, 1000+ servers
+│   │   └── Integration: Windows, SQL, Azure, Third-party tools
+│   │
+│   ├── PowerShell Basics
+│   │   ├── Cmdlets: Verb-Noun format (Get-Service, Set-Location)
+│   │   ├── Pipeline: | passes output to next command
+│   │   ├── Variables: $ServerName = "SQL01"
+│   │   ├── Objects: Everything is an object with properties/methods
+│   └── Help: Get-Help <cmdlet>, Get-Help <cmdlet> -Examples
+│   │
+│   └── PowerShell for SQL
+│       ├── SqlServer Module: Microsoft official module (Install-Module SqlServer)
+│       ├── dbatools: Community module (Install-Module dbatools) - Highly recommended
+│       ├── SQLPS: Legacy module (deprecated, Use SqlServer instead)
+│       └── Invoke-Sqlcmd: Run T-SQL commands from PowerShell
+│
+├── SQL Server PowerShell Module
+│   ├── Installation
+│   │   ├── Install-Module SqlServer -Scope CurrentUser
+│   │   ├── Update: Update-Module SqlServer
+│   │   ├── Import: Import-Module SqlServer
+│   │   └── Verify: Get-Module SqlServer -ListAvailable
+│   │
+│   ├── Key Cmdlets
+│   │   ├── Invoke-Sqlcmd: Execute T-SQL queries
+│   │   ├── Backup-SqlDatabase: Backup databases
+│   │   ├── Restore-SqlDatabase: Restore databases
+│   │   ├── Get-SqlDatabase: List databases
+│   │   ├── Get-SqlInstance: SQL Server instance info
+│   │   └── Test-SqlConnection: Test connectivity
+│   │
+│   └── Examples
+│       ├── Query Database
+│       │   └── Invoke-Sqlcmd -ServerInstance "SQL01" -Database "master" -Query "SELECT @@VERSION"
+│       │
+│       ├── Backup Database
+│       │   └── Backup-SqlDatabase -ServerInstance "SQL01" -Database "MyDB" -BackupFile "C:\Backup\MyDB.bak"
+│       │
+│       └── Get Database List
+│           └── Get-SqlDatabase -ServerInstance "SQL01" | Select-Object Name, Size, RecoveryModel
+│
+├── dbatools Module (Community Favorite)
+│   ├── Why dbatools
+│   │   ├── 500+ Commands: Comprehensive DBA toolset
+│   │   ├── Best Practices Built-In: Follows SQL Server best practices
+│   │   ├── Active Community: Frequent updates, Great support
+│   │   └── Free & Open Source: https://dbatools.io
+│   │
+│   ├── Installation
+│   │   ├── Install-Module dbatools -Scope CurrentUser
+│   │   ├── Update: Update-Module dbatools
+│   │   └── Find Commands: Find-DbaCommand -Pattern backup
+│   │
+│   ├── Essential dbatools Commands
+│   │   ├── Connect-DbaInstance: Test/establish SQL connection
+│   │   ├── Get-DbaDatabase: Database information
+│   │   ├── Backup-DbaDatabase: Intelligent backups
+│   │   ├── Test-DbaLastBackup: Test backup restorability
+│   │   ├── Get-DbaDbSpace: Database space usage
+│   │   ├── Find-DbaDatabase: Search for databases across instances
+│   │   ├── Copy-DbaDatabase: Copy database between servers
+│   │   ├── Get-DbaAgentJob: SQL Agent job information
+│   │   ├── Start-DbaAgentJob: Start SQL Agent job
+│   │   └── Invoke-DbaQuery: Execute queries (alternative to Invoke-Sqlcmd)
+│   │
+│   └── Power Examples
+│       ├── Backup All Databases
+│       │   └── Get-DbaDatabase -SqlInstance SQL01 | Backup-DbaDatabase -Path C:\Backup
+│       │
+│       ├── Check Last Backup
+│       │   └── Get-DbaLastBackup -SqlInstance SQL01 | Where LastBackup -lt (Get-Date).AddDays(-1)
+│       │
+│       ├── Find Large Databases
+│       │   └── Find-DbaDatabase -SqlInstance SQL01, SQL02 | Where SizeMB -gt 10000
+│       │
+│       └── Copy Login
+│           └── Copy-DbaLogin -Source SQL01 -Destination SQL02 -Login "AppUser"
+│
+├── Common DBA Automation Scripts
+│   ├── Health Check Script
+│   │   powershell │   │   $servers = "SQL01", "SQL02", "SQL03" │   │   foreach ($server in $servers) { │   │       $results = @{ │   │           Server = $server │   │           ServiceStatus = (Get-DbaService -ComputerName $server).State │   │           LastBackup = (Get-DbaLastBackup -SqlInstance $server -Database master).LastBackup │   │           DiskSpace = (Get-DbaDiskSpace -ComputerName $server | Where {$_.PercentFree -lt 15}) │   │       } │   │       $results | Format-Table │   │   } │   │   
+│   │
+│   ├── Backup All Databases
+│   │   powershell │   │   $instances = "SQL01", "SQL02" │   │   $backupPath = "\\BackupServer\SQLBackups" │   │   foreach ($instance in $instances) { │   │       Get-DbaDatabase -SqlInstance $instance -ExcludeSystem | │   │           Backup-DbaDatabase -Path $backupPath -Type Full -CompressBackup │   │   } │   │   
+│   │
+│   ├── Index Maintenance
+│   │   powershell │   │   $server = "SQL01" │   │   $fraggedIndexes = Get-DbaDbFragmentation -SqlInstance $server -Database "MyDB" | │   │       Where {$_.FragmentationPercent -gt 30} │   │    │   │   foreach ($index in $fraggedIndexes) { │   │       if ($index.FragmentationPercent -gt 30) { │   │           # Rebuild if >30% │   │           Invoke-DbaQuery -SqlInstance $server -Database $index.Database -Query  │   │               "ALTER INDEX [$($index.IndexName)] ON [$($index.Schema)].[$($index.Table)] REBUILD" │   │       } │   │   } │   │   
+│   │
+│   ├── Space Monitoring
+│   │   powershell │   │   $servers = Get-Content "C:\Servers.txt" │   │   $threshold = 15 # Alert if <15% free │   │    │   │   foreach ($server in $servers) { │   │       $lowSpace = Get-DbaDbSpace -SqlInstance $server | │   │           Where {$_.PercentFree -lt $threshold} │   │        │   │       if ($lowSpace) { │   │           Send-MailMessage -To "dba@company.com" -From "alerts@company.com" ` │   │               -Subject "Low Disk Space on $server" ` │   │               -Body ($lowSpace | ConvertTo-Html | Out-String) -BodyAsHtml │   │       } │   │   } │   │   
+│   │
+│   └── Failed Job Report
+│       powershell │       $instances = "SQL01", "SQL02", "SQL03" │       $yesterday = (Get-Date).AddDays(-1) │        │       $failedJobs = foreach ($instance in $instances) { │           Get-DbaAgentJobHistory -SqlInstance $instance -StartDate $yesterday | │               Where {$_.Status -eq 'Failed'} | │               Select SqlInstance, Job, RunDate, RunDuration, Message │       } │        │       if ($failedJobs) { │           $failedJobs | Export-Csv "C:\Reports\FailedJobs.csv" -NoTypeInformation │           # Email report │           Send-MailMessage -To "dba@company.com" -From "reports@company.com" ` │               -Subject "Failed SQL Jobs - $(Get-Date -Format 'yyyy-MM-dd')" ` │               -Attachments "C:\Reports\FailedJobs.csv" │       } │       
+│
+├── Looping & Error Handling
+│   ├── ForEach Loop
+│   │   powershell │   │   $servers = "SQL01", "SQL02", "SQL03" │   │   foreach ($server in $servers) { │   │       Write-Host "Processing $server" │   │       # Commands here │   │   } │   │   
+│   │
+│   ├── Pipeline Iteration
+│   │   powershell │   │   Get-DbaDatabase -SqlInstance SQL01 | ForEach-Object { │   │       Write-Host "Database: $($_.Name), Size: $($_.Size)" │   │   } │   │   
+│   │
+│   ├── Try/Catch Error Handling
+│   │   powershell │   │   try { │   │       Backup-DbaDatabase -SqlInstance SQL01 -Database MyDB -Path C:\Backup │   │       Write-Host "Backup successful" │   │   } │   │   catch { │   │       Write-Error "Backup failed: $_" │   │       # Send alert email │   │   } │   │   
+│   │
+│   └── Logging
+│       powershell │       $logFile = "C:\Logs\Script_$(Get-Date -Format 'yyyyMMdd').log" │       function Write-Log { │           param([string]$Message) │           $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss" │           "$timestamp - $Message" | Out-File $logFile -Append │       } │        │       Write-Log "Script started" │       # Script operations │       Write-Log "Script completed" │       
+│
+├── Reporting & Output
+│   ├── Export to CSV
+│   │   └── Get-DbaDatabase -SqlInstance SQL01 | Export-Csv "C:\Reports\Databases.csv" -NoTypeInformation
+│   │
+│   ├── Export to HTML
+│   │   powershell │   │   $html = Get-DbaDatabase -SqlInstance SQL01 | ConvertTo-Html -Title "SQL01 Databases" │   │   $html | Out-File "C:\Reports\Databases.html" │   │   
+│   │
+│   ├── Format Output
+│   │   ├── Format-Table: Tabular display
+│   │   ├── Format-List: Detailed list
+│   │   └── Out-GridView: Interactive GUI table
+│   │
+│   └── Email Reports
+│       powershell │       $body = Get-DbaLastBackup -SqlInstance SQL01 | ConvertTo-Html | Out-String │       Send-MailMessage -To "dba@company.com" -From "reports@company.com" ` │           -Subject "Daily Backup Report" -Body $body -BodyAsHtml ` │           -SmtpServer "smtp.company.com" │       
+│
+├── Scheduling PowerShell Scripts
+│   ├── Windows Task Scheduler
+│   │   ├── Action: powershell.exe
+│   │   ├── Arguments: -File "C:\Scripts\BackupScript.ps1"
+│   │   ├── Schedule: Daily, Weekly, etc.
+│   │   └── Run As: Service account with SQL permissions
+│   │
+│   ├── SQL Agent PowerShell Job Step
+│   │   ├── Job Type: PowerShell
+│   │   ├── Command: PowerShell script text or file path
+│   │   ├── Pros: Centralized in SQL Agent, Job history
+│   │   └── Cons: Limited to single instance (unless CmdExec with PS)
+│   │
+│   └── Execution Policy
+│       ├── Check: Get-ExecutionPolicy
+│       ├── Set: Set-ExecutionPolicy RemoteSigned (admin required)
+│       └── Bypass: powershell.exe -ExecutionPolicy Bypass -File script.ps1
+│
+└── PowerShell Best Practices for DBAs
+├── Comment Your Code: # This does X, Especially for complex logic
+├── Use Parameters: Don't hardcode server names, Use variables/params
+├── Error Handling: Always use try/catch for critical operations
+├── Logging: Write logs for scheduled scripts, Audit trail
+├── Test in Dev: Never run untested scripts in production
+├── Version Control: Store scripts in Git/SVN, Track changes
+├── Modular Functions: Reusable functions, DRY principle
+└── Security: Don't store passwords in scripts, Use Windows Auth or secure credential storage
+│
+

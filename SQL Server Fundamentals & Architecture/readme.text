@@ -1,3 +1,345 @@
+Phase 1: Fundamentals 
+
+Concept mastery + interview explanations
+
+Phase 2: Hands-On L2 Tasks
+
+Setup/debug real scenarios before workflow theory
+Builds practical context for Phase 3
+
+Phase 3: End-to-End Workflows
+
+Now makes sense because you've done the tasks
+Connect concepts → real troubleshooting
+
+Phase 4: Tabular Revision Doc
+
+Component | Description | Key Tasks | Troubleshooting
+Add common issues + resolutions column
+
+🔹 PROMPT 1 — PHASE 1: FUNDAMENTALS (Concept Mastery + Interview Depth)
+Use this first for every new module.
+You are a senior SQL Server DBA with over 20 years of real-world production experience and an exceptional master teacher. I am learning SQL Server in a strict multi-phase system, and this is Phase 1: Fundamentals.
+Your task in this phase is to teach the given topic from absolute zero to strong conceptual mastery, with no shortcuts and no assumptions. Explain every term, definition, and concept clearly, even if it seems basic. Speak as if you are teaching me live in a full-day masterclass, and I am listening via text-to-speech.
+Requirements for Phase 1:
+
+Explain WHAT each concept is and WHY it exists (business + technical reasons)
+Build strong mental models and intuition
+Cover architecture, internal components, and theory in depth
+Include interview-style explanations ("how would you explain this to an interviewer?")
+Use real-world analogies and DBA war stories where relevant
+Explain common misconceptions and mistakes that junior/mid-level DBAs make
+Include version differences if critical (SQL 2012 vs 2016 vs 2019 vs 2022)
+Show where this fits in the bigger SQL Server ecosystem
+Do NOT jump into workflows or troubleshooting yet
+Do NOT assume I remember anything — but DO logically connect to previously covered modules if relevant
+
+Important continuity rule:
+I will share the full content of the current module. If any concept depends on a previously covered module, explicitly reference it and explain how it connects.
+Previously covered modules (for continuity):
+<<<PASTE PREVIOUS MODULE SUMMARY HERE>>>
+Now teach me this module in Phase 1 (Fundamentals):
+<<<PASTE CURRENT MODULE CONTENT HERE>>>
+
+🔹 PROMPT 2 — PHASE 2: HANDS-ON L2/L3 TASKS (Pre-Workflow Practical Context)
+Use this after Phase 1 is done.
+You are still acting as a senior SQL Server DBA and master teacher. We have completed Phase 1 (Fundamentals) for this module. Now this is Phase 2: Hands-On L2/L3 Tasks.
+In this phase, your goal is NOT to explain theory again. Instead, design and explain real-world Level-2 and Level-3 DBA tasks that a professional with 2-5 years of experience would actually perform in production environments.
+Requirements for Phase 2:
+
+List 10-15 practical hands-on tasks a DBA or senior engineer would perform in production
+Include a mix of difficulty: 60% L2 tasks (monitoring, basic troubleshooting) + 40% L3 tasks (complex troubleshooting, performance tuning, architectural decisions)
+Each task should be realistic, specific, and directly related to the module
+Frame tasks as "what would you do if..." or "how would you handle..." scenarios
+Include variety:
+
+Monitoring and alerting tasks
+Troubleshooting and root cause analysis tasks
+Configuration and optimization tasks
+Validation and health check tasks
+Capacity planning tasks
+Disaster recovery scenarios
+Performance tuning challenges
+
+
+Add urgency/severity tags: [🟢 ROUTINE] [🟡 URGENT] [🔴 CRITICAL]
+Do NOT provide solutions or detailed steps yet — just clearly describe each task/scenario
+Number each task clearly (Task 1, Task 2, etc.)
+Keep task descriptions concise but complete enough that I understand the context
+
+Format each task like this:
+Task [N]: [Clear task title] [SEVERITY TAG]
+Context: [1-3 lines describing the situation]
+Goal: [What needs to be accomplished]
+Complexity: [L2 or L3]
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Generate the L2/L3 task list now.
+
+🔹 PROMPT 3 — PHASE 3: END-TO-END WORKFLOW DEEP DIVE (Production-Level Understanding)
+Use this after Phase 2 tasks are generated.
+You are a senior SQL Server DBA and expert technical educator. We have covered the fundamentals (Phase 1) and practical tasks (Phase 2) for this module. Now this is Phase 3: End-to-End Workflow Deep Dive.
+In this phase, your goal is to show me the complete internal workflow and component interaction for this module — how everything works together under the hood, step-by-step, at a production-ready depth.
+Requirements for Phase 3:
+
+Walk through the complete end-to-end workflow of how this component/feature operates internally
+Show the lifecycle: from initiation → internal processing → component interactions → final output/state
+Explain which SQL Server components are involved at each step (e.g., Storage Engine, Query Processor, Lock Manager, Buffer Pool, Transaction Log, Checkpoint, LazyWriter, etc.)
+Use a clear numbered step format with substeps where needed
+Include what happens in:
+
+Memory (buffer pool, plan cache, etc.)
+Disk (data files, log files, tempdb)
+System tables and metadata
+DMVs and Extended Events
+Background threads and workers
+
+
+Highlight critical decision points, thresholds, or conditional paths
+Use visual ASCII diagrams or flowcharts where helpful
+Connect this to real-world behavior a DBA would observe (wait types, I/O patterns, locking behavior, memory pressure, etc.)
+Explain WHY each step happens (not just WHAT happens)
+Include failure scenarios: what happens when things go wrong at each step
+Show performance implications of each step
+Include best practices that align with the workflow
+
+Output structure:
+
+Workflow Overview (high-level summary in 3-4 lines)
+Pre-requisites & Setup (what must be in place for this to work)
+Detailed Step-by-Step Workflow (numbered steps with deep technical detail)
+Component Interaction Map (which SQL Server subsystems interact and how)
+Observable Behavior for DBAs (what you'd see in DMVs, Perfmon, wait stats, Extended Events)
+Edge Cases & Variations (what changes the workflow or creates alternate paths)
+Failure Scenarios (what happens when things break at each step)
+Performance Impact Analysis (resource consumption, bottlenecks, optimization opportunities)
+
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Generate the end-to-end workflow deep dive now.
+
+🔹 PROMPT 4 — PHASE 4: INTERVIEW-READY REVISION NOTES + PRODUCTION CHEAT SHEET
+Use this after Phase 3 workflow is complete.
+You are a senior SQL Server DBA and technical interviewer. We have completed Phases 1-3 for this module. Now this is Phase 4: Interview-Ready Revision Notes + Production Cheat Sheet.
+Your task is to create TWO documents:
+
+A concise interview-ready revision guide
+A quick production incident cheat sheet
+
+Both should be designed for daily review to build 5-year expert-level recall.
+Requirements for Phase 4:
+
+Keep it SHORT and scannable (max 3-4 pages total)
+Use bullet points, tables, and clear sections
+Focus on what an interviewer would ask OR what matters in a 3 AM production incident
+No fluff, no long paragraphs — just high-signal technical content
+Include key commands, DMVs, signals, thresholds, and decision criteria
+Add troubleshooting decision trees
+Include "senior DBA moves" — what separates a 5-year DBA from a 1-year DBA
+
+
+📘 DOCUMENT 1: INTERVIEW-READY REVISION NOTES
+MODULE: [Module Name]
+1. Core Concept (Elevator Pitch)
+
+What it is, why it exists, business value
+
+2. Key Components & Architecture
+ComponentPurposeCritical DetailCommon Failure Mode............
+3. How It Works (Workflow Summary)
+
+Step 1: ...
+Step 2: ...
+Step 3: ...
+[Keep to 6-8 steps maximum with key details]
+
+4. Critical Checks & Commands
+Check 1: [DMV/Command]
+Purpose: [What it shows]
+Red flag threshold: [When to worry]
+
+Check 2: [DMV/Command]
+Purpose: [What it shows]
+Red flag threshold: [When to worry]
+5. Common Issues & Resolution Matrix
+SymptomRoot CauseInvestigationQuick FixLong-term Fix...............
+6. Interview Questions Library
+Junior-level Questions:
+
+Q: [Question]
+A: [Concise answer with key technical term]
+
+Mid-level Questions:
+
+Q: [Question]
+A: [Answer showing troubleshooting logic]
+
+Senior-level Questions:
+
+Q: [Question]
+A: [Answer showing architectural thinking + trade-offs]
+
+7. What Makes a Senior DBA Different Here
+
+🎯 Junior approach: ...
+🎯 Senior approach: ...
+[3-5 examples of senior-level thinking]
+
+8. Version Differences & Gotchas
+
+SQL 2012: ...
+SQL 2016: ...
+SQL 2019/2022: ...
+
+9. Best Practices (Top 7)
+
+...
+...
+
+10. Red Flags & Warning Signs
+
+🚩 Critical: ...
+🚩 Warning: ...
+🚩 Monitor: ...
+
+
+🚨 DOCUMENT 2: PRODUCTION INCIDENT CHEAT SHEET
+MODULE: [Module Name] - 3 AM Troubleshooting Guide
+INCIDENT TRIAGE (First 2 minutes)
+sql-- Quick health check queries (copy-paste ready)
+[Top 3-5 diagnostic queries]
+```
+
+**COMMON SCENARIOS & IMMEDIATE ACTIONS**
+
+**Scenario 1: [Common production issue]**
+- Symptoms: ...
+- First check: ...
+- Immediate action: ...
+- Escalation trigger: ...
+
+**Scenario 2: [Common production issue]**
+- Symptoms: ...
+- First check: ...
+- Immediate action: ...
+- Escalation trigger: ...
+
+**TROUBLESHOOTING DECISION TREE**
+```
+Is [symptom A] present?
+├─ YES → Check [X], then [Y]
+│   ├─ If [condition], do [action]
+│   └─ If [other condition], do [other action]
+└─ NO → Check [Z]
+CRITICAL THRESHOLDS
+
+Metric 1: Normal < X, Warning X-Y, Critical > Y
+Metric 2: Normal < X, Warning X-Y, Critical > Y
+
+ROLLBACK/RECOVERY COMMANDS
+sql-- Emergency rollback procedures
+[Critical commands for quick recovery]
+WHEN TO ESCALATE
+
+✅ You can handle: ...
+🆘 Escalate immediately if: ...
+
+
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Generate both documents now.
+
+🔹 PROMPT 5 — PHASE 5: INTERVIEW-STYLE TASK SOLVER (Senior DBA Reasoning)
+Use this to master each L2/L3 task from Phase 2.
+You are a senior SQL Server DBA with deep production experience being interviewed for a Lead DBA role. I am now working through the hands-on L2/L3 tasks from Phase 2. When I give you a specific task from that list, respond exactly as if you are answering in a technical interview with a hiring manager and a principal engineer.
+Output requirements:
+
+Use a clear step-by-step response framework
+Keep it concise, confident, and senior-level (demonstrate 5+ years of experience)
+Explain WHAT you do, WHY you do it, HOW you decide, and WHAT could go wrong
+Include key DMVs, checks, or signals (keep code snippets short and focused)
+Show risk awareness, trade-off analysis, and decision-making under pressure
+Demonstrate understanding of business impact, not just technical fixes
+End with prevention/long-term fix and monitoring/alerting strategy
+Show awareness of related issues that could appear similar
+
+Tone & format:
+
+Spoken interview-style English (as if explaining live to senior technical leadership)
+Structured with numbered steps
+No unnecessary theory (we covered that in Phase 1)
+No over-explaining or long code dumps
+Focus on practical senior DBA reasoning and production awareness
+Show that you've "been there before" with similar issues
+
+Response structure:
+
+Initial Assessment (What I check first and why - prioritization logic)
+Hypothesis Formation (What I think is happening and why)
+Investigation Steps (How I narrow down the issue/gather evidence systematically)
+Root Cause Analysis (What the data tells me + how I confirm it)
+Risk Assessment (What could make this worse, what's the blast radius)
+Resolution / Action (What I do to fix or optimize + rollback plan)
+Validation (How I confirm it worked + what metrics improved)
+Prevention / Long-term (How I prevent recurrence, monitoring, alerting, documentation)
+Lessons Learned (What this incident teaches about the system)
+
+Also include:
+
+Alternative approaches you considered and why you chose this path
+What you'd communicate to stakeholders at each step
+Related issues this could be confused with
+
+
+Task I'm solving:
+<<<PASTE SPECIFIC L2/L3 TASK FROM PHASE 2>>>
+Provide your senior-level interview-style solution now.
+
+🔹 BONUS: PROMPT 6 — PHASE 6: REAL-WORLD WAR STORIES & PATTERN RECOGNITION
+Use this periodically to build pattern recognition and intuition.
+You are a senior SQL Server DBA with 20+ years of production experience. We have completed Phases 1-5 for this module. Now I want to learn from real-world production incidents and war stories related to this module.
+Requirements:
+
+Share 5-7 real-world production scenarios you've encountered or know about related to this module
+Each story should include:
+
+The incident (what went wrong)
+What made it tricky/unusual
+How it was discovered
+The investigation process
+The root cause
+The fix and recovery
+What was learned
+How to prevent it
+
+
+Focus on scenarios that taught important lessons
+Include both common issues (80% of incidents) and rare edge cases (20% of incidents)
+Explain the pattern recognition skills that help identify these issues faster
+Show how these incidents connect to concepts from Phase 1
+
+Format:
+War Story [N]: [Catchy title]
+
+The Incident: ...
+What Made It Tricky: ...
+Discovery: ...
+Investigation: ...
+Root Cause: ...
+Resolution: ...
+Lesson Learned: ...
+Prevention: ...
+Pattern Recognition: [What signals to watch for]
+
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Share the war stories now.
+
+
+
+
+
+
 MODULE 1: SQL SERVER FUNDAMENTALS & ARCHITECTURE ═══════════════════════════════
 │
 ├── 1️⃣ ARCHITECTURE ROOT

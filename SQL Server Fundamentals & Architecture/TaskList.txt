@@ -1,0 +1,518 @@
+PHASE 1: PRE-INSTALLATION & PLANNING
+Task 1: Configure Windows Firewall rules for SQL Server using PowerShell 🟢 ROUTINE
+Context: Server build automation requires scripted firewall configuration.
+Goal: Create inbound rules for TCP 1433, UDP 1434, DAC 1434 via PowerShell, test remote connectivity.
+Complexity: L2
+
+Task 2: Troubleshoot installation failure due to .NET Framework version mismatch 🔴 CRITICAL
+Context: SQL Server 2022 installation failing; .NET 4.8 not detected despite being installed.
+Goal: Identify .NET registry keys, repair .NET installation, retry SQL install, verify success.
+Complexity: L3
+
+Task 3: Troubleshoot installation failure due to pending Windows reboot 🟡 URGENT
+Context: SQL installation failing with error; system configuration check shows pending reboot.
+Goal: Identify pending reboot registry keys, resolve (reboot or clear safely), retry installation.
+Complexity: L2
+
+PHASE 2: INITIAL INSTALLATION (STANDALONE)
+Task 4: Install SQL Server 2019 default instance with mixed-mode authentication 🟢 ROUTINE
+Context: New application server provisioned; dev team needs SQL Server with both Windows and SQL logins.
+Goal: Perform interactive installation, configure sa password, verify service accounts.
+Complexity: L2
+
+Task 5: Install SQL Server with custom data/log/tempdb/backup paths 🟢 ROUTINE
+Context: Storage team allocated D: for data, E: for logs, F: for tempdb, G: for backups per company standards.
+Goal: Perform installation with all custom directories, verify placement post-install.
+Complexity: L2
+
+Task 6: Install SQL Server Enterprise Edition and configure multiple tempdb files 🟢 ROUTINE
+Context: 24-core production server; application has tempdb contention history.
+Goal: Install with 8 tempdb data files sized equally, verify file layout and growth settings.
+Complexity: L2
+
+Task 7: Install SQL Server 2022 named instance on server with existing default instance 🟢 ROUTINE
+Context: Shared server hosts multiple applications; new instance needed for isolation.
+Goal: Install named instance PROD02, different port, separate service accounts, verify both instances running.
+Complexity: L2
+
+Task 8: Perform unattended installation using ConfigurationFile.ini 🟡 URGENT
+Context: Disaster recovery plan requires automated rebuild capability; manual install took 4 hours last time.
+Goal: Generate configuration file from GUI install, modify for silent install, execute unattended installation.
+Complexity: L2
+
+Task 9: Install SQL Server on Windows Server Core (no GUI) 🟡 URGENT
+Context: Security policy mandates Server Core for new builds; GUI installation not possible.
+Goal: Perform command-line installation with ConfigurationFile.ini, verify via sqlcmd and PowerShell.
+Complexity: L3
+
+PHASE 3: POST-INSTALLATION SERVICE CONFIGURATION
+Task 10: Change SQL Server service account from LocalSystem to domain managed service account 🟡 URGENT
+Context: Audit finding: service running as LocalSystem violates security policy; gMSA account created by AD team.
+Goal: Change service account via Configuration Manager, verify service restart and database accessibility.
+Complexity: L2
+
+Task 11: Configure Service Principal Name (SPN) for Kerberos authentication 🟡 URGENT
+Context: Security team mandates Kerberos; application experiencing double-hop authentication failures.
+Goal: Register SPNs using setspn, verify with delegation and Kerberos ticket inspection.
+Complexity: L3
+
+Task 12: Configure SQL Server Browser service for named instance discovery 🟢 ROUTINE
+Context: Clients cannot connect to named instance without specifying port.
+Goal: Enable and start SQL Browser service, configure firewall for UDP 1434, test client connection.
+Complexity: L2
+
+Task 13: Disable SQL Server Browser and configure clients with static port 🟢 ROUTINE
+Context: Security policy prohibits SQL Browser; clients must use server\instance,port format.
+Goal: Stop and disable Browser, configure clients with static port, verify connectivity.
+Complexity: L2
+
+PHASE 4: NETWORK & CONNECTIVITY CONFIGURATION
+Task 14: Enable and configure SQL Server instance for remote connections 🟢 ROUTINE
+Context: Application servers cannot connect; SQL Server installed with remote connections disabled.
+Goal: Enable TCP/IP protocol, configure firewall rule for port 1433, restart service, test remote connection.
+Complexity: L2
+
+Task 15: Configure SQL Server to use static port instead of dynamic port 🟢 ROUTINE
+Context: Network team needs static port for firewall rules; named instance currently using dynamic port.
+Goal: Set static port 14333, remove dynamic port value, restart service, verify connectivity.
+Complexity: L2
+
+Task 16: Disable protocols (Shared Memory, Named Pipes) per security baseline 🟢 ROUTINE
+Context: Security scan requires disabling all protocols except TCP/IP.
+Goal: Disable Shared Memory and Named Pipes via Configuration Manager, restart service, verify connectivity.
+Complexity: L2
+
+Task 17: Re-enable Named Pipes for legacy application compatibility 🟡 URGENT
+Context: Legacy application cannot connect after protocol disabled; vendor requires Named Pipes.
+Goal: Enable Named Pipes, configure firewall exception, restart service, test legacy app connectivity.
+Complexity: L2
+
+Task 18: Configure network packet size for large bulk operations 🟢 ROUTINE
+Context: Bulk data transfer from mainframe; default 4096 packet size causing throughput issues.
+Goal: Increase network packet size to 8192, test bulk insert performance improvement.
+Complexity: L2
+
+Task 19: Configure dedicated administrator connection (DAC) for remote access 🟡 URGENT
+Context: Production server unresponsive; need DAC access from jump box to troubleshoot.
+Goal: Enable remote DAC via sp_configure, test connection using ADMIN: prefix from remote machine.
+Complexity: L2
+
+Task 20: Configure remote admin connections setting 🟢 ROUTINE
+Context: New server build checklist requires enabling remote admin connections.
+Goal: Enable remote admin connections via sp_configure, test DAC from remote machine.
+Complexity: L2
+
+PHASE 5: MEMORY & CPU CONFIGURATION
+Task 21: Configure max server memory to prevent OS starvation 🟢 ROUTINE
+Context: 64GB server; SQL Server consuming all memory causing OS paging and poor performance.
+Goal: Calculate and set max server memory to 52GB, verify buffer pool respects limit.
+Complexity: L2
+
+Task 22: Configure SQL Server for minimum memory per NUMA node 🟡 URGENT
+Context: 4-socket NUMA server with uneven memory allocation; node 3 starving under load.
+Goal: Configure min memory per NUMA node, verify balanced allocation across nodes via DMVs.
+Complexity: L3
+
+Task 23: Configure server memory clerks monitoring via DMVs post-configuration 🟢 ROUTINE
+Context: Memory configuration changed; need baseline of memory clerk allocation.
+Goal: Query sys.dm_os_memory_clerks, document buffer pool vs. non-buffer pool distribution.
+Complexity: L2
+
+Task 24: Configure max degree of parallelism (MAXDOP) per Microsoft best practices 🟢 ROUTINE
+Context: 16-core server experiencing CXPACKET waits; queries using all cores inefficiently.
+Goal: Set instance-level MAXDOP to 8, verify query execution respects setting.
+Complexity: L2
+
+Task 25: Configure cost threshold for parallelism from default 5 to 50 🟢 ROUTINE
+Context: Small queries going parallel unnecessarily; excessive context switching observed.
+Goal: Change cost threshold to 50, monitor query plans for parallelism behavior change.
+Complexity: L2
+
+Task 26: Configure affinity mask to bind SQL Server to specific CPUs 🟡 URGENT
+Context: Shared server runs SQL and application tier; CPU contention causing timeouts.
+Goal: Set affinity mask to cores 0-7, restart service, verify SQL limited to assigned cores.
+Complexity: L3
+
+Task 27: Configure priority boost (and then disable after testing) 🟢 ROUTINE
+Context: Vendor recommended priority boost during implementation; need to validate impact.
+Goal: Enable priority boost, test workload, disable (not recommended), document findings.
+Complexity: L2
+
+Task 28: Configure lightweight pooling (fiber mode) and roll back 🟡 URGENT
+Context: Vendor claims fiber mode improves performance; verify and revert if issues arise.
+Goal: Enable lightweight pooling, restart, test application, disable due to instability, document.
+Complexity: L2
+
+PHASE 6: STORAGE & FILE CONFIGURATION
+Task 29: Enable and configure instant file initialization 🟢 ROUTINE
+Context: Database restores taking 2+ hours due to file zeroing; 500GB databases common.
+Goal: Grant SE_MANAGE_VOLUME_NAME privilege to SQL service account, restart service, verify with trace flag 3004.
+Complexity: L2
+
+Task 30: Configure default database data and log file locations 🟢 ROUTINE
+Context: New databases created in C:\Program Files; should default to D:\Data and E:\Logs.
+Goal: Change default data and log paths via server properties, create test database, verify placement.
+Complexity: L2
+
+Task 31: Configure default backup directory 🟢 ROUTINE
+Context: Backups defaulting to C:\ filling system drive; G:\Backups allocated.
+Goal: Change default backup directory, perform test backup, verify file location.
+Complexity: L2
+
+Task 32: Configure SQL Server to use multiple tempdb files post-installation 🟢 ROUTINE
+Context: Installed with single tempdb file; PFS contention now visible in wait stats.
+Goal: Add 7 additional tempdb files (8 total for 8-core server), size equally, verify even usage.
+Complexity: L2
+
+Task 33: Relocate tempdb to high-speed SSD storage 🟡 URGENT
+Context: Tempdb on slow HDD causing performance issues; new SSD volume allocated.
+Goal: Change tempdb file paths via ALTER DATABASE, restart service, verify files created on new drive.
+Complexity: L2
+
+Task 34: Configure trace flags 1117 and 1118 for SQL Server 2014 🟢 ROUTINE
+Context: Filegroup contention on legacy instance; multiple data files in primary filegroup.
+Goal: Enable trace flags globally as startup parameters, restart service, verify with DBCC TRACESTATUS.
+Complexity: L2
+
+Task 35: Configure fill factor default to 90% for all indexes 🟢 ROUTINE
+Context: Frequent page splits observed; architect recommends 90% fill factor site-wide.
+Goal: Change fill factor default via sp_configure, rebuild test index, verify 90% applied.
+Complexity: L2
+
+Task 36: Configure page verify option to CHECKSUM on all databases 🟢 ROUTINE
+Context: Data integrity check required per change control standards.
+Goal: Change page verify to CHECKSUM on all user databases, verify setting persists.
+Complexity: L2
+
+Task 37: Configure filestream for BLOB storage 🟢 ROUTINE
+Context: Application stores documents in varbinary(max); file system storage preferred for >1MB files.
+Goal: Enable filestream at instance and database level, create filestream filegroup, test file insertion.
+Complexity: L2
+
+Task 38: Configure filetable on filestream-enabled database 🟢 ROUTINE
+Context: Developers need Windows file system access to database-stored documents.
+Goal: Enable non-transactional access, create filetable, verify SMB share access to table files.
+Complexity: L2
+
+PHASE 7: LOGGING, AUDITING & MONITORING
+Task 39: Configure SQL Server error log retention to 30 cycles 🟢 ROUTINE
+Context: Error log recycled after 6 restarts; historical troubleshooting data lost.
+Goal: Set error log file count to 30 via SSMS or sp_cycle_errorlog configuration.
+Complexity: L2
+
+Task 40: Configure trace flag 3226 to suppress successful backup log entries 🟢 ROUTINE
+Context: Error log flooded with backup success messages; 200+ backups daily across instances.
+Goal: Enable trace flag 3226 as startup parameter, restart service, verify error log cleaner.
+Complexity: L2
+
+Task 41: Identify and remove unknown startup trace flags 🟡 URGENT
+Context: Inherited server has trace flags 1222, 1224, 3205; purpose unknown.
+Goal: Document current trace flags via DBCC TRACESTATUS(-1), research purpose, remove unnecessary flags.
+Complexity: L2
+
+Task 42: Configure SQL Server audit to track login failures 🟢 ROUTINE
+Context: Security team requires audit trail of failed login attempts for SOX compliance.
+Goal: Create server audit, audit specification for failed logins, verify events written to file.
+Complexity: L2
+
+Task 43: Configure SQL Server audit to track SELECT on sensitive table 🟡 URGENT
+Context: Unauthorized access suspected on HR.Salaries table; audit trail required.
+Goal: Create database audit specification for SELECT on specific table, verify audit captures queries.
+Complexity: L2
+
+Task 44: Configure server audit to file with maximum file size and rollover 🟢 ROUTINE
+Context: Audit files filling disk; need 100MB max size with automatic rollover.
+Goal: Configure audit with max file size, max rollover files, verify rotation behavior.
+Complexity: L2
+
+Task 45: Recover from corrupted server audit file 🔴 CRITICAL
+Context: Audit file corrupted; SQL Server refusing to start because continue_on_error not set.
+Goal: Start SQL in single-user mode, disable audit, delete corrupt file, re-enable audit.
+Complexity: L3
+
+Task 46: Enable C2 audit mode and assess performance impact 🟡 URGENT
+Context: Regulatory requirement for healthcare application mandates C2-level auditing.
+Goal: Enable C2 audit mode, restart service, monitor file growth and performance degradation.
+Complexity: L2
+
+Task 47: Configure extended events session for deadlock capture 🟢 ROUTINE
+Context: Application experiencing deadlocks; deadlock graph needed for developer troubleshooting.
+Goal: Create XE session capturing xml_deadlock_report, start session, generate deadlock, retrieve graph.
+Complexity: L2
+
+Task 48: Configure extended events session for blocking chain capture 🟡 URGENT
+Context: Users reporting timeouts; blocking suspected but default trace insufficient.
+Goal: Create XE session for blocked_process_report, set threshold 10 seconds, capture blocking chain.
+Complexity: L2
+
+Task 49: Configure blocked process threshold for alerting 🟢 ROUTINE
+Context: Blocking incidents not detected until users call; need proactive monitoring.
+Goal: Set blocked process threshold to 10 seconds, configure alert on event, test alert delivery.
+Complexity: L2
+
+PHASE 8: ALERTING & NOTIFICATIONS
+Task 50: Configure database mail for alert notifications 🟢 ROUTINE
+Context: DBA team not receiving backup failure alerts; database mail never configured.
+Goal: Configure mail profile, SMTP settings, send test email, configure operator and alert.
+Complexity: L2
+
+Task 51: Configure SQL Server Agent mail profile and job failure notifications 🟢 ROUTINE
+Context: Nightly ETL job failed 3 days ago; nobody noticed until users complained.
+Goal: Link Agent to mail profile, configure operator, set job to notify on failure, test.
+Complexity: L2
+
+PHASE 9: QUERY OPTIMIZATION & PERFORMANCE
+Task 52: Configure optimize for ad hoc workloads 🟢 ROUTINE
+Context: Plan cache bloated with single-use plans; memory pressure observed.
+Goal: Enable optimize for ad hoc workloads, clear plan cache, monitor cache efficiency improvement.
+Complexity: L2
+
+Task 53: Configure query store on production database 🟢 ROUTINE
+Context: Performance regression after code deployment; need query execution history for comparison.
+Goal: Enable Query Store with 7-day retention, verify data collection, query runtime statistics.
+Complexity: L2
+
+Task 54: Configure automatic plan correction using Query Store 🟡 URGENT
+Context: Parameter sniffing causing intermittent slow queries; automatic correction approved.
+Goal: Enable automatic plan correction, force specific plan, verify Query Store prevents regressions.
+Complexity: L3
+
+Task 55: Configure Resource Governor to limit reporting query resource usage 🟢 ROUTINE
+Context: Reporting queries consuming excessive CPU during business hours; OLTP users impacted.
+Goal: Create resource pool (30% CPU max), classifier function, workload group, enable Resource Governor.
+Complexity: L3
+
+Task 56: Configure user options to set default ANSI settings for connections 🟢 ROUTINE
+Context: Application requires ANSI_WARNINGS ON by default; developers forget to set in code.
+Goal: Configure user options via sp_configure, verify new connections inherit settings.
+Complexity: L2
+
+Task 57: Configure remote query timeout to prevent indefinite waits 🟢 ROUTINE
+Context: Linked server queries hanging indefinitely; need 300-second timeout.
+Goal: Set remote query timeout via sp_configure, test linked server query with long-running remote procedure.
+Complexity: L2
+
+Task 58: Configure locks setting to prevent lock escalation threshold override 🟡 URGENT
+Context: Lock escalation occurring at 2500 locks; application needs 10000 threshold.
+Goal: Change locks configuration from 0 (dynamic) to fixed value, monitor memory impact.
+Complexity: L2
+
+Task 59: Recover from accidental sp_configure change that set locks to 100 🔴 CRITICAL
+Context: Incorrect locks value causing out-of-memory errors; service unstable.
+Goal: Reset locks to 0 (dynamic), reconfigure, restart service if necessary, verify stability.
+Complexity: L3
+
+Task 60: Configure recovery interval for automatic checkpoint frequency 🟢 ROUTINE
+Context: Transaction log growing between log backups; need more frequent checkpoints.
+Goal: Change recovery interval from 0 to 5 minutes, monitor checkpoint frequency and log growth.
+Complexity: L2
+
+PHASE 10: SECURITY CONFIGURATION
+Task 61: Harden SQL Server by disabling unnecessary system stored procedures 🟡 URGENT
+Context: Security baseline requires disabling xp_cmdshell, Ole Automation, ad hoc distributed queries.
+Goal: Disable all unnecessary surface area features via sp_configure, document approved exceptions.
+Complexity: L2
+
+Task 62: Configure xp_cmdshell with proxy account 🟡 URGENT
+Context: ETL job requires xp_cmdshell; security team requires non-sysadmin execution via proxy.
+Goal: Create credential, configure proxy account, grant non-sysadmin user access, test execution.
+Complexity: L2
+
+Task 63: Disable xp_cmdshell after security audit finding 🟢 ROUTINE
+Context: Security scan flagged xp_cmdshell enabled; not required by any application.
+Goal: Disable xp_cmdshell via sp_configure, verify disabled, document justification if re-enabled.
+Complexity: L2
+
+Task 64: Configure TDE (Transparent Data Encryption) on user database 🟡 URGENT
+Context: Compliance requires encryption-at-rest for customer PII database.
+Goal: Create master key, certificate, DEK, enable TDE, verify encryption state and performance impact.
+Complexity: L3
+
+Task 65: Back up and restore TDE certificate to secondary server 🔴 CRITICAL
+Context: DR server cannot restore TDE-encrypted database; certificate missing.
+Goal: Backup certificate with private key, securely copy, restore on DR server, test database restore.
+Complexity: L3
+
+Task 66: Configure Always Encrypted with column master key in certificate store 🟡 URGENT
+Context: Application requires column-level encryption for credit card fields; Always Encrypted selected.
+Goal: Create CMK, CEK, encrypt existing column, verify application can decrypt with proper connection string.
+Complexity: L3
+
+Task 67: Configure SQL Server for FIPS 140-2 compliance 🟡 URGENT
+Context: Government contract requires FIPS-compliant encryption algorithms.
+Goal: Enable FIPS policy at OS level, verify SQL Server TLS compliance, test encrypted connections.
+Complexity: L3
+
+Task 68: Configure contained database authentication 🟢 ROUTINE
+Context: Application migration to Azure planned; contained users required for portability.
+Goal: Enable contained database authentication at instance level, convert database to partial containment.
+Complexity: L2
+
+Task 69: Migrate SQL login to contained database user 🟢 ROUTINE
+Context: Database being prepared for AG failover; logins must travel with database.
+Goal: Create contained user with same password hash, test authentication, drop server-level login.
+Complexity: L2
+
+Task 70: Configure cross-database ownership chaining 🟡 URGENT
+Context: Application uses cross-database stored procedures; ownership chain broken causing permission errors.
+Goal: Enable cross-db ownership chaining at instance level, test cross-database procedure execution.
+Complexity: L2
+
+Task 71: Disable cross-database ownership chaining per security baseline 🟢 ROUTINE
+Context: Security hardening requires disabling cross-db ownership chaining.
+Goal: Disable feature, identify affected procedures, remediate with explicit permissions or certificates.
+Complexity: L2
+
+PHASE 11: CLR & EXTERNAL INTEGRATION
+Task 72: Enable CLR integration and deploy CLR assembly 🟢 ROUTINE
+Context: Application uses CLR functions for complex regex operations.
+Goal: Enable CLR via sp_configure, set database trustworthy or sign assembly, deploy and test function.
+Complexity: L2
+
+Task 73: Configure CLR strict security in SQL Server 2017+ 🟡 URGENT
+Context: Custom CLR assembly fails to load after upgrade; strict security now enforced.
+Goal: Sign assembly, create asymmetric key from assembly, create login, grant UNSAFE ASSEMBLY.
+Complexity: L3
+
+Task 74: Install SQL Server R Services (Machine Learning Services) 🟢 ROUTINE
+Context: Data science team needs in-database R execution for predictive models.
+Goal: Install ML Services with R, enable external scripts, test sp_execute_external_script.
+Complexity: L2
+
+Task 75: Install PolyBase feature for external data access 🟢 ROUTINE
+Context: Data analytics team needs SQL Server to query Hadoop cluster directly.
+Goal: Install PolyBase feature, configure scale-out group, create external data source, test query.
+Complexity: L3
+
+Task 76: Configure PolyBase to connect to Azure Blob Storage 🟡 URGENT
+Context: Historical data archived to Azure; need T-SQL access without import.
+Goal: Create master key, credential, external data source for Blob, create external table, query data.
+Complexity: L3
+
+PHASE 12: LINKED SERVERS & DISTRIBUTED QUERIES
+Task 77: Configure linked server to remote SQL Server with SQL authentication 🟢 ROUTINE
+Context: Application needs cross-server queries to reporting database on separate instance.
+Goal: Create linked server, configure security mapping, test four-part name query.
+Complexity: L2
+
+Task 78: Configure linked server using Kerberos delegation (no stored credentials) 🟡 URGENT
+Context: Security policy prohibits storing passwords; linked server must use current user credentials.
+Goal: Configure constrained delegation in AD, create linked server with delegation, test query execution.
+Complexity: L3
+
+PHASE 13: POLICY-BASED MANAGEMENT & GOVERNANCE
+Task 79: Configure policy-based management to enforce naming conventions 🟢 ROUTINE
+Context: Database naming standards violated; tables created without tbl_ prefix.
+Goal: Create condition, policy to check naming convention, evaluate against server, set to prevent violations.
+Complexity: L2
+
+PHASE 14: MAINTENANCE & AUTOMATION
+Task 80: Configure maintenance plan for index rebuild and statistics update 🟢 ROUTINE
+Context: No maintenance performed since go-live; fragmentation >80% on key indexes.
+Goal: Create maintenance plan with rebuild (>30% frag), reorganize (10-30%), update stats, schedule nightly.
+Complexity: L2
+
+Task 81: Configure Ola Hallengren maintenance solution 🟢 ROUTINE
+Context: Built-in maintenance plans insufficient; need intelligent fragmentation-based rebuild.
+Goal: Deploy Ola scripts, configure IndexOptimize job with fragmentation thresholds, schedule and test.
+Complexity: L2
+
+Task 82: Configure compression (backup compression default) 🟢 ROUTINE
+Context: Backup files consuming 3TB storage; backups taking 4 hours nightly.
+Goal: Enable backup compression default, perform test backup, verify size reduction and duration impact.
+Complexity: L2
+
+PHASE 15: TRIGGERS & AUTOMATION SAFEGUARDS
+Task 83: Configure server-level trigger to prevent database drops 🟡 URGENT
+Context: Production database accidentally dropped last month; prevent DDL at server level.
+Goal: Create DDL trigger blocking DROP DATABASE, test trigger fires and prevents action.
+Complexity: L2
+
+Task 84: Configure logon trigger to block access outside business hours 🟢 ROUTINE
+Context: Development environment should only be accessible 8 AM - 6 PM per security policy.
+Goal: Create logon trigger checking time and login name, test access inside and outside window.
+Complexity: L2
+
+Task 85: Configure startup stored procedure to log service restarts 🟢 ROUTINE
+Context: Need audit trail of SQL service restarts with timestamp and reason if available.
+Goal: Create startup procedure logging to table, mark as startup proc via sp_procoption, test across restart.
+Complexity: L2
+
+Task 86: Remove rogue startup procedure preventing service start 🔴 CRITICAL
+Context: Developer set buggy procedure as startup proc; service fails to start with error 3417.
+Goal: Start SQL with trace flag 4022 to skip startup procedures, disable proc, restart normally.
+Complexity: L3
+
+PHASE 16: HIGH AVAILABILITY & DISASTER RECOVERY SETUP
+Task 87: Install SQL Server failover cluster instance (FCI) on two-node WSFC 🔴 CRITICAL
+Context: Mission-critical ERP system requires automatic failover; shared storage configured by infrastructure team.
+Goal: Install clustered instance across both nodes, configure network name and IP, test failover.
+Complexity: L3
+
+Task 88: Configure HADR cluster timeout values for slow network 🟡 URGENT
+Context: AG experiencing false failovers on WAN link; default timeout too aggressive.
+Goal: Increase cluster timeout from 5s to 30s, session-timeout to 20s, test stability.
+Complexity: L3
+
+Task 89: Configure read-only routing for Always On Availability Group 🟡 URGENT
+Context: AG configured but reporting queries hitting primary; read-only replicas not utilized.
+Goal: Configure read-only routing URLs and lists, modify connection string with ApplicationIntent, verify routing.
+Complexity: L3
+
+Task 90: Troubleshoot listener connectivity after AG failover 🔴 CRITICAL
+Context: AG failed over; applications cannot connect via listener despite replica online.
+Goal: Verify DNS registration, cluster network resources, firewall rules, test listener connectivity.
+Complexity: L3
+
+PHASE 17: PATCHING & UPGRADES
+Task 91: Install cumulative update on standalone SQL Server instance 🔴 CRITICAL
+Context: Critical bug fix in CU12 addresses data corruption issue affecting production.
+Goal: Download CU, backup all databases, install patch, verify version and database integrity.
+Complexity: L2
+
+Task 92: Install cumulative update on SQL Server failover cluster 🔴 CRITICAL
+Context: Security patch required on clustered instance; zero downtime not possible.
+Goal: Install CU on passive node, failover, install on second node, verify cluster health.
+Complexity: L3
+
+Task 93: Install cumulative update using command-line for automation 🟡 URGENT
+Context: DR runbook requires scripted patching; GUI installation not repeatable.
+Goal: Extract CU setup files, execute with /quiet /IAcceptSQLServerLicenseTerms, verify success via log.
+Complexity: L2
+
+Task 94: Roll back failed cumulative update installation 🔴 CRITICAL
+Context: CU installation caused service startup failure; instance offline 15 minutes.
+Goal: Uninstall CU via Programs and Features, restart service, verify databases online and accessible.
+Complexity: L3
+
+Task 95: Upgrade SQL Server 2016 to SQL Server 2019 in-place 🔴 CRITICAL
+Context: Production instance must upgrade for extended support; zero data loss acceptable.
+Goal: Backup all databases, run upgrade installer, verify all databases online and accessible.
+Complexity: L3
+
+Task 96: Perform side-by-side migration from SQL 2012 to SQL 2019 🔴 CRITICAL
+Context: In-place upgrade too risky; new server provisioned for migration.
+Goal: Install SQL 2019 on new server, detach/attach databases, reconfigure logins/jobs/linked servers, cutover.
+Complexity: L3
+
+Task 97: Change SQL Server collation post-installation 🔴 CRITICAL
+Context: Installed with SQL_Latin1_General_CP1_CI_AS; application requires Latin1_General_CS_AS.
+Goal: Rebuild system databases with new collation, verify user databases unaffected, test application.
+Complexity: L3
+
+PHASE 18: TROUBLESHOOTING & RECOVERY
+Task 98: Troubleshoot and fix failed SQL Server service startup 🔴 CRITICAL
+Context: SQL Server service fails to start after configuration change; error log shows TempDB errors.
+Goal: Identify root cause via error log, resolve (remove bad startup parameters, fix file paths, etc.), start service.
+Complexity: L3
+
+Task 99: Reconfigure server after incorrect sp_configure change prevents startup 🔴 CRITICAL
+Context: Junior DBA set max server memory to 512MB; service won't start due to insufficient memory.
+Goal: Start SQL with minimal configuration (-f), reset max memory, restart normally.
+Complexity: L3
+
+PHASE 20: COMPLIANCE & VALIDATION
+Task 100: Validate installation meets CIS SQL Server Benchmark requirements 🟡 URGENT
+Context: Compliance audit in 2 weeks; installation must pass CIS Level 1 benchmark.
+Goal: Review and configure: sa disabled, protocols limited, auditing enabled, permissions restricted, document findings.
+Complexity: L3

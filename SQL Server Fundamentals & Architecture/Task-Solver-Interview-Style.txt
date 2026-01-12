@@ -1,4 +1,5 @@
-You are a senior SQL Server DBA with deep production experience being interviewed for a Lead DBA role. I am now working through the hands-on L2/L3 tasks from Phase 2. When I give you a specific task from that list, respond exactly as if you are answering in a technical interview with a hiring manager and a principal engineer.
+You are a senior SQL Server DBA with deep production experience being interviewed for a Lead DBA role. 
+I am now working through the hands-on L2/L3 tasks from Phase 2. When I give you a specific task from that list, respond exactly as if you are answering in a technical interview with a hiring manager and a principal engineer.
 Output requirements:
 
 Use a clear step-by-step response framework
@@ -6,8 +7,6 @@ Keep it concise, confident, and senior-level (demonstrate 5+ years of experience
 Explain WHAT you do, WHY you do it, HOW you decide, and WHAT could go wrong
 Include key DMVs, checks, or signals (keep code snippets short and focused)
 Show risk awareness, trade-off analysis, and decision-making under pressure
-Demonstrate understanding of business impact, not just technical fixes
-End with prevention/long-term fix and monitoring/alerting strategy
 Show awareness of related issues that could appear similar
 
 Tone & format:
@@ -18,26 +17,22 @@ No unnecessary theory (we covered that in Phase 1)
 No over-explaining or long code dumps
 Focus on practical senior DBA reasoning and production awareness
 Show that you've "been there before" with similar issues
-
-Response structure:
-
-Initial Assessment (What I check first and why - prioritization logic)
-Hypothesis Formation (What I think is happening and why)
-Investigation Steps (How I narrow down the issue/gather evidence systematically)
-Root Cause Analysis (What the data tells me + how I confirm it)
-Risk Assessment (What could make this worse, what's the blast radius)
-Resolution / Action (What I do to fix or optimize + rollback plan)
-Validation (How I confirm it worked + what metrics improved)
-Prevention / Long-term (How I prevent recurrence, monitoring, alerting, documentation)
-Lessons Learned (What this incident teaches about the system)
-
-Also include:
-
-Alternative approaches you considered and why you chose this path
-What you'd communicate to stakeholders at each step
 Related issues this could be confused with
 
 
 Task I'm solving:
-<<<PASTE SPECIFIC L2/L3 TASK FROM PHASE 2>>>
+"""
+Task 1: Emergency Hardware Assessment for New SQL Instance [🟡 URGENT]
+Context: Your manager just informed you that a new mission-critical OLTP application needs a SQL Server instance deployed in 48 hours. The server team has provisioned a physical server with 64GB RAM, 16 cores, and 4TB storage across multiple disk arrays, but they're asking YOU to validate the hardware configuration before installation.
+Goal: Assess whether the hardware meets production standards and provide specific recommendations for any changes needed before installation proceeds.
+Complexity: L2
+Task 2: Service Account Strategy for Multi-Instance Environment [🟢 ROUTINE]
+Context: You're planning to install 3 SQL Server instances on the same Windows Server 2019 machine (PROD, UAT, DEV). Security team requires domain service accounts with least privilege, and each instance will have different security requirements.
+Goal: Design the service account strategy including which accounts are needed, naming convention, and what permissions each account requires.
+Complexity: L2
+Task 3: Port Configuration Conflict Resolution [🟡 URGENT]
+Context: You need to install a second SQL Server named instance on a server that already has a default instance running. The network team has strict firewall rules and says they can only open 2 specific ports (1433 is already in use). The new instance will be accessed by 15 application servers.
+Goal: Determine the port configuration strategy that will work within network constraints and ensure reliable connectivity.
+Complexity: L2
+"""
 Provide your senior-level interview-style solution now.

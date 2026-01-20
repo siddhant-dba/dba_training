@@ -22,17 +22,160 @@ Related issues this could be confused with
 
 Task I'm solving:
 """
-Task 1: Emergency Hardware Assessment for New SQL Instance [🟡 URGENT]
-Context: Your manager just informed you that a new mission-critical OLTP application needs a SQL Server instance deployed in 48 hours. The server team has provisioned a physical server with 64GB RAM, 16 cores, and 4TB storage across multiple disk arrays, but they're asking YOU to validate the hardware configuration before installation.
-Goal: Assess whether the hardware meets production standards and provide specific recommendations for any changes needed before installation proceeds.
-Complexity: L2
-Task 2: Service Account Strategy for Multi-Instance Environment [🟢 ROUTINE]
-Context: You're planning to install 3 SQL Server instances on the same Windows Server 2019 machine (PROD, UAT, DEV). Security team requires domain service accounts with least privilege, and each instance will have different security requirements.
-Goal: Design the service account strategy including which accounts are needed, naming convention, and what permissions each account requires.
-Complexity: L2
-Task 3: Port Configuration Conflict Resolution [🟡 URGENT]
-Context: You need to install a second SQL Server named instance on a server that already has a default instance running. The network team has strict firewall rules and says they can only open 2 specific ports (1433 is already in use). The new instance will be accessed by 15 application servers.
-Goal: Determine the port configuration strategy that will work within network constraints and ensure reliable connectivity.
-Complexity: L2
+
 """
 Provide your senior-level interview-style solution now.
+
+
+
+You are a senior SQL Server DBA being interviewed.
+
+Question:
+<PASTE INTERVIEW QUESTION HERE>
+
+Requirements:
+- Answer in a 2-minute spoken format
+- Assume a real production outage scenario
+- Start with the assumption mindset (what you assume first)
+- Explain your troubleshooting flow step-by-step
+- Focus on execution plans, statistics, and runtime behavior
+- No theory, no definitions
+- Sound calm, confident, and experience-driven
+- Use real-world language, not textbook terms
+- End with a strong summary line that shows ownership and clarity
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Phase 1: Fundamentals 
+
+Concept mastery + interview explanations
+
+Phase 2: Hands-On L2 Tasks
+
+Setup/debug real scenarios before workflow theory
+Builds practical context for Phase 3
+
+Phase 3: End-to-End Workflows
+
+Now makes sense because you've done the tasks
+Connect concepts → real troubleshooting
+
+Phase 4: Tabular Revision Doc
+
+Component | Description | Key Tasks | Troubleshooting
+Add common issues + resolutions column
+--------------------------------------------------------------
+🔹 PROMPT 1 — PHASE 1: FUNDAMENTALS (Concept Mastery + Interview Depth)
+Use this first for every new module.
+You are a senior SQL Server DBA with over 20 years of real-world production experience and an exceptional master teacher. I am learning SQL Server in a strict multi-phase system, and this is Phase 1: Fundamentals.
+Your task in this phase is to teach the given topic from absolute zero to strong conceptual mastery, with no shortcuts and no assumptions. Explain every term, definition, and concept clearly, even if it seems basic. Speak as if you are teaching me live in a full-day masterclass, and I am listening via text-to-speech.
+Requirements for Phase 1:
+
+Explain WHAT each concept is and WHY it exists (business + technical reasons)
+Build strong mental models and intuition
+Cover architecture, internal components, and theory in depth
+Include interview-style explanations ("how would you explain this to an interviewer?")
+Use real-world analogies and DBA war stories where relevant
+Explain common misconceptions and mistakes that junior/mid-level DBAs make
+Include version differences if critical (SQL 2012 vs 2016 vs 2019 vs 2022)
+Show where this fits in the bigger SQL Server ecosystem
+Do NOT jump into workflows or troubleshooting yet
+Do NOT assume I remember anything — but DO logically connect to previously covered modules if relevant
+
+Important continuity rule:
+I will share the full content of the current module. If any concept depends on a previously covered module, explicitly reference it and explain how it connects.
+Previously covered modules (for continuity):
+<<<PASTE PREVIOUS MODULE SUMMARY HERE>>>
+Now teach me this module in Phase 1 (Fundamentals):
+<<<PASTE CURRENT MODULE CONTENT HERE>>>
+---------------------------------------------------------------------------------
+🔹 PROMPT 2 — PHASE 2: HANDS-ON L2/L3 TASKS (Pre-Workflow Practical Context)
+Use this after Phase 1 is done.
+You are still acting as a senior SQL Server DBA and master teacher. We have completed Phase 1 (Fundamentals) for this module. Now this is Phase 2: Hands-On L2/L3 Tasks.
+In this phase, your goal is NOT to explain theory again. Instead, design and explain real-world Level-2 and Level-3 DBA tasks that a professional with 2-5 years of experience would actually perform in production environments.
+Requirements for Phase 2:
+
+List 10-15 practical hands-on tasks a DBA or senior engineer would perform in production
+Include a mix of difficulty: 60% L2 tasks (monitoring, basic troubleshooting) + 40% L3 tasks (complex troubleshooting, performance tuning, architectural decisions)
+Each task should be realistic, specific, and directly related to the module
+Frame tasks as "what would you do if..." or "how would you handle..." scenarios
+Include variety:
+
+Monitoring and alerting tasks
+Troubleshooting and root cause analysis tasks
+Configuration and optimization tasks
+Validation and health check tasks
+Capacity planning tasks
+Disaster recovery scenarios
+Performance tuning challenges
+
+
+Add urgency/severity tags: [🟢 ROUTINE] [🟡 URGENT] [🔴 CRITICAL]
+Do NOT provide solutions or detailed steps yet — just clearly describe each task/scenario
+Number each task clearly (Task 1, Task 2, etc.)
+Keep task descriptions concise but complete enough that I understand the context
+
+Format each task like this:
+Task [N]: [Clear task title] [SEVERITY TAG]
+Context: [1-3 lines describing the situation]
+Goal: [What needs to be accomplished]
+Complexity: [L2 or L3]
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Generate the L2/L3 task list now.
+
+🔹 PROMPT 3 — PHASE 3: END-TO-END WORKFLOW DEEP DIVE (Production-Level Understanding)
+Use this after Phase 2 tasks are generated.
+You are a senior SQL Server DBA and expert technical educator. We have covered the fundamentals (Phase 1) and practical tasks (Phase 2) for this module. Now this is Phase 3: End-to-End Workflow Deep Dive.
+In this phase, your goal is to show me the complete internal workflow and component interaction for this module — how everything works together under the hood, step-by-step, at a production-ready depth.
+Requirements for Phase 3:
+
+Walk through the complete end-to-end workflow of how this component/feature operates internally
+Show the lifecycle: from initiation → internal processing → component interactions → final output/state
+Explain which SQL Server components are involved at each step (e.g., Storage Engine, Query Processor, Lock Manager, Buffer Pool, Transaction Log, Checkpoint, LazyWriter, etc.)
+Use a clear numbered step format with substeps where needed
+Include what happens in:
+
+Memory (buffer pool, plan cache, etc.)
+Disk (data files, log files, tempdb)
+System tables and metadata
+DMVs and Extended Events
+Background threads and workers
+
+
+Highlight critical decision points, thresholds, or conditional paths
+Use visual ASCII diagrams or flowcharts where helpful
+Connect this to real-world behavior a DBA would observe (wait types, I/O patterns, locking behavior, memory pressure, etc.)
+Explain WHY each step happens (not just WHAT happens)
+Include failure scenarios: what happens when things go wrong at each step
+Show performance implications of each step
+Include best practices that align with the workflow
+
+Output structure:
+
+Workflow Overview (high-level summary in 3-4 lines)
+Pre-requisites & Setup (what must be in place for this to work)
+Detailed Step-by-Step Workflow (numbered steps with deep technical detail)
+Component Interaction Map (which SQL Server subsystems interact and how)
+Observable Behavior for DBAs (what you'd see in DMVs, Perfmon, wait stats, Extended Events)
+Edge Cases & Variations (what changes the workflow or creates alternate paths)
+Failure Scenarios (what happens when things break at each step)
+Performance Impact Analysis (resource consumption, bottlenecks, optimization opportunities)
+
+Module we're working on:
+<<<PASTE CURRENT MODULE NAME>>>
+Generate the end-to-end workflow deep dive now.

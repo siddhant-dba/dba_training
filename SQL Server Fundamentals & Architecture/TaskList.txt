@@ -2,14 +2,18 @@ PHASE 1: PRE-INSTALLATION & PLANNING
 Task 1: Configure Windows Firewall rules for SQL Server using PowerShell 🟢 ROUTINE
 Context: Server build automation requires scripted firewall configuration.
 Goal: Create inbound rules for TCP 1433, UDP 1434, DAC 1434 via PowerShell, test remote connectivity.
-Complexity: L2
+Complexity: L2 
+[New-NetFirewallRule
+Get-Help New-NetFirewallRule 
+Get-NetFirewallRule | Where-Object DisplayName -like
+]
 
-Task 2: Troubleshoot installation failure due to .NET Framework version mismatch 🔴 CRITICAL
+## Task 2: Troubleshoot installation failure due to .NET Framework version mismatch 🔴 CRITICAL
 Context: SQL Server 2022 installation failing; .NET 4.8 not detected despite being installed.
 Goal: Identify .NET registry keys, repair .NET installation, retry SQL install, verify success.
 Complexity: L3
 
-Task 3: Troubleshoot installation failure due to pending Windows reboot 🟡 URGENT
+## Task 3: Troubleshoot installation failure due to pending Windows reboot 🟡 URGENT
 Context: SQL installation failing with error; system configuration check shows pending reboot.
 Goal: Identify pending reboot registry keys, resolve (reboot or clear safely), retry installation.
 Complexity: L2
@@ -24,11 +28,13 @@ Task 5: Install SQL Server with custom data/log/tempdb/backup paths 🟢 ROUTINE
 Context: Storage team allocated D: for data, E: for logs, F: for tempdb, G: for backups per company standards.
 Goal: Perform installation with all custom directories, verify placement post-install.
 Complexity: L2
+[ I validate storage is provisioned according to standards before installation. ]
 
 Task 6: Install SQL Server Enterprise Edition and configure multiple tempdb files 🟢 ROUTINE
 Context: 24-core production server; application has tempdb contention history.
 Goal: Install with 8 tempdb data files sized equally, verify file layout and growth settings.
 Complexity: L2
+
 
 Task 7: Install SQL Server 2022 named instance on server with existing default instance 🟢 ROUTINE
 Context: Shared server hosts multiple applications; new instance needed for isolation.
@@ -50,8 +56,15 @@ Task 10: Change SQL Server service account from LocalSystem to domain managed se
 Context: Audit finding: service running as LocalSystem violates security policy; gMSA account created by AD team.
 Goal: Change service account via Configuration Manager, verify service restart and database accessibility.
 Complexity: L2
+[ New-ADServiceAccount `
+-Name gmsa_sql `
+-DNSHostName gmsa_sql.sql.local `
+-PrincipalsAllowedToRetrieveManagedPassword SQLSERVER01$ ]
+[
+    Install-ADServiceAccount gmsa_sql
+]
 
-Task 11: Configure Service Principal Name (SPN) for Kerberos authentication 🟡 URGENT
+##Task 11: Configure Service Principal Name (SPN) for Kerberos authentication 🟡 URGENT
 Context: Security team mandates Kerberos; application experiencing double-hop authentication failures.
 Goal: Register SPNs using setspn, verify with delegation and Kerberos ticket inspection.
 Complexity: L3

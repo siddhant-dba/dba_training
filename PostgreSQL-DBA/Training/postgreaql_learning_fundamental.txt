@@ -1,0 +1,335 @@
+================================================================================
+                 PostgreSQL Learning & Setup Checklist (Linux)
+================================================================================
+This document is a step‑by‑step guide for beginners to install, configure,
+and understand PostgreSQL on a Debian/Ubuntu Linux system. It covers
+fundamental concepts and Linux‑specific operations in a milestone format.
+
+================================================================================
+Milestone 1: Linux System Preparation
+================================================================================
+Objective: Prepare the Linux environment for PostgreSQL installation, ensuring
+           correct user, directories, firewall, and security contexts.
+
+Steps:
+  1. Log in as root or use sudo.
+     - `sudo -i` or ensure your user has sudo rights.
+
+  2. Verify that required commands are available.
+     - `which apt-get ufw systemctl psql wget adduser`
+
+  3. Create the dedicated system user `postgres` if it does not exist.
+     - `id postgres` (if not found)
+     - `adduser --system --group --home /var/lib/postgresql --no-create-home --shell /bin/bash postgres`
+     - Expected: user `postgres` with home `/var/lib/postgresql`.
+
+  4. Create data and log directories (use defaults or custom).
+     - Data: `/var/lib/postgresql/16/main`
+     - Logs: `/var/log/postgresql`
+     - `mkdir -p /var/lib/postgresql/16/main /var/log/postgresql`
+     - `chown -R postgres:postgres /var/lib/postgresql /var/log/postgresql`
+     - `chmod 750 /var/lib/postgresql /var/log/postgresql`
+
+  5. Configure firewall (UFW) if remote access is planned.
+     - Example: `ufw allow from 192.168.1.0/24 to any port 5432 proto tcp comment "PostgreSQL"`
+     - `ufw reload`
+
+  6. Check AppArmor status (Ubuntu/Debian default).
+     - `aa-status --enabled`
+     - If enabled, ensure PostgreSQL profile is loaded: `aa-status | grep postgres`
+     - Reload if needed: `systemctl reload apparmor`
+
+Verification:
+  - User `postgres` exists: `id postgres`
+  - Directories exist and have correct ownership/permissions: `ls -ld /var/lib/postgresql/16/main /var/log/postgresql`
+  - Firewall rules: `ufw status numbered` (if UFW enabled)
+  - AppArmor: `aa-status | grep postgres` (if AppArmor active)
+
+================================================================================
+Milestone 2: PostgreSQL Installation
+================================================================================
+Objective: Install PostgreSQL 16 from the official APT repository.
+
+Steps:
+  1. Add the PostgreSQL official repository.
+     - `echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list`
+
+  2. Import the repository signing key.
+     - `wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -`
+
+  3. Update package lists and install PostgreSQL 16.
+     - `apt-get update`
+     - `apt-get install -y postgresql-16 postgresql-contrib-16`
+
+Verification:
+  - Check PostgreSQL version: `sudo -u postgres psql -c "SELECT version();"`
+  - Confirm service is running: `systemctl status postgresql`
+
+================================================================================
+Milestone 3: PostgreSQL Basic Configuration
+================================================================================
+Objective: Configure authentication, network, logging, and restart the service.
+
+Steps:
+  1. Set a strong password for the `postgres` superuser.
+     - `sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'YourStrongPassword';"`
+
+  2. Backup default configuration files.
+     - `cp /etc/postgresql/16/main/pg_hba.conf /etc/postgresql/16/main/pg_hba.conf.bak`
+     - `cp /etc/postgresql/16/main/postgresql.conf /etc/postgresql/16/main/postgresql.conf.bak`
+
+  3. Configure `pg_hba.conf` for SCRAM‑SHA‑256 authentication.
+     - Edit `/etc/postgresql/16/main/pg_hba.conf` to contain:
+local all postgres scram-sha-256
+local all all scram-sha-256
+host all all 127.0.0.1/32 scram-sha-256
+host all all ::1/128 scram-sha-256
+
+Add remote lines if needed, e.g.:
+host all all 192.168.1.0/24 scram-sha-256
+text
+- Set ownership/permissions: `chown postgres:postgres /etc/postgresql/16/main/pg_hba.conf && chmod 640 /etc/postgresql/16/main/pg_hba.conf`
+
+4. Configure `postgresql.conf` for network and logging.
+- Edit `/etc/postgresql/16/main/postgresql.conf` and set/uncomment:
+listen_addresses = '*' # or specific IP
+port = 5432
+logging_collector = on
+log_directory = '/var/log/postgresql'
+log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+log_rotation_age = 1d
+log_rotation_size = 100MB
+log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h'
+
+text
+- Ensure log directory is writable: `chown postgres:postgres /var/log/postgresql && chmod 750 /var/log/postgresql`
+
+5. Restart PostgreSQL to apply changes.
+- `systemctl restart postgresql`
+
+Verification:
+- Check listening ports: `ss -tlnp | grep 5432`
+- Test local connection: `sudo -u postgres psql -c "SELECT 1;"`
+- Examine logs: `ls -la /var/log/postgresql/`
+
+================================================================================
+Milestone 4: Understanding Roles (Users) and Databases
+================================================================================
+Objective: Learn about PostgreSQL roles, create additional users and databases,
+    and understand ownership.
+
+Steps:
+1. Connect to PostgreSQL as superuser.
+- `sudo -u postgres psql`
+
+2. List existing roles and databases.
+- `\du` (list roles)
+- `\l` (list databases)
+
+3. Create a new role (user) with login capability.
+- `CREATE ROLE app_user WITH LOGIN PASSWORD 'AppPassword';`
+
+4. Create a new database and assign ownership.
+- `CREATE DATABASE app_db OWNER app_user;`
+
+5. Grant privileges to the user on its database.
+- `GRANT CONNECT ON DATABASE app_db TO app_user;`
+- `GRANT ALL PRIVILEGES ON DATABASE app_db TO app_user;` (for development)
+
+6. Connect as the new user to its database.
+- `\q` to exit.
+- `psql -U app_user -d app_db -h localhost` (you'll be prompted for password)
+
+7. Explore the new database.
+- `\c app_db` (connect)
+- `\dt` (list tables – empty initially)
+- `SELECT current_user;`
+
+Verification:
+- Role exists: `\du` shows `app_user`
+- Database exists: `\l` shows `app_db` with owner `app_user`
+- Connection works: `psql -U app_user -d app_db -h localhost -c "SELECT 1;"`
+
+================================================================================
+Milestone 5: Schemas and Tables
+================================================================================
+Objective: Understand PostgreSQL schemas, create tables, and perform basic SQL.
+
+Steps:
+1. Connect to `app_db` as `app_user` (or as `postgres` and then switch).
+- `sudo -u postgres psql -d app_db`
+
+2. List schemas.
+- `\dn`
+
+3. Create a new schema for the application.
+- `CREATE SCHEMA app_schema;`
+
+4. Create a table inside the schema.
+- `CREATE TABLE app_schema.users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW());`
+
+5. Insert, update, select, delete data.
+- `INSERT INTO app_schema.users (name) VALUES ('Alice'), ('Bob');`
+- `SELECT * FROM app_schema.users;`
+- `UPDATE app_schema.users SET name = 'Alice Updated' WHERE id = 1;`
+- `DELETE FROM app_schema.users WHERE id = 2;`
+
+6. Understand search path.
+- `SHOW search_path;`
+- `SET search_path TO app_schema, public;`
+- `SELECT * FROM users;` (now works without schema qualification)
+
+Verification:
+- Table exists: `\dt app_schema.users`
+- Data can be queried: `SELECT COUNT(*) FROM app_schema.users;`
+
+================================================================================
+Milestone 6: Privileges and Security
+================================================================================
+Objective: Apply least‑privilege principles: grant only necessary permissions.
+
+Steps:
+1. Create a read‑only role.
+- `CREATE ROLE readonly_user WITH LOGIN PASSWORD 'ReadOnlyPass';`
+
+2. Grant CONNECT on the database.
+- `GRANT CONNECT ON DATABASE app_db TO readonly_user;`
+
+3. Grant USAGE on the schema.
+- `GRANT USAGE ON SCHEMA app_schema TO readonly_user;`
+
+4. Grant SELECT on all tables in the schema (existing and future).
+- `GRANT SELECT ON ALL TABLES IN SCHEMA app_schema TO readonly_user;`
+- `ALTER DEFAULT PRIVILEGES IN SCHEMA app_schema GRANT SELECT ON TABLES TO readonly_user;`
+
+5. Verify that readonly_user can only SELECT, not INSERT/UPDATE/DELETE.
+- Connect as readonly_user: `psql -U readonly_user -d app_db -h localhost`
+- Try `SELECT * FROM app_schema.users;` (should work)
+- Try `INSERT INTO app_schema.users (name) VALUES ('Test');` (should fail)
+
+6. (Optional) Revoke public schema access for extra security.
+- `REVOKE CREATE ON SCHEMA public FROM PUBLIC;`
+- `REVOKE ALL ON DATABASE app_db FROM PUBLIC;`
+
+Verification:
+- readonly_user can SELECT but cannot modify data.
+- Default privileges are set: create a new table as app_user, then check if readonly_user can SELECT it.
+
+================================================================================
+Milestone 7: Backup and Restore Basics
+================================================================================
+Objective: Learn how to back up and restore databases using pg_dump and psql.
+
+Steps:
+1. Create a backup of a single database.
+- `sudo -u postgres pg_dump app_db > /tmp/app_db_backup.sql`
+
+2. Create a backup of all databases.
+- `sudo -u postgres pg_dumpall > /tmp/all_db_backup.sql`
+
+3. Restore a database from a backup (first drop existing database if needed).
+- `sudo -u postgres psql -c "DROP DATABASE app_db;"`
+- `sudo -u postgres psql -c "CREATE DATABASE app_db OWNER app_user;"`
+- `sudo -u postgres psql -d app_db < /tmp/app_db_backup.sql`
+
+4. Use custom format for more flexibility.
+- `pg_dump -Fc app_db > app_db.dump`
+- `pg_restore -d app_db app_db.dump`
+
+5. Schedule a cron job for automated backups (concept only – not executed now).
+
+Verification:
+- After restore, verify data: `sudo -u postgres psql -d app_db -c "SELECT COUNT(*) FROM app_schema.users;"`
+- Compare with original count.
+
+================================================================================
+Milestone 8: Monitoring and Logs
+================================================================================
+Objective: Understand where PostgreSQL logs are stored and how to monitor activity.
+
+Steps:
+1. Locate PostgreSQL logs.
+- Check `log_directory` and `log_filename` in postgresql.conf.
+- Default: `/var/log/postgresql/postgresql-*.log`
+
+2. View real‑time logs.
+- `tail -f /var/log/postgresql/postgresql-*.log`
+
+3. Enable additional logging if needed.
+- In postgresql.conf, set `log_statement = 'all'` (for debugging) and `log_connections = on`.
+- Restart PostgreSQL.
+
+4. Use `pg_stat_activity` to see current connections and queries.
+- `SELECT pid, usename, application_name, state, query FROM pg_stat_activity;`
+
+5. Check for long‑running queries.
+- `SELECT pid, now() - query_start AS duration, query FROM pg_stat_activity WHERE state = 'active' AND now() - query_start > interval '1 minute';`
+
+Verification:
+- Logs are being written: `ls -la /var/log/postgresql/`
+- `pg_stat_activity` shows active sessions.
+
+================================================================================
+Milestone 9: Performance Tuning Basics
+================================================================================
+Objective: Learn how to adjust PostgreSQL parameters for better performance.
+
+Steps:
+1. Understand key parameters in postgresql.conf.
+- `shared_buffers` – typically 25% of RAM.
+- `work_mem` – per‑operation memory for sorting/hashing.
+- `effective_cache_size` – estimate of OS cache.
+- `max_connections` – limit concurrent connections.
+
+2. View current settings.
+- `SHOW shared_buffers;` (inside psql)
+
+3. Modify parameters (requires restart for some, reload for others).
+- Edit `/etc/postgresql/16/main/postgresql.conf`.
+- Example: `shared_buffers = 512MB` (for a server with 2GB RAM).
+- For parameters that require restart: `systemctl restart postgresql`
+- For parameters that can be reloaded: `systemctl reload postgresql`
+
+4. Use `pg_stat_bgwriter` to monitor checkpoint and buffer performance.
+- `SELECT * FROM pg_stat_bgwriter;`
+
+5. Enable query logging for slow queries.
+- `log_min_duration_statement = 1000` (logs queries slower than 1000ms)
+
+Verification:
+- After changing parameters, verify they are applied: `SHOW shared_buffers;`
+- Check logs for slow queries after enabling.
+
+================================================================================
+Milestone 10: Advanced Security (Optional)
+================================================================================
+Objective: Implement SSL encryption and row‑level security.
+
+Steps:
+1. Enable SSL (requires certificates).
+- Generate self‑signed certificate: `openssl req -new -text -nodes -subj "/CN=localhost" -x509 -days 365 -out server.crt -keyout server.key`
+- Move to data directory: `cp server.crt server.key /var/lib/postgresql/16/main/`
+- Set permissions: `chown postgres:postgres /var/lib/postgresql/16/main/server.{crt,key} && chmod 600 /var/lib/postgresql/16/main/server.key`
+- In postgresql.conf, set: `ssl = on`, `ssl_cert_file = 'server.crt'`, `ssl_key_file = 'server.key'`
+- Restart PostgreSQL.
+
+2. Test SSL connection.
+- `psql "host=localhost port=5432 sslmode=require user=app_user dbname=app_db"`
+
+3. Implement row‑level security (RLS).
+- `ALTER TABLE app_schema.users ENABLE ROW LEVEL SECURITY;`
+- Create a policy: `CREATE POLICY user_policy ON app_schema.users USING (name = current_user);`
+- Test with different users.
+
+Verification:
+- SSL: `psql` command connects with `SSL connection` notice.
+- RLS: Users can only see rows matching their own name.
+
+================================================================================
+Conclusion
+================================================================================
+This checklist covers the essential PostgreSQL concepts and Linux operations
+needed to set up and maintain a production‑ready database. Each milestone builds
+on the previous one, providing both theoretical understanding and practical
+commands. For further learning, explore replication, partitioning, and advanced
+monitoring tools.

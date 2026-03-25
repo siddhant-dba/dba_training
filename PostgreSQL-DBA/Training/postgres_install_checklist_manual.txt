@@ -1,0 +1,105 @@
+1. Linux System Preparation
+   Run as root or with sudo
+   - Verify current user has root privileges.
+   - Verify required commands
+     apt-get, ufw, systemctl, psql, wget, adduser must be available.
+   Create dedicated system user postgres
+   - System user: postgres
+   - Home: /var/lib/postgresql
+   - Shell: /bin/bash
+   - Group: postgres
+   Create necessary directories
+   - Data directory: /var/lib/postgresql/16/main (or custom)
+   - Log directory: /var/log/postgresql (or custom)
+   - Set ownership: postgres:postgres
+   - Set permissions: 750
+   Configure firewall (UFW)
+   - If remote connections are required, allow port 5432 from specific IPs/CIDRs.
+   - Reload UFW to apply rules.
+   Check AppArmor status
+   - Ensure AppArmor is enabled.
+   - Confirm PostgreSQL profile is loaded; reload if necessary.
+   - Skip if AppArmor is not used.
+
+2. PostgreSQL Repository and Installation
+   Add official PostgreSQL 16 APT repository
+   - Use lsb_release -cs to determine the Debian/Ubuntu codename.
+   Import the repository signing key
+   - Ensures package authenticity.
+   Update package lists
+   - apt-get update
+   Install PostgreSQL 16 packages
+   - Required packages: postgresql-16, postgresql-contrib-16
+
+3. PostgreSQL Configuration
+   Set strong password for postgres superuser
+   - Use ALTER USER postgres WITH PASSWORD 'strong_password';
+   Backup configuration files
+   - pg_hba.conf → pg_hba.conf.bak.YYYYMMDD_HHMMSS
+   - postgresql.conf → postgresql.conf.bak.YYYYMMDD_HHMMSS
+   Configure pg_hba.conf
+   - Authentication: SCRAM-SHA-256 for all connection types
+     - Local connections (unix socket)
+     - IPv4 local (127.0.0.1/32)
+     - IPv6 local (::1/128)
+     - Optionally, add remote IP/CIDR entries if remote access is needed
+   Configure postgresql.conf
+   - listen_addresses = * (or specific IPs)
+   - port = 5432
+   - Enable logging_collector = on
+   - Set log_directory (default /var/log/postgresql or custom)
+   - Set log_filename with timestamp (postgresql-%Y-%m-%d_%H%M%S.log)
+   - Set log rotation: log_rotation_age = 1d, log_rotation_size = 100MB
+   - Set log_line_prefix for detailed logging
+   - Optional: configure SSL, max connections, shared_buffers, work_mem, etc.
+   Ensure log directory exists
+   - Ownership: postgres:postgres
+   - Permissions: 750
+   Restart PostgreSQL
+   - Apply all configuration changes: systemctl restart postgresql
+
+4. User and Database Creation
+   Create additional PostgreSQL users
+   - Define LOGIN users with strong passwords.
+   - Check if the user already exists before creation.
+   Create additional databases
+   - Assign ownership based on naming convention or default to postgres.
+   Grant privileges to users
+   - CONNECT on assigned database
+   - USAGE on public schema
+   - CRUD (SELECT, INSERT, UPDATE, DELETE) on all existing tables
+   - Set default privileges for future tables in the public schema
+
+5. Environment Setup
+   Ensure PostgreSQL bin directory is in PATH for postgres user
+   - Typically /usr/lib/postgresql/16/bin
+   - Add to .profile or .bashrc of postgres user
+
+6. Verification
+   Check PostgreSQL service status
+   - systemctl status postgresql
+   Check listening ports
+   - ss -tlnp | grep 5432
+   Confirm PostgreSQL version
+   - sudo -u postgres psql -c "SELECT version();"
+   Review configuration files
+   - /etc/postgresql/16/main/pg_hba.conf
+   - /etc/postgresql/16/main/postgresql.conf
+   Confirm log files location
+   - Default: /var/log/postgresql
+   Confirm firewall and AppArmor settings
+
+7. Idempotence Notes
+   - Creation of users, databases, directories, and firewall rules is idempotent.
+   - Configuration files are backed up before modification.
+   - Script or manual steps can be safely re-applied.
+
+8. Production Standards Enforced
+   - Strong passwords for all users
+   - Least privilege access on databases and schemas
+   - Secure authentication (SCRAM-SHA-256)
+   - Correct ownership and permissions for data/log directories (postgres:postgres, 750)
+   - Systemd service management
+   - Firewall configured only if remote access allowed
+   - AppArmor profile loaded if enabled
+   - Non-interactive, repeatable process

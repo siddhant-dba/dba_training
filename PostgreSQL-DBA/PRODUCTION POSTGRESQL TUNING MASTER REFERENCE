@@ -1,0 +1,253 @@
+# PRODUCTION POSTGRESQL TUNING MASTER REFERENCE (COMPLETE)
+# ==========================================================
+# Memory, CPU, I/O, and Network – bullet‑point format
+# Based on 20+ years of production experience + dynamic tuning best practices
+# Version: 2.0 – includes all critical parameters
+
+## 1. MEMORY TUNING
+
+### Memory Source & Budgeting
+- Use MemAvailable from /proc/meminfo (actual free memory + cache), not MemTotal.
+- Subtract dynamic OS reserve:
+  * 15% if total RAM < 4 GB
+  * 10% if total RAM < 16 GB
+  * else 5% + 2 GB
+- Subtract connection overhead: max_connections × 8 MB (fixed per‑connection shared memory).
+- Available DB RAM = MemAvailable - OS_reserve - connection_overhead.
+
+### shared_buffers
+- Set to 25–40% of Available DB RAM (policy driven: 25% for OLTP, 40% for DW).
+- Hard cap: 8 GB if total RAM < 32 GB, else never more than 25% of total RAM.
+- Primary cache for data and indexes.
+
+### effective_cache_size
+- Estimate of OS page cache: 50–75% of total RAM (policy driven).
+- Not allocated memory – only a planner hint.
+
+### maintenance_work_mem
+- 5% of total RAM, capped at 10 GB.
+- Used for VACUUM, CREATE INDEX, and other maintenance operations.
+
+### wal_buffers
+- Set to min(16 MB, shared_buffers / 32) → typically 16 MB.
+- Explicit setting avoids default (which is fine but less predictable).
+
+### Execution Pool
+- What remains after subtracting shared_buffers, maintenance_work_mem, and wal_buffers from Available DB RAM.
+- This pool is reserved for work_mem and other per‑session allocations.
+
+### work_mem
+- Calculation: Execution_pool / max_connections.
+- Clamp between 4 MB and 2 GB.
+- **Critical**: Do NOT divide by 4. One work_mem per connection per sort/hash operation.
+
+### temp_buffers
+- Local per‑session memory for temporary tables.
+- Default 8 MB; increase if heavy temp table usage (but part of work_mem pool in practice).
+
+### max_wal_size
+- shared_buffers × 3 for OLTP, ×6 for data warehouse.
+- Minimum 1 GB.
+
+### HugePages (kernel memory)
+- Required size = (shared_buffers + wal_buffers + (max_connections × 8 MB)) × (1 + margin_pct/100).
+- Margin default: 10%.
+- Round up to next multiple of hugepage size (2 MB or 1 GB).
+- After setting vm.nr_hugepages, verify allocation (fail if insufficient).
+- Set huge_pages = on (or try) in postgresql.conf.
+
+### Kernel Shared Memory Limits (legacy, still needed on many systems)
+- kernel.shmmax = shared_buffers (bytes).
+- kernel.shmall = shared_buffers / 4096 (4 KB pages).
+
+### Shared Memory Type (modern Linux)
+- shared_memory_type = mmap (default, preferred) or sysv.
+- dynamic_shared_memory_type = posix (default) or mmap.
+
+---
+
+## 2. CPU & PARALLELISM TUNING
+
+### Core Discovery
+- Physical cores = real execution units (ignore SMT for base parallelism).
+- Logical CPUs = physical cores × threads per core (nproc).
+
+### max_worker_processes
+- Set to total logical CPUs.
+- Background workers (parallel, autovacuum, logical replication, etc.).
+
+### Parallelism Budget (physical cores)
+- Apply policy: parallel_workers_pct (50% conservative, 100% aggressive).
+- Budgeted cores = physical_cores × parallel_workers_pct / 100.
+
+### max_parallel_workers
+- Total parallel workers across all queries = budgeted cores.
+- Hard cap at 64.
+
+### max_parallel_workers_per_gather
+- Workers per query = max(1, floor(max_parallel_workers / 4)).
+- Allows 1 (no parallelism) on very small systems.
+
+### max_parallel_maintenance_workers
+- Parallel workers for CREATE INDEX, VACUUM (parallel option).
+- = min(8, max_parallel_workers_per_gather).
+
+### autovacuum_max_workers
+- Dedicated autovacuum background processes.
+- = max(2, floor(physical_cores / 2)), capped at 10.
+- Minimum 2 prevents table bloat.
+
+### Parallel Query Cost Thresholds (prevent tiny queries going parallel)
+- min_parallel_table_scan_size: 8 MB (default) – table must be at least this big.
+- min_parallel_index_scan_size: 512 KB (default) – index size threshold.
+- parallel_setup_cost: 1000 (default) – planner cost to start parallel workers.
+- parallel_tuple_cost: 0.1 (default) – cost to transfer a tuple between workers.
+
+### enable_parallel_append
+- on by default (allows parallel append for UNION/partitioned tables).
+
+### force_parallel_mode
+- off (normal), on (testing), regress (debug) – never enable in production.
+
+### max_slave_threads (logical replication)
+- Number of logical replication apply workers per subscription.
+- Default 8; increase for high‑throughput logical replication.
+
+---
+
+## 3. I/O TUNING
+
+### Planner Cost Parameters (storage type dependent)
+- random_page_cost:
+  * HDD: 4.0 (default)
+  * SSD: 1.1 – 1.5
+  * NVMe: 1.0 – 1.1
+  * All in memory: 1.0
+- seq_page_cost: usually 1.0; lower only for extremely fast storage.
+- effective_io_concurrency:
+  * HDD/RAID: number of spindles
+  * SSD: 100–200
+  * NVMe: 200–1000
+  * Default in PostgreSQL 18+: 16
+
+### Checkpoint & WAL Tuning
+- checkpoint_timeout: 5 minutes (default); increase to 10–15 min for write‑heavy DW.
+- checkpoint_completion_target: 0.9 (spreads writes over 90% of interval).
+- max_wal_size: 4–16 GB typical (smooth I/O vs recovery time).
+- min_wal_size: meaningful value (e.g., 1–2 GB) to avoid WAL segment churn.
+- log_checkpoints: on (to monitor checkpoint behaviour).
+
+### Background Writer (bgwriter)
+- bgwriter_delay: 200 ms (default).
+- bgwriter_lru_maxpages: 100 (default); higher = more writes per cycle.
+- bgwriter_lru_multiplier: 2.0 (default); higher = more aggressive cleaning.
+- bgwriter_flush_after: 64 kB (default) – how many dirty pages before flush.
+
+### WAL Writer
+- wal_writer_delay: 200 ms (default) – how often WAL writer flushes.
+- wal_writer_flush_after: 1 MB (default) – flush after this much WAL.
+
+### WAL Buffers & Compression
+- wal_buffers: 16 MB (or 64 MB for high write workloads).
+- wal_compression: on (reduces WAL volume at small CPU cost).
+- wal_log_hints: off unless using pg_checksums.
+- full_page_writes: on (required for crash recovery, unless using pg_rewind or replica).
+- wal_sync_method: open_datasync (default) or fdatasync (better on Linux); test for performance.
+
+### Asynchronous I/O (PostgreSQL 18+)
+- io_method: io_uring (for modern Linux kernels).
+- io_workers: 3 (default); increase for high‑concurrency workloads.
+- io_combine_limit: 8 (default); increase for high‑latency storage.
+
+### Flush After (reduce I/O stalls)
+- backend_flush_after: 256 kB (default) – how many dirty pages before a backend flushes.
+- effective_io_concurrency already covered.
+
+### Filesystem & OS Level (lower‑level)
+- Mount options: noatime, nodiratime, async, barrier=0 (only with battery‑backed cache).
+- Kernel dirty page ratios: vm.dirty_ratio (10% default), vm.dirty_background_ratio (5% default).
+- vm.swappiness: reduce to 1 (avoid swapping PostgreSQL).
+- Scheduler: NOOP or mq‑deadline for SSDs; CFQ (with tuning) for HDDs.
+- Block device read‑ahead: 4096–16384 kB for spinning disks, lower for SSDs.
+
+### synchronous_commit
+- on (default) – safest, but increases I/O.
+- off – faster but risk of data loss on crash.
+- remote_write / remote_apply for synchronous replication.
+
+---
+
+## 4. NETWORK TUNING
+
+### Connection Management
+- port: 5432 (change for security or multiple instances).
+- listen_addresses: '*' for all interfaces, or specific IPs.
+- max_connections: hard limit (200–500 typical); plan memory and network accordingly.
+- superuser_reserved_connections: 3–10 (reserved for admin).
+
+### Connection Pooling / Proxy
+- Use PgBouncer or Pgpool‑II when max_connections > 200.
+- pool_mode: session (default), transaction, or statement.
+- reserve_pool_size: 5–20 extra connections for privileged users during spikes.
+
+### Network Timeouts (TCP keepalives)
+- tcp_keepalives_idle: 60 seconds (detect idle dead connections).
+- tcp_keepalives_interval: 15 seconds (between probes).
+- tcp_keepalives_count: 9 (probes before dropping).
+- tcp_user_timeout: milliseconds – modern alternative, e.g., 30000 (30s).
+- Total disconnect time ≈ idle + interval × count.
+
+### Authentication & Security (overhead)
+- ssl: on (for public/cloud networks); off only on trusted internal LAN.
+- ssl_ciphers: HIGH:MEDIUM:+3DES:!aNULL (modern, fast ciphers).
+- ssl_min_protocol_version: TLSv1.2 (disable older protocols).
+- password_encryption: scram‑sha‑256 (modern, avoid md5).
+
+### Replication Network (primary ↔ standby)
+- wal_sender_timeout: 60 seconds default; increase to 120–300 for high‑latency links.
+- wal_receiver_timeout: same as sender.
+- max_wal_senders: number of standbys + backup + 2.
+- wal_keep_segments (or wal_keep_size) – retain WAL for network lag.
+
+### OS / Kernel Network Tuning
+- net.core.rmem_max / wmem_max: 16–32 MB (max socket buffer size).
+- net.core.rmem_default / wmem_default: 8–16 MB.
+- net.ipv4.tcp_rmem / tcp_wmem: "4096 87380 16777216" (min, default, max in pages).
+- net.core.netdev_max_backlog: 5000 (increase for high packet rates).
+- net.ipv4.tcp_congestion_control: bbr (for high‑bandwidth, high‑latency) or cubic.
+
+### Application‑Level Behaviour
+- Use connection pooling inside application (HikariCP, Tomcat JDBC, etc.).
+- Batch / pipeline mode to reduce round‑trips.
+- Enable libpq compression (PostgreSQL 16+) for slow links.
+- idle_in_transaction_session_timeout: 60s (avoid long‑idle transactions consuming network).
+- statement_timeout: 0 (off) or set to a safe value (e.g., 5min) for specific queries.
+
+### Unix Socket (local connections, no network)
+- unix_socket_directories: /var/run/postgresql (default).
+- unix_socket_permissions: 0777 (default) – restrict if security needed.
+
+---
+
+## 5. ADDITIONAL PRODUCTION PARAMETERS (Cross‑cutting)
+
+### Logging & Monitoring (affects I/O and CPU)
+- log_min_duration_statement: 1000 ms (log slow queries).
+- log_connections / log_disconnections: on (for auditing).
+- log_lock_waits: on (detect deadlocks).
+- log_temp_files: 0 (log all temp file usage).
+- track_io_timing: on (requires superuser, helps I/O analysis).
+
+### Resource Limits (prevent runaway queries)
+- statement_timeout: 0 (off) or set per role.
+- lock_timeout: 0 (off) or 30s.
+- idle_in_transaction_session_timeout: 60s.
+
+### Vacuum Tuning (affects I/O and CPU)
+- autovacuum_vacuum_scale_factor: 0.2 (default) – reduce to 0.05–0.1 for large tables.
+- autovacuum_analyze_scale_factor: 0.1 (default) – reduce similarly.
+- autovacuum_vacuum_threshold: 50 (default) – increase for very large tables.
+- autovacuum_naptime: 1 min (default) – increase to 5 min on quiet systems.
+
+---
+End of master reference – complete for production deployment

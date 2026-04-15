@@ -1,0 +1,972 @@
+================================================================================
+CATEGORY 1: DATABASE INTERNALS & STORAGE ARCHITECTURE
+================================================================================
+ 
+TOPIC: Storage Layout & Page Structure
+  PostgreSQL:
+    [P1] 8KB heap pages, FSM (Free Space Map), VM (Visibility Map)
+    [P1] TOAST (The Oversized Attribute Storage Technique) — inline vs. out-of-line
+    [P1] Fillfactor impact on HOT updates (Heap Only Tuple)
+    [P2] ctid, xmin, xmax — tuple-level internals (dev concern, but DBA must read)
+  SQL Server:
+    [P1] 8KB pages, Extents (uniform vs. mixed), IAM pages
+    [P1] Heap tables vs. Clustered Index tables — physical structure impact
+    [P1] Page splits — causes, detection via sys.dm_db_index_physical_stats
+    [P0] File growth events — autogrowth vs. pre-allocated, instant file init
+  Priority:
+    P0: File growth management, TempDB data file configuration
+    P1: Page structure (fragmentation decisions)
+    P2: Tuple internals (dev scope, but DBA reads execution plans)
+  Scripting Reference:
+    BASH: df -h, du -sh, lsblk, pvdisplay (LVM-based storage checks)
+    PS:   Get-Volume, Get-PhysicalDisk, Get-Counter '\LogicalDisk(*)\Free Megabytes'
+ 
+--------------------------------------------------------------------------------
+ 
+TOPIC: Write-Ahead Log (WAL) / Transaction Log
+  PostgreSQL:
+    [P0] LSNs, WAL segments, wal_level settings (replica, logical, minimal)
+    [P0] archive_mode / archive_command — correct and failure modes
+    [P0] Replication Slots — monitoring slot lag, dropping stale slots
+         PITFALL: Slot lag fills pg_wal directory → instance STOP
+    [P0] wal_keep_size vs. replication slots for WAL retention
+    [P1] Checkpointing — checkpoint_completion_target, max_wal_size
+  SQL Server:
+    [P0] VLF (Virtual Log File) count — impact of autogrowth events, shrink
+    [P0] log_reuse_wait_desc — all 12 wait states, especially LOG_BACKUP,
+         REPLICATION, ACTIVE_TRANSACTION
+    [P0] Log Truncation — when it happens, why it doesn't happen
+    [P0] Tail-log backup before restore — correct sequence
+         PITFALL: Log full in FULL recovery with no log backup job → instance stop
+    [P1] MinLSN & Oldest Active Transaction — long transactions blocking truncation
+  Priority: P0 CRITICAL — Backup/DR scope. Log full = instance halt.
+  Scripting Reference:
+    BASH: pg_waldump, pg_walinspect extension, watch pg_stat_replication
+    PS:   SQLCMD queries to sys.databases (log_reuse_wait_desc),
+          Get-EventLog for SQL errors, custom log backup chain validation
+ 
+--------------------------------------------------------------------------------
+ 
+TOPIC: Memory Architecture
+  PostgreSQL:
+    [P1] shared_buffers (target: 25% RAM), effective_cache_size (OS page cache)
+    [P1] work_mem — per-sort/hash operation, not per-session (multiplication trap)
+    [P1] huge_pages — Linux THP vs. explicit hugepages (vm.nr_hugepages)
+    [P1] OOM Killer — protecting postmaster (vm.overcommit_memory settings)
+  SQL Server:
+    [P1] Buffer Pool — min/max server memory, Lock Pages in Memory (LPIM)
+    [P1] Plan Cache — ad-hoc workload cache bloat, optimize for ad hoc
+    [P1] In-Memory OLTP (Hekaton) — basics for monitoring XTP memory usage
+    [P0] Memory Pressure — Resource Monitor wait, PAGEIOLATCH spike correlation
+  Priority: P1 HIGH — Performance/Monitoring and System Parameter Tuning scope.
+  Scripting Reference:
+    BASH: free -m, /proc/meminfo, sysctl vm.swappiness, pg_buffercache extension
+    PS:   Get-Counter '\Memory\Available MBytes', sys.dm_os_memory_clerks queries
+ 
+--------------------------------------------------------------------------------
+ 
+TOPIC: The VACUUM Process (PostgreSQL Only)
+  [P0] Autovacuum — per-table tuning (autovacuum_vacuum_scale_factor,
+       autovacuum_vacuum_cost_delay, autovacuum_analyze_scale_factor)
+  [P0] Transaction ID Wraparound — pg_database.datfrozenxid monitoring,
+       relfrozenxid per table, emergency VACUUM FREEZE procedures
+       PITFALL: Wraparound shutdown requires single-user mode restart — P0
+  [P0] pg_stat_user_tables — n_dead_tup, last_vacuum, last_autovacuum columns
+  [P1] Manual VACUUM ANALYZE vs. VACUUM FREEZE — when to use each
+  [P1] Bloat estimation queries (pgstattuple extension or manual calculation)
+  [P1] TOAST table bloat — often overlooked; requires separate VACUUM
+  Priority: P0 CRITICAL — Maintenance, Compliance, and Monitoring scope.
+  Scripting Reference:
+    BASH: psql -c "SELECT relname, n_dead_tup, last_autovacuum FROM
+          pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 20;"
+          Cron-based VACUUM ANALYZE wrapper scripts
+ 
+--------------------------------------------------------------------------------
+ 
+TOPIC: Statistics Management
+  PostgreSQL:
+    [P0] ANALYZE — manual, auto, and per-column extended statistics
+    [P1] pg_statistic / pg_stats view — understanding histogram bounds
+    [P1] CREATE STATISTICS — multi-column and expression statistics (PG 14+)
+  SQL Server:
+    [P0] UPDATE STATISTICS — full scan vs. default sampling; post-bulk-load
+    [P0] Auto-update statistics thresholds — table size tipping point behavior
+    [P1] sys.dm_db_stats_properties — last updated, rows, modification counter
+    [P1] Trace Flag 2371 — older compat: dynamic auto-stats threshold
+  Priority: P0 CRITICAL — directly impacts query plan quality. 5yr DBA must own
+  this. Bad stats = bad plans = performance incident.
+  Scripting Reference:
+    BASH: psql query on pg_stats for stale table statistics
+    PS:   Automated UPDATE STATISTICS job via SQL Agent or custom PowerShell
+ 
+--------------------------------------------------------------------------------
+ 
+TOPIC: TempDB (SQL Server Only)
+  [P0] Number of data files — rule: match logical CPU count up to 8
+  [P0] PFS/GAM/SGAM latch contention — detection via sys.dm_exec_requests wait_type
+  [P0] Trace Flag 1117/1118 — pre-2016 behavior; MIXED_PAGE_ALLOCATION in 2016+
+  [P0] Version Store growth — RCSI / snapshot isolation consumers
+  [P1] TempDB on separate fast storage — I/O separation best practice
+  [P1] Global vs. Local temp tables — object ID collisions under load
+  Priority: P0 CRITICAL — Server Configuration and Performance scope.
+  Scripting Reference:
+    PS:   sys.dm_db_task_space_usage, sys.dm_db_session_space_usage queries
+          Automated TempDB space alert via PowerShell + SQL Agent
+ 
+================================================================================
+CATEGORY 2: ADVANCED QUERY OPTIMIZATION & EXECUTION PLANS
+================================================================================
+ 
+TOPIC: Cardinality Estimation
+  [P2] Histograms (SHOW / pg_stats), CE70 vs. CE120+ in SQL Server
+  [P2] Extended Statistics, filtered statistics
+  [P2] DBCC SHOW_STATISTICS — density vector, histogram inspection
+  Priority: P2 — DBA identifies bad estimates; fix is App/Dev scope.
+ 
+TOPIC: Parameter Sniffing
+  SQL Server:
+    [P2] OPTION (RECOMPILE), OPTIMIZE FOR UNKNOWN, plan_cache_mode
+    [P2] Identifying sniffed plans via sys.dm_exec_query_plan
+  PostgreSQL:
+    [P2] plan_cache_mode = force_generic_plan (PG 12+)
+  Priority: P2 — DBA diagnoses; App team fixes stored proc / query text.
+ 
+TOPIC: Wait Statistics & Blocking Chains
+  PostgreSQL:
+    [P0] pg_stat_activity — wait_event_type, wait_event, state columns
+    [P0] pg_blocking_pids() — immediate blocker identification
+    [P0] pg_locks join with pg_stat_activity — full blocking chain query
+  SQL Server:
+    [P0] sys.dm_os_wait_stats — delta snapshots for top waits
+    [P0] sys.dm_exec_requests — blocking_session_id head-blocker traversal
+    [P0] sp_WhoIsActive (Adam Machanic) — production standard tool
+    [P0] CXPACKET / CXCONSUMER — parallelism waits vs. true contention
+    [P0] WRITELOG — synchronous log write waits (I/O problem indicator)
+  Priority: P0 CRITICAL — Primary performance triage tool for a 5yr DBA.
+  Scripting Reference:
+    BASH: psql blocking chain query (recursive CTE on pg_blocking_pids)
+    PS:   Automated blocker detection with email/Teams alert + kill option
+ 
+TOPIC: Deadlock Detection & Graph Analysis [ADDED]
+  PostgreSQL:
+    [P0] log_lock_waits = on, deadlock_timeout tuning
+    [P0] Parsing pg_log for deadlock entries
+    [P1] pgBadger for deadlock pattern analysis
+  SQL Server:
+    [P0] System Health Session — deadlock graph XML auto-capture
+    [P0] Extended Events (xe) session — deadlock graph collection
+    [P0] Reading deadlock graph XML — victim, process, resource nodes
+    [P1] SSMS deadlock graph viewer vs. raw XML analysis
+  Priority: P0 — Incident Response scope. 5yr DBA must read and resolve.
+  Scripting Reference:
+    BASH: grep "deadlock" postgresql.log | tail -100 | parse pattern
+    PS:   Query system_health XE session, export deadlock XML to file
+ 
+TOPIC: Query Store / pg_stat_statements
+  PostgreSQL:
+    [P1] pg_stat_statements — total_exec_time, mean_exec_time, calls, rows
+    [P1] Resetting stats (pg_stat_statements_reset) for baseline isolation
+  SQL Server:
+    [P1] Query Store — Regressed Queries, Top Resource Consumers views
+    [P1] Forcing plans — SSMS or sp_query_store_force_plan
+    [P1] Query Store during upgrades — plan regression detection post-patch
+  Priority: P1 HIGH — Monitoring scope; critical for post-upgrade validation.
+  Scripting Reference:
+    BASH: psql query on pg_stat_statements for top CPU/IO consumers
+    PS:   Query Store summary report generated to HTML via PowerShell
+ 
+================================================================================
+CATEGORY 3: INDEXING MASTERY & STRATEGY
+================================================================================
+ 
+TOPIC: Index Maintenance (REORG / REBUILD)
+  PostgreSQL:
+    [P0] REINDEX CONCURRENTLY — zero-downtime rebuild (PG 12+)
+    [P0] pg_stat_user_indexes — idx_scan = 0 detection (unused indexes)
+    [P1] Partial indexes — WHERE clause index; DBA must understand for plans
+    [P1] Expression indexes — functional indexes impact on VACUUM/ANALYZE
+  SQL Server:
+    [P0] sys.dm_db_index_physical_stats — avg_fragmentation_in_percent
+    [P0] REORGANIZE (< 30% frag, online) vs. REBUILD (> 30%, offline or ONLINE=ON)
+    [P0] Fill Factor — appropriate settings per table access pattern
+    [P0] ONLINE=ON availability — requires Enterprise edition awareness
+    [P1] Ola Hallengren IndexOptimize — production standard script
+    [P1] Columnstore Index Rebuild — REORGANIZE removes deleted rows,
+         REBUILD fully compresses; different from rowstore rules [ADDED]
+  Priority: P0 CRITICAL — Core DBA maintenance task.
+  Scripting Reference:
+    BASH: psql script to detect bloated indexes (pgstattuple-based)
+    PS:   Ola Hallengren wrapper with dynamic fragmentation thresholds,
+          scheduled via SQL Agent or Windows Task Scheduler
+ 
+TOPIC: Missing Index Recommendations [CORRECTED to P1]
+  PostgreSQL:
+    [P1] pg_stat_user_indexes — seq_scan vs. idx_scan ratio analysis
+    [P1] EXPLAIN (ANALYZE, BUFFERS) — Seq Scan on large table = missing index
+  SQL Server:
+    [P1] sys.dm_db_missing_index_details + sys.dm_db_missing_index_group_stats
+    [P1] Calculating index benefit score — user_seeks * avg_total_user_cost
+    [P1] Caution: DMV misses filtered indexes and composite index opportunities
+  Priority: P1 HIGH — DBA produces recommendations; DBO/App applies.
+  Note: A 5yr DBA is expected to provide index advisory, not just flag the gap.
+ 
+TOPIC: Advanced Index Types
+  PostgreSQL:
+    [P1] BRIN indexes — time-series / append-only tables; DBA must know for
+         capacity and plan analysis [CORRECTED from P2]
+    [P2] GIN indexes — full-text search, jsonb indexing (App Architecture scope)
+    [P2] GiST indexes — geometric/range types (App scope)
+  SQL Server:
+    [P1] Filtered Indexes — WHERE clause selectivity for partial data
+    [P2] Columnstore Indexes (architecture) — batched execution, segment elimination
+ 
+================================================================================
+CATEGORY 4: CONCURRENCY, LOCKING & ISOLATION LEVELS
+================================================================================
+ 
+TOPIC: Blocking & Deadlock Resolution
+  [P0] Head Blocker identification and KILL command (with caution)
+  [P0] Lock wait graph — multi-hop blocking chain traversal
+  [P0] Deadlock trace collection and victim analysis
+  [P0] Kill decision criteria — DBA authority scope (confirm vs. kill policy)
+  Priority: P0 CRITICAL — Performance/Monitoring and Incident Response scope.
+  Scripting Reference:
+    BASH: Recursive CTE query on pg_locks + pg_stat_activity for chain
+    PS:   sp_WhoIsActive wrapper; automated block detection with threshold alert
+ 
+TOPIC: Isolation Level Configuration
+  PostgreSQL:
+    [P1] READ COMMITTED (default), REPEATABLE READ, SERIALIZABLE
+    [P1] Serializable Snapshot Isolation (SSI) — predicate locking awareness
+  SQL Server:
+    [P1] RCSI (Read Committed Snapshot Isolation) — enabling at DB level,
+         impact on version store in TempDB
+    [P1] Snapshot Isolation vs. RCSI — when to use each
+    [P1] SET TRANSACTION ISOLATION LEVEL — session vs. database default
+  Priority: P1 HIGH — Server/Database Configuration parameter; DBA task.
+ 
+TOPIC: Lock Escalation
+  SQL Server:
+    [P1] TABLE escalation threshold (5000 locks), DISABLE_LOCK_ESCALATION hint
+    [P1] sp_configure 'locks' — deprecated but still asked in audits
+  PostgreSQL:
+    [P1] Lock modes (AccessShare through AccessExclusive) — DDL lock impact
+    [P1] lock_timeout — preventing long DDL waits from cascading
+  Priority: P1 — System Parameter Tuning scope.
+ 
+================================================================================
+CATEGORY 5: HIGH AVAILABILITY & REPLICATION TOPOLOGIES
+================================================================================
+ 
+TOPIC: Physical Replication Setup
+  PostgreSQL:
+    [P0] Streaming Replication — primary_conninfo, recovery.conf / standby.signal
+    [P0] pg_basebackup — initial standby build
+    [P0] Synchronous vs. Asynchronous replication — RPO trade-offs
+    [P0] Patroni — leader election, etcd/Consul integration, REST API
+    [P0] pg_rewind — rewinding a former primary after failover
+  SQL Server:
+    [P0] Always On Availability Groups — AG creation, listener config, seeding
+    [P0] Synchronous vs. Asynchronous commit mode — RPO vs. performance
+    [P0] AG dashboard — synchronization health states
+    [P0] Windows Server Failover Cluster (WSFC) — quorum modes, node votes
+  Priority: P0 CRITICAL — Explicitly in DBA scope.
+  Scripting Reference:
+    BASH: pg_controldata, pg_stat_replication monitoring, patronictl status
+    PS:   Test-DbaAvailabilityGroup (dbatools), Get-DbaAgReplica
+ 
+TOPIC: Logical Replication (PostgreSQL) [ADDED]
+  [P1] Publication / Subscription model — CREATE PUBLICATION, CREATE SUBSCRIPTION
+  [P1] Use cases: cross-version migration, selective table replication
+  [P1] Slot management — logical replication slot lag monitoring (same disk risk
+       as physical slots)
+  [P1] pg_logical_slot_get_changes — debugging replication content
+  Priority: P1 HIGH — 5yr DBA must understand for migrations and DR alternatives.
+ 
+TOPIC: Failover & Switchover
+  PostgreSQL:
+    [P0] pg_ctl promote — manual standby promotion
+    [P0] Patroni failover/switchover — patronictl failover, patronictl switchover
+    [P0] pg_rewind — timeline divergence reconciliation
+  SQL Server:
+    [P0] Manual AG Failover — SSMS wizard vs. T-SQL ALTER AVAILABILITY GROUP
+    [P0] Automatic Failover conditions — health check timeout, failure conditions
+    [P0] Listener DNS TTL — client reconnection behavior after failover
+  Priority: P0 CRITICAL — Maintaining DB availability is in scope.
+  Scripting Reference:
+    BASH: patronictl failover <cluster> --master <node> --candidate <node>
+    PS:   Switch-DbaAvailabilityGroup (dbatools), failover runbook scripts
+ 
+TOPIC: Connection Pooling
+  PostgreSQL:
+    [P1] PgBouncer — session vs. transaction vs. statement pooling modes
+    [P1] PgBouncer pool_size, max_client_conn, auth_type = scram-sha-256
+    [P1] PgBouncer stats — SHOW POOLS, SHOW CLIENTS, SHOW SERVERS
+  SQL Server:
+    [P1] Connection pool management at application driver level
+    [P1] max connections (sys.dm_exec_connections monitoring)
+  Priority: P1 HIGH — Server Configuration and Connection Management scope.
+  Scripting Reference:
+    BASH: psql -h 127.0.0.1 -p 6432 pgbouncer -c "SHOW POOLS;"
+    PS:   Monitoring active connections via sys.dm_exec_connections query
+ 
+TOPIC: Quorum & Cluster Health
+  [P0] WSFC quorum modes — Node Majority, Node + Disk, Node + File Share
+  [P0] Quorum loss behavior — AG in resolving state, service offline
+  [P0] etcd cluster health (Patroni) — member list, endpoint health
+  Priority: P0 CRITICAL — Cluster health = database availability.
+  Scripting Reference:
+    BASH: etcdctl member list, etcdctl endpoint health
+    PS:   Get-ClusterNode, Get-ClusterQuorum, Test-Cluster
+ 
+================================================================================
+CATEGORY 6: BACKUP & DISASTER RECOVERY ENGINEERING
+================================================================================
+ 
+TOPIC: Binary & Logical Backups
+  PostgreSQL:
+    [P0] pg_basebackup — full cluster backup, WAL streaming option
+    [P0] pg_dump / pg_dumpall — logical backup; version portability
+    [P0] pgBackRest — parallel, incremental, compressed, S3/Azure target
+    [P0] Backup manifest verification — pg_verifybackup (PG 13+)
+  SQL Server:
+    [P0] BACKUP DATABASE ... TO DISK / URL (Azure Blob)
+    [P0] Full → Differential → Log backup chain — restore sequence
+    [P0] COPY_ONLY backups — out-of-band backup without breaking LSN chain
+    [P0] Ola Hallengren DatabaseBackup — production standard
+    [P0] Native SQL Backup with COMPRESSION, CHECKSUM, STATS
+  Priority: P0 CRITICAL — Core DBA scope.
+  Scripting Reference:
+    BASH: pgbackrest backup --stanza=main --type=full
+          pgbackrest info --stanza=main
+    PS:   Invoke-DbaQuery for backup job monitoring,
+          Backup-DbaDatabase (dbatools),
+          Custom backup status report emailed daily
+ 
+TOPIC: Point-in-Time Recovery (PITR)
+  PostgreSQL:
+    [P0] WAL archiving — archive_command, restore_command
+    [P0] recovery_target_time, recovery_target_lsn, recovery_target_xid
+    [P0] recovery_target_action = promote | shutdown | pause
+    [P0] pgBackRest PITR — pgbackrest restore --target="2024-01-15 03:45:00"
+  SQL Server:
+    [P0] Log Shipping — latency, monitor alert job
+    [P0] RESTORE DATABASE ... WITH STOPAT (T-SQL PITR syntax)
+    [P0] Full → Log chain integrity — no gaps allowed
+    [P0] STANDBY mode restore — readable standby with undo file
+  Priority: P0 CRITICAL — "Setup DR/PITR" is explicit in DBA scope.
+  Scripting Reference:
+    BASH: Automated PITR test script with target timestamp, auto-promote,
+          connectivity test, result log
+    PS:   PITR validation script using RESTORE HEADERONLY + STOPAT simulation
+ 
+TOPIC: Restore Validation
+  [P0] Automated restore to test instance — weekly or monthly schedule
+  [P0] Checksum validation — RESTORE VERIFYONLY (SQL Server),
+       pg_verifybackup (PostgreSQL)
+  [P0] Recovery time measurement — track RTO actual vs. RTO target
+  Priority: P0 CRITICAL — Backup that is untested is not a backup.
+  Scripting Reference:
+    BASH: pgbackrest restore --target-action=promote --type=time, then
+          run pg_isready and a canary query; log result + runtime
+    PS:   Full restore validation script: restore → connectivity → row count
+          check → log to table → email report
+ 
+TOPIC: Upgrade & Version Migration Procedures [ADDED]
+  PostgreSQL:
+    [P0] pg_upgrade — in-place major version upgrade; --check mode first
+    [P0] pg_upgrade with --link mode (hard links, faster) vs. copy mode
+    [P0] Logical replication-based upgrade — zero-downtime approach
+    [P1] Extension compatibility matrix before upgrade
+  SQL Server:
+    [P0] In-place upgrade checklist — edition, compat level, deprecated features
+    [P0] Database compatibility level — compat level ≠ server version
+    [P0] Backup before upgrade — mandatory; document rollback path
+    [P1] Upgrade Advisor / Database Experimentation Assistant (DEA)
+  Priority: P0 — "Apply patches and fixes" is in scope. Major version changes
+  require a DBA-owned plan at 5yr experience level.
+  Scripting Reference:
+    BASH: pg_upgrade -b /old/bin -B /new/bin -d /old/data -D /new/data --check
+    PS:   Pre-upgrade compatibility check script; deprecated feature scan
+ 
+================================================================================
+CATEGORY 7: SECURITY HARDENING & ACCESS CONTROL
+================================================================================
+ 
+TOPIC: Server-Level Logins & Roles
+  PostgreSQL:
+    [P0] CREATE ROLE / CREATE USER — WITH LOGIN, NOLOGIN, SUPERUSER distinctions
+    [P0] Role hierarchy — group roles vs. login roles, GRANT role TO user
+    [P0] pg_hba.conf — auth methods: scram-sha-256, md5, peer, cert, ldap, reject
+    [P0] pg_hba.conf reload — pg_reload_conf() vs. restart requirement
+  SQL Server:
+    [P0] CREATE LOGIN (server level) vs. CREATE USER (database level)
+    [P0] sa account — disable or rename, enforce password
+    [P0] sysadmin / securityadmin — membership audit
+    [P0] Windows Auth vs. Mixed Mode — security implications
+  Priority: P0 CRITICAL — Creating/managing server-level logins is in scope.
+  Scripting Reference:
+    BASH: psql audit of pg_hba.conf entries; detect md5 (weak) vs. scram-sha-256
+    PS:   Audit sysadmin members, disabled logins, password policy compliance
+ 
+TOPIC: Orphaned Users & SID Mismatches [ADDED — SQL Server]
+  [P0] Detecting orphaned users — exec sp_change_users_login 'Report'
+  [P0] Fixing SID mismatches after restore to different server
+  [P0] ALTER USER ... WITH LOGIN — remap user to correct login
+  Priority: P0 — Routine task after database restore. 5yr DBA must know this.
+  Scripting Reference:
+    PS:   Automated orphan detection across all databases post-restore
+ 
+TOPIC: Password Policies & Authentication
+  PostgreSQL:
+    [P0] scram-sha-256 — default in PG 14+; enforce in pg_hba.conf
+    [P0] passwordcheck extension — enforce complexity
+    [P0] LDAP / AD integration in pg_hba.conf
+    [P1] Certificate authentication — sslmode=verify-full, client cert config
+  SQL Server:
+    [P0] CHECK_POLICY, CHECK_EXPIRATION on SQL logins
+    [P0] Windows Auth (Kerberos) — preferred; token delegation awareness
+    [P0] Always Encrypted — key management for column-level encryption
+  Priority: P0 CRITICAL — Enforce password policies is in scope.
+ 
+TOPIC: Firewall / pg_hba.conf
+  [P0] pg_hba.conf — hostssl entries, IP range restrictions (CIDR)
+  [P0] OS-level firewall — UFW (Ubuntu), firewall-cmd (RHEL), Windows Firewall
+  [P0] Port hardening — non-default port considerations, port scan detection
+  [P0] SSL/TLS enforcement — ssl=on, ssl_min_protocol_version in postgresql.conf
+  Priority: P0 CRITICAL — OS-level DB security management is in scope.
+  Scripting Reference:
+    BASH: ufw status verbose; ss -tlnp | grep 5432; openssl s_client check
+    PS:   Get-NetFirewallRule; Test-NetConnection for port validation scripts
+ 
+TOPIC: Transparent Data Encryption (TDE)
+  PostgreSQL:
+    [P1] Encryption at rest — OS-level (LUKS) or pgcrypto for column encryption
+    [P1] pg_tde extension (PG 17+ preview) — native TDE awareness
+  SQL Server:
+    [P1] TDE — enabling, certificate backup to secure location (mandatory)
+    [P1] TDE certificate rotation procedure
+    [P1] TDE impact on backup files — encrypted backups need certificate
+  Priority: P1 HIGH — Required for compliance audits (PCI-DSS, HIPAA, GDPR).
+ 
+TOPIC: Cross-Database Ownership Chaining [ADDED — SQL Server]
+  [P1] TRUSTWORTHY database property — security risk, audit setting
+  [P1] Cross-database chaining — sp_configure 'cross db ownership chaining'
+  [P1] Module signing as alternative to TRUSTWORTHY
+  Priority: P1 — Security hardening knowledge expected at 5yr level.
+ 
+TOPIC: Connection String & Driver Hardening [ADDED]
+  [P1] Enforcing SSL in connection strings — sslmode=verify-full (PG),
+       Encrypt=True;TrustServerCertificate=False (SQL Server)
+  [P1] Principle of least privilege for application service accounts
+  [P1] Read-only routing for AG replicas — connection string patterns
+  Priority: P1 — Security and HA/DR connection management scope.
+ 
+TOPIC: GDPR / Data Retention Policy Enforcement [ADDED]
+  [P1] Identifying PII columns — DBA discovery role in data classification
+  [P1] SQL Server Data Discovery & Classification
+  [P1] pg_dump selective restore for data subject access requests
+  [P1] Partition-based data deletion strategy (retention enforcement)
+  [P1] Audit log retention — pgaudit (PG), SQL Server Audit object
+  Priority: P1 — Compliance scope. 5yr DBA in enterprise must understand this.
+ 
+================================================================================
+CATEGORY 8: ADVANCED MONITORING & OBSERVABILITY
+================================================================================
+ 
+TOPIC: Wait Event Analysis
+  PostgreSQL:
+    [P0] pg_stat_activity.wait_event_type + wait_event pairs
+    [P0] LWLock:buffer_mapping, Lock:relation, IO:DataFileRead, Client:ClientRead
+    [P0] pg_stat_bgwriter — checkpoint activity and buffer hit ratios
+  SQL Server:
+    [P0] PAGEIOLATCH_SH/EX — I/O saturation indicator
+    [P0] LCK_M_* waits — locking; WRITELOG — synchronous log I/O
+    [P0] ASYNC_NETWORK_IO — slow client reads; CXPACKET — parallelism
+  Priority: P0 CRITICAL — Instance-level performance monitoring is in scope.
+  Scripting Reference:
+    BASH: Wait event summary query on pg_stat_activity by wait_event group
+    PS:   Delta snapshot of sys.dm_os_wait_stats with top 15 consumers
+ 
+TOPIC: Long-Running Query Detection
+  [P0] pg_stat_activity — state = 'active', query_start comparison to now()
+  [P0] sys.dm_exec_requests — total_elapsed_time, blocking_session_id
+  [P0] Kill threshold policy — agree with DBAs on max tolerated duration
+  Priority: P0 CRITICAL — Monitoring scope.
+  Scripting Reference:
+    BASH: psql -c "SELECT pid, now()-query_start AS duration, query FROM
+          pg_stat_activity WHERE state='active' AND query_start < now()-
+          interval '5 minutes' ORDER BY duration DESC;"
+    PS:   Automated long-query alert with query text + calling host to Teams
+ 
+TOPIC: Disk Space & Growth Monitoring
+  [P0] Tablespace usage — pg_tablespace, pg_database_size()
+  [P0] Filegroup space — sys.dm_db_file_space_usage, DBCC SQLPERF(LOGSPACE)
+  [P0] Growth trend report — week-over-week table size delta
+  Priority: P0 CRITICAL — Manage database growth and usage reports are in scope.
+  Scripting Reference:
+    BASH: du -sh $PGDATA/base/*, df -h; psql size report query to CSV
+    PS:   Weekly size report emailed from SQL Agent; growth trend to HTML table
+ 
+TOPIC: Slow Disk I/O Triage [ADDED]
+  Linux:
+    [P0] iostat -xz 1 — await (total latency), svctm (service time), %util
+    [P0] iotop — per-process I/O consumer identification
+    [P0] blktrace / blkparse — deep block-level I/O tracing
+    [P1] /sys/block/*/queue/scheduler — I/O scheduler (noop/none for SSD/NVMe)
+  Windows:
+    [P0] perfmon — LogicalDisk Avg. Disk sec/Read, Avg. Disk sec/Write
+    [P0] sys.dm_io_virtual_file_stats — SQL Server file-level I/O latency
+  Priority: P0 — Storage triage is a core DBA skill at 5yr level.
+  Scripting Reference:
+    BASH: iostat -xz 1 5 | grep -v '^$'
+    PS:   Get-Counter '\PhysicalDisk(*)\Avg. Disk sec/Write' in a loop
+ 
+TOPIC: Alerting Framework
+  [P0] Custom threshold alerts — disk, log space, replication lag, blocker age
+  [P0] SQL Agent Alerts (SQL Server) — error number, severity, performance condition
+  [P0] pg_cron / cron-based PostgreSQL health checks
+  [P1] Integration targets — email (Database Mail), Teams webhook, PagerDuty
+  Priority: P0 CRITICAL — Providing alerts is in scope.
+  Scripting Reference:
+    BASH: Cron-scheduled health check script with curl Teams webhook alert
+    PS:   PowerShell alert framework with SQL Agent integration
+ 
+TOPIC: SQL Agent / pgAgent Job Management [ADDED]
+  SQL Server:
+    [P0] SQL Agent — creating, scheduling, monitoring jobs; job history cleanup
+    [P0] Proxy accounts — running jobs under least-privilege accounts
+    [P0] Job failure alerting — operator notifications
+    [P0] msdb backup — SQL Agent jobs survive server rebuild
+  PostgreSQL:
+    [P1] pg_cron — schedule SQL jobs inside PostgreSQL
+    [P1] pgAgent — external job scheduler with job chain support
+  Priority: P0 — Automation of maintenance tasks requires job scheduler mastery.
+  Scripting Reference:
+    BASH: Cron + psql for maintenance jobs; pg_cron setup
+    PS:   New-DbaAgentJob, Get-DbaAgentJobHistory (dbatools)
+ 
+================================================================================
+CATEGORY 9: AUTOMATION, IaC & SCRIPTING
+================================================================================
+ 
+TOPIC: Infrastructure as Code
+  [P1] Terraform — RDS instance, parameter groups, subnet groups, security groups
+  [P1] Ansible — PostgreSQL install + configure role (community.postgresql)
+  [P1] Ansible — SQL Server install on Windows (chocolatey / DSC)
+  [P1] Idempotent configuration — enforce pg_hba.conf, postgresql.conf via Ansible
+  Priority: P1 HIGH — Streamlines server build and configuration management.
+  Scripting Reference:
+    BASH: ansible-playbook deploy_postgres.yml -i inventory/prod
+    PS:   DSC (Desired State Configuration) for SQL Server baseline config
+ 
+TOPIC: Maintenance Scripting
+  [P0] Backup automation scripts — pgBackRest / Ola Hallengren wrappers
+  [P0] Health check script — runs as cron / Task Scheduler, output to log + alert
+  [P0] Vacuum / ANALYZE scheduler — intelligent wrapper using pg_stat_user_tables
+  [P0] Index maintenance script — fragmentation-aware REORG/REBUILD
+  Priority: P0 CRITICAL — Automation of Data Management tasks.
+ 
+TOPIC: Enterprise CLI Tooling
+  [P0] pgBackRest — stanza management, backup/restore, verify
+  [P0] dbatools (PowerShell) — SQL Server fleet management
+  [P0] psql — scripting mode, \copy, \gexec, variable substitution
+  [P1] pg_activity — top-like real-time PostgreSQL monitor
+  [P1] SQLCMD — scripted SQL Server operations in pipelines
+  Priority: P0 CRITICAL — Core tooling for enterprise DBA operations.
+ 
+================================================================================
+CATEGORY 13: POWERSHELL SCRIPTING FOR DBA [ADDED]
+================================================================================
+ 
+This category is MISSING from the original roadmap. At 5 years of experience,
+PowerShell is a mandatory skill for SQL Server DBAs and increasingly for
+cross-platform automation.
+ 
+--------------------------------------------------------------------------------
+TOPIC 13.1: PowerShell Foundations for DBAs
+  [P0] Execution Policy — Set-ExecutionPolicy RemoteSigned (domain policy)
+  [P0] Modules — Install-Module dbatools, SqlServer, ImportExcel
+  [P0] Credential handling — Get-Credential, SecureString, Windows Credential Manager
+  [P0] Error handling — Try/Catch/Finally, $ErrorActionPreference, -ErrorAction Stop
+  [P0] Logging — Start-Transcript, custom log function with timestamps
+  [P1] Scheduled Tasks — Register-ScheduledTask for maintenance automation
+  [P1] Environment variables — $env:COMPUTERNAME, $env:PGPASSWORD
+ 
+  Sample: Secure credential storage
+    $cred = Get-Credential
+    $cred.Password | ConvertFrom-SecureString | Set-Content "$env:USERPROFILE\.dbcred"
+    # Retrieve:
+    $pass = Get-Content "$env:USERPROFILE\.dbcred" | ConvertTo-SecureString
+ 
+--------------------------------------------------------------------------------
+TOPIC 13.2: dbatools — SQL Server Fleet Management
+  [P0] Connect-DbaInstance, Get-DbaDatabase, Invoke-DbaQuery
+  [P0] Backup-DbaDatabase, Restore-DbaDatabase
+  [P0] Get-DbaDbVirtualLogFile — VLF count audit across servers
+  [P0] Test-DbaDbRecoveryModel — ensure databases not accidentally in SIMPLE
+  [P0] Get-DbaAgentJob, Start-DbaAgentJob, Get-DbaAgentJobHistory
+  [P0] Copy-DbaLogin — login migration between instances
+  [P0] Sync-DbaLoginPermission — sync logins after AG failover
+  [P0] Get-DbaLastBackup — RPO compliance audit
+  [P0] Test-DbaLastBackup — automated restore validation
+  [P1] Get-DbaSpaceUsed — disk usage report across all databases
+  [P1] Invoke-DbaDatabaseShrink — with appropriate warnings and usage criteria
+  [P1] Get-DbaAvailabilityGroup, Get-DbaAgReplica — AG health monitoring
+ 
+  Sample: Daily last backup audit
+    $servers = 'sql01','sql02','sql03'
+    Get-DbaLastBackup -SqlInstance $servers |
+      Where-Object {$_.LastFullBackup -lt (Get-Date).AddDays(-1)} |
+      Select-Object SqlInstance, Database, LastFullBackup |
+      Export-Csv "$env:TEMP\backup_audit_$(Get-Date -f yyyyMMdd).csv" -NoTypeInformation
+ 
+--------------------------------------------------------------------------------
+TOPIC 13.3: SQL Server Monitoring Scripts
+  [P0] Blocking detection and alert:
+    Invoke-DbaQuery -SqlInstance sql01 -Query "
+      SELECT r.session_id, r.blocking_session_id, r.wait_type,
+             r.total_elapsed_time/1000 AS elapsed_sec,
+             SUBSTRING(t.text,1,200) AS query_text
+      FROM sys.dm_exec_requests r
+      CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+      WHERE r.blocking_session_id > 0
+      AND r.total_elapsed_time > 30000"
+ 
+  [P0] Disk space alert with Teams webhook:
+    $volumes = Get-Volume | Where-Object {$_.SizeRemaining/$_.Size -lt 0.15}
+    if ($volumes) {
+      $body = @{text="DISK ALERT: $($volumes.DriveLetter) below 15% on $env:COMPUTERNAME"} | ConvertTo-Json
+      Invoke-RestMethod -Uri $TeamsWebhookUrl -Method Post -Body $body -ContentType 'application/json'
+    }
+ 
+  [P0] Wait stats delta report:
+    # Capture baseline, wait 60 seconds, capture again, diff the top waits
+    # Output top 10 wait types by delta wait_time_ms
+ 
+  [P1] Log space report across all databases:
+    Invoke-DbaQuery -SqlInstance sql01 -Query "DBCC SQLPERF(LOGSPACE)" |
+      Sort-Object 'Log Space Used (%)' -Descending |
+      Select-Object -First 10
+ 
+--------------------------------------------------------------------------------
+TOPIC 13.4: SQL Server Maintenance Automation
+  [P0] Ola Hallengren job wrapper — parameterized backup + index maintenance
+  [P0] Database integrity check (DBCC CHECKDB) scheduling and result capture
+  [P0] SQL Agent job failure report — daily email of failed jobs
+  [P0] Orphaned user remediation across all databases:
+    Get-DbaDatabase -SqlInstance sql01 |
+      ForEach-Object { Invoke-DbaQuery -SqlInstance sql01 -Database $_.Name
+        -Query "EXEC sp_change_users_login 'Report'" }
+ 
+  [P1] Auto-grow event detection via default trace:
+    # Query sys.traces + fn_trace_gettable for file growth events
+ 
+--------------------------------------------------------------------------------
+TOPIC 13.5: PostgreSQL via PowerShell (Cross-Platform)
+  [P1] Npgsql or psql.exe invocation from PowerShell
+  [P1] Invoke-Expression with psql -c for PostgreSQL queries from Windows
+  [P1] pg_dump / pgbackrest invocation via Start-Process with error capture
+  [P1] Cross-platform scripts that detect OS and branch to correct CLI tool
+ 
+================================================================================
+CATEGORY 14: LINUX BASH SCRIPTING FOR DBA [ADDED]
+================================================================================
+ 
+This category is MISSING from the original roadmap. At 5 years of experience,
+Bash scripting is mandatory for PostgreSQL DBAs and any DBA managing Linux hosts.
+ 
+--------------------------------------------------------------------------------
+TOPIC 14.1: Bash Foundations for DBAs
+  [P0] Shebang, errexit, nounset — #!/bin/bash; set -euo pipefail
+  [P0] Variables, quoting, arrays — "${var}", "${arr[@]}"
+  [P0] Conditionals — [[ ]], -z / -n / -f / -d / -eq tests
+  [P0] Loops — for, while read line, while true with sleep
+  [P0] Functions — with return codes, local variables
+  [P0] Logging — timestamped log function, tee to file, log rotation (logrotate)
+  [P0] Exit codes — meaningful codes, trap for cleanup on EXIT/ERR
+  [P1] Here-docs for psql/sqlcmd embedded SQL
+  [P1] getopts — argument parsing for reusable scripts
+  [P1] cron — crontab -e, /etc/cron.d/, avoiding environment variable traps
+ 
+  Sample: Bash script header (production standard)
+    #!/bin/bash
+    set -euo pipefail
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    LOG_FILE="/var/log/dba/$(basename "$0" .sh)_$(date +%Y%m%d).log"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+    trap 'log "ERROR: Script failed at line $LINENO"' ERR
+ 
+--------------------------------------------------------------------------------
+TOPIC 14.2: PostgreSQL Operational Scripts
+  [P0] Connection wrapper — PGPASSFILE or .pgpass; avoid plaintext passwords
+    export PGPASSFILE="/home/postgres/.pgpass"  # chmod 600
+    psql -h localhost -U replicator -d postgres -c "SELECT 1;"
+ 
+  [P0] Replication lag monitor:
+    psql -U postgres -Atc "
+      SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::INT
+      AS lag_seconds;"
+ 
+  [P0] Autovacuum stale table check:
+    psql -U postgres -Atc "
+      SELECT schemaname||'.'||relname, n_dead_tup, last_autovacuum
+      FROM pg_stat_user_tables
+      WHERE n_dead_tup > 50000
+      ORDER BY n_dead_tup DESC LIMIT 20;"
+ 
+  [P0] Transaction ID age alert:
+    AGE=$(psql -U postgres -Atc "SELECT max(age(datfrozenxid)) FROM pg_database;")
+    if [ "$AGE" -gt 1500000000 ]; then
+      log "CRITICAL: TXID age $AGE — wraparound risk!"
+      curl -s -X POST "$TEAMS_WEBHOOK" \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"TXID Wraparound WARNING: age=$AGE on $HOSTNAME\"}"
+    fi
+ 
+  [P0] WAL directory size check:
+    WAL_SIZE=$(du -sb "$PGDATA/pg_wal" | awk '{print $1}')
+    WAL_GB=$((WAL_SIZE / 1073741824))
+    log "WAL directory size: ${WAL_GB}GB"
+    if [ "$WAL_GB" -gt 20 ]; then
+      log "WARNING: WAL directory unusually large — check archive or slot lag"
+    fi
+ 
+  [P0] pgBackRest backup script with notification:
+    log "Starting pgBackRest full backup"
+    pgbackrest --stanza=main --type=full backup
+    RESULT=$?
+    if [ $RESULT -eq 0 ]; then
+      log "Backup completed successfully"
+    else
+      log "BACKUP FAILED — exit code $RESULT"
+      # send alert
+    fi
+ 
+  [P1] Bloat estimation query to CSV:
+    psql -U postgres -Atc "COPY (
+      SELECT schemaname, tablename,
+             pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
+             n_dead_tup
+      FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 50
+    ) TO STDOUT WITH CSV HEADER" > "/tmp/bloat_$(date +%Y%m%d).csv"
+ 
+--------------------------------------------------------------------------------
+TOPIC 14.3: Linux System Administration for DBAs
+  [P0] Process management — ps aux | grep postgres, kill -SIGTERM, systemctl
+  [P0] Disk management — df -h, du -sh, lsblk, fdisk -l, pvdisplay, lvdisplay
+  [P0] LVM extension — lvextend -L+50G /dev/mapper/data-pgdata; resize2fs
+  [P0] File permissions — chmod 700 $PGDATA; chown postgres:postgres
+  [P0] Network — ss -tlnp, netstat -an, ping, telnet / nc for port check
+  [P0] Log analysis — tail -f, grep, awk, sed for parsing PostgreSQL logs
+  [P0] ulimit — open files (nofile), max processes (nproc) for postgres user
+  [P1] sysctl tuning — vm.swappiness=1, vm.overcommit_memory=2, kernel.shmmax
+  [P1] I/O scheduler — cat /sys/block/sda/queue/scheduler; set to none for SSD
+  [P1] Huge pages — vm.nr_hugepages = (shared_buffers / hugepagesize) + margin
+ 
+  Sample: PostgreSQL service recovery check
+    if ! systemctl is-active --quiet postgresql; then
+      log "PostgreSQL service is DOWN — attempting restart"
+      systemctl start postgresql
+      sleep 5
+      if pg_isready -U postgres; then
+        log "Service recovered successfully"
+      else
+        log "CRITICAL: Service failed to recover"
+        # alert
+      fi
+    fi
+ 
+--------------------------------------------------------------------------------
+TOPIC 14.4: Backup & DR Automation Scripts
+  [P0] Full backup with retention cleanup:
+    #!/bin/bash
+    set -euo pipefail
+    BACKUP_DIR="/mnt/backups/postgres"
+    RETENTION_DAYS=30
+    DATE=$(date +%Y%m%d_%H%M%S)
+ 
+    pgbackrest --stanza=main --type=full backup
+    # Verify
+    pgbackrest --stanza=main verify
+    # Cleanup old local backups if any
+    find "$BACKUP_DIR" -type f -mtime +$RETENTION_DAYS -delete
+    log "Backup and verify completed: $DATE"
+ 
+  [P0] PITR test script (restore to sandbox):
+    TARGET_TIME="$1"  # pass as argument: "2024-01-15 03:00:00"
+    SANDBOX_DATA="/tmp/pg_pitr_test"
+    rm -rf "$SANDBOX_DATA"
+    pgbackrest --stanza=main --target="$TARGET_TIME" \
+               --target-action=promote \
+               --pg1-path="$SANDBOX_DATA" restore
+    pg_ctl -D "$SANDBOX_DATA" start -l "/tmp/pitr_test.log"
+    sleep 5
+    RESULT=$(psql -p 5433 -U postgres -Atc "SELECT count(*) FROM pg_tables;")
+    log "PITR test at $TARGET_TIME: table count = $RESULT"
+    pg_ctl -D "$SANDBOX_DATA" stop
+ 
+  [P0] Replication slot lag alert:
+    psql -U postgres -Atc "
+      SELECT slot_name, pg_size_pretty(
+        pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS lag_size
+      FROM pg_replication_slots
+      WHERE active = false;" | while IFS='|' read slot lag; do
+        log "Inactive slot $slot has lag: $lag"
+    done
+ 
+--------------------------------------------------------------------------------
+TOPIC 14.5: Monitoring & Alerting Scripts
+  [P0] Health check cron wrapper (runs every 5 minutes):
+    Checks: pg_isready, replication lag, disk space, TXID age, WAL size
+    Outputs: structured log line + alert to webhook if threshold breached
+ 
+  [P0] Teams/Slack webhook alert function:
+    send_alert() {
+      local MESSAGE="$1"
+      curl -s -o /dev/null -X POST "$WEBHOOK_URL" \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"[$(hostname)] $MESSAGE\"}"
+    }
+ 
+  [P0] Long query alert:
+    psql -U postgres -Atc "
+      SELECT pid, extract(epoch from now()-query_start)::int AS seconds, query
+      FROM pg_stat_activity
+      WHERE state='active'
+      AND query_start < now() - interval '10 minutes'
+      AND query NOT LIKE '%pg_stat_activity%';" |
+    while IFS='|' read pid seconds query; do
+      send_alert "Long query: PID=$pid running ${seconds}s — ${query:0:100}"
+    done
+ 
+  [P1] pg_log parser for slow queries:
+    grep "duration:" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log |
+    awk '{print $NF, $0}' | sort -rn | head -20 > /tmp/slow_queries_today.txt
+ 
+================================================================================
+CATEGORY 10: CLOUD & MANAGED SERVICES STRATEGY
+================================================================================
+ 
+TOPIC: RDS / Azure SQL Limitations
+  [P1] No OS-level access — no pg_hba.conf file; use parameter groups
+  [P1] RDS for PostgreSQL — enhanced monitoring, Performance Insights
+  [P1] RDS automated backups vs. manual snapshots — retention and restore mechanics
+  [P1] RDS Multi-AZ — synchronous standby; failover is DNS-based, ~60s
+  [P1] Aurora PostgreSQL — shared storage, Aurora PITR to second granularity
+  [P1] Azure SQL Managed Instance — near full SQL Server compatibility; limitations
+  Priority: P1 HIGH — Changes how parameters are configured and backups are done.
+ 
+TOPIC: Managed Instance Storage & IO Governance
+  [P1] RDS storage autoscaling — enable vs. disable; threshold behaviour
+  [P1] IOPS provisioning — gp2 vs. gp3 vs. io1 — cost vs. latency
+  [P1] Aurora storage auto-scaling — separate from compute scaling
+  Priority: P1 HIGH — Impacts Performance and Capacity Planning.
+ 
+================================================================================
+CATEGORY 11: INCIDENT RESPONSE & TROUBLESHOOTING
+================================================================================
+ 
+TOPIC: Disk Full Emergency
+  [P0] PostgreSQL: WAL archiver stuck → pg_wal fills → writes fail
+       Steps: pause archiver, identify large files, clear old WAL, resume
+  [P0] SQL Server: Log full → transaction log drive full → all DML blocked
+       Steps: identify log_reuse_wait_desc, take log backup, check VLFs
+  [P0] OS disk full vs. data disk full — different response procedures
+  Priority: P0 CRITICAL — Availability scope.
+  Scripting Reference:
+    BASH: Emergency disk triage one-liner sequence
+    PS:   Get-DbaDbSpace; SQL Agent alert on < 10% free log space
+ 
+TOPIC: Instance Won't Start
+  PostgreSQL:
+    [P0] Check pg_log for last error — missing file, permission, corrupt WAL
+    [P0] pg_resetwal — last resort; implies data loss risk; must document
+    [P0] Single-user mode — for wraparound recovery
+  SQL Server:
+    [P0] Event Viewer — SQL Server service errors (17113, 17182 error codes)
+    [P0] Startup parameters — trace flags, alternate master location (-m, -f)
+    [P0] TempDB startup — tempdb rebuild on startup (-f flag)
+  Priority: P0 CRITICAL.
+ 
+TOPIC: License Compliance Audit
+  SQL Server:
+    [P0] Core-based licensing — physical cores per socket, min 4 cores per socket
+    [P0] Virtual core licensing — vCPU count on VM, SA (Software Assurance) required
+    [P0] SQL Server edition rights — Enterprise, Standard, Developer (non-production)
+    [P0] sys.dm_os_host_info — OS, hypervisor, CPU info for audit reporting
+  Priority: P0 CRITICAL — Compliance scope.
+  Scripting Reference:
+    PS:   Core count report: Get-WmiObject Win32_Processor |
+          Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+ 
+================================================================================
+CATEGORY 12: CAPACITY PLANNING & SCALING
+================================================================================
+ 
+TOPIC: Storage Growth Forecasting
+  [P0] Weekly size delta tracking — automate to table, report trend
+  [P0] Tablespace / Filegroup growth report — 30/60/90 day projection
+  [P0] Index vs. data ratio — unexpected index bloat detection
+  [P1] Data archival strategy — partition-based archival for DBA-managed tables
+  Priority: P0 CRITICAL — Manage database growth and usage reports in scope.
+  Scripting Reference:
+    BASH: pg_database_size() weekly snapshot to CSV with gnuplot trend
+    PS:   SQL Server size trend report to Excel via ImportExcel module
+ 
+TOPIC: Sharding / Citus
+  [P3 — OUT OF SCOPE] Application Architecture. Confirmed unchanged.
+ 
+================================================================================
+PRIORITIZED LEARNING PATH — 5 YEARS DBA EXPERIENCE
+================================================================================
+ 
+PHASE 1: THE PLATFORM STABILIZER (Months 0-3)
+  [P0] Backup Automation — pgBackRest / dbatools, with restore validation
+  [P0] Transaction Log / WAL Management — fill prevention and monitoring
+  [P0] Instance Health Checks — wait stats, cache ratio, autovacuum lag
+  [P0] Security Hardening — pg_hba.conf, firewall, login audit
+  [P0] PowerShell Basics + dbatools — daily SQL Server operations
+  [P0] Bash Scripting Basics — daily PostgreSQL operations, health checks
+ 
+PHASE 2: THE HA/DR ENGINEER (Months 3-6)
+  [P0] Replication Setup & Failover Drills — Streaming Replication / Always On
+  [P0] PITR Configuration — WAL Archiving / Log Shipping; tested end-to-end
+  [P0] Deadlock & Blocking Incident Response — collect, read, resolve
+  [P1] Index Maintenance Automation — fragmentation-aware scripts
+  [P1] Statistics Management — automated refresh jobs
+ 
+PHASE 3: THE AUTOMATION ARCHITECT (Months 6-12)
+  [P1] IaC — Ansible PostgreSQL / Terraform RDS provisioning
+  [P1] Advanced Incident Response — corrupt page, pg_resetwal, TempDB rebuild
+  [P1] Security Deep Dive — TDE, audit logging, GDPR classification
+  [P2] Query Store / pg_stat_statements Reporting — provide to App Team
+  [P2] Cloud Managed Services — RDS/Azure SQL operational patterns
+ 
+================================================================================
+TOP 12 CRITICAL SKILLS — 5 YEAR DBA (Expanded from Top 10)
+================================================================================
+ 
+  #  | Skill                                | Scope
+  ---+--------------------------------------+-----------------------------------
+  1  | Rapid Storage Triage (Disk Full)     | Availability — DB stops on full
+  2  | Log/WAL Archival + PITR Validation   | Backup & DR scope
+  3  | Blocking Chain + Deadlock Resolution | Performance Monitoring scope
+  4  | Replication Slot / AG Health         | HA/DR Setup scope
+  5  | Autovacuum / TempDB / Stats Tuning   | Data Management / Defrag scope
+  6  | pg_hba.conf / Firewall Rules         | OS-Level Security scope
+  7  | pgBackRest / dbatools Automation     | Efficiency in Data Management
+  8  | Bash Health Check Script Suite       | PostgreSQL DBA daily operations
+  9  | PowerShell dbatools Fleet Management | SQL Server DBA daily operations
+  10 | License Compliance Reporting         | Compliance scope
+  11 | Instance Parameter Tuning            | Configure system-level parameters
+  12 | Zero-Downtime Patching + Upgrade     | Apply patches and fixes scope
+ 
+================================================================================
+END OF SYLLABUS
+================================================================================
+Generated: DBA Syllabus v2.0 — Validated for 5 Years DBA Experience
+Platforms: PostgreSQL | SQL Server | Linux | Windows
+Scripting: Bash (Linux) | PowerShell (Windows/Cross-platform)
+================================================================================

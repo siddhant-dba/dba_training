@@ -1,4 +1,931 @@
 ================================================================================
+DBA SYLLABUS — 5 YEARS EXPERIENCE
+Prioritized Top to Bottom | Mapped to DBA Team Scope
+Platforms: PostgreSQL | SQL Server | Linux | Windows
+================================================================================
+
+SCOPE REFERENCE (from DBA Team Scope document):
+  [AVAIL]   = Maintain DB availability
+  [BACKUP]  = Backup & restore / DR / PITR
+  [PERF]    = Performance & monitoring / alerts
+  [SEC]     = Security — server-level logins, firewall, password policy
+  [DATA]    = Data management — vacuum, stats, defrag, consistency checks
+  [CONFIG]  = Configure system-level parameters
+  [PROV]    = Database provisioning & de-provisioning
+  [COMPL]   = Maintenance & compliance — license, usage reports, DR testing
+
+PRIORITY:
+  [P0] = CRITICAL  — Instance stops or data loss if neglected
+  [P1] = HIGH      — Performance degradation or compliance risk
+  [P2] = MEDIUM    — Optimization and advisory
+  [P3] = OUT OF SCOPE
+
+================================================================================
+TIER 1 — P0 CRITICAL  (Master These First)
+================================================================================
+
+--------------------------------------------------------------------------------
+TOPIC 1: WAL / Transaction Log Management              [P0][AVAIL][BACKUP]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Replication slot lag fills pg_wal directory → PostgreSQL stops writing.
+  SQL Server log full with no log backup job → all DML blocked.
+  These are the most common causes of unplanned downtime.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Monitors pg_wal directory size daily and alerts if growing unexpectedly
+  - Checks all replication slots for lag — inactive slots are the primary risk
+  - Drops stale replication slots after confirming with team (irreversible)
+  - Verifies archive_command is succeeding (pg_stat_archiver.failed_count)
+  - Monitors streaming replication lag on primary via pg_stat_replication
+  - Checks replication lag in seconds on each standby
+  - Investigates log_reuse_wait_desc on SQL Server (LOG_BACKUP, REPLICATION,
+    ACTIVE_TRANSACTION are the three most dangerous states)
+  - Manages VLF count — excessive VLFs caused by autogrowth events degrade
+    SQL Server log performance
+  - Takes tail-log backup before any SQL Server restore operation
+  - Tunes wal_keep_size as secondary protection alongside replication slots
+  - Reviews checkpoint_completion_target and max_wal_size for I/O smoothing
+  - Sets up WAL archiving: archive_mode, archive_command, restore_command
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  pg_waldump — inspect WAL segment content
+  watch -n 5 'du -sh $PGDATA/pg_wal'
+  psql: SELECT * FROM pg_stat_archiver;
+  psql: SELECT * FROM pg_stat_replication;
+  psql: SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(
+          pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots;
+  psql: SELECT pg_drop_replication_slot('slot_name');  [after confirming]
+  psql: SELECT pg_reload_conf();  [after archive_command change]
+
+KEY PITFALLS:
+  - Slot lag fills disk → emergency = drop slot or expand disk, NOT pause archiver
+  - wal_keep_size alone does not protect against slot consumers
+  - archive_command silently failing for days is common — monitor failed_count
+  - SQL Server: FULL recovery model + no log backup job = log fills to 100%
+
+--------------------------------------------------------------------------------
+TOPIC 2: Disk Space & Storage Triage                  [P0][AVAIL][COMPL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Disk full on pg_wal → PostgreSQL crashes.
+  Disk full on data directory → all writes fail.
+  SQL Server data file fills filegroup → inserts fail.
+  Weekly growth reporting is required in DBA scope.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Runs weekly size snapshot of all databases and appends to tracking CSV
+  - Monitors tablespace and filegroup free space — alerts at 15% remaining
+  - Identifies the top tables and indexes by size when investigating growth
+  - Tracks week-over-week delta to project when disk will fill (30/60/90 day)
+  - Separates data disk vs WAL disk vs OS disk — each has different response
+  - Uses LVM to extend volumes live without downtime (lvextend + resize2fs)
+  - Reviews pre-allocated vs autogrowth file settings in SQL Server
+  - Enables Instant File Initialization on SQL Server to reduce growth event time
+  - Monitors index vs data ratio to detect unexpected index bloat
+  - Maintains database growth report for management and capacity planning
+
+PRODUCTION BASH TASKS (Linux):
+  df -h
+  du -sh $PGDATA/base/* | sort -rh | head 20
+  du -sh $PGDATA/pg_wal
+  lsblk
+  pvdisplay / lvdisplay
+  lvextend -L+50G /dev/mapper/data-pgdata && resize2fs /dev/mapper/data-pgdata
+  psql: SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database;
+  psql: SELECT schemaname||'.'||tablename, pg_size_pretty(
+          pg_total_relation_size(schemaname||'.'||tablename)) FROM pg_tables
+          ORDER BY pg_total_relation_size(...) DESC LIMIT 20;
+
+KEY PITFALLS:
+  - pg_wal fills faster than data dir — monitor both separately
+  - Index size can exceed table size in write-heavy workloads — bloat indicator
+  - SQL Server: log file on same volume as data = double risk on disk full
+
+--------------------------------------------------------------------------------
+TOPIC 3: Backup Automation & Restore Validation       [P0][BACKUP][COMPL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  An untested backup is not a backup.
+  Backup that succeeds but cannot restore = zero DR value.
+  Backup chain integrity (full → diff → log) must be verified, not assumed.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Configures pgBackRest stanzas — full weekly, incremental daily
+  - Runs pgbackrest verify after every backup to confirm integrity
+  - Maintains backup manifest (pg_verifybackup for PG 13+)
+  - Monitors backup age — alerts if last successful backup > 25 hours old
+  - Tests PITR monthly — restore to sandbox, run canary query, log result + time
+  - Documents RTO actual vs RTO target — required for compliance audit
+  - For SQL Server: maintains full → differential → log chain — no gaps allowed
+  - Uses COPY_ONLY backups for out-of-band copies without breaking LSN chain
+  - Stores pgBackRest / Ola Hallengren backup logs and reviews for failures
+  - Ensures pg_dump / pg_dumpall covers logical backup for cross-version cases
+  - Monitors SQL Agent backup jobs daily — checks job history for failures
+  - Sends daily backup status report to team / management
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  pgbackrest --stanza=main --type=full backup
+  pgbackrest --stanza=main --type=incr backup
+  pgbackrest --stanza=main verify
+  pgbackrest info --stanza=main
+  pg_verifybackup /path/to/backup
+  pg_dump -U postgres -Fc dbname > /mnt/backups/dbname_$(date +%Y%m%d).dump
+  pg_dumpall -U postgres > /mnt/backups/globals_$(date +%Y%m%d).sql
+  pgbackrest --stanza=main --target="2024-01-15 03:45:00" --target-action=promote restore
+  pg_isready -U postgres  [canary after PITR restore]
+
+KEY PITFALLS:
+  - pgBackRest verify is skipped under time pressure — this is when it matters most
+  - PITR test to sandbox must use a different port to avoid collision with production
+  - pg_dump does not backup roles/logins — pg_dumpall covers globals
+  - SQL Server COPY_ONLY is frequently forgotten — breaks log chain if omitted
+
+--------------------------------------------------------------------------------
+TOPIC 4: VACUUM & Transaction ID Wraparound           [P0][DATA][AVAIL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  TXID wraparound → PostgreSQL forces shutdown of all writes.
+  Recovery requires single-user mode restart — this is a P0 outage.
+  Autovacuum misconfiguration is the root cause in 90% of cases.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Monitors age(datfrozenxid) per database — alert at 1B, critical at 1.5B
+  - Monitors relfrozenxid per table — identifies tables closest to wraparound
+  - Tunes autovacuum_vacuum_scale_factor per table for high-write tables
+    (default 20% threshold too high for large tables)
+  - Tunes autovacuum_vacuum_cost_delay to allow autovacuum to run faster
+  - Runs manual VACUUM FREEZE on tables that autovacuum is not keeping up with
+  - Checks pg_stat_user_tables: n_dead_tup, last_vacuum, last_autovacuum daily
+  - Investigates TOAST table bloat separately — often overlooked
+  - Monitors autovacuum worker activity via pg_stat_activity
+  - Checks bloat estimation using pgstattuple or manual approximation queries
+  - Documents per-table autovacuum tuning in postgresql.conf or ALTER TABLE
+  - In emergency (TXID age > 1.9B): runs VACUUM FREEZE manually, escalates
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  psql: SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY 2 DESC;
+  psql: SELECT schemaname, relname, age(relfrozenxid), n_dead_tup,
+          last_autovacuum FROM pg_stat_user_tables ORDER BY age DESC LIMIT 20;
+  psql: VACUUM FREEZE VERBOSE schema.tablename;
+  psql: VACUUM ANALYZE schema.tablename;
+  psql: SELECT pid, query FROM pg_stat_activity WHERE query LIKE 'autovacuum%';
+  psql: ALTER TABLE big_table SET (autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_vacuum_cost_delay = 2);
+
+KEY PITFALLS:
+  - Large tables (100M+ rows) with 20% scale factor = autovacuum never triggers
+    → set scale_factor = 0.01 or use autovacuum_vacuum_threshold instead
+  - Long-running transactions block VACUUM — check pg_stat_activity for idle-in-transaction
+  - TOAST tables accumulate dead tuples independently — must VACUUM separately
+  - age() wraps at 2^31 — monitoring must happen well before that point
+
+--------------------------------------------------------------------------------
+TOPIC 5: Wait Event Analysis & Blocking Resolution    [P0][PERF]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Blocking chains cause application timeouts.
+  Long lock holds cascade into connection pool exhaustion.
+  A 5yr DBA must identify head blocker and decide to kill or wait.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Checks pg_stat_activity.wait_event_type during every performance incident
+  - Identifies blocking chains using pg_blocking_pids()
+  - Traverses multi-hop blocking chains (A blocks B blocks C)
+  - Makes the kill decision based on elapsed time and business impact
+  - Uses sp_WhoIsActive (SQL Server) as primary real-time triage tool
+  - Monitors PAGEIOLATCH spikes on SQL Server (I/O saturation indicator)
+  - Monitors WRITELOG waits (synchronous log I/O — disk problem)
+  - Monitors CXPACKET/CXCONSUMER (parallelism — distinguish from true contention)
+  - Sets up automated blocker alerts with Teams/email webhook
+  - Tunes lock_timeout to prevent DDL operations from cascading into long waits
+  - Reviews lock escalation settings — table-level escalation at 5000 locks
+  - Investigates idle-in-transaction sessions — these block VACUUM and DML
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  psql: SELECT wait_event_type, wait_event, count(*) FROM pg_stat_activity
+          WHERE wait_event IS NOT NULL GROUP BY 1,2 ORDER BY 3 DESC;
+  psql: SELECT pid, pg_blocking_pids(pid), query, state, now()-query_start
+          FROM pg_stat_activity WHERE pg_blocking_pids(pid) != '{}';
+  psql: SELECT pg_terminate_backend(PID);  [after confirming with team]
+  psql: SHOW lock_timeout;
+  psql: SET lock_timeout = '5s';  [session-level DDL protection]
+  psql: SELECT pid, state, now()-state_change AS idle_time, query
+          FROM pg_stat_activity WHERE state = 'idle in transaction'
+          ORDER BY idle_time DESC;
+
+KEY PITFALLS:
+  - Killing the wrong session (symptom blocker vs head blocker) makes it worse
+  - idle-in-transaction sessions are invisible without checking state column
+  - Client:ClientRead wait = slow network client reading result — not DB issue
+  - CXPACKET on SQL Server is often misdiagnosed as a problem — check MAXDOP first
+
+--------------------------------------------------------------------------------
+TOPIC 6: Deadlock Detection & Analysis               [P0][PERF]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Recurring deadlocks cause application transaction failures.
+  DBA must collect, read, and provide root cause — not just log the count.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Enables log_lock_waits = on and sets deadlock_timeout in postgresql.conf
+  - Parses PostgreSQL logs for deadlock entries — identifies tables and queries involved
+  - Uses pgBadger for pattern analysis over time (which tables, which hours)
+  - Reads SQL Server deadlock XML from System Health Extended Events session
+  - Identifies victim process, locking resources, and involved application queries
+  - Provides deadlock graph analysis to App team with reproduction steps
+  - Monitors deadlock frequency trend — increase indicates application regression
+  - Adjusts deadlock_timeout if legitimate short transactions are falsely flagged
+  - Sets up Extended Events session on SQL Server for continuous collection
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  grep -i "deadlock" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail 50
+  grep -A 10 "deadlock detected" /var/log/postgresql/postgresql-*.log
+  grep "deadlock detected" /var/log/postgresql/*.log | wc -l  [frequency count]
+  pgbadger /var/log/postgresql/postgresql-*.log -o /tmp/pgbadger_report.html
+  psql: SHOW deadlock_timeout;
+  psql: SHOW log_lock_waits;
+
+KEY PITFALLS:
+  - deadlock_timeout default is 1s — too aggressive for OLTP, raise to 2-5s first
+  - Deadlock does not mean slow — it means two sessions want each other's lock
+  - Fix is always in application code (transaction order) — DBA diagnoses, Dev fixes
+
+--------------------------------------------------------------------------------
+TOPIC 7: HA Replication Setup & Failover Procedures  [P0][AVAIL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Replication misconfiguration = RPO breach on failover.
+  Failover without pg_rewind = split-brain risk.
+  Patroni leader election failure = dual primaries writing simultaneously.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Configures streaming replication: primary_conninfo, standby.signal, pg_hba.conf
+  - Builds new standbys using pg_basebackup
+  - Monitors synchronization state (streaming, catchup) via pg_stat_replication
+  - Configures Patroni with etcd/Consul — defines leader election parameters
+  - Tests switchover (planned, zero data loss) and failover (unplanned) procedures
+  - Runs pg_rewind after failover to reconcile former primary's timeline
+  - Configures AG (Always On) on SQL Server — listener, seeding, sync commit
+  - Monitors AG health dashboard — synchronization_health states
+  - Manages WSFC quorum — confirms node votes and quorum mode
+  - Documents failover runbook and drills it quarterly
+  - Confirms listener DNS TTL for client reconnection behavior post-failover
+  - For Patroni: uses patronictl switchover / failover with explicit candidate
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  pg_basebackup -h primary -U replicator -D /var/lib/postgresql/14/main -Fp -Xs -P
+  pg_controldata $PGDATA | grep -E "state|timeline|checkpoint"
+  patronictl -c /etc/patroni/patroni.yml list
+  patronictl -c /etc/patroni/patroni.yml switchover CLUSTERNAME
+  patronictl -c /etc/patroni/patroni.yml failover CLUSTERNAME --master NODE
+  pg_ctl promote -D $PGDATA  [manual promotion without Patroni]
+  pg_rewind --target-pgdata=$PGDATA --source-server="host=newprimary user=postgres"
+  etcdctl member list
+  etcdctl endpoint health
+
+KEY PITFALLS:
+  - pg_rewind only works if wal_log_hints=on or data checksums enabled — set this at install
+  - synchronous_commit=on with only 1 standby: standby death blocks all commits
+  - Patroni DCS (etcd) failure = cluster freezes — etcd HA is required
+  - SQL Server AG in async mode: failover always has potential data loss — document RPO
+
+--------------------------------------------------------------------------------
+TOPIC 8: Security — Logins, pg_hba.conf, Firewall    [P0][SEC]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  Misconfigured pg_hba.conf with trust = unauthenticated access.
+  Superuser proliferation = audit failure + breach risk.
+  Firewall misconfiguration = database exposed to network.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Audits pg_hba.conf for md5 or trust entries — enforces scram-sha-256
+  - Creates login roles with least privilege — NOSUPERUSER, NOCREATEDB default
+  - Audits all roles with superuser or replication attribute — minimizes count
+  - Checks password validity / expiry on all login roles quarterly
+  - Configures SSL: ssl=on, ssl_min_protocol_version=TLSv1.2, hostssl entries
+  - Manages OS firewall (ufw / firewall-cmd) — only app servers get port 5432
+  - Reloads pg_hba.conf without restart using pg_reload_conf()
+  - Audits sysadmin role membership on SQL Server — sa account disabled or renamed
+  - Configures CHECK_POLICY and CHECK_EXPIRATION on SQL Server SQL logins
+  - Reviews TRUSTWORTHY database property — should be OFF unless documented
+  - Performs quarterly user access review — removes stale accounts
+  - Configures pgaudit for audit logging where compliance requires it
+
+PRODUCTION BASH TASKS (Linux/PostgreSQL):
+  cat /etc/postgresql/14/main/pg_hba.conf | grep -v '^#' | grep -v '^$'
+  grep -E 'trust|md5' /etc/postgresql/14/main/pg_hba.conf
+  ss -tlnp | grep 5432
+  ufw status verbose
+  openssl s_client -connect localhost:5432 -starttls postgres  [verify SSL]
+  psql: SELECT rolname, rolsuper, rolreplication, rolcanlogin,
+          rolvaliduntil FROM pg_roles ORDER BY rolsuper DESC;
+  psql: SELECT pg_reload_conf();
+  psql: CREATE ROLE appuser WITH LOGIN PASSWORD '...' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+
+KEY PITFALLS:
+  - peer auth works only on socket — remote connections fall through to next rule
+  - Reloading pg_hba.conf affects only new connections — existing sessions unaffected
+  - scram-sha-256 requires client library support — verify before switching from md5
+  - SQL Server Mixed Mode auth increases attack surface vs Windows Auth only
+
+--------------------------------------------------------------------------------
+TOPIC 9: Instance Won't Start — Recovery Procedures  [P0][AVAIL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  PostgreSQL startup failure blocks all applications.
+  Root cause is rarely obvious — requires systematic log-driven diagnosis.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Reads pg_log for the actual error at startup failure — last 50 lines minimum
+  - Checks file permissions on $PGDATA (must be 700, owned by postgres)
+  - Checks pg_controldata for cluster state — "in production" vs "in crash recovery"
+  - Investigates corrupt WAL segment — identifies via startup error message
+  - Uses single-user mode for wraparound emergency VACUUM FREEZE
+  - Uses pg_resetwal as absolute last resort — documents potential data loss
+  - On SQL Server: reads Windows Event Viewer for SQL Server service errors
+  - Checks SQL Server startup parameters — alternate master DB location (-m, -f flags)
+  - Rebuilds TempDB using -f startup flag if TempDB is corrupt
+  - Verifies disk space — startup fails silently if pg_wal or data disk is full
+
+PRODUCTION BASH TASKS (PostgreSQL):
+  tail -100 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+  journalctl -u postgresql --since "1 hour ago"
+  ls -la $PGDATA  [check permissions]
+  pg_controldata $PGDATA | grep "state"
+  postgres --single -D $PGDATA postgres  [single-user mode for emergency VACUUM]
+  pg_resetwal --dry-run $PGDATA  [ONLY if WAL is corrupt and no recovery possible]
+  systemctl status postgresql
+  systemctl start postgresql
+
+KEY PITFALLS:
+  - pg_resetwal DESTROYS data that has not been replicated — last resort only
+  - Single-user mode: only one session allowed — other processes must not connect
+  - Corrupt WAL segment: do NOT delete manually — try restore from archive first
+  - Disk full is the most common startup failure — check df -h first, always
+
+--------------------------------------------------------------------------------
+TOPIC 10: Disk Full Emergency Response               [P0][AVAIL]
+--------------------------------------------------------------------------------
+WHY CRITICAL:
+  pg_wal fills → archiver stalls → WAL accumulates → disk hits 100% → crash.
+  SQL Server: log drive fills → log backup cannot complete → loop.
+  Response speed matters — every minute adds risk.
+
+WHAT A DBA DOES IN PRODUCTION:
+  - Identifies which filesystem is full (data, WAL, OS, archive target)
+  - Finds largest files and directories consuming unexpected space
+  - Checks archive_command failure — stalled archiver is primary WAL accumulation cause
+  - Removes old backup files from disk after confirming retention policy
+  - Extends LVM volume if cloud/SAN allows (lvextend + resize2fs)
+  - Pauses archiving temporarily only as bridge — never as permanent solution
+  - On SQL Server: identifies log_reuse_wait_desc — takes immediate log backup
+  - Shrinks log only after resolving root cause — never as first step
+  - Sends immediate escalation alert to team with disk utilization and ETL
+
+PRODUCTION BASH TASKS (Linux):
+  df -h
+  du -sh $PGDATA/*  | sort -rh | head 20
+  du -sh $PGDATA/pg_wal
+  find /mnt/archive -name "*.gz" -mtime +7 -ls  [review before deleting]
+  find /mnt/archive -name "*.gz" -mtime +7 -delete  [after confirming safe]
+  lvextend -L+100G /dev/vg_data/lv_pgdata && resize2fs /dev/vg_data/lv_pgdata
+  psql: SELECT pg_reload_conf();  [if archive_command was fixed]
+  psql: SELECT * FROM pg_stat_archiver;  [confirm archiving resumes]
+
+KEY PITFALLS:
+  - DO NOT run VACUUM to free space on full disk — VACUUM also writes WAL
+  - DO NOT shrink data files as first response — diagnose cause first
+  - Archiver pause is valid bridge only if WAL restore is available in recovery
+  - Multiple rapid growth events in SQL Server = VLF fragmentation over time
+
+================================================================================
+TIER 2 — P0/P1 HIGH (Master After Tier 1)
+================================================================================
+
+--------------------------------------------------------------------------------
+TOPIC 11: Backup Chain Integrity — Full/Diff/Log      [P0][BACKUP]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Verifies full → incremental → log backup chain has no gaps
+  - Tests COPY_ONLY backups on SQL Server to avoid breaking LSN chain
+  - Validates backup age compliance against RPO target (e.g., < 1 hour for logs)
+  - Audits last successful backup for every database daily
+  - Ensures SQL Server backup CHECKSUM is enabled — detects page corruption early
+  - Stores backup metadata to monitoring table for trend and compliance reporting
+
+PRODUCTION BASH TASKS:
+  pgbackrest info --stanza=main
+  pgbackrest --stanza=main check  [checks WAL archiving is reachable]
+  pg_verifybackup /path/to/backup/directory
+  psql: SELECT * FROM pg_stat_archiver;
+  find /mnt/backups -name "*.pgdump" -mtime +1 -ls  [confirm recent backup exists]
+
+--------------------------------------------------------------------------------
+TOPIC 12: PITR Configuration & DR Setup              [P0][BACKUP][COMPL]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Configures WAL archiving: archive_mode=on, archive_command, restore_command
+  - Sets recovery_target_time / recovery_target_lsn / recovery_target_xid
+  - Configures recovery_target_action = promote for automated DR
+  - Tests PITR restore quarterly to sandbox with actual target timestamp
+  - Measures actual RTO and documents vs SLA target
+  - Configures Log Shipping on SQL Server (latency monitoring + alert job)
+  - Uses RESTORE ... WITH STANDBY for readable standby during log apply
+  - Documents full restore runbook with exact command sequence
+
+PRODUCTION BASH TASKS:
+  pgbackrest --stanza=main --target="YYYY-MM-DD HH:MM:SS" \
+    --target-action=promote --pg1-path=/tmp/sandbox restore
+  pg_ctl -D /tmp/sandbox -o "-p 5555" start
+  pg_isready -p 5555 -U postgres  [canary test after PITR restore]
+  pg_ctl -D /tmp/sandbox stop && rm -rf /tmp/sandbox  [cleanup]
+
+--------------------------------------------------------------------------------
+TOPIC 13: Statistics Management                      [P0][DATA][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Monitors n_mod_since_analyze per table — detects tables with stale stats
+  - Runs manual ANALYZE after bulk loads — autovacuum threshold may not trigger
+  - Schedules weekly full ANALYZE on top modified tables
+  - Runs UPDATE STATISTICS full scan on SQL Server post-bulk-load
+  - Understands auto-update stats threshold tipping point behavior in SQL Server
+  - Checks sys.dm_db_stats_properties for last_updated and modification counter
+  - Investigates bad query plans before recommending stat refresh
+  - Resets pg_stat_statements stats to establish clean baseline for comparison
+
+PRODUCTION BASH TASKS:
+  psql -d DBNAME -c "ANALYZE VERBOSE;"
+  psql -d DBNAME -c "ANALYZE VERBOSE schema.tablename;"
+  psql: SELECT schemaname, relname, n_mod_since_analyze, last_autoanalyze
+          FROM pg_stat_user_tables ORDER BY n_mod_since_analyze DESC LIMIT 30;
+  psql: SELECT pg_stat_statements_reset();  [baseline reset]
+
+--------------------------------------------------------------------------------
+TOPIC 14: Index Maintenance — REINDEX / REBUILD      [P1][DATA]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Detects unused indexes: idx_scan = 0 in pg_stat_user_indexes
+  - Detects bloated indexes via pgstattuple or approximate size ratio
+  - Runs REINDEX CONCURRENTLY for zero-downtime rebuild (PG 12+)
+  - Rebuilds indexes on SQL Server: REORGANIZE < 30%, REBUILD > 30%
+  - Uses ONLINE=ON for SQL Server rebuilds in production (Enterprise only)
+  - Runs Ola Hallengren IndexOptimize with dynamic fragmentation thresholds
+  - Sets fill factor per table access pattern — high-update tables need lower fill
+  - Reviews partial indexes — WHERE clause correctness affects plan selection
+  - Schedules index maintenance off-peak — REBUILD holds SCH-M lock on SQL Server
+
+PRODUCTION BASH TASKS:
+  psql: SELECT schemaname, tablename, indexname, idx_scan,
+          pg_size_pretty(pg_relation_size(indexrelid))
+          FROM pg_stat_user_indexes WHERE idx_scan = 0
+          ORDER BY pg_relation_size(indexrelid) DESC LIMIT 20;
+  psql -d DBNAME -c "REINDEX INDEX CONCURRENTLY schema.indexname;"
+  psql -d DBNAME -c "REINDEX TABLE CONCURRENTLY schema.tablename;"
+  psql: SELECT schemaname||'.'||relname, pg_size_pretty(pg_relation_size(indexrelid))
+          FROM pg_stat_user_indexes ORDER BY pg_relation_size(indexrelid) DESC LIMIT 10;
+
+--------------------------------------------------------------------------------
+TOPIC 15: TempDB Configuration (SQL Server)          [P0][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Sets TempDB data file count = logical CPU count, capped at 8
+  - Places TempDB on fastest available storage — separate from user databases
+  - Monitors PFS/GAM/SGAM latch contention via sys.dm_exec_requests wait_type
+  - Monitors version store growth from RCSI/snapshot isolation consumers
+  - Enables Trace Flag 1118 (pre-SQL 2016) to eliminate mixed extent contention
+  - Checks sys.dm_db_task_space_usage and dm_db_session_space_usage for consumers
+  - Sets all TempDB files to equal size and equal auto-growth increment
+  - Disables TempDB autoshrink — it causes constant churn
+
+PRODUCTION BASH TASKS (Windows/SQLCMD):
+  sqlcmd: SELECT * FROM sys.dm_db_task_space_usage WHERE session_id > 50;
+  sqlcmd: SELECT * FROM tempdb.sys.dm_db_file_space_usage;
+  sqlcmd: SELECT wait_type, count(*) FROM sys.dm_exec_requests
+            WHERE wait_type LIKE 'PAGELATCH%' GROUP BY wait_type;
+
+--------------------------------------------------------------------------------
+TOPIC 16: Memory Configuration & OOM Protection      [P1][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Sets shared_buffers to 25% of RAM as baseline
+  - Sets effective_cache_size to 75% of RAM (planner hint only — no allocation)
+  - Sizes work_mem carefully — it is per-sort/hash operation, not per session
+    (multiplication: 50 sessions × 10 concurrent sorts × 4MB = 2GB actual usage)
+  - Protects postmaster from OOM killer: vm.overcommit_memory=2 or CGROUP limit
+  - Configures huge_pages — calculates vm.nr_hugepages from shared_buffers size
+  - Sets vm.swappiness=1 for database servers — avoid swap at all cost
+  - On SQL Server: configures min/max server memory — Lock Pages in Memory (LPIM)
+  - Monitors plan cache bloat — "optimize for ad hoc workloads" for OLTP
+  - Checks memory pressure via Resource Monitor wait on SQL Server
+
+PRODUCTION BASH TASKS (Linux):
+  free -m
+  cat /proc/meminfo | grep -E "HugePages|MemTotal|MemAvailable"
+  sysctl vm.swappiness vm.overcommit_memory vm.nr_hugepages
+  psql: SHOW shared_buffers; SHOW work_mem; SHOW huge_pages;
+  psql: SELECT name, setting, unit FROM pg_settings
+          WHERE name IN ('shared_buffers','work_mem','effective_cache_size',
+                         'maintenance_work_mem','max_connections');
+
+--------------------------------------------------------------------------------
+TOPIC 17: Long-Running Query Detection & Alerting    [P0][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Monitors pg_stat_activity for queries running > threshold (e.g., 10 min)
+  - Checks query, user, client_addr, wait_event for every long-running query
+  - Confirms with app team before killing — batch jobs may be legitimate
+  - Sets up cron-based alert that sends query details + calling host to webhook
+  - Monitors sys.dm_exec_requests for elapsed time and blocking chain
+  - Reviews long-running queries for missing indexes or bad plans before killing
+  - Tracks recurring long queries — candidates for query optimization advisory
+
+PRODUCTION BASH TASKS:
+  psql: SELECT pid, usename, client_addr, now()-query_start AS duration,
+          state, wait_event_type, wait_event, left(query, 200)
+          FROM pg_stat_activity
+          WHERE state = 'active'
+            AND query_start < now() - interval '10 minutes'
+          ORDER BY duration DESC;
+  psql: SELECT pg_cancel_backend(PID);   [cancels query, keeps connection]
+  psql: SELECT pg_terminate_backend(PID); [terminates connection]
+
+--------------------------------------------------------------------------------
+TOPIC 18: Alerting Framework Setup                   [P0][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Builds health check script covering: disk, WAL size, slot lag, TXID age,
+    replication lag, connection count, long queries, backup age
+  - Schedules via cron (every 5 min for critical checks, every 1 min for blocking)
+  - Integrates Teams/Slack webhook for real-time alerts
+  - Configures SQL Agent Alerts for SQL Server: error severity, perf conditions
+  - Tests all alert thresholds — confirms alert fires before production incident
+  - Sets up Database Mail on SQL Server for operator notifications
+  - Reviews alert noise monthly — tightens thresholds to reduce false positives
+
+PRODUCTION BASH TASKS:
+  crontab -l  [review existing cron jobs]
+  crontab -e  [add new health check schedule]
+  curl -X POST $TEAMS_WEBHOOK -H 'Content-Type: application/json' \
+    -d '{"text":"TEST: DBA Alert from hostname"}'  [test webhook]
+  /etc/cron.d/dba_healthcheck  [preferred over crontab for managed scripts]
+  systemctl status cron  [confirm cron daemon is running]
+
+================================================================================
+TIER 3 — P1 HIGH (Core Professional Competency)
+================================================================================
+
+--------------------------------------------------------------------------------
+TOPIC 19: Connection Pooling — PgBouncer             [P1][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Installs and configures PgBouncer in transaction pooling mode for OLTP
+  - Sets pool_size, max_client_conn, and server_lifetime
+  - Configures auth_type = scram-sha-256 with userlist.txt or auth_query
+  - Monitors pool utilization: SHOW POOLS; SHOW CLIENTS; SHOW SERVERS
+  - Tunes pool_mode per database — session mode for apps using session state
+  - Restarts PgBouncer gracefully — PAUSE then RESUME before config reload
+  - Monitors server_idle_timeout to reclaim unused backend connections
+  - Documents PgBouncer as single point of failure — configures HA with keepalived
+
+PRODUCTION BASH TASKS:
+  psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c "SHOW POOLS;"
+  psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c "SHOW CLIENTS;"
+  psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c "SHOW STATS;"
+  psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c "RELOAD;"
+  psql -h 127.0.0.1 -p 6432 -U pgbouncer pgbouncer -c "PAUSE; RESUME;"
+  systemctl status pgbouncer
+  cat /etc/pgbouncer/pgbouncer.ini
+
+--------------------------------------------------------------------------------
+TOPIC 20: Logical Replication (PostgreSQL)           [P1][AVAIL][BACKUP]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Sets wal_level = logical in postgresql.conf (requires restart)
+  - Creates publications for specific tables or all tables
+  - Creates subscriptions on target — monitors pg_stat_subscription
+  - Monitors logical replication slot lag (same disk risk as physical slots)
+  - Uses logical replication for zero-downtime major version upgrades
+  - Uses pg_logical_slot_get_changes for debugging replication content
+  - Drops unused logical slots immediately — disk risk is same as physical
+
+PRODUCTION BASH TASKS:
+  psql: SHOW wal_level;
+  psql: SELECT * FROM pg_replication_slots WHERE slot_type = 'logical';
+  psql: SELECT * FROM pg_stat_subscription;
+  psql: SELECT * FROM pg_publication;
+  psql: SELECT * FROM pg_subscription;
+  psql: SELECT pg_drop_replication_slot('logical_slot_name');
+
+--------------------------------------------------------------------------------
+TOPIC 21: Isolation Levels & Lock Escalation         [P1][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Enables RCSI on SQL Server databases for OLTP to reduce read/write blocking
+  - Monitors version store growth in TempDB after enabling RCSI
+  - Understands which PostgreSQL lock modes block DDL operations
+  - Sets lock_timeout at session level before DDL to prevent cascading waits
+  - Documents isolation level per database — RCSI is a DB-level setting
+  - Reviews applications for implicit NOLOCK usage — data integrity risk
+
+PRODUCTION BASH TASKS:
+  psql: SHOW default_transaction_isolation;
+  psql: SELECT datname, ... FROM pg_database;  [check per-db settings]
+  psql: BEGIN; SET LOCAL lock_timeout = '3s'; ALTER TABLE ...; COMMIT;
+
+--------------------------------------------------------------------------------
+TOPIC 22: Query Store & pg_stat_statements           [P1][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Reviews top CPU/IO consumers weekly via pg_stat_statements
+  - Resets pg_stat_statements to establish clean baseline after tuning
+  - Uses Query Store on SQL Server to detect plan regressions after patching
+  - Forces stable plans via sp_query_store_force_plan for known regression
+  - Provides top-10 resource consumer report to App team monthly
+  - Monitors mean_exec_time trend — sudden increase = plan change or data growth
+
+PRODUCTION BASH TASKS:
+  psql: SELECT query, calls, total_exec_time, mean_exec_time, rows
+          FROM pg_stat_statements
+          ORDER BY total_exec_time DESC LIMIT 20;
+  psql: SELECT pg_stat_statements_reset();
+  psql: SELECT query, stddev_exec_time / mean_exec_time AS variability
+          FROM pg_stat_statements
+          WHERE calls > 100 ORDER BY variability DESC LIMIT 10;
+
+--------------------------------------------------------------------------------
+TOPIC 23: Database Provisioning & De-provisioning    [P1][PROV]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Creates databases with correct encoding, collation, and tablespace
+  - Creates DBO (database owner) role and assigns ownership
+  - Configures tablespace on appropriate storage tier
+  - Sets default_tablespace and temp_tablespaces at database level
+  - Drops databases after confirming backup exists and app team sign-off
+  - Removes DBO account and revokes all residual permissions on drop
+  - Documents every provisioned database — owner, purpose, retention policy
+
+PRODUCTION BASH TASKS:
+  psql: CREATE DATABASE appdb OWNER appowner TABLESPACE tblspc_fast
+          ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';
+  psql: CREATE ROLE appowner WITH LOGIN PASSWORD '...' NOCREATEDB NOSUPERUSER;
+  psql: DROP DATABASE appdb;  [after confirming final backup]
+  psql: SELECT datname, datdba::regrole, pg_tablespace.spcname,
+          pg_encoding_to_char(encoding) FROM pg_database
+          JOIN pg_tablespace ON dattablespace = pg_tablespace.oid;
+
+--------------------------------------------------------------------------------
+TOPIC 24: TDE — Transparent Data Encryption         [P1][SEC][COMPL]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Enables TDE on SQL Server — creates master key, certificate, DEK
+  - Backs up TDE certificate to secure separate location (mandatory — loss = data loss)
+  - Documents certificate rotation procedure and schedules annual rotation
+  - Understands backup encryption implications — backups are also encrypted
+  - For PostgreSQL: manages LUKS encryption at OS level for encryption at rest
+  - Confirms TDE does not protect against OS-level access — clarifies scope
+  - Reviews pg_tde extension availability for PostgreSQL 17+ environments
+
+PRODUCTION BASH TASKS (Linux — LUKS):
+  lsblk  [identify disk]
+  cryptsetup status /dev/mapper/pgdata  [confirm LUKS status]
+  cryptsetup luksDump /dev/sdb  [view LUKS header]
+
+--------------------------------------------------------------------------------
+TOPIC 25: License Compliance Reporting               [P0][COMPL]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Counts physical cores per socket for SQL Server core-based licensing
+  - Documents vCPU count on VMs — requires SA for downgrade rights
+  - Confirms SQL Server edition rights: Enterprise vs Standard feature limits
+  - Generates core count report for annual license audit
+  - Checks sys.dm_os_host_info for OS/hypervisor/CPU info
+  - Identifies Developer edition instances in non-development environments (violation)
+  - Reviews PostgreSQL version support status — EOL versions require upgrade plan
+
+PRODUCTION BASH TASKS (Linux):
+  lscpu | grep -E "Socket|Core|Thread|CPU\(s\)"
+  nproc --all
+  cat /proc/cpuinfo | grep -E "processor|physical id|core id" | sort | uniq
+  psql: SELECT version();  [confirm PostgreSQL version + EOL check]
+  uname -r  [kernel version]
+
+--------------------------------------------------------------------------------
+TOPIC 26: Slow Disk I/O Triage                       [P0][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Runs iostat to identify disk latency during performance incidents
+  - Uses iotop to identify which process is causing I/O saturation
+  - Checks I/O scheduler — should be none or noop for SSD/NVMe
+  - Correlates PAGEIOLATCH_SH/EX waits on SQL Server with iostat await values
+  - Checks sys.dm_io_virtual_file_stats for per-datafile I/O latency on SQL Server
+  - Distinguishes read I/O saturation from write I/O saturation — different root causes
+  - Reviews checkpoint I/O impact — checkpoint_completion_target tuning
+
+PRODUCTION BASH TASKS (Linux):
+  iostat -xz 1 5
+  iotop -ob -d 2 -n 5
+  cat /sys/block/sda/queue/scheduler
+  echo none > /sys/block/sda/queue/scheduler  [set for SSD — confirm device name]
+  blktrace -d /dev/sda -o /tmp/trace && blkparse /tmp/trace  [deep trace]
+  psql: SELECT pg_stat_bgwriter.buffers_checkpoint, buffers_clean,
+          buffers_backend FROM pg_stat_bgwriter;
+
+--------------------------------------------------------------------------------
+TOPIC 27: pg_upgrade — Major Version Upgrade         [P0][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Runs pg_upgrade --check BEFORE any actual upgrade to catch blockers
+  - Chooses --link mode for large instances (hard links, near-instant, no copy)
+  - Verifies extension compatibility matrix before upgrade
+  - Runs ANALYZE on all databases post-upgrade (statistics format changed)
+  - Documents rollback path — old data directory is preserved in --link mode
+  - Uses logical replication upgrade for zero-downtime requirement
+  - Tests upgrade in non-production environment with production dump first
+  - Runs pg_upgrade as postgres user, not root
+
+PRODUCTION BASH TASKS:
+  pg_upgrade -b /usr/lib/postgresql/13/bin -B /usr/lib/postgresql/14/bin \
+    -d /var/lib/postgresql/13/main -D /var/lib/postgresql/14/main --check
+  pg_upgrade -b /usr/lib/postgresql/13/bin -B /usr/lib/postgresql/14/bin \
+    -d /var/lib/postgresql/13/main -D /var/lib/postgresql/14/main --link
+  ./analyze_new_cluster.sh  [generated by pg_upgrade — run immediately after]
+  ./delete_old_cluster.sh   [only after confirming new cluster is healthy]
+
+================================================================================
+TIER 4 — P1/P2 (Advanced Competency — Months 6-12)
+================================================================================
+
+--------------------------------------------------------------------------------
+TOPIC 28: Infrastructure as Code — Ansible / Terraform  [P1][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Writes Ansible playbook for PostgreSQL install + postgresql.conf + pg_hba.conf
+  - Enforces idempotent configuration — playbook can run repeatedly safely
+  - Uses Terraform for RDS instance, parameter groups, subnet groups, SGs
+  - Manages pg_hba.conf entries via Ansible template with version control
+  - Provisions new PostgreSQL standbys automatically via Ansible role
+  - Uses DSC (Desired State Configuration) for SQL Server baseline on Windows
+
+PRODUCTION BASH TASKS:
+  ansible-playbook deploy_postgres.yml -i inventory/prod --check  [dry run]
+  ansible-playbook deploy_postgres.yml -i inventory/prod
+  ansible-playbook configure_pgbouncer.yml -i inventory/prod
+  terraform plan -var-file=prod.tfvars
+  terraform apply -var-file=prod.tfvars
+
+--------------------------------------------------------------------------------
+TOPIC 29: SQL Agent / pg_cron Job Management         [P0][DATA]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Creates and schedules maintenance jobs: backup, VACUUM, ANALYZE, index maint
+  - Configures job failure alerting — operator notifications with email/Teams
+  - Reviews SQL Agent job history daily — failed jobs require immediate investigation
+  - Backs up msdb database — SQL Agent jobs survive server rebuild only if msdb is backed up
+  - Configures pg_cron for PostgreSQL scheduled maintenance tasks
+  - Uses proxy accounts on SQL Server to run jobs under least-privilege accounts
+  - Tests all new jobs manually before enabling schedule
+
+PRODUCTION BASH TASKS:
+  psql: SELECT cron.schedule('vacuum-job', '0 2 * * *', 'VACUUM ANALYZE');
+  psql: SELECT * FROM cron.job;
+  psql: SELECT * FROM cron.job_run_details ORDER BY end_time DESC LIMIT 20;
+  psql: SELECT cron.unschedule(job_id);
+
+--------------------------------------------------------------------------------
+TOPIC 30: Orphaned Users & SID Mismatches (SQL Server) [P0][SEC][PROV]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Detects orphaned users after database restore to different server
+  - Fixes SID mismatches using ALTER USER ... WITH LOGIN
+  - Runs sp_change_users_login 'Report' across all databases post-restore
+  - Automates orphan detection in post-restore runbook
+
+PRODUCTION BASH TASKS (SQLCMD):
+  sqlcmd: EXEC sp_change_users_login 'Report';
+  sqlcmd: ALTER USER [username] WITH LOGIN = [loginname];
+  sqlcmd: EXEC sp_change_users_login 'Auto_Fix', 'username';
+
+--------------------------------------------------------------------------------
+TOPIC 31: GDPR / Data Retention & Audit Logging      [P1][COMPL][SEC]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Installs and configures pgaudit for audit logging of DDL/DML/role actions
+  - Identifies PII columns — participates in data classification exercise
+  - Uses pg_dump selective restore to fulfill data subject access requests
+  - Implements partition-based data deletion strategy for retention enforcement
+  - Reviews audit log retention — ensures logs are stored per policy (e.g., 1 year)
+  - Configures SQL Server Audit object for compliance event capture
+  - Uses SQL Server Data Discovery & Classification for PII tagging
+
+PRODUCTION BASH TASKS:
+  psql: SHOW pgaudit.log;
+  grep "AUDIT" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail 20
+  pg_dump -U postgres -d DBNAME -t schema.tablename \
+    -f /tmp/subject_access_$(date +%Y%m%d).dump
+  psql: SELECT schemaname, tablename, attname FROM pg_attribute
+          JOIN pg_class ON attrelid = pg_class.oid
+          JOIN pg_namespace ON relnamespace = pg_namespace.oid
+          WHERE attname ILIKE '%email%' OR attname ILIKE '%phone%'
+            OR attname ILIKE '%address%';
+
+--------------------------------------------------------------------------------
+TOPIC 32: Missing Index Advisory                     [P1][PERF]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Identifies high seq_scan vs idx_scan ratio on large tables
+  - Reviews EXPLAIN (ANALYZE, BUFFERS) output for sequential scans on large tables
+  - Uses sys.dm_db_missing_index_details on SQL Server for index recommendations
+  - Calculates index benefit score: user_seeks × avg_total_user_cost
+  - Provides index recommendation report to App/Dev team — DBA does not create
+    application-level indexes without App team approval
+  - Reviews duplicate and overlapping indexes — consolidation candidates
+
+PRODUCTION BASH TASKS:
+  psql -d DBNAME: EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT ...;
+  psql: SELECT schemaname, relname, seq_scan, idx_scan,
+          round(100.0 * seq_scan / NULLIF(seq_scan + idx_scan, 0), 1) AS seq_pct,
+          n_live_tup
+          FROM pg_stat_user_tables
+          WHERE seq_scan > idx_scan AND n_live_tup > 10000
+          ORDER BY seq_scan DESC LIMIT 20;
+
+--------------------------------------------------------------------------------
+TOPIC 33: Cloud Managed Services — RDS / Azure SQL   [P1][CONFIG]
+--------------------------------------------------------------------------------
+WHAT A DBA DOES:
+  - Configures parameter groups instead of postgresql.conf (no OS access on RDS)
+  - Manages RDS automated backups vs manual snapshots — understands retention
+  - Monitors Performance Insights for query-level diagnostics
+  - Configures RDS Multi-AZ — understands DNS-based ~60s failover behavior
+  - Evaluates gp3 vs io1 IOPS provisioning for latency-sensitive workloads
+  - Enables storage autoscaling with documented threshold and ceiling
+  - Tests RDS failover — confirms application reconnects and DNS TTL
+
+PRODUCTION BASH TASKS:
+  aws rds describe-db-instances --db-instance-identifier mydb
+  aws rds describe-db-log-files --db-instance-identifier mydb
+  aws rds download-db-log-file-portion --db-instance-identifier mydb \
+    --log-file-name error/postgresql.log --starting-token 0
+  aws rds failover-db-cluster --db-cluster-identifier mycluster  [Aurora]
+
+================================================================================
+PRIORITIZED LEARNING EXECUTION ORDER — SUMMARY
+================================================================================
+
+PHASE 1 — MONTHS 0-3 (Survivability):
+  1.  WAL / Transaction Log Management
+  2.  Disk Space & Storage Triage
+  3.  Backup Automation & Restore Validation
+  4.  VACUUM & Transaction ID Wraparound
+  5.  Wait Event Analysis & Blocking Resolution
+  6.  Deadlock Detection & Analysis
+  7.  HA Replication Setup & Failover
+  8.  Security — Logins, pg_hba.conf, Firewall
+  9.  Instance Won't Start — Recovery
+  10. Disk Full Emergency Response
+
+PHASE 2 — MONTHS 3-6 (Stability):
+  11. Backup Chain Integrity
+  12. PITR Configuration & DR Setup
+  13. Statistics Management
+  14. Index Maintenance — REINDEX / REBUILD
+  15. TempDB Configuration (SQL Server)
+  16. Memory Configuration & OOM Protection
+  17. Long-Running Query Detection & Alerting
+  18. Alerting Framework Setup
+  19. Connection Pooling — PgBouncer
+  20. Logical Replication (PostgreSQL)
+  21. Isolation Levels & Lock Escalation
+
+PHASE 3 — MONTHS 6-12 (Professional Maturity):
+  22. Query Store & pg_stat_statements
+  23. Database Provisioning & De-provisioning
+  24. TDE — Transparent Data Encryption
+  25. License Compliance Reporting
+  26. Slow Disk I/O Triage
+  27. pg_upgrade — Major Version Upgrade
+  28. Infrastructure as Code — Ansible / Terraform
+  29. SQL Agent / pg_cron Job Management
+  30. Orphaned Users & SID Mismatches
+  31. GDPR / Data Retention & Audit Logging
+  32. Missing Index Advisory
+  33. Cloud Managed Services — RDS / Azure SQL
+
+================================================================================
+END OF SYLLABUS — DBA 5 YEARS EXPERIENCE
+Platforms: PostgreSQL | SQL Server | Linux | Windows
+================================================================================
+
+
+
+
+
+
+
+
+
+================================================================================
 CATEGORY 1: DATABASE INTERNALS & STORAGE ARCHITECTURE
 ================================================================================
  

@@ -1,0 +1,1843 @@
+================================================================================
+PHASE 1: PostgreSQL Perimeter & Network Hardening - COMPLETE RUNBOOK
+================================================================================
+Lab Environment: Docker-based Multi-Subnet PostgreSQL Infrastructure
+Purpose: Learning and manual execution after conceptual understanding
+Security Level: Production-grade hardening
+================================================================================
+
+NETWORK TOPOLOGY
+================================================================================
+corp_vpn (10.0.1.0/24)
+  ├─ app-srv (10.0.1.20)
+  └─ pg-db (10.0.1.10) [dual-homed]
+
+mgmt_zone (10.0.2.0/24)
+  ├─ pg-db (10.0.2.20) [same host as 10.0.1.10]
+  └─ jumpbox (10.0.2.10)
+
+dev_wifi (192.168.100.0/24)
+  └─ dev-pc (192.168.100.50)
+
+================================================================================
+CRITICAL SAFETY NOTES
+================================================================================
+⚠️  BEFORE YOU BEGIN:
+1. Keep a terminal with 'docker exec -it pg-db /bin/bash' open at all times
+2. Never close your last postgres superuser connection until testing is complete
+3. Have this rollback command ready:
+   docker cp /tmp/pg_hba.conf.backup pg-db:/var/lib/postgresql/data/pg_hba.conf
+   docker exec -it pg-db pg_ctl reload -D /var/lib/postgresql/data
+
+🔄 ROLLBACK STRATEGY:
+   If locked out: Restart container with volume mount to restore configs
+   Emergency: docker restart pg-db (will reload original configs if not persisted)
+
+================================================================================
+SECTION 0: ENVIRONMENT VALIDATION
+================================================================================
+
+Step 0.1: Verify PostgreSQL Service Status
+================================================================================
+CONCEPT:
+  Before any security changes, establish a known-good baseline. In production,
+  you never apply security controls to a broken system - you'll create 
+  impossible-to-debug situations where you can't tell if access failure is due
+  to misconfiguration or your new security policy.
+
+COMMAND:
+--------
+docker exec -it pg-db pg_isready -h localhost
+
+EXPECTED OUTPUT:
+----------------
+localhost:5432 - accepting connections
+
+WHAT THIS VALIDATES:
+--------------------
+✓ PostgreSQL process is running
+✓ Socket/port is open and listening
+✓ Database is not in recovery mode
+✓ Connection pooling is functional
+
+IF FAILED:
+----------
+Check: docker ps | grep pg-db
+Check: docker logs pg-db --tail 50
+Check: docker exec -it pg-db systemctl status postgresql (if systemd)
+
+
+Step 0.2: Identify Configuration File Locations
+================================================================================
+CONCEPT:
+  PostgreSQL can be compiled with different default paths. Docker images 
+  especially vary by vendor (postgres:alpine vs postgres:debian vs bitnami).
+  Using SHOW commands guarantees you're editing the ACTIVE config, not some
+  abandoned file in /etc.
+
+COMMAND:
+--------
+docker exec -it pg-db psql -U postgres -c "SHOW config_file;"
+docker exec -it pg-db psql -U postgres -c "SHOW hba_file;"
+docker exec -it pg-db psql -U postgres -c "SHOW data_directory;"
+
+EXPECTED OUTPUT:
+----------------
+                config_file                
+-------------------------------------------
+ /var/lib/postgresql/data/postgresql.conf
+
+                  hba_file                  
+-------------------------------------------
+ /var/lib/postgresql/data/pg_hba.conf
+
+           data_directory           
+-----------------------------------
+ /var/lib/postgresql/data
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Config files are in data directory (standard for Docker)
+✓ You know exactly which files to edit
+✓ Files are writable (if in mounted volume)
+
+SAVE THESE PATHS - YOU'LL NEED THEM:
+-------------------------------------
+export PG_DATA=/var/lib/postgresql/data
+export PG_HBA=$PG_DATA/pg_hba.conf
+export PG_CONF=$PG_DATA/postgresql.conf
+
+
+Step 0.3: Verify Network Connectivity Between All Zones
+================================================================================
+CONCEPT:
+  This separates "network unreachable" from "authentication denied". When 
+  pg_hba.conf later blocks dev_wifi, you'll know it's policy-based rejection,
+  not a routing issue. In production, always test L3/L4 before L7 controls.
+
+COMMANDS:
+---------
+# From jumpbox (mgmt_zone) to pg-db
+docker exec -it jumpbox ping -c 2 10.0.2.20
+docker exec -it jumpbox nc -zv 10.0.2.20 5432
+
+# From app-srv (corp_vpn) to pg-db  
+docker exec -it app-srv ping -c 2 10.0.1.10
+docker exec -it app-srv nc -zv 10.0.1.10 5432
+
+# From dev-pc (dev_wifi) to pg-db
+docker exec -it dev-pc ping -c 2 10.0.1.10
+docker exec -it dev-pc nc -zv 10.0.1.10 5432
+
+EXPECTED OUTPUT (ALL ZONES):
+----------------------------
+PING 10.0.X.X: 2 packets transmitted, 2 received, 0% packet loss
+Connection to 10.0.X.X 5432 port [tcp/postgresql] succeeded!
+
+WHAT THIS VALIDATES:
+--------------------
+✓ No iptables/firewall blocking between zones
+✓ PostgreSQL is listening on 0.0.0.0:5432 (default)
+✓ Docker network routing is functional
+✓ Later failures are purely pg_hba.conf or SSL policy
+
+IF FAILED:
+----------
+Check: docker network ls
+Check: docker network inspect <network_name>
+Check: docker exec -it pg-db ss -tlnp | grep 5432
+
+
+Step 0.4: Backup Current pg_hba.conf
+================================================================================
+CONCEPT:
+  pg_hba.conf is the ONLY file controlling authentication. One wrong entry 
+  can lock out all users including postgres superuser. In production, always
+  keep the last-known-good config and test changes on a clone first.
+
+COMMANDS:
+---------
+# View current config
+docker exec -it pg-db cat /var/lib/postgresql/data/pg_hba.conf
+
+# Create timestamped backup
+docker exec -it pg-db cp /var/lib/postgresql/data/pg_hba.conf \
+  /var/lib/postgresql/data/pg_hba.conf.backup.$(date +%Y%m%d_%H%M%S)
+
+# Copy backup outside container (for disaster recovery)
+docker cp pg-db:/var/lib/postgresql/data/pg_hba.conf /tmp/pg_hba.conf.original
+
+EXPECTED OUTPUT:
+----------------
+# Default pg_hba.conf usually contains:
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             all                                     trust
+host    all             all             127.0.0.1/32            trust
+host    all             all             ::1/128                 trust
+host    all             all             0.0.0.0/0               md5
+
+WHAT THIS VALIDATES:
+--------------------
+✓ You have rollback capability
+✓ You can see current insecure settings (trust, md5, 0.0.0.0/0)
+✓ Backup exists both inside and outside container
+
+CRITICAL NOTE:
+--------------
+The default config above is INSECURE:
+- 'trust' = no password required (!)
+- 'md5' = outdated hash, vulnerable to rainbow tables
+- '0.0.0.0/0' = allows entire internet if port exposed
+
+
+Step 0.5: Create Test Users and Databases
+================================================================================
+CONCEPT:
+  Never test authentication policies with production users. Create isolated
+  test subjects for each security zone. This also validates that your 
+  understanding of roles/grants is correct before applying HBA restrictions.
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres <<'EOF'
+-- Management zone DBA user (for jumpbox access)
+CREATE ROLE dba WITH LOGIN PASSWORD 'DBA_SecurePass_2024!';
+GRANT pg_monitor TO dba;  -- Monitoring privileges
+GRANT CONNECT ON DATABASE postgres TO dba;
+
+-- Corporate VPN application user
+CREATE DATABASE app_db;
+CREATE ROLE app_user WITH LOGIN PASSWORD 'APP_SecurePass_2024!';
+GRANT CONNECT ON DATABASE app_db TO app_user;
+GRANT ALL PRIVILEGES ON DATABASE app_db TO app_user;
+
+-- Create a schema for app_user
+\c app_db
+CREATE SCHEMA IF NOT EXISTS app_schema AUTHORIZATION app_user;
+
+-- Verify creation
+\du
+\l
+\c postgres
+EOF
+
+EXPECTED OUTPUT:
+----------------
+CREATE ROLE
+GRANT
+CREATE DATABASE
+CREATE ROLE
+GRANT
+GRANT
+CREATE SCHEMA
+
+                                   List of roles
+ Role name |                         Attributes                         
+-----------+------------------------------------------------------------
+ app_user  | 
+ dba       | 
+ postgres  | Superuser, Create role, Create DB, Replication, Bypass RLS
+
+                                  List of databases
+   Name    |  Owner   | Encoding | Collate |  Ctype  |   Access privileges   
+-----------+----------+----------+---------+---------+-----------------------
+ app_db    | postgres | UTF8     | C       | C       | =Tc/postgres         +
+           |          |          |         |         | app_user=CTc/postgres
+ postgres  | postgres | UTF8     | C       | C       | =Tc/postgres         +
+           |          |          |         |         | dba=c/postgres
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Roles created with strong passwords
+✓ Database-level access control configured
+✓ app_user isolated to app_db only
+✓ dba can access postgres database for monitoring
+
+TEST BASELINE ACCESS (BEFORE HBA RESTRICTIONS):
+------------------------------------------------
+# From jumpbox (should work with default trust/md5)
+docker exec -it jumpbox psql -h 10.0.2.20 -U dba -d postgres -c "SELECT current_user, inet_server_addr();"
+
+# From app-srv (should work with default trust/md5)
+docker exec -it app-srv psql -h 10.0.1.10 -U app_user -d app_db -c "SELECT current_user, inet_server_addr();"
+
+Expected: Both should succeed (we'll lock this down next)
+
+
+================================================================================
+TASK 1.1: MULTI-TIER pg_hba.conf POLICY
+================================================================================
+
+SECURITY OBJECTIVES:
+====================
+1. Implement Zero Trust networking (explicit allow, implicit deny)
+2. Enforce least-privilege access (role-based, database-specific)
+3. Eliminate weak authentication methods (trust, md5)
+4. Use modern cryptographic authentication (scram-sha-256)
+5. Prepare for certificate-based authentication (peer/cert)
+
+THREAT MODEL:
+=============
+- Attacker on dev_wifi (192.168.100.0/24) → MUST be rejected entirely
+- Compromised app-srv credentials → Limited to app_db only, no postgres DB
+- MitM on corp_vpn → Mitigated by SSL (implemented in Task 1.2)
+- Lateral movement from app-srv to mgmt functions → Prevented by DB isolation
+
+
+Step 1.1.1: Design the HBA Policy Matrix
+================================================================================
+CONCEPT:
+  pg_hba.conf is processed TOP-TO-BOTTOM, first match wins. Order matters
+  critically. More specific rules (single IPs, specific DBs) go first,
+  broader rules (subnets, all databases) go last, reject rules go at end.
+
+POLICY MATRIX:
+--------------
+Source          | Database | User     | Auth Method        | SSL  | Allowed?
+----------------|----------|----------|--------------------|------|----------
+jumpbox (local) | postgres | dba      | peer               | N/A  | ✓
+jumpbox (10.0.2.10) | postgres | dba  | scram-sha-256      | reqd | ✓
+app-srv (10.0.1.20) | app_db | app_user | scram-sha-256    | reqd | ✓
+corp_vpn (10.0.1.0/24) | app_db | app_user | scram-sha-256 | reqd | ✓
+dev_wifi (192.168.100.0/24) | all | all | reject          | N/A  | ✗
+localhost       | all      | postgres | peer               | N/A  | ✓
+default         | all      | all      | reject             | N/A  | ✗
+
+REASONING:
+----------
+- Local socket (peer) for emergency superuser access (no network = no lockout)
+- Jumpbox gets postgres DB only (monitoring, backups, not application data)
+- App tier gets app_db only (principle of least privilege)
+- SSL required for all network connections (Task 1.2 will enforce verify-full)
+- dev_wifi explicitly rejected (not just omitted - log the attempts)
+- Catch-all reject (deny by default, not implicit trust)
+
+
+Step 1.1.2: Write the New pg_hba.conf
+================================================================================
+COMMAND:
+--------
+docker exec -it pg-db bash -c 'cat > /var/lib/postgresql/data/pg_hba.conf.new <<'\''HBAEOF'\''
+# PostgreSQL Client Authentication Configuration File
+# ====================================================
+# Phase 1 Security Hardening - Multi-Tier Access Control
+# Applied: $(date)
+#
+# PROCESSING ORDER: First matching rule wins
+# SECURITY LEVEL: Production-grade, zero-trust
+#
+# FORMAT:
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# ============================================================================
+# LOCAL SOCKET CONNECTIONS (Emergency Access)
+# ============================================================================
+# Allow postgres superuser via local socket only (no network exposure)
+# Auth: peer = trust OS-level user identity (no password needed)
+# Use case: docker exec -it pg-db psql -U postgres
+local   all             postgres                                peer
+
+# Allow DBA role via local socket for maintenance
+local   postgres        dba                                     peer
+
+# ============================================================================
+# MANAGEMENT ZONE (10.0.2.0/24) - Monitoring & Administration
+# ============================================================================
+# Jumpbox: Allow DBA access to postgres database only (not app data)
+# Auth: scram-sha-256 = modern password hashing (not reversible)
+# Future: Will add clientcert=verify-full in Task 1.2
+hostssl postgres        dba             10.0.2.10/32            scram-sha-256
+
+# Reject any other management zone access explicitly
+hostnossl all           all             10.0.2.0/24             reject
+hostssl   all           all             10.0.2.0/24             reject
+
+# ============================================================================
+# CORPORATE VPN ZONE (10.0.1.0/24) - Application Access
+# ============================================================================
+# App server: Allow app_user to app_db only (database isolation)
+# Auth: scram-sha-256 over SSL (Task 1.2 will enforce certificate validation)
+hostssl app_db          app_user        10.0.1.20/32            scram-sha-256
+
+# Broader corp_vpn subnet (if app-srv scales horizontally)
+hostssl app_db          app_user        10.0.1.0/24             scram-sha-256
+
+# Explicitly deny corp_vpn access to postgres database (privilege separation)
+hostssl postgres        all             10.0.1.0/24             reject
+
+# Deny non-SSL from corp_vpn
+hostnossl all           all             10.0.1.0/24             reject
+
+# ============================================================================
+# DEVELOPER WIFI ZONE (192.168.100.0/24) - TOTAL LOCKDOWN
+# ============================================================================
+# Explicitly reject all developer access (not production-safe network)
+# This logs attempts - pure omission would silently fall through to default reject
+host    all             all             192.168.100.0/24        reject
+hostssl all             all             192.168.100.0/24        reject
+
+# ============================================================================
+# LOCALHOST CONNECTIONS (Container Internal)
+# ============================================================================
+# Allow postgres superuser from localhost (for init scripts, cron jobs)
+hostssl all             postgres        127.0.0.1/32            scram-sha-256
+hostssl all             postgres        ::1/128                 scram-sha-256
+
+# ============================================================================
+# DEFAULT DENY (Catch-All Rule)
+# ============================================================================
+# Reject everything else (zero-trust: explicit allow only)
+host    all             all             0.0.0.0/0               reject
+host    all             all             ::/0                    reject
+HBAEOF
+'
+
+WHAT THIS DOES:
+---------------
+✓ Eliminates all 'trust' authentication (password required everywhere)
+✓ Eliminates all 'md5' authentication (upgraded to scram-sha-256)
+✓ Enforces database-level isolation (app_user cannot touch postgres DB)
+✓ Enforces network-zone isolation (dev_wifi completely blocked)
+✓ Prepares for SSL enforcement (hostssl instead of host)
+✓ Maintains emergency access (local socket with peer auth)
+
+VERIFY THE FILE WAS CREATED:
+----------------------------
+docker exec -it pg-db cat /var/lib/postgresql/data/pg_hba.conf.new
+
+
+Step 1.1.3: Activate the New pg_hba.conf
+================================================================================
+⚠️  CRITICAL CHECKPOINT:
+   Before activating, ensure you have:
+   1. Active superuser session: docker exec -it pg-db psql -U postgres
+   2. Backup saved: /tmp/pg_hba.conf.original
+   3. Emergency rollback command ready (see top of document)
+
+COMMANDS:
+---------
+# Replace active config with new hardened version
+docker exec -it pg-db cp /var/lib/postgresql/data/pg_hba.conf.new \
+  /var/lib/postgresql/data/pg_hba.conf
+
+# Reload PostgreSQL configuration (no restart needed)
+docker exec -it pg-db psql -U postgres -c "SELECT pg_reload_conf();"
+
+# Verify reload succeeded
+docker exec -it pg-db psql -U postgres -c "SELECT pg_postmaster_start_time();"
+
+EXPECTED OUTPUT:
+----------------
+ pg_reload_conf 
+----------------
+ t
+
+      pg_postmaster_start_time      
+------------------------------------
+ 2024-XX-XX XX:XX:XX.XXXXXX+00
+(1 row)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Config reloaded without restart (no downtime)
+✓ Postmaster still running (start_time unchanged)
+✓ New HBA rules now active
+
+IF LOCKED OUT:
+--------------
+# From outside container (if you can't connect anymore)
+docker cp /tmp/pg_hba.conf.original pg-db:/var/lib/postgresql/data/pg_hba.conf
+docker exec -it pg-db psql -U postgres -c "SELECT pg_reload_conf();"
+
+
+Step 1.1.4: Verification - Test Allowed Connections
+================================================================================
+CONCEPT:
+  Positive testing: Verify legitimate access still works. If these fail,
+  your policy is too restrictive (false positive = outage).
+
+TEST 1: Jumpbox DBA Access (Management Zone)
+---------------------------------------------
+docker exec -it jumpbox psql -h 10.0.2.20 -U dba -d postgres -c "SELECT current_user, inet_server_addr(), inet_server_port();"
+
+EXPECTED OUTPUT:
+----------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+
+ current_user | inet_server_addr | inet_server_port 
+--------------+------------------+------------------
+ dba          | 10.0.2.20        |             5432
+(1 row)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Management zone can reach postgres database
+✓ scram-sha-256 authentication works
+✓ Correct interface/IP binding (10.0.2.20, not 10.0.1.10)
+
+TEST 2: App Server Access (Corporate VPN)
+------------------------------------------
+docker exec -it app-srv psql -h 10.0.1.10 -U app_user -d app_db -c "SELECT current_user, inet_server_addr(), current_database();"
+
+EXPECTED OUTPUT:
+----------------
+Password for user app_user: [enter APP_SecurePass_2024!]
+
+ current_user | inet_server_addr | current_database 
+--------------+------------------+------------------
+ app_user     | 10.0.1.10        | app_db
+(1 row)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Application tier can reach app_db
+✓ Database isolation working (connected to app_db, not postgres)
+✓ scram-sha-256 authentication works
+
+TEST 3: Local Socket Access (Emergency Backdoor)
+-------------------------------------------------
+docker exec -it pg-db psql -U postgres -c "SELECT current_user, inet_server_addr();"
+
+EXPECTED OUTPUT:
+----------------
+ current_user | inet_server_addr 
+--------------+------------------
+ postgres     | [NULL]
+(1 row)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Local socket works (inet_server_addr is NULL for Unix socket)
+✓ No password needed (peer authentication trusts OS user)
+✓ Emergency access preserved (even if network HBA breaks)
+
+
+Step 1.1.5: Verification - Test Denied Connections
+================================================================================
+CONCEPT:
+  Negative testing: Verify unauthorized access is blocked. If these succeed,
+  your policy has holes (false negative = breach).
+
+TEST 4: Developer Wi-Fi Rejection (Should FAIL)
+------------------------------------------------
+docker exec -it dev-pc psql -h 10.0.1.10 -U app_user -d app_db -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.1.10", port 5432 failed: 
+FATAL:  pg_hba.conf rejects connection for host "192.168.100.50", 
+user "app_user", database "app_db", no encryption
+
+WHAT THIS VALIDATES:
+--------------------
+✓ dev_wifi subnet completely blocked
+✓ Error message shows source IP (192.168.100.50) for audit logging
+✓ "no encryption" = hostssl rule not matched (SSL not configured yet)
+
+TEST 5: Cross-Database Access Denial (Should FAIL)
+---------------------------------------------------
+# Try app_user accessing postgres database (should be denied)
+docker exec -it app-srv psql -h 10.0.1.10 -U app_user -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user app_user: [enter APP_SecurePass_2024!]
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  pg_hba.conf rejects connection for host "10.0.1.20",
+user "app_user", database "postgres", SSL off
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Database-level isolation enforced
+✓ app_user confined to app_db only
+✓ Lateral movement prevention working
+
+TEST 6: DBA Access to App Database (Should FAIL)
+-------------------------------------------------
+# Try dba accessing app_db (should be denied - not in HBA rules)
+docker exec -it jumpbox psql -h 10.0.2.20 -U dba -d app_db -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "dba", 
+database "app_db", SSL off
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Role-based access control working
+✓ dba limited to postgres database only
+✓ Principle of least privilege enforced
+
+
+Step 1.1.6: Enable Query Logging for Authentication Events
+================================================================================
+CONCEPT:
+  Security controls without logging = security theater. In production,
+  you must log auth failures to detect brute-force, lateral movement,
+  or misconfiguration. This also helps debug legitimate connection issues.
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres <<'EOF'
+-- Enable connection logging
+ALTER SYSTEM SET log_connections = 'on';
+ALTER SYSTEM SET log_disconnections = 'on';
+
+-- Log all authentication attempts (success and failure)
+ALTER SYSTEM SET log_line_prefix = '%t [%p] %u@%d from %h ';
+
+-- Set log level to capture security events
+ALTER SYSTEM SET log_min_messages = 'warning';
+
+-- Log duration of long-running queries (performance + security)
+ALTER SYSTEM SET log_min_duration_statement = 1000;  -- 1 second
+
+-- Show current settings
+SELECT name, setting, source FROM pg_settings 
+WHERE name IN ('log_connections', 'log_disconnections', 'log_line_prefix');
+
+-- Reload to apply
+SELECT pg_reload_conf();
+EOF
+
+EXPECTED OUTPUT:
+----------------
+ALTER SYSTEM (x5)
+
+            name            |              setting               |  source  
+----------------------------+------------------------------------+----------
+ log_connections            | on                                 | override
+ log_disconnections         | on                                 | override
+ log_line_prefix            | %t [%p] %u@%d from %h             | override
+
+ pg_reload_conf 
+----------------
+ t
+
+WHERE LOGS ARE WRITTEN:
+-----------------------
+docker exec -it pg-db psql -U postgres -c "SHOW log_directory;"
+docker exec -it pg-db psql -U postgres -c "SHOW log_filename;"
+
+# View recent authentication events
+docker logs pg-db --tail 50 | grep -i "connection\|authentication\|fatal"
+
+SAMPLE LOG OUTPUT AFTER TESTS:
+------------------------------
+2024-04-16 10:30:15 UTC [1234] dba@postgres from 10.0.2.10 LOG:  connection authorized: user=dba database=postgres
+2024-04-16 10:30:20 UTC [1235] app_user@app_db from 10.0.1.20 LOG:  connection authorized: user=app_user database=app_db
+2024-04-16 10:30:25 UTC [1236] app_user@app_db from 192.168.100.50 FATAL:  pg_hba.conf rejects connection for host "192.168.100.50"
+
+WHAT THIS VALIDATES:
+--------------------
+✓ All connection attempts logged with timestamp, user, DB, source IP
+✓ Failed attempts generate FATAL entries (triggerable alerts)
+✓ Audit trail for compliance (PCI-DSS, SOC2, HIPAA require this)
+
+
+TASK 1.1 COMPLETION CHECKLIST:
+===============================
+☑ pg_hba.conf configured with zone-based rules
+☑ scram-sha-256 authentication enforced (no trust/md5)
+☑ Database-level access control validated
+☑ dev_wifi subnet completely blocked
+☑ Emergency local socket access preserved
+☑ Authentication logging enabled
+☑ Positive and negative tests passed
+
+
+================================================================================
+TASK 1.2: STRICT SSL/TLS WITH CERTIFICATE VALIDATION
+================================================================================
+
+SECURITY OBJECTIVES:
+====================
+1. Prevent man-in-the-middle attacks (MitM) on database connections
+2. Enforce mutual TLS (both server and client authentication)
+3. Bind certificates to specific hostnames (prevent cert reuse)
+4. Use modern TLS 1.3 with strong cipher suites
+5. Implement certificate-based authentication (stronger than passwords)
+
+THREAT MODEL:
+=============
+- ARP spoofing on corp_vpn → Mitigated by certificate pinning
+- Compromised network switch → Cannot decrypt TLS 1.3 traffic
+- Stolen password → Useless without client certificate
+- Certificate theft → Limited by CN validation and short expiry
+
+
+Step 1.2.1: Install OpenSSL and Create CA Directory Structure
+================================================================================
+CONCEPT:
+  Public Key Infrastructure (PKI) requires a Certificate Authority (CA) to
+  sign certificates. In production, you'd use an internal CA (HashiCorp Vault,
+  AWS ACM Private CA). For this lab, we'll create a self-signed CA.
+
+COMMANDS:
+---------
+docker exec -it pg-db bash -c '
+# Install OpenSSL if not present
+apt-get update && apt-get install -y openssl
+
+# Create CA directory structure
+mkdir -p /var/lib/postgresql/ca/{private,certs,newcerts}
+cd /var/lib/postgresql/ca
+
+# Initialize CA database
+touch index.txt
+echo 1000 > serial
+
+# Set restrictive permissions (private keys must be secret)
+chmod 700 private
+'
+
+WHAT THIS VALIDATES:
+--------------------
+✓ OpenSSL available for certificate operations
+✓ CA directory follows X.509 best practices
+✓ Private key directory protected (only postgres user can read)
+
+
+Step 1.2.2: Create Root CA Certificate
+================================================================================
+CONCEPT:
+  The Root CA is the trust anchor. Anyone with this CA cert can validate
+  certificates you sign. In production, this would be stored in an HSM or
+  air-gapped machine. Compromise = total PKI collapse.
+
+COMMAND:
+--------
+docker exec -it pg-db bash -c 'cat > /var/lib/postgresql/ca/openssl.cnf <<'\''CAFEOF'\''
+[ ca ]
+default_ca = CA_default
+
+[ CA_default ]
+dir               = /var/lib/postgresql/ca
+certs             = $dir/certs
+crl_dir           = $dir/crl
+new_certs_dir     = $dir/newcerts
+database          = $dir/index.txt
+serial            = $dir/serial
+private_key       = $dir/private/ca.key
+certificate       = $dir/certs/ca.crt
+default_md        = sha256
+default_days      = 3650
+preserve          = no
+policy            = policy_loose
+
+[ policy_loose ]
+countryName             = optional
+stateOrProvinceName     = optional
+localityName            = optional
+organizationName        = optional
+organizationalUnitName  = optional
+commonName              = supplied
+emailAddress            = optional
+
+[ req ]
+default_bits        = 4096
+distinguished_name  = req_distinguished_name
+string_mask         = utf8only
+default_md          = sha256
+x509_extensions     = v3_ca
+
+[ req_distinguished_name ]
+countryName                     = Country Name (2 letter code)
+stateOrProvinceName             = State or Province Name
+localityName                    = Locality Name
+0.organizationName              = Organization Name
+organizationalUnitName          = Organizational Unit Name
+commonName                      = Common Name
+emailAddress                    = Email Address
+
+[ v3_ca ]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+
+[ server_cert ]
+basicConstraints = CA:FALSE
+nsCertType = server
+nsComment = "OpenSSL Generated Server Certificate"
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer:always
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+CAFEOF
+
+# Generate CA private key (4096-bit RSA, encrypted with passphrase)
+cd /var/lib/postgresql/ca
+openssl genrsa -aes256 -out private/ca.key -passout pass:CASecurePass2024 4096
+
+# Create self-signed CA certificate (valid 10 years)
+openssl req -new -x509 -days 3650 -key private/ca.key -passin pass:CASecurePass2024 \
+  -out certs/ca.crt -config openssl.cnf \
+  -subj "/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Database Security/CN=PostgreSQL Root CA"
+
+# Verify CA certificate
+openssl x509 -in certs/ca.crt -text -noout | grep -A2 "Subject:"
+'
+
+EXPECTED OUTPUT:
+----------------
+Generating RSA private key, 4096 bit long modulus
+.....++
+e is 65537 (0x10001)
+
+        Subject: C=US, ST=California, L=SanFrancisco, O=LabOrg, OU=Database Security, CN=PostgreSQL Root CA
+        Subject Public Key Info:
+
+WHAT THIS VALIDATES:
+--------------------
+✓ CA private key generated (4096-bit = strong)
+✓ CA certificate created (self-signed)
+✓ CA valid for 10 years (long enough for lab)
+✓ CN clearly identifies this as CA (not server cert)
+
+
+Step 1.2.3: Generate PostgreSQL Server Certificate
+================================================================================
+CONCEPT:
+  The server certificate CN (Common Name) MUST match the hostname clients
+  use to connect. If they connect via IP, CN should be IP. If via DNS, CN
+  should be FQDN. Mismatch = TLS validation failure.
+
+CRITICAL: Our pg-db hostname for this lab
+  - From corp_vpn: 10.0.1.10
+  - From mgmt_zone: 10.0.2.20
+  - Hostname: pg-db (Docker internal DNS)
+  
+We'll create a cert with Subject Alternative Names (SAN) for all three.
+
+COMMAND:
+--------
+docker exec -it pg-db bash -c 'cat > /var/lib/postgresql/ca/server_cert.cnf <<'\''SRVEOF'\''
+[ req ]
+default_bits        = 2048
+distinguished_name  = req_distinguished_name
+req_extensions      = v3_req
+prompt              = no
+
+[ req_distinguished_name ]
+C  = US
+ST = California
+L  = SanFrancisco
+O  = LabOrg
+OU = Database Servers
+CN = pg-db.internal
+
+[ v3_req ]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = pg-db
+DNS.2 = pg-db.internal
+DNS.3 = localhost
+IP.1  = 10.0.1.10
+IP.2  = 10.0.2.20
+IP.3  = 127.0.0.1
+SRVEOF
+
+cd /var/lib/postgresql/ca
+
+# Generate server private key (unencrypted for auto-start)
+openssl genrsa -out private/server.key 2048
+
+# Create Certificate Signing Request (CSR)
+openssl req -new -key private/server.key -out server.csr -config server_cert.cnf
+
+# Sign server cert with CA (valid 1 year)
+openssl x509 -req -in server.csr -CA certs/ca.crt -CAkey private/ca.key \
+  -passin pass:CASecurePass2024 -CAcreateserial -out certs/server.crt \
+  -days 365 -sha256 -extensions v3_req -extfile server_cert.cnf
+
+# Verify server certificate
+openssl x509 -in certs/server.crt -text -noout | grep -A1 "Subject:\|Subject Alternative Name:"
+
+# Set correct permissions for PostgreSQL
+chown postgres:postgres private/server.key certs/server.crt certs/ca.crt
+chmod 600 private/server.key
+chmod 644 certs/server.crt certs/ca.crt
+'
+
+EXPECTED OUTPUT:
+----------------
+Generating RSA private key, 2048 bit long modulus
+....+++
+e is 65537 (0x10001)
+
+Signature ok
+subject=/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Database Servers/CN=pg-db.internal
+Getting CA Private Key
+
+        Subject: C=US, ST=California, L=SanFrancisco, O=LabOrg, OU=Database Servers, CN=pg-db.internal
+            X509v3 Subject Alternative Name: 
+                DNS:pg-db, DNS:pg-db.internal, DNS:localhost, IP Address:10.0.1.10, IP Address:10.0.2.20, IP Address:127.0.0.1
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Server certificate signed by our CA
+✓ CN = pg-db.internal (primary hostname)
+✓ SANs include all IPs clients will use (10.0.1.10, 10.0.2.20)
+✓ Private key permissions = 600 (PostgreSQL requirement)
+✓ Certificate valid for 1 year (rotate before expiry)
+
+
+Step 1.2.4: Configure PostgreSQL to Use SSL
+================================================================================
+CONCEPT:
+  PostgreSQL needs to know where certs are and which TLS versions/ciphers
+  to accept. Modern config = TLS 1.2+ only, disable weak ciphers.
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres <<'EOF'
+-- Enable SSL
+ALTER SYSTEM SET ssl = 'on';
+
+-- Point to certificate files
+ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/ca/certs/server.crt';
+ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/ca/private/server.key';
+ALTER SYSTEM SET ssl_ca_file = '/var/lib/postgresql/ca/certs/ca.crt';
+
+-- Enforce TLS 1.2 and 1.3 only (disable SSLv3, TLS 1.0, TLS 1.1)
+ALTER SYSTEM SET ssl_min_protocol_version = 'TLSv1.2';
+
+-- Use strong cipher suites only (ECDHE for perfect forward secrecy)
+ALTER SYSTEM SET ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL:!eNULL:!EXPORT:!DES:!MD5:!PSK:!RC4';
+
+-- Prefer server cipher order (server chooses strongest cipher)
+ALTER SYSTEM SET ssl_prefer_server_ciphers = 'on';
+
+-- Show current SSL settings
+SELECT name, setting FROM pg_settings WHERE name LIKE 'ssl%';
+
+-- Restart required for SSL changes
+\q
+EOF
+
+# Restart PostgreSQL to apply SSL configuration
+docker restart pg-db
+
+# Wait for startup
+sleep 5
+docker exec -it pg-db pg_isready -h localhost
+
+# Verify SSL is enabled
+docker exec -it pg-db psql -U postgres -c "SHOW ssl;"
+
+EXPECTED OUTPUT:
+----------------
+ALTER SYSTEM (x7)
+
+         name                |                    setting                    
+-----------------------------+-----------------------------------------------
+ ssl                         | on
+ ssl_ca_file                 | /var/lib/postgresql/ca/certs/ca.crt
+ ssl_cert_file               | /var/lib/postgresql/ca/certs/server.crt
+ ssl_ciphers                 | HIGH:MEDIUM:+3DES:!aNULL:...
+ ssl_key_file                | /var/lib/postgresql/ca/private/server.key
+ ssl_min_protocol_version    | TLSv1.2
+ ssl_prefer_server_ciphers   | on
+
+[After restart]
+localhost:5432 - accepting connections
+
+ ssl 
+-----
+ on
+
+WHAT THIS VALIDATES:
+--------------------
+✓ SSL enabled on PostgreSQL
+✓ Server certificate configured
+✓ TLS 1.2+ enforced (no weak protocols)
+✓ Strong ciphers only (no RC4, MD5, export ciphers)
+✓ PostgreSQL restarted successfully with SSL
+
+
+Step 1.2.5: Update pg_hba.conf to Enforce SSL and Client Certificates
+================================================================================
+CONCEPT:
+  Current pg_hba.conf uses 'hostssl' but doesn't validate client certs.
+  We'll add 'clientcert=verify-full' to require clients to present valid
+  certificates signed by our CA. This is mutual TLS (mTLS).
+
+COMMAND:
+--------
+docker exec -it pg-db bash -c 'cat > /var/lib/postgresql/data/pg_hba.conf <<'\''HBAEOF2'\''
+# PostgreSQL Client Authentication Configuration File
+# ====================================================
+# Phase 1 Security Hardening - SSL + Certificate Validation
+# Applied: $(date)
+#
+# SECURITY LEVEL: Production-grade, mutual TLS
+
+# ============================================================================
+# LOCAL SOCKET CONNECTIONS (Emergency Access)
+# ============================================================================
+local   all             postgres                                peer
+local   postgres        dba                                     peer
+
+# ============================================================================
+# MANAGEMENT ZONE (10.0.2.0/24) - Monitoring & Administration
+# ============================================================================
+# Jumpbox: Require client certificate + password (defense in depth)
+hostssl postgres        dba             10.0.2.10/32            scram-sha-256 clientcert=verify-full
+
+# Reject non-SSL and unauthorized mgmt access
+hostnossl all           all             10.0.2.0/24             reject
+hostssl   all           all             10.0.2.0/24             reject
+
+# ============================================================================
+# CORPORATE VPN ZONE (10.0.1.0/24) - Application Access
+# ============================================================================
+# App server: Require client certificate + password
+hostssl app_db          app_user        10.0.1.20/32            scram-sha-256 clientcert=verify-full
+hostssl app_db          app_user        10.0.1.0/24             scram-sha-256 clientcert=verify-full
+
+# Deny access to postgres database from corp_vpn
+hostssl postgres        all             10.0.1.0/24             reject
+hostnossl all           all             10.0.1.0/24             reject
+
+# ============================================================================
+# DEVELOPER WIFI ZONE (192.168.100.0/24) - TOTAL LOCKDOWN
+# ============================================================================
+host    all             all             192.168.100.0/24        reject
+hostssl all             all             192.168.100.0/24        reject
+
+# ============================================================================
+# LOCALHOST CONNECTIONS
+# ============================================================================
+hostssl all             postgres        127.0.0.1/32            scram-sha-256
+hostssl all             postgres        ::1/128                 scram-sha-256
+
+# ============================================================================
+# DEFAULT DENY
+# ============================================================================
+host    all             all             0.0.0.0/0               reject
+host    all             all             ::/0                    reject
+HBAEOF2
+'
+
+# Reload HBA configuration
+docker exec -it pg-db psql -U postgres -c "SELECT pg_reload_conf();"
+
+EXPECTED OUTPUT:
+----------------
+ pg_reload_conf 
+----------------
+ t
+
+WHAT THIS VALIDATES:
+--------------------
+✓ All network connections require SSL (hostssl)
+✓ clientcert=verify-full enforces client certificate validation
+✓ Client cert CN must match connecting user
+✓ Dual authentication: certificate + password (defense in depth)
+
+
+Step 1.2.6: Generate Client Certificates for DBA and App User
+================================================================================
+CONCEPT:
+  Client certificates authenticate the user to the server. The CN field
+  MUST match the PostgreSQL role name. Without this match, even with valid
+  signature, authentication fails.
+
+COMMANDS:
+---------
+docker exec -it pg-db bash -c '
+cd /var/lib/postgresql/ca
+
+# Generate DBA client certificate
+openssl genrsa -out private/dba.key 2048
+
+openssl req -new -key private/dba.key -out dba.csr \
+  -subj "/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=DBAs/CN=dba"
+
+openssl x509 -req -in dba.csr -CA certs/ca.crt -CAkey private/ca.key \
+  -passin pass:CASecurePass2024 -CAcreateserial -out certs/dba.crt \
+  -days 365 -sha256
+
+# Generate app_user client certificate  
+openssl genrsa -out private/app_user.key 2048
+
+openssl req -new -key private/app_user.key -out app_user.csr \
+  -subj "/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Applications/CN=app_user"
+
+openssl x509 -req -in app_user.csr -CA certs/ca.crt -CAkey private/ca.key \
+  -passin pass:CASecurePass2024 -CAcreateserial -out certs/app_user.crt \
+  -days 365 -sha256
+
+# Verify client certificates
+openssl x509 -in certs/dba.crt -noout -subject
+openssl x509 -in certs/app_user.crt -noout -subject
+
+# Set permissions
+chmod 600 private/dba.key private/app_user.key
+chmod 644 certs/dba.crt certs/app_user.crt
+'
+
+EXPECTED OUTPUT:
+----------------
+Generating RSA private key, 2048 bit long modulus
+...+++
+subject=/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=DBAs/CN=dba
+
+subject=/C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Applications/CN=app_user
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Client certs generated for each role
+✓ CN=dba and CN=app_user (matches PostgreSQL role names)
+✓ Signed by our CA (trust chain valid)
+✓ Private keys protected (chmod 600)
+
+
+Step 1.2.7: Distribute Client Certificates to Client Machines
+================================================================================
+CONCEPT:
+  In production, use secrets management (HashiCorp Vault, AWS Secrets Manager).
+  For this lab, we'll copy certs directly to client containers.
+
+COMMANDS:
+---------
+# Copy DBA certs to jumpbox
+docker exec -it pg-db bash -c '
+mkdir -p /tmp/certs_dba
+cp /var/lib/postgresql/ca/certs/ca.crt /tmp/certs_dba/
+cp /var/lib/postgresql/ca/certs/dba.crt /tmp/certs_dba/
+cp /var/lib/postgresql/ca/private/dba.key /tmp/certs_dba/
+chmod 644 /tmp/certs_dba/*
+'
+
+docker cp pg-db:/tmp/certs_dba /tmp/
+docker exec -it jumpbox mkdir -p /root/.postgresql
+docker cp /tmp/certs_dba/ca.crt jumpbox:/root/.postgresql/root.crt
+docker cp /tmp/certs_dba/dba.crt jumpbox:/root/.postgresql/postgresql.crt
+docker cp /tmp/certs_dba/dba.key jumpbox:/root/.postgresql/postgresql.key
+docker exec -it jumpbox chmod 600 /root/.postgresql/postgresql.key
+
+# Copy app_user certs to app-srv
+docker exec -it pg-db bash -c '
+mkdir -p /tmp/certs_app
+cp /var/lib/postgresql/ca/certs/ca.crt /tmp/certs_app/
+cp /var/lib/postgresql/ca/certs/app_user.crt /tmp/certs_app/
+cp /var/lib/postgresql/ca/private/app_user.key /tmp/certs_app/
+chmod 644 /tmp/certs_app/*
+'
+
+docker cp pg-db:/tmp/certs_app /tmp/
+docker exec -it app-srv mkdir -p /root/.postgresql
+docker cp /tmp/certs_app/ca.crt app-srv:/root/.postgresql/root.crt
+docker cp /tmp/certs_app/app_user.crt app-srv:/root/.postgresql/postgresql.crt
+docker cp /tmp/certs_app/app_user.key app-srv:/root/.postgresql/postgresql.key
+docker exec -it app-srv chmod 600 /root/.postgresql/postgresql.key
+
+# Verify files exist on clients
+docker exec -it jumpbox ls -la /root/.postgresql/
+docker exec -it app-srv ls -la /root/.postgresql/
+
+EXPECTED OUTPUT:
+----------------
+[jumpbox]
+-rw-r--r-- 1 root root 1598 Jan 01 12:00 root.crt
+-rw-r--r-- 1 root root 1346 Jan 01 12:00 postgresql.crt
+-rw------- 1 root root 1704 Jan 01 12:00 postgresql.key
+
+[app-srv]
+-rw-r--r-- 1 root root 1598 Jan 01 12:00 root.crt
+-rw-r--r-- 1 root root 1350 Jan 01 12:00 postgresql.crt
+-rw------- 1 root root 1704 Jan 01 12:00 postgresql.key
+
+WHAT THIS VALIDATES:
+--------------------
+✓ CA certificate installed on clients (root.crt)
+✓ Client certificates installed (postgresql.crt)
+✓ Client private keys installed (postgresql.key)
+✓ ~/.postgresql/ is standard psql location (auto-detected)
+
+
+Step 1.2.8: Verification - Test SSL Connections
+================================================================================
+TEST 1: Connection Without SSL (Should FAIL)
+---------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=disable"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "dba", 
+database "postgres", no encryption
+
+WHAT THIS VALIDATES:
+--------------------
+✓ hostnossl rules working (non-SSL rejected)
+✓ SSL enforcement active
+
+TEST 2: Connection With SSL But No Client Certificate (Should FAIL)
+--------------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=require"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [enter password]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  connection requires a valid client certificate
+
+WHAT THIS VALIDATES:
+--------------------
+✓ clientcert=verify-full enforced
+✓ Password alone is insufficient
+✓ Client certificate required
+
+TEST 3: Connection With SSL + Client Certificate (Should SUCCEED)
+------------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=verify-full"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+
+psql (XX.X)
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, bits: 256, compression: off)
+Type "help" for help.
+
+postgres=>
+
+WHAT THIS VALIDATES:
+--------------------
+✓ SSL connection established
+✓ TLS 1.3 negotiated (modern protocol)
+✓ Strong cipher (AES-256-GCM)
+✓ Client certificate validated
+✓ Password also required (dual factor)
+
+TEST 4: Verify SSL Session Details
+-----------------------------------
+# From within the psql session above
+SELECT 
+    ssl,
+    version,
+    cipher,
+    bits,
+    client_dn
+FROM pg_stat_ssl
+WHERE pid = pg_backend_pid();
+
+EXPECTED OUTPUT:
+----------------
+ ssl | version |        cipher         | bits |                          client_dn                           
+-----+---------+-----------------------+------+--------------------------------------------------------------
+ t   | TLSv1.3 | TLS_AES_256_GCM_SHA384|  256 | /C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=DBAs/CN=dba
+
+WHAT THIS VALIDATES:
+--------------------
+✓ SSL active (ssl=t)
+✓ TLS 1.3 in use
+✓ 256-bit encryption
+✓ Client certificate DN captured (proves cert was presented)
+✓ CN=dba matches connected user
+
+TEST 5: App Server SSL Connection
+----------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 user=app_user dbname=app_db sslmode=verify-full"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user app_user: [enter APP_SecurePass_2024!]
+
+psql (XX.X)
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, bits: 256)
+Type "help" for help.
+
+app_db=>
+
+# Verify from app side
+app_db=> SELECT ssl, version, cipher, client_dn FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+
+ ssl | version |        cipher         |                          client_dn                           
+-----+---------+-----------------------+--------------------------------------------------------------
+ t   | TLSv1.3 | TLS_AES_256_GCM_SHA384| /C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Applications/CN=app_user
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Application tier SSL working
+✓ app_user client certificate validated
+✓ CN=app_user matches role name
+
+TEST 6: Connection With Wrong Client Certificate (Should FAIL)
+---------------------------------------------------------------
+# Try connecting as app_user but using dba certificate
+docker exec -it jumpbox bash -c '
+cp /root/.postgresql/root.crt /tmp/root.crt.backup
+cp /root/.postgresql/dba.crt /root/.postgresql/postgresql.crt.backup
+cat /tmp/certs_app/app_user.crt > /root/.postgresql/postgresql.crt
+cat /tmp/certs_app/app_user.key > /root/.postgresql/postgresql.key
+chmod 600 /root/.postgresql/postgresql.key
+
+psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=verify-full"
+'
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  certificate authentication failed for user "dba"
+DETAIL:  Connection matched pg_hba.conf line X: "hostssl postgres dba 10.0.2.10/32 scram-sha-256 clientcert=verify-full"
+
+WHAT THIS VALIDATES:
+--------------------
+✓ CN field validation working
+✓ Cannot use app_user cert to authenticate as dba
+✓ Prevents certificate stealing/reuse across roles
+
+# Restore correct certificate
+docker exec -it jumpbox bash -c '
+mv /root/.postgresql/postgresql.crt.backup /root/.postgresql/postgresql.crt
+'
+
+
+TASK 1.2 COMPLETION CHECKLIST:
+===============================
+☑ Root CA created and secured
+☑ Server certificate generated with SANs
+☑ PostgreSQL configured for SSL (TLS 1.2+)
+☑ Client certificates generated per role
+☑ Mutual TLS enforced (clientcert=verify-full)
+☑ Strong ciphers validated (TLS 1.3, AES-256-GCM)
+☑ Client DN validation working
+☑ SSL connection details logged
+
+
+================================================================================
+TASK 1.3: NETWORK ISOLATION (PORT & LISTEN ADDRESS)
+================================================================================
+
+SECURITY OBJECTIVES:
+====================
+1. Reduce attack surface (non-standard port)
+2. Prevent accidental exposure (bind to specific IPs only)
+3. Limit local socket access (no localhost TCP bypass)
+4. Enable network-level monitoring (unique port for firewall rules)
+
+THREAT MODEL:
+=============
+- Port scanner (nmap) → Won't find DB on standard 5432
+- Compromised localhost process → Cannot connect via 127.0.0.1
+- Accidental Docker port publish → Binds to wrong interface
+- Automated exploit scripts → Target 5432, not 15432
+
+
+Step 1.3.1: Change PostgreSQL Listen Port
+================================================================================
+CONCEPT:
+  Default port 5432 is well-known (IANA registered). Changing it doesn't
+  provide real security (security by obscurity), but it reduces noise from
+  automated scanners and makes firewall rules more granular. In production,
+  combine with proper firewall rules.
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres <<'EOF'
+-- Change port from 5432 to 15432
+ALTER SYSTEM SET port = 15432;
+
+-- Show current setting (won't take effect until restart)
+SHOW port;
+
+-- Restart required for port change
+\q
+EOF
+
+# Restart PostgreSQL
+docker restart pg-db
+
+# Wait for startup
+sleep 5
+
+# Verify new port is listening
+docker exec -it pg-db ss -tlnp | grep postgres
+
+EXPECTED OUTPUT:
+----------------
+ALTER SYSTEM
+ port 
+------
+ 5432  -- (still showing old value, restart needed)
+
+[After restart]
+LISTEN  0  128  *:15432  *:*  users:(("postgres",pid=1234,fd=7))
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Port changed to 15432
+✓ PostgreSQL listening on new port
+✓ Old port (5432) no longer bound
+
+VERIFY OLD PORT IS CLOSED:
+---------------------------
+docker exec -it pg-db ss -tlnp | grep 5432
+# Should return nothing
+
+docker exec -it jumpbox nc -zv 10.0.2.20 5432
+# Should fail: Connection refused
+
+
+Step 1.3.2: Bind to Specific Network Interfaces Only
+================================================================================
+CONCEPT:
+  Default listen_addresses='*' binds to 0.0.0.0 (all interfaces). This is
+  dangerous if container has public interface. Bind only to required IPs:
+  - 10.0.1.10 (corp_vpn interface)
+  - 10.0.2.20 (mgmt_zone interface)
+  - NOT 127.0.0.1 (prevent localhost bypass)
+  - NOT 0.0.0.0 (prevent wildcard binding)
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres -p 15432 <<'EOF'
+-- Bind only to specific private interfaces
+ALTER SYSTEM SET listen_addresses = '10.0.1.10,10.0.2.20';
+
+-- Show current setting
+SHOW listen_addresses;
+
+-- Restart required
+\q
+EOF
+
+# Restart PostgreSQL
+docker restart pg-db
+sleep 5
+
+# Verify listening addresses
+docker exec -it pg-db ss -tlnp | grep 15432
+
+EXPECTED OUTPUT:
+----------------
+ALTER SYSTEM
+ listen_addresses 
+------------------
+ *  -- (old value)
+
+[After restart]
+LISTEN  0  128  10.0.1.10:15432  0.0.0.0:*  users:(("postgres",pid=1234,fd=7))
+LISTEN  0  128  10.0.2.20:15432  0.0.0.0:*  users:(("postgres",pid=1235,fd=8))
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Listening ONLY on specified IPs
+✓ NOT listening on 0.0.0.0 (wildcard)
+✓ NOT listening on 127.0.0.1 (localhost)
+✓ Each interface bound separately
+
+VERIFY LOCALHOST IS BLOCKED:
+-----------------------------
+docker exec -it pg-db psql -h 127.0.0.1 -p 15432 -U postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "127.0.0.1", port 15432 failed: 
+Connection refused
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Localhost TCP connections blocked
+✓ Only Unix socket works for local access (more secure)
+
+
+Step 1.3.3: Update Connection Strings for New Port
+================================================================================
+CONCEPT:
+  All clients must now specify port=15432. This tests your change control
+  process - in production, you'd update all application configs, monitoring
+  tools, backup scripts, etc. Missed one = outage.
+
+UPDATE CLIENT CONNECTION TESTS:
+--------------------------------
+# Jumpbox DBA access (new port)
+docker exec -it jumpbox psql "host=10.0.2.20 port=15432 user=dba dbname=postgres sslmode=verify-full"
+
+Expected: SUCCESS (with password prompt)
+
+# App server access (new port)
+docker exec -it app-srv psql "host=10.0.1.10 port=15432 user=app_user dbname=app_db sslmode=verify-full"
+
+Expected: SUCCESS (with password prompt)
+
+# Dev WiFi should still be blocked (even with correct port)
+docker exec -it dev-pc psql "host=10.0.1.10 port=15432 user=app_user dbname=app_db"
+
+Expected: FAILURE (pg_hba.conf rejects connection)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Allowed zones can connect on new port
+✓ Blocked zones still blocked (port change doesn't bypass HBA)
+✓ All previous security controls still active
+
+
+Step 1.3.4: Configure Unix Socket Permissions
+================================================================================
+CONCEPT:
+  Even though we blocked TCP on localhost, Unix socket still exists.
+  Restrict socket permissions so only postgres user (and root) can connect.
+
+COMMANDS:
+---------
+docker exec -it pg-db psql -U postgres -p 15432 <<'EOF'
+-- Set socket directory permissions (only postgres user)
+ALTER SYSTEM SET unix_socket_permissions = '0700';
+
+-- Verify socket directory (should be /var/run/postgresql)
+SHOW unix_socket_directories;
+
+-- Restart to apply
+\q
+EOF
+
+docker restart pg-db
+sleep 5
+
+# Verify socket permissions
+docker exec -it pg-db ls -ld /var/run/postgresql/
+docker exec -it pg-db ls -l /var/run/postgresql/.s.PGSQL.15432
+
+EXPECTED OUTPUT:
+----------------
+drwx------ 2 postgres postgres 80 Jan 01 12:00 /var/run/postgresql/
+
+srwxrwxrwx 1 postgres postgres 0 Jan 01 12:00 /var/run/postgresql/.s.PGSQL.15432
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Socket directory restricted to postgres user
+✓ Socket file exists for new port (15432)
+✓ Local socket still works for emergency access
+
+TEST LOCAL SOCKET ACCESS:
+--------------------------
+docker exec -it pg-db psql -U postgres -c "SELECT current_user;"
+
+Expected: SUCCESS (no password, using peer authentication)
+
+
+Step 1.3.5: Verification - Network Isolation Tests
+================================================================================
+TEST 1: Port Scanner Simulation
+--------------------------------
+# Scan for PostgreSQL on default port (should find nothing)
+docker exec -it dev-pc nc -zv 10.0.1.10 5432
+
+EXPECTED OUTPUT:
+----------------
+nc: connect to 10.0.1.10 port 5432 (tcp) failed: Connection refused
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Old port closed
+✓ Reduces automated scanner visibility
+
+TEST 2: New Port Connectivity
+------------------------------
+# Scan for PostgreSQL on new port (should find it if network-reachable)
+docker exec -it jumpbox nc -zv 10.0.2.20 15432
+
+EXPECTED OUTPUT:
+----------------
+Connection to 10.0.2.20 15432 port [tcp/*] succeeded!
+
+WHAT THIS VALIDATES:
+--------------------
+✓ New port open from allowed zones
+✓ TCP handshake succeeds (before HBA/SSL enforcement)
+
+TEST 3: Localhost TCP Blocked
+------------------------------
+docker exec -it pg-db psql -h 127.0.0.1 -p 15432 -U postgres
+
+EXPECTED OUTPUT:
+----------------
+psql: error: connection to server at "127.0.0.1", port 15432 failed: Connection refused
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Localhost TCP disabled
+✓ Forces use of Unix socket (peer auth)
+
+TEST 4: Unix Socket Still Works
+--------------------------------
+docker exec -it pg-db psql -U postgres -c "SELECT version();"
+
+EXPECTED OUTPUT:
+----------------
+                                                 version                                                  
+----------------------------------------------------------------------------------------------------------
+ PostgreSQL 15.X on x86_64-pc-linux-gnu, compiled by gcc (Debian 10.X.X-X) 10.X.X, 64-bit
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Emergency access preserved
+✓ Peer authentication functional
+✓ No password needed for local socket
+
+TEST 5: Wrong Interface Connection Attempt
+-------------------------------------------
+# Try connecting to 10.0.1.10 from mgmt_zone (wrong interface for source zone)
+docker exec -it jumpbox psql "host=10.0.1.10 port=15432 user=dba dbname=postgres"
+
+EXPECTED OUTPUT:
+----------------
+Could vary based on routing, but likely:
+- Connection refused (no route), OR
+- pg_hba.conf rejects connection (if routing exists but HBA blocks)
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Interface-specific binding working
+✓ Network segmentation enforced
+
+TEST 6: Full Connection with All Security Layers
+-------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=15432 user=dba dbname=postgres sslmode=verify-full" <<'EOF'
+-- Show all security attributes of current connection
+SELECT 
+    current_user,
+    current_database(),
+    inet_server_addr() AS server_ip,
+    inet_server_port() AS server_port,
+    inet_client_addr() AS client_ip,
+    ssl,
+    version AS ssl_version,
+    cipher AS ssl_cipher,
+    bits AS ssl_bits,
+    client_dn AS ssl_client_cert
+FROM pg_stat_ssl 
+WHERE pid = pg_backend_pid();
+\q
+EOF
+
+EXPECTED OUTPUT:
+----------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+
+ current_user | current_database | server_ip | server_port | client_ip | ssl | ssl_version |     ssl_cipher      | ssl_bits |                 ssl_client_cert                  
+--------------+------------------+-----------+-------------+-----------+-----+-------------+---------------------+----------+--------------------------------------------------
+ dba          | postgres         | 10.0.2.20 |       15432 | 10.0.2.10 | t   | TLSv1.3     | TLS_AES_256_GCM_SHA384 |  256  | /C=US/.../CN=dba
+
+WHAT THIS VALIDATES:
+--------------------
+✓ Custom port (15432)
+✓ Specific interface binding (10.0.2.20)
+✓ SSL enabled (TLS 1.3)
+✓ Strong cipher (AES-256)
+✓ Client certificate validated
+✓ All Phase 1 security controls active
+
+
+TASK 1.3 COMPLETION CHECKLIST:
+===============================
+☑ Port changed from 5432 to 15432
+☑ Listening on specific IPs only (not 0.0.0.0)
+☑ Localhost TCP disabled (127.0.0.1)
+☑ Unix socket permissions restricted
+☑ All clients updated with new port
+☑ Old port confirmed closed
+☑ Emergency socket access preserved
+
+
+================================================================================
+PHASE 1 COMPLETE: FINAL VERIFICATION MATRIX
+================================================================================
+
+Run this comprehensive test suite to validate all security controls:
+
+TEST MATRIX:
+------------
+Source Zone    | Target         | Port  | SSL  | Cert | Expected Result
+---------------|----------------|-------|------|------|------------------
+jumpbox        | 10.0.2.20:15432| ✓     | ✓    | ✓    | SUCCESS (dba@postgres)
+app-srv        | 10.0.1.10:15432| ✓     | ✓    | ✓    | SUCCESS (app_user@app_db)
+dev-pc         | 10.0.1.10:15432| ✓     | ✓    | ✓    | REJECT (pg_hba.conf)
+jumpbox        | 10.0.2.20:5432 | X     | -    | -    | FAIL (port closed)
+app-srv        | 10.0.1.10:15432| X     | X    | X    | REJECT (no SSL)
+app-srv        | 10.0.1.10:15432| ✓     | X    | ✓    | REJECT (cert required)
+jumpbox (dba)  | 10.0.2.20:15432| ✓     | ✓    | app* | REJECT (wrong CN)
+localhost      | 127.0.0.1:15432| ✓     | -    | -    | FAIL (not listening)
+local socket   | unix socket    | N/A   | N/A  | N/A  | SUCCESS (peer auth)
+
+* app = using app_user certificate to connect as dba
+
+SECURITY POSTURE SUMMARY:
+=========================
+✓ Network Segmentation: 3 zones with distinct access policies
+✓ Authentication: scram-sha-256 (no trust/md5)
+✓ Encryption: TLS 1.3 with AES-256-GCM (256-bit)
+✓ Certificate Validation: Mutual TLS (clientcert=verify-full)
+✓ Port Security: Non-standard port (15432)
+✓ Interface Binding: Specific IPs only (not 0.0.0.0)
+✓ Localhost Security: TCP disabled, socket restricted
+✓ Audit Logging: All connections logged with source IP
+✓ Emergency Access: Local socket preserved
+✓ Default Deny: Explicit rejection of unauthorized access
+
+ATTACK SURFACE REDUCTION:
+==========================
+BEFORE Phase 1:
+- Accessible from any IP (0.0.0.0:5432)
+- Trust authentication (no password)
+- MD5 hashing (weak)
+- No encryption
+- Standard port (automated scanners)
+- Localhost TCP open (lateral movement)
+
+AFTER Phase 1:
+- Accessible from 2 IPs only (10.0.1.10, 10.0.2.20)
+- scram-sha-256 + client certificates
+- TLS 1.3 with perfect forward secrecy
+- Non-standard port (reduced scanner noise)
+- Localhost TCP closed
+- All network zones explicitly controlled
+
+COMPLIANCE MAPPING:
+===================
+PCI-DSS 4.0:
+  ✓ Req 2.2.4 - Secure configurations
+  ✓ Req 4.1.1 - Strong cryptography (TLS 1.2+)
+  ✓ Req 8.3.1 - Multi-factor authentication (cert + password)
+  ✓ Req 10.2.1 - Audit trail of authentication
+
+SOC 2:
+  ✓ CC6.1 - Logical access controls
+  ✓ CC6.6 - Encryption in transit
+  ✓ CC6.7 - Secure credential storage
+
+HIPAA:
+  ✓ 164.312(a)(1) - Access control
+  ✓ 164.312(e)(1) - Transmission security
+  ✓ 164.312(e)(2)(i) - Encryption
+
+NIST 800-53:
+  ✓ AC-3 - Access Enforcement
+  ✓ SC-8 - Transmission Confidentiality
+  ✓ IA-5 - Authenticator Management
+
+
+================================================================================
+NEXT STEPS (Phase 2 Preview)
+================================================================================
+Phase 1 focused on PERIMETER hardening. Next phases would cover:
+
+Phase 2: Role-Based Access Control (RBAC)
+  - Row-level security (RLS)
+  - Column-level privileges
+  - GRANT/REVOKE matrices
+  - Service accounts vs human users
+
+Phase 3: Data-at-Rest Encryption
+  - Transparent Data Encryption (TDE)
+  - Encrypted tablespaces
+  - Key management (KMIP, KMS integration)
+
+Phase 4: Auditing & Monitoring
+  - pgaudit extension
+  - Failed login alerting
+  - Query logging for sensitive tables
+  - SIEM integration
+
+Phase 5: Backup Security
+  - Encrypted backups
+  - Secure backup transport
+  - Point-in-time recovery testing
+  - Backup credential rotation
+
+
+================================================================================
+TROUBLESHOOTING GUIDE
+================================================================================
+
+SYMPTOM: "Connection refused"
+DIAGNOSIS: Port not listening OR firewall blocking
+FIX: 
+  docker exec -it pg-db ss -tlnp | grep 15432
+  docker exec -it jumpbox nc -zv 10.0.2.20 15432
+
+SYMPTOM: "FATAL: pg_hba.conf rejects connection"
+DIAGNOSIS: HBA rule missing or wrong order
+FIX:
+  docker exec -it pg-db cat /var/lib/postgresql/data/pg_hba.conf
+  Check source IP, database, user match
+  Verify rule order (more specific rules first)
+
+SYMPTOM: "connection requires a valid client certificate"
+DIAGNOSIS: clientcert=verify-full but cert not presented
+FIX:
+  ls -l ~/.postgresql/postgresql.{crt,key,root.crt}
+  chmod 600 ~/.postgresql/postgresql.key
+  psql "...sslmode=verify-full"
+
+SYMPTOM: "certificate authentication failed"
+DIAGNOSIS: Certificate CN doesn't match username
+FIX:
+  openssl x509 -in ~/.postgresql/postgresql.crt -noout -subject
+  Verify CN=<username>
+
+SYMPTOM: "SSL error: certificate verify failed"
+DIAGNOSIS: Server certificate not trusted by client
+FIX:
+  Ensure ~/.postgresql/root.crt contains CA certificate
+  psql "...sslmode=verify-full" (not just require)
+
+SYMPTOM: Locked out completely
+EMERGENCY FIX:
+  docker cp /tmp/pg_hba.conf.original pg-db:/var/lib/postgresql/data/pg_hba.conf
+  docker exec -it pg-db psql -U postgres -c "SELECT pg_reload_conf();"
+  OR
+  docker restart pg-db
+
+
+================================================================================
+HARDENING VALIDATION CHECKLIST
+================================================================================
+
+Pre-Production Sign-Off:
+☐ All tests in verification matrix passed
+☐ Rollback procedure tested and documented
+☐ Monitoring alerts configured for failed auth
+☐ Certificate expiry tracking configured (365 days)
+☐ Backup/restore tested with new SSL config
+☐ Application connection strings updated
+☐ Secrets management for certificates implemented
+☐ On-call runbook updated with new port/SSL config
+☐ Certificate rotation procedure documented
+☐ Disaster recovery plan includes CA private key backup
+
+Security Review:
+☐ No 'trust' or 'md5' authentication methods
+☐ No 0.0.0.0 or ::/0 in HBA rules (except explicit reject)
+☐ TLS 1.2+ enforced (no SSLv3, TLS 1.0, TLS 1.1)
+☐ Strong ciphers only (verified in pg_stat_ssl)
+☐ Client certificate validation enabled (verify-full)
+☐ Logging enabled for all connections
+☐ Non-default port configured
+☐ Localhost TCP disabled
+☐ Emergency access tested and verified
+
+
+================================================================================
+DOCUMENT REVISION HISTORY
+================================================================================
+Version 1.0 - Initial Phase 1 hardening runbook
+Applied: [DATE]
+Engineer: [NAME]
+Review Status: [PENDING/APPROVED]
+
+================================================================================
+END OF RUNBOOK
+================================================================================

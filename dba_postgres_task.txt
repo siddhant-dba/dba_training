@@ -1,0 +1,737 @@
+================================================================================
+PRODUCTION DBA TASKS BY SUPPORT LEVEL (L1/L2/L3)
+Experience Range: 1-10 Years
+Platforms: PostgreSQL | SQL Server | Linux | Windows
+================================================================================
+
+LEGEND:
+- L1: First-line support, monitoring, routine tasks (1-2 years experience)
+- L2: Intermediate troubleshooting, maintenance, performance (2-5 years experience)
+- L3: Advanced architecture, optimization, incidents (5-10 years experience)
+- Tasks listed WITHOUT solutions - real production scenarios only
+
+================================================================================
+SECTION 1: MONITORING & ALERTING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+1. Disk space alert fired - database server showing 85% disk utilization
+2. SQL Server Agent job "Daily_Full_Backup" failed - investigate and report
+3. Replication lag alert - standby server is 5 minutes behind primary
+4. Connection count approaching max_connections limit - current count at 180/200
+5. Long-running query alert - query running for 45 minutes in production
+6. Autovacuum process not completing on large table for 3 days
+7. TempDB data file showing 90% full during business hours
+8. Email delivery failure from Database Mail - backup reports not sent
+9. Transaction log backup job skipped last night - no backup taken
+10. CPU utilization spiking to 95% on database server during peak hours
+11. Memory pressure alert - Available MBytes below 500 MB threshold
+12. Blocking session alert - 15 sessions blocked by session ID 238
+13. Deadlock graph captured in system health session - 3 deadlocks in last hour
+14. Scheduled DBCC CHECKDB job running longer than usual - 8 hours vs normal 3 hours
+15. Archive_command failing in PostgreSQL - pg_wal directory growing rapidly
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+16. Sudden spike in PAGEIOLATCH_SH waits - users reporting slow application response
+17. Query performance degraded after weekend index maintenance - execution time 10x slower
+18. Database growth rate changed from 2GB/week to 15GB/week - identify cause
+19. Replication slot lag accumulating - 50GB of WAL retained, disk filling up
+20. SQL Server service unexpectedly restarted at 3 AM - determine root cause
+21. Autovacuum worker processes maxed out - all workers busy for extended period
+22. Application reporting "timeout expired" errors - no obvious blocking detected
+23. Backup duration increased from 2 hours to 8 hours over past month
+24. Inconsistent query performance - same query fast sometimes, slow other times
+25. Connection pooling exhausted - application unable to acquire connections
+26. Log shipping restore job falling behind - secondary database 6 hours behind
+27. Memory grant waits increasing - queries waiting for memory allocation
+28. Page life expectancy dropped from 5000 to 300 seconds
+29. Statistics out of date on critical tables - last updated 45 days ago
+30. Fragmentation levels exceeding 80% on clustered indexes after rebuild
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+31. Entire instance experiencing severe performance degradation across all databases
+32. Transaction ID wraparound warning - age approaching 2 billion transactions
+33. Always On Availability Group in RESOLVING state - quorum lost
+34. Corruption detected in critical production table - DBCC CHECKDB error 8928
+35. Out of memory condition causing queries to fail - need to identify memory leak
+36. Cascading blocking chain - 200+ sessions blocked in multi-level hierarchy
+37. Plan cache bloat - 15GB of ad-hoc query plans consuming memory
+38. Excessive VLF count (32,000 VLFs) causing transaction log performance issues
+39. Full database snapshot isolation version store filling TempDB rapidly
+40. Ghost cleanup process not running - deleted rows accumulating in heap tables
+
+================================================================================
+SECTION 2: BACKUP & RECOVERY
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+41. Restore last night's full backup to DEV environment for testing
+42. Verify backup files exist on backup server for compliance audit
+43. Developer requests copy of PROD database restored to QA server
+44. Backup job completed with warnings - investigate warning messages
+45. Business requires database restore as of 2 PM yesterday (point-in-time)
+46. Differential backup failed - disk full on backup destination
+47. Tail-log backup needed before planned maintenance window
+48. Copy production backup files to off-site storage location
+49. Validate backup chain integrity for database before restore
+50. Encryption certificate expired - backups failing with error 15240
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+51. Restore production database to different server with renamed files
+52. Database accidentally dropped - recover from most recent backup
+53. Corrupted data discovered - restore to point before corruption occurred
+54. Backup restoration taking 12 hours - expected 3 hours - optimize
+55. PITR required to specific LSN - transaction log backup chain validation needed
+56. Suspect page detected - page-level restore required without full database restore
+57. Verify backup recoverability - perform test restore on isolated server
+58. Backup files consuming excessive storage - implement compression and retention
+59. pgBackRest stanza creation failing - configuration issue to resolve
+60. Log backup chain broken - differential/log backups no longer valid
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+61. Disaster recovery drill - fail over to DR site and validate RTO/RPO
+62. Multi-database consistent restore required across 15 interdependent databases
+63. In-place restore not possible - design side-by-side migration strategy
+64. Backup validation automation - weekly automated restore and consistency check
+65. Design backup strategy for 8TB VLDB with 4-hour backup window constraint
+66. Backup infrastructure failure - all recent backups corrupted - recovery plan needed
+67. Cross-version database migration - PostgreSQL 11 to 15 using logical replication
+68. Geo-redundant backup strategy design for multi-region deployment
+69. Implement backup encryption and key management for compliance (PCI-DSS)
+70. Minimize RTO for 2TB database - current restore time 18 hours unacceptable
+
+================================================================================
+SECTION 3: PERFORMANCE TROUBLESHOOTING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+71. User reports slow login to application - database connection taking 30 seconds
+72. Specific report query taking 5 minutes - should complete in 10 seconds
+73. Batch job running longer than maintenance window - usually 2 hours, now 6 hours
+74. Application timeout errors during peak business hours
+75. Identify top 10 most expensive queries by CPU consumption today
+76. Check if statistics are updated on tables in slow-performing stored procedure
+77. Verify indexes exist on columns used in WHERE clause of slow query
+78. Restart SQL Server service to clear memory pressure (as directed by L2/L3)
+79. Kill specific session causing blocking (session ID provided by L2)
+80. Update statistics on specific table after bulk data load
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+81. Query execution plan showing table scan on 500 million row table - optimize
+82. Parameter sniffing issue - cached plan optimized for atypical parameter value
+83. Stored procedure performance varies wildly - 2 seconds vs 5 minutes for same data
+84. Implicit conversion causing index scan instead of seek - fix data type mismatch
+85. Missing index recommendation showing 95% improvement - validate before creating
+86. Parallel query execution causing CXPACKET waits and resource contention
+87. Sort operations spilling to TempDB - work_mem / memory grant too small
+88. Nested loop join on large tables - cardinality estimation severely inaccurate
+89. Key lookup operations dominating query cost - covering index needed
+90. Query hint causing worse performance - remove OPTION(RECOMPILE) and test
+91. High logical reads on query - buffer cache hit ratio impacted
+92. Index fragmentation at 85% - rebuild vs reorganize decision required
+93. Clustered index scan when seek expected - statistics histogram skewed
+94. Hash join spilling to disk - memory grant too low for join operation
+95. Query running in RCSI reading old version from version store - performance hit
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+96. Entire application slowdown - no single query identified - systematic approach needed
+97. Cardinality estimation model change after upgrade causing plan regression
+98. Design workload-specific indexing strategy for data warehouse ETL pipeline
+99. Memory grant feedback not working - queries consistently getting wrong memory
+100. Adaptive join threshold causing unpredictable execution plan choices
+101. Multi-statement table-valued function causing severe performance degradation
+102. Optimize complex query with 15 table joins and correlated subqueries
+103. Partition elimination not occurring - query scanning all 120 partitions
+104. Statistics maintenance strategy for 200+ billion row fact table
+105. Database design review - identify normalization issues causing performance problems
+
+================================================================================
+SECTION 4: HIGH AVAILABILITY & DISASTER RECOVERY
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+106. Monitor AG synchronization health - replica showing "Not Synchronizing"
+107. Verify backup jobs running on secondary replica in AG configuration
+108. Check replication lag on read replica - report lag in seconds
+109. Add new database to existing Always On Availability Group
+110. Test connectivity to AG listener from application server
+111. Document current AG configuration - replica names, sync mode, failover mode
+112. Monitor pg_stat_replication view for active replication connections
+113. Verify automatic failover occurred successfully - check logs
+114. Update DNS record after manual AG failover to point to new primary
+115. Restart PostgreSQL service on standby replica after configuration change
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+116. AG secondary replica stuck in "Resolving" state - diagnose and resolve
+117. Synchronous commit causing latency - evaluate changing to asynchronous
+118. Failover history analysis - 3 unexpected failovers in past week - find root cause
+119. Replication slot preventing WAL removal - 200GB of WAL accumulation
+120. Streaming replication broken - standby cannot connect to primary
+121. Create new read-only replica for reporting workload offload
+122. Quorum configuration incorrect - cluster at risk of split-brain scenario
+123. Network latency between replicas causing synchronization delays
+124. Redo apply rate on standby too slow - falling behind primary
+125. Listener failover taking 2 minutes - optimize DNS TTL and retry settings
+126. Configure automatic page repair in Availability Group
+127. Implement distributed Availability Group across data centers
+128. Standby feedback causing bloat on primary - hot_standby_feedback issue
+129. Witness server failure in database mirroring setup - establish new witness
+130. Geo-replication lag unacceptable for DR RTO - need solution
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+131. Design multi-site HA architecture with RPO < 5 minutes, RTO < 15 minutes
+132. Entire cluster failure - restore quorum and bring AG back online
+133. Implement Patroni-based automatic failover with etcd consensus
+134. Split-brain scenario detected - two primaries accepting writes - reconcile
+135. Design zero-downtime upgrade strategy using AG rolling upgrade
+136. Cross-region AG deployment with network partition resilience
+137. Implement read-scale architecture with connection string routing
+138. Design disaster recovery test plan with production-like workload simulation
+139. Optimize AG for mixed workload - OLTP on primary, analytics on secondary
+140. Disaster recovery failback procedure - return to primary datacenter safely
+
+================================================================================
+SECTION 5: SECURITY & COMPLIANCE
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+141. Create new SQL Server login for application service account
+142. Grant SELECT permission on specific schema to reporting user
+143. Password expiration policy violation - reset expired DBA account password
+144. Developer needs read-only access to production database - create login/user
+145. Audit failed login attempts from specific IP address - review logs
+146. Disable unused SQL login account per security team request
+147. Add user to existing database role for application access
+148. Document current members of sysadmin server role for audit
+149. Enable database-level auditing for specific table access
+150. Configure SQL Server to enforce password complexity requirements
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+151. Orphaned users detected after database restore - fix SID mismatches
+152. Implement row-level security for multi-tenant application database
+153. Configure Transparent Data Encryption (TDE) on production database
+154. Audit login accounts with sysadmin privilege - remediate over-privileged accounts
+155. Database restored to UAT but developers cannot access - permission sync needed
+156. Implement dynamic data masking on PII columns for non-production environments
+157. Configure Always Encrypted for credit card number column
+158. pg_hba.conf incorrectly allowing connections from 0.0.0.0/0 - restrict access
+159. SSL/TLS certificate expired - database connections failing with encryption error
+160. Create least-privilege application account - avoid db_owner membership
+161. Implement database auditing for GDPR compliance - track PII access
+162. Configure Azure AD authentication for SQL Server Managed Instance
+163. Scram-sha-256 authentication not enforced - still using MD5 - upgrade auth
+164. Stored procedure execute permission issue - user cannot run proc
+165. Cross-database ownership chaining security risk - disable TRUSTWORTHY
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+166. Design comprehensive security model for PCI-DSS compliance
+167. Implement column-level encryption with application-side key management
+168. Security breach - unauthorized access detected - incident response and forensics
+169. Design zero-trust network architecture for database access
+170. Implement database activity monitoring with SIEM integration
+171. Conduct security audit - identify and remediate vulnerabilities across fleet
+172. Design secrets management solution - eliminate hardcoded credentials
+173. Implement certificate-based authentication for replication connections
+174. Create data classification and protection framework for GDPR/CCPA
+175. Design privileged access management (PAM) solution for DBA accounts
+
+================================================================================
+SECTION 6: DATABASE MAINTENANCE & OPTIMIZATION
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+176. Execute weekly index rebuild job manually after automated job failed
+177. Update statistics on all tables in database after bulk data load
+178. Shrink transaction log file after unusually large transaction
+179. Run DBCC CHECKDB on database to verify integrity
+180. Rebuild specific index that is 90% fragmented
+181. Execute VACUUM ANALYZE on large table that hasn't been vacuumed in week
+182. Clear query plan cache to force recompilation of problematic plan
+183. Monitor autovacuum progress on long-running vacuum operation
+184. Drop unused non-clustered index consuming 50GB storage
+185. Execute maintenance plan for index reorganization on weekend
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+186. Optimize index maintenance schedule - current jobs causing blocking during business hours
+187. Table bloat at 60% - vacuum not reclaiming space - investigate and resolve
+188. Design index strategy for new table with 50 million rows
+189. Partitioning scheme not working - queries still scanning all partitions
+190. Columnstore index not being used - query optimizer choosing rowstore instead
+191. Filtered index not matching query predicate - index unused
+192. Create maintenance plan for 500+ database fleet with varying workload patterns
+193. XML fragmentation in plan cache causing memory pressure
+194. Heap table with 2 billion rows - convert to clustered index or partition
+195. TOAST table bloat - separate maintenance required from main table
+196. Optimize fill factor settings for OLTP tables with frequent updates
+197. Index consolidation project - eliminate redundant and duplicate indexes
+198. Statistics sampling issue - default sampling missing data skew
+199. Implement sliding window partition management for time-series data
+200. Compression evaluation - estimate space savings vs CPU overhead
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+201. Design comprehensive maintenance framework for 24/7 global application
+202. Architect partitioning strategy for 10TB fact table with retention policy
+203. Optimize vacuuming for extremely high-velocity OLTP system
+204. Design index architecture for mixed OLTP/analytics workload
+205. Implement online index rebuild strategy for zero-downtime maintenance
+206. Create intelligent adaptive maintenance based on workload patterns
+207. Solve persistent bloat issue - vacuum not effective - rearchitecture needed
+208. Design maintenance windows for global 24/7 application with regional failover
+209. Optimize TempDB configuration for high-concurrency workload
+210. Implement automated index tuning with validation and rollback capability
+
+================================================================================
+SECTION 7: CAPACITY PLANNING & STORAGE MANAGEMENT
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+211. Transaction log file growing beyond expected size - investigate log reuse wait
+212. Data file autogrowth events causing application pauses - review growth settings
+213. TempDB out of space during monthly reporting job - expand TempDB
+214. Tablespace usage at 90% - add new data file to filegroup
+215. Archive old data from audit tables per retention policy (7 year retention)
+216. Monitor daily database growth rate - report anomalies
+217. LVM volume out of space - extend logical volume for PostgreSQL data directory
+218. Backup disk utilization at 95% - cleanup old backup files
+219. Identify largest tables and indexes in database for capacity report
+220. Move database files to new storage array per infrastructure upgrade
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+221. Database growth rate changed from 5GB/month to 50GB/month - identify cause
+222. Design data archival strategy for 5-year-old transactional data
+223. Storage performance degraded - IOPS throttling on cloud instance
+224. Implement table partitioning for efficient data purging
+225. Optimize storage layout - separate data, logs, TempDB across disk arrays
+226. IOPS capacity planning for new application deployment
+227. Implement ILM (Information Lifecycle Management) for document storage
+228. Database size projection - estimate storage needs for next 12 months
+229. Instant file initialization not enabled - file growth causing long pauses
+230. RAID configuration not optimal for database workload - recommend changes
+231. Design retention policy automation - delete data older than 3 years
+232. SAN storage migration - move production databases with minimal downtime
+233. Evaluate compression options - row vs page compression trade-offs
+234. Storage tiering strategy - hot vs warm vs cold data placement
+235. Manage filegroup space allocation across multiple data files
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+236. Design enterprise-wide storage architecture for 500+ database fleet
+237. Capacity planning for 100TB data warehouse with 3-year growth projection
+238. Design automated data lifecycle management across storage tiers
+239. Architect multi-tier storage solution - NVMe/SSD/HDD optimization
+240. Storage consolidation project - migrate 200 databases to new infrastructure
+241. Design sharding strategy for horizontal scaling beyond single instance limits
+242. Implement automated capacity forecasting with predictive analytics
+243. Design cloud storage strategy - optimize costs vs performance (S3/Blob tiers)
+244. Architect storage solution for regulatory compliance (WORM storage)
+245. Design disaster recovery storage architecture with geographic distribution
+
+================================================================================
+SECTION 8: INCIDENT RESPONSE & TROUBLESHOOTING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+246. Database service failed to start - check event logs and report findings
+247. Application cannot connect to database - verify service is running
+248. User account locked out - unlock and reset password
+249. Network connectivity issue - database server unreachable from app server
+250. Disk full alert - database writes failing - immediate cleanup needed
+251. Scheduled job not executing - verify SQL Agent service status
+252. Database in "Recovery Pending" state - investigate and report
+253. Connection string error in application - verify server name and port
+254. Authentication failure - verify login credentials and server name
+255. Service account password changed - update SQL Server service credentials
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+256. Database corruption detected (error 824) - determine extent and recovery path
+257. Sudden CPU spike to 100% - identify query or process causing spike
+258. Memory dump generated - SQL Server crashed - analyze dump file
+259. Suspect pages detected - page corruption on multiple pages
+260. Long-running transaction blocking all other transactions - kill or wait?
+261. Application deadlock storm - 50 deadlocks in 5 minutes - resolve immediately
+262. PostgreSQL postmaster process crashed - investigate crash logs
+263. Out of memory error - identify memory leak or insufficient memory
+264. Transaction log full - all DML operations blocked - immediate resolution needed
+265. Replication completely broken - secondary database suspect - rebuild or restore?
+266. Ghost records accumulating - ghost cleanup not running - manual intervention
+267. Database marked suspect after power failure - recovery procedure needed
+268. Emergency downtime - production database needs immediate restart
+269. Failover to DR site required - primary datacenter network failure
+270. Mass blocking event - 500+ sessions waiting - identify root blocker
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+271. Multi-database outage - 50 databases across 10 servers affected simultaneously
+272. Data corruption across multiple replicas - determine root cause and recovery
+273. Silent data corruption discovered - transaction committed but data incorrect
+274. Major version upgrade failure - rollback plan execution required
+275. Ransomware attack detected - implement incident response and recovery plan
+276. Complete system failure - bare metal restore from backup required
+277. Transaction ID wraparound emergency - database shutdown imminent
+278. Cluster quorum lost - entire HA infrastructure down - restore services
+279. Hardware failure - disk array failed - recover databases from backup
+280. Performance degradation affecting all databases - systematic root cause analysis
+281. Emergency patch deployment required - zero-day vulnerability mitigation
+282. Data center migration failure - rollback or continue decision needed
+283. Mass casualty incident - entire database infrastructure compromised
+284. Design and implement hot fix deployment without downtime
+285. Post-mortem analysis and prevention strategy for critical outage
+
+================================================================================
+SECTION 9: AUTOMATION & SCRIPTING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+286. Schedule new backup job to run nightly at 2 AM
+287. Create SQL Agent job to execute stored procedure hourly
+288. Modify existing job schedule to run on weekends only
+289. Set up email notifications for failed backup jobs
+290. Create simple PowerShell script to check service status
+291. Write bash script to check disk space and send alert if > 80%
+292. Automate daily log backup job execution
+293. Create cron job to run VACUUM ANALYZE on specific tables
+294. Set up alert for blocked processes exceeding 5 minutes
+295. Automate weekly index rebuild job
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+296. Create automated health check script running every 5 minutes
+297. Implement backup validation automation - weekly restore test
+298. Develop PowerShell module for fleet-wide database administration
+299. Create dynamic index maintenance script based on fragmentation levels
+300. Implement automated orphaned user remediation after database restores
+301. Design log shipping automation with alerting and failover detection
+302. Create custom monitoring solution using pg_stat_activity and wait events
+303. Develop automated capacity reporting across all database instances
+304. Implement self-healing script for common issues (log full, blocking, etc.)
+305. Create automated performance baseline collection and comparison
+306. Develop automated statistics update job based on modification counters
+307. Implement automated pg_wal cleanup when archive_command fails
+308. Create dynamic backup retention policy based on database criticality
+309. Develop automated replication lag monitoring with escalation
+310. Implement automated license compliance reporting
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+311. Design enterprise automation framework using Ansible/Terraform
+312. Implement GitOps workflow for database configuration management
+313. Create intelligent workload-aware maintenance scheduler
+314. Design self-tuning index recommendation engine with automated deployment
+315. Implement automated disaster recovery testing framework
+316. Create predictive alerting system using machine learning on metrics
+317. Design automated database provisioning pipeline (infrastructure as code)
+318. Implement automated compliance scanning and remediation framework
+319. Create intelligent backup orchestration across multi-tier storage
+320. Design automated performance regression detection after deployments
+
+================================================================================
+SECTION 10: UPGRADES, MIGRATIONS & PATCHING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+321. Apply latest cumulative update to SQL Server test instance
+322. Install PostgreSQL minor version patch (14.10 to 14.11)
+323. Verify application compatibility after database patch deployment
+324. Document current version and patch level of all instances
+325. Test database backup/restore after upgrade on non-production environment
+326. Apply Windows security patches to database servers during maintenance window
+327. Verify service startup after patch installation
+328. Update ODBC drivers on application servers after database upgrade
+329. Test connection to database after service pack installation
+330. Roll back failed patch deployment using documented procedure
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+331. Plan and execute SQL Server 2016 to 2019 in-place upgrade
+332. Migrate database from PostgreSQL 12 to PostgreSQL 15 using pg_upgrade
+333. Perform major version upgrade with zero downtime using logical replication
+334. Identify deprecated features before major version upgrade
+335. Test application with higher database compatibility level
+336. Migrate on-premises database to Azure SQL Managed Instance
+337. Execute database migration from Oracle to PostgreSQL
+338. Perform cross-platform migration (Windows to Linux for SQL Server)
+339. Implement blue-green deployment for database schema changes
+340. Handle extension compatibility issues during PostgreSQL upgrade
+341. Design upgrade runbook with rollback procedures
+342. Coordinate multi-database upgrade across interdependent applications
+343. Validate Query Store data retention after upgrade
+344. Migrate large database (2TB+) with minimal downtime window
+345. Handle login migration and permission synchronization after upgrade
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+346. Design enterprise-wide upgrade strategy for 500+ database instances
+347. Architect zero-downtime upgrade using AG rolling upgrade technique
+348. Design migration strategy from monolith to microservices database architecture
+349. Plan and execute cross-cloud migration (AWS to Azure)
+350. Design automated upgrade validation framework with rollback triggers
+351. Architect hybrid cloud migration strategy with on-premises co-existence
+352. Design data platform modernization - legacy to cloud-native architecture
+353. Implement automated canary deployment for database changes
+354. Design version upgrade strategy for 24/7 global application
+355. Architect database consolidation project - merge 50 databases into 5
+
+================================================================================
+SECTION 11: CLOUD & MANAGED SERVICES
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+356. Create RDS PostgreSQL instance using AWS console
+357. Configure automated backups for RDS instance (7-day retention)
+358. Restore RDS snapshot to new instance for testing
+359. Modify RDS instance storage size to accommodate growth
+360. Set up CloudWatch alarms for RDS CPU and storage metrics
+361. Enable Performance Insights on RDS instance
+362. Create read replica for RDS database in different region
+363. Modify Azure SQL Database service tier (scale up/down)
+364. Configure long-term retention for Azure SQL Database backups
+365. Set up point-in-time restore for managed database instance
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+366. Design RDS Multi-AZ deployment for high availability
+367. Optimize RDS instance type and storage based on workload analysis
+368. Configure VPC peering for cross-region RDS access
+369. Implement RDS parameter group tuning for performance optimization
+370. Design backup strategy using RDS snapshots and S3 exports
+371. Configure Azure SQL Database elastic pool for multi-tenant application
+372. Implement geo-replication for Azure SQL Database
+373. Optimize Aurora PostgreSQL configuration for OLTP workload
+374. Design cost optimization strategy for RDS reserved instances
+375. Implement database migration to RDS with minimal downtime using DMS
+376. Configure private endpoint for Azure SQL Managed Instance
+377. Design monitoring strategy using CloudWatch and custom metrics
+378. Implement automated scaling for Aurora Serverless
+379. Optimize storage costs using S3 lifecycle policies for backups
+380. Design disaster recovery strategy using cross-region replication
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+381. Architect multi-region active-active deployment using Aurora Global Database
+382. Design cloud-native database architecture with auto-scaling and resilience
+383. Implement enterprise-wide cloud database governance framework
+384. Architect hybrid cloud solution with on-premises and cloud databases
+385. Design FinOps strategy for database cloud spend optimization
+386. Implement cloud database security architecture (encryption, network, IAM)
+387. Design migration strategy from self-managed to fully managed services
+388. Architect serverless database solution for variable workload patterns
+389. Implement multi-cloud database strategy for vendor independence
+390. Design compliance framework for regulated industries in cloud (HIPAA/PCI)
+
+================================================================================
+SECTION 12: ADVANCED TROUBLESHOOTING SCENARIOS
+================================================================================
+
+--- L3 TASKS ONLY (7-10 Years Experience) ---
+
+391. Intermittent performance issues - fast 80% of time, slow 20% - no pattern identified
+392. Memory leak in application causing progressive database server memory exhaustion
+393. Network saturation causing replication lag and timeout errors
+394. Lock escalation causing application timeouts despite no obvious blocking
+395. Plan cache pollution from ad-hoc queries - 20GB+ of single-use plans
+396. Ghost cleanup blocked by long-running transaction in different database
+397. Non-yielding scheduler causing scheduler dumps and performance degradation
+398. Subtle data corruption - checksum passes but logical data inconsistency found
+399. Resource governor misconfiguration causing workload group starvation
+400. NUMA node imbalance causing inefficient memory access patterns
+401. TempDB PFS contention despite correct file count configuration
+402. Log writer bottleneck - synchronous log writes slower than workload generation
+403. Latch contention on system tables in TempDB or master database
+404. Backup compression causing CPU saturation and query timeouts
+405. Trace flag interaction causing unexpected query optimizer behavior
+406. Distributed transaction coordinator (MSDTC) issues causing transaction failures
+407. Kerberos authentication failures causing connection storms and timeouts
+408. Schema lock accumulation preventing DDL operations
+409. Version store explosion in TempDB from long-running snapshot transaction
+410. Parallel redo on AG secondary causing replica lag despite fast hardware
+
+================================================================================
+SECTION 13: COMPLIANCE & AUDITING
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+411. Generate report of all users with sysadmin privileges
+412. Document database access for SOC 2 audit
+413. Collect evidence of daily backup execution for compliance team
+414. Verify encryption at rest is enabled on all production databases
+415. Generate audit log report for specific user activity over past 30 days
+416. Document password policy configuration for security audit
+417. Create inventory report of all database instances and versions
+418. Verify SQL Server Audit is enabled and collecting specified events
+419. Check for databases without TDE enabled in production
+420. Generate report of failed login attempts for security review
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+421. Implement SQL Server Audit for PCI-DSS compliance requirements
+422. Configure pgaudit extension for comprehensive PostgreSQL auditing
+423. Design data retention policy enforcement mechanism
+424. Implement data discovery and classification for GDPR compliance
+425. Create audit trail for all DDL changes across database estate
+426. Design and implement privileged user monitoring solution
+427. Conduct access review - identify and remediate excessive permissions
+428. Implement automated compliance reporting framework
+429. Design data anonymization strategy for non-production environments
+430. Create regulatory compliance dashboard for management reporting
+431. Implement audit log retention and archival strategy
+432. Design separation of duties framework for DBA activities
+433. Create evidence collection automation for quarterly audits
+434. Implement change management workflow with approval tracking
+435. Design encryption key rotation procedure for compliance
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+436. Design enterprise compliance framework spanning multiple regulations
+437. Implement comprehensive data governance program
+438. Design and implement database activity monitoring (DAM) solution
+439. Create compliance as code framework - automated policy enforcement
+440. Design cross-border data residency solution for GDPR
+441. Implement comprehensive audit trail with tamper-proof log storage
+442. Design privileged access management (PAM) for database administrators
+443. Create forensic analysis capability for security incident investigation
+444. Implement real-time compliance monitoring with automated remediation
+445. Design data sovereignty architecture for multinational corporation
+
+================================================================================
+SECTION 14: DATABASE DESIGN & ARCHITECTURE REVIEW
+================================================================================
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+446. Review database schema design for new application module
+447. Identify normalization issues causing performance problems
+448. Recommend index strategy for new high-volume transactional table
+449. Review proposed partitioning scheme for time-series data
+450. Evaluate data type choices - identify potential issues
+451. Review foreign key relationships and constraint implementation
+452. Assess proposed schema changes for backward compatibility
+453. Review ER diagram and recommend improvements
+454. Evaluate proposed database for scalability concerns
+455. Review migration script for data integrity risks
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+456. Design database architecture for multi-tenant SaaS application
+457. Review and optimize database design for 100TB+ data warehouse
+458. Design schema evolution strategy for zero-downtime deployments
+459. Architect time-series database solution for IoT telemetry data
+460. Design polyglot persistence strategy - right database for right workload
+461. Review microservices data architecture - prevent distributed data problems
+462. Design event sourcing and CQRS database architecture
+463. Architect globally distributed database with conflict resolution
+464. Design database schema for temporal data with bi-temporal tracking
+465. Review database design for compliance with data modeling best practices
+
+================================================================================
+SECTION 15: COLLABORATION & STAKEHOLDER MANAGEMENT
+================================================================================
+
+--- L1 TASKS (1-2 Years Experience) ---
+
+466. Provide database connection details to development team
+467. Document database maintenance window schedule for business stakeholders
+468. Report backup success/failure status to management
+469. Coordinate with network team for firewall rule changes
+470. Provide database size reports to capacity planning team
+
+--- L2 TASKS (2-5 Years Experience) ---
+
+471. Present performance analysis findings to development team
+472. Translate technical issues into business impact for management
+473. Coordinate multi-team incident response during production outage
+474. Negotiate maintenance window timing with business stakeholders
+475. Review developer-proposed index changes and provide feedback
+476. Provide capacity forecasts to infrastructure planning team
+477. Coordinate with security team on vulnerability remediation
+478. Present DR test results and recommendations to management
+479. Collaborate with developers on query optimization strategies
+480. Coordinate with vendors on support escalations
+
+--- L3 TASKS (5-10 Years Experience) ---
+
+481. Present database strategy roadmap to C-level executives
+482. Lead cross-functional incident post-mortem and prevention planning
+483. Provide technical leadership for enterprise architecture initiatives
+484. Negotiate SLAs and define database service level objectives
+485. Lead vendor selection process for database monitoring tools
+486. Present risk assessment and mitigation strategy to board
+487. Mentor junior DBAs and develop team capability
+488. Define database standards and governance for organization
+489. Lead proof-of-concept for new database technology adoption
+490. Participate in enterprise disaster recovery planning committee
+
+================================================================================
+SECTION 16: REAL-WORLD COMPLEX SCENARIOS (MULTI-FACETED)
+================================================================================
+
+--- L3 TASKS ONLY (7-10 Years Experience) ---
+
+491. Database server experiencing intermittent 10-second freeze every 15 minutes - 
+     affects all databases - no errors in logs - hardware checks pass
+
+492. After Windows update, SQL Server starts but all databases stuck in 
+     "Recovery Pending" - cannot detach or bring online
+
+493. Production application reports data inconsistency - same query returns 
+     different results on refresh - no errors - replication lag normal
+
+494. Complete network partition between data centers during transaction - 
+     split-brain detected - data written to both sides - reconciliation needed
+
+495. Customer reports missing orders from 2 weeks ago - backups show orders existed - 
+     current database does not - no DELETE in logs - how did data disappear?
+
+496. Database restore successful but application fails with "object not found" errors - 
+     some tables visible, others not - SSMS shows all objects present
+
+497. Performance fine all week, suddenly degraded Friday afternoon - no code changes - 
+     no data growth - execution plans identical - root cause unknown
+
+498. Replication working for 2 years, suddenly subscriber database has 100,000 more 
+     rows than publisher - latency normal - validation shows out of sync
+
+499. Database size reported as 500GB but sum of all table sizes is 200GB - 
+     250GB unaccounted for - no LOB data - where is space used?
+
+500. Application INSERT operations taking 30 seconds each after SQL Server upgrade - 
+     SELECT queries fast - no blocking - no index changes - why?
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+
+Total Tasks: 500
+Organized by: Support Level (L1/L2/L3) and Experience (1-10 years)
+Categories: 16 major categories covering all DBA responsibilities
+Format: Problem statements without solutions - real production scenarios
+
+Note: These tasks represent actual production scenarios DBAs encounter.
+Complexity and required experience increase progressively through the list.
+
+================================================================================

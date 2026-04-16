@@ -1,0 +1,216 @@
+Phase 1: Perimeter & Network Hardening
+Task 1.1: Implement a Multi-Tier pg_hba.conf Policy
+Scenario: Your lab has three subnets: Corporate VPN (10.0.1.0/24), Management Jumpbox (10.0.2.10/32), and Developer Wi-Fi (192.168.100.0/24).
+
+Actions:
+
+Modify pg_hba.conf to enforce the following logic:
+Management Jumpbox: Allow connections to the postgres database only for the dba role using peer authentication (local socket) or cert authentication if remote.
+Corporate VPN: Allow connections to the app_db database for the app_user role using scram-sha-256 only over SSL.
+Developer Wi-Fi: Reject all connections unconditionally.
+Ensure no trust or md5 entries remain in the file.
+Verification Requirements:
+
+Simulate connections from each source IP using psql with appropriate PGHOST environment variables or connection strings.
+
+Capture the exact FATAL error message for the Developer Wi-Fi attempt.
+
+Run a query to show the auth_method used by the successful Corporate VPN connection.
+
+Task 1.2: Enforce Strict SSL/TLS with Certificate Validation
+Scenario: You must prevent Man-in-the-Middle (MitM) attacks between the application server and the database.
+
+Actions:
+
+Generate a Root CA certificate and sign a server certificate where the Common Name (CN) matches the exact hostname of your database server (e.g., db-prod-1.internal).
+Configure the PostgreSQL server to use these certificates and set the necessary parameters in postgresql.conf.
+Configure all hostssl entries in pg_hba.conf to require clientcert=verify-full.
+On a separate client machine (or container), install the Root CA certificate.
+Verification Requirements:
+
+Attempt to connect using psql with sslmode=require but without the Root CA file. Document why this fails.
+
+Connect successfully using sslmode=verify-full and the correct Root CA file.
+
+Run a meta-command or query to verify the SSL cipher and bit strength being used for the active session.
+
+Task 1.3: Advanced Network Isolation (Port & Listen Address)
+Scenario: You want the database to be invisible to network scanners on the default port and bind only to a specific private interface.
+
+Actions:
+
+Change the TCP port from 5432 to a non-standard high port number (e.g., 15432).
+Configure the server to listen only on the private network interface IP address, not localhost and not *.
+Restart the PostgreSQL service.
+Verification Requirements:
+
+Use netstat or ss on the server to confirm the process is bound correctly to the new port and IP.
+
+Test local socket connection: psql -d postgres. (Should still work).
+
+Test TCP connection to localhost on the new port. (Should fail).
+
+Phase 2: Data-at-Rest and Object Security
+Task 2.1: Implement Column-Level Encryption for PII with Key Rotation Simulation
+Scenario: You store national_id numbers in a table. The compliance team requires that these are encrypted on disk and that you can demonstrate a key rotation procedure.
+
+Actions:
+
+Enable the necessary extension to support cryptographic functions.
+Create a table user_pii with columns for username and national_id (data type must store binary data).
+Insert two records: one encrypted with KEY_A, and another with KEY_B.
+Simulate key rotation: Write a script that decrypts the KEY_A record and re-encrypts it with KEY_C without exposing the plaintext in the PostgreSQL logs.
+Verification Requirements:
+
+Query the table as a superuser and verify the national_id column is unreadable.
+
+Query the table using the decryption function and the correct session key; verify plaintext.
+
+Audit Log Check: Examine the PostgreSQL logs. There should be zero instances of the plaintext national ID number.
+
+Task 2.2: Implement Row-Level Security (RLS) for a Multi-Department Dashboard
+Scenario: You have a projects table. Users in the engineering role should see all projects. Users in the sales role should only see projects where status = 'closed' or budget < 50000. All other authenticated users should see nothing.
+
+Actions:
+
+Create the necessary roles (engineering, sales, intern).
+Enable RLS on the projects table.
+Create two separate policies to satisfy the complex logic for the sales role. Ensure there is a strict USING clause.
+Do not grant any privileges to the table owner; rely solely on policy evaluation.
+Verification Requirements:
+
+Connect as sales user and run SELECT * FROM projects. Verify the row count matches the policy condition.
+
+Connect as intern user and run SELECT count(*) FROM projects. Verify the result is 0 even though the user has CONNECT privilege on the database.
+
+Task 2.3: Secure the Default public Schema
+Scenario: Prevent users from creating objects in the public schema and prevent unprivileged users from listing objects they shouldn't see.
+
+Actions:
+
+Revoke the default CREATE privilege on the public schema from the PUBLIC role.
+Revoke the default USAGE privilege on the public schema from PUBLIC.
+Create a new schema secure_app and grant USAGE and CREATE on secure_app only to the app_role.
+Adjust the database search_path for the app_role to prefer secure_app over public.
+Verification Requirements:
+
+Connect as a new user with LOGIN only. Run \dt. Verify the output is "No relations found."
+
+Attempt to create a table in public as this new user. Verify it fails.
+
+Connect as app_role and create a table without schema qualification. Verify it is created in secure_app.
+
+Phase 3: Role-Based Access Control (RBAC) & Least Privilege
+Task 3.1: Group Role Hierarchy and Default Privileges
+Scenario: You need a readonly group and a readwrite group. The readwrite group should inherit all privileges of readonly plus INSERT/UPDATE/DELETE.
+
+Actions:
+
+Create role_read (NOLOGIN) and role_write (NOLOGIN).
+Make role_write a member of role_read with INHERIT true.
+Grant SELECT on all existing tables in secure_app to role_read.
+Configure default privileges so that future tables created by app_role in secure_app automatically grant SELECT to role_read and ALL to role_write.
+Create a login user analyst_jane and grant her role_read.
+Verification Requirements:
+
+As analyst_jane, attempt to SELECT from a new table created after the default privilege setup.
+
+As analyst_jane, attempt to INSERT (expected: fail).
+
+Use system catalog queries to list all roles and their direct/indirect memberships.
+
+Task 3.2: Function Security and SECURITY DEFINER
+Scenario: You want to allow analyst_jane to update the last_accessed timestamp in a table she otherwise cannot write to.
+
+Actions:
+
+Create a table sensitive_data that analyst_jane can only read, not modify.
+Create a function touch_timestamp() that updates the last_accessed column.
+Define the function with the appropriate security attribute to run with the privileges of the function owner (who has write access).
+Ensure the function is not vulnerable to SQL injection (use format strings or EXECUTE carefully).
+Verification Requirements:
+
+Connect as analyst_jane and call the function. Verify the timestamp updates.
+
+Attempt to manually run an UPDATE sensitive_data... as analyst_jane. Verify this fails.
+
+Phase 4: Auditing, Logging, and Forensics
+Task 4.1: Configure Logging for Compliance Monitoring
+Scenario: Auditors require that all connection attempts, disconnections, and Data Definition Language (DDL) changes be logged in CSV format.
+
+Actions:
+
+Enable the logging collector and set the destination to csvlog.
+Set the appropriate parameters to log connections, disconnections, and all DDL statements (CREATE, ALTER, DROP).
+Configure the log filename pattern to include the day of the week (e.g., postgresql-%a.log).
+Verification Requirements:
+
+Connect and disconnect several times.
+
+Create and drop a test table.
+
+Locate the CSV log file and import it into a temporary table using COPY ... FROM ... CSV.
+
+Write a query on this temporary log table to count how many times the postgres superuser logged in today.
+
+Task 4.2: Privilege Escalation Detection Drill
+Scenario: An application user app_user has been granted CREATE on the public schema (a common misconfiguration). You need to detect if this user can escalate privileges to read the pg_authid system catalog.
+
+Actions:
+
+Grant CREATE on public to app_user temporarily.
+Connect as app_user and attempt to create a SECURITY DEFINER function owned by a higher-privileged user (this is a known attack vector).
+Goal: Attempt to read the rolpassword column from pg_authid.
+Verification Requirements:
+
+Document whether the attack succeeded in your specific PostgreSQL version.
+
+Identify the exact system view that app_user is allowed to see instead (pg_roles vs pg_authid).
+
+Hardening Task: Revoke CREATE on public and explain why this mitigates the vector.
+
+Task 4.3: Simulate a Security Vulnerability (CVE Context)
+Scenario: Without actually downgrading, research the details of CVE-2018-1058 (Uncontrolled search path element in pg_dump).
+
+Actions:
+
+Create a schema named public in a different database? No, investigate how search_path injection works.
+Create a function named lower(text) in the public schema.
+Connect as a user with a vulnerable search_path and run a query that implicitly calls lower().
+Verification Requirements:
+
+Prove that your malicious function executes instead of the built-in pg_catalog.lower().
+
+Identify the postgresql.conf parameter or user-level ALTER ROLE setting that would prevent this attack vector entirely.
+
+Phase 5: Production Readiness and Zero-Trust Challenge
+Task 5.1: Comprehensive Permission Audit Script
+Scenario: Your manager wants a weekly report of who can do what.
+
+Actions:
+
+Write a single SQL script (using information_schema and pg_catalog tables) that outputs:
+
+List of all login roles and their group memberships.
+List of all tables where PUBLIC still has any privilege (SELECT, INSERT, etc.).
+List of all functions that are marked SECURITY DEFINER and owned by a superuser.
+Verification Requirements:
+
+Run the script and confirm it executes without errors in under 1 second.
+
+Task 5.2: The "Zero Trust" Failure Test
+Scenario: Create a user zero_trust_test with only LOGIN and CONNECT privileges. No other grants.
+
+Actions:
+
+Connect as this user.
+Attempt to list databases.
+Attempt to list schemas.
+Attempt to access any system catalog that reveals user passwords or table definitions.
+Verification Requirements:
+
+Document exactly what this user can see.
+
+Compare this to a user with pg_read_all_data predefined role.
+
+Propose a pg_hba.conf entry that would reject this user's connection before they even reach the database.

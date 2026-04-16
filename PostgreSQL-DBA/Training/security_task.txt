@@ -1,3 +1,4 @@
+
 Phase 1: Perimeter & Network Hardening
 Task 1.1: Implement a Multi-Tier pg_hba.conf Policy
 Scenario: Your lab has three subnets: Corporate VPN (10.0.1.0/24), Management Jumpbox (10.0.2.10/32), and Developer Wi-Fi (192.168.100.0/24).
@@ -214,3 +215,69 @@ Document exactly what this user can see.
 Compare this to a user with pg_read_all_data predefined role.
 
 Propose a pg_hba.conf entry that would reject this user's connection before they even reach the database.
+
+##########################################################################################################
+LAB ENV SETUP
+#########################################################################################################
+corp_vpn (10.0.1.0/24)
+ ├── app-srv (10.0.1.20)
+ └── pg-db   (10.0.1.10)
+        │
+        │ (second interface)
+        ▼
+mgmt_zone (10.0.2.0/24)
+ └── pg-db (10.0.2.20)
+      jumpbox (10.0.2.10)
+
+dev_wifi (192.168.100.0/24)
+ └── dev-pc (192.168.100.50)
+
+
+
+TYPE  DATABASE  USER  ADDRESS  METHOD
+
+docker stop $(docker ps -aq)
+docker rm $(docker ps -aq)
+docker network prune -f
+docker rmi -f $(docker images -aq)
+docker system prune -a --volumes -f
+
+docker network create --subnet=10.0.1.0/24 corp_vpn
+docker network create --subnet=10.0.2.0/24 mgmt_zone
+docker network create --subnet=192.168.100.0/24 dev_wifi
+
+docker run -d --name app-srv --network corp_vpn --ip 10.0.1.20 debian sleep infinity
+docker run -d --name pg-db --network corp_vpn --ip 10.0.1.10 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=app_db postgres:17
+docker network connect --ip 10.0.2.20 mgmt_zone pg-db
+docker run -d --name jumpbox --network mgmt_zone --ip 10.0.2.10 debian sleep infinity
+docker run -d --name dev-pc --network dev_wifi --ip 192.168.100.50 debian sleep infinity
+
+
+docker exec -it pg-db bash -c "apt-get update && apt-get install -y iproute2 iputils-ping sudo nano vim"
+docker exec -it jumpbox bash -c "apt-get update && apt-get install -y iproute2 iputils-ping sudo nano vim postgresql-client"
+docker exec -it app-srv bash -c "apt-get update && apt-get install -y iproute2 iputils-ping sudo nano vim"
+docker exec -it dev-pc bash -c "apt-get update && apt-get install -y iproute2 iputils-ping sudo nano vim"
+
+# Connect as postgres admin
+sudo -u postgres psql
+
+# Create required databases
+CREATE DATABASE postgres;  -- Usually exists by default
+CREATE DATABASE app_db;
+
+# Create required users/roles
+CREATE ROLE dba WITH LOGIN SUPERUSER;
+CREATE ROLE app_user WITH LOGIN PASSWORD 'toor';
+
+# Grant privileges
+GRANT CONNECT ON DATABASE app_db TO app_user;
+GRANT USAGE ON SCHEMA public TO app_user;
+
+# Exit psql
+\q
+
+
+
+
+
+

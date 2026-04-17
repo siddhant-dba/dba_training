@@ -103,9 +103,9 @@ WHAT THIS VALIDATES:
 
 SAVE THESE PATHS - YOU'LL NEED THEM:
 -------------------------------------
-export PG_DATA=/var/lib/postgresql/data
-export PG_HBA=$PG_DATA/pg_hba.conf
-export PG_CONF=$PG_DATA/postgresql.conf
+$env:PG_DATA = "/var/lib/postgresql/data"
+$env:PG_HBA = "$env:PG_DATA/pg_hba.conf"
+$env:PG_CONF = "$env:PG_DATA/postgresql.conf"
 
 
 Step 0.3: Verify Network Connectivity Between All Zones
@@ -114,6 +114,10 @@ CONCEPT:
   This separates "network unreachable" from "authentication denied". When 
   pg_hba.conf later blocks dev_wifi, you'll know it's policy-based rejection,
   not a routing issue. In production, always test L3/L4 before L7 controls.
+
+docker exec -it app-srv bash -c "apt update && apt install -y netcat-openbsd"
+docker exec -it pg-db bash -c "apt update && apt install -y netcat-openbsd"
+docker exec -it jumpbox bash -c "apt update && apt install -y netcat-openbsd"
 
 COMMANDS:
 ---------
@@ -128,6 +132,7 @@ docker exec -it app-srv nc -zv 10.0.1.10 5432
 # From dev-pc (dev_wifi) to pg-db
 docker exec -it dev-pc ping -c 2 10.0.1.10
 docker exec -it dev-pc nc -zv 10.0.1.10 5432
+
 
 EXPECTED OUTPUT (ALL ZONES):
 ----------------------------

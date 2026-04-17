@@ -1169,143 +1169,320 @@ WHAT THIS VALIDATES:
 
 
 Step 1.2.8: Verification - Test SSL Connections
-================================================================================
-TEST 1: Connection Without SSL (Should FAIL)
----------------------------------------------
-docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=disable"
+TEST M01: DBA Access via Jumpbox with Valid Cert and Correct Password (SUCCESS)
+-------------------------------------------------------------------------------
+# Full mTLS + SCRAM authentication
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslcert=/certs/client.crt sslkey=/certs/client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user dba: [enter DBA_SecurePass_2024!]
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST M02: DBA Access via Jumpbox with Valid Cert but WRONG Password (FAIL)
+---------------------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslcert=/certs/client.crt sslkey=/certs/client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+# Enter wrong password when prompted
 
 EXPECTED OUTPUT (FAILURE):
 --------------------------
+Password for user dba: [enter wrong password]
 psql: error: connection to server at "10.0.2.20", port 5432 failed:
-FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "dba", 
-database "postgres", no encryption
+FATAL:  password authentication failed for user "dba"
 
-WHAT THIS VALIDATES:
---------------------
-✓ hostnossl rules working (non-SSL rejected)
-✓ SSL enforcement active
 
-TEST 2: Connection With SSL But No Client Certificate (Should FAIL)
---------------------------------------------------------------------
-docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=require"
+TEST M03: DBA Access via Jumpbox with NO Client Certificate (FAIL)
+------------------------------------------------------------------
+# Missing client certificate – SSL handshake should fail
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslrootcert=/certs/ca.crt" -c "SELECT 1;"
 
 EXPECTED OUTPUT (FAILURE):
 --------------------------
-Password for user dba: [enter password]
 psql: error: connection to server at "10.0.2.20", port 5432 failed:
 FATAL:  connection requires a valid client certificate
 
-WHAT THIS VALIDATES:
---------------------
-✓ clientcert=verify-full enforced
-✓ Password alone is insufficient
-✓ Client certificate required
 
-TEST 3: Connection With SSL + Client Certificate (Should SUCCEED)
+TEST M04: DBA Access via Jumpbox with Certificate CN != dba (FAIL)
 ------------------------------------------------------------------
-docker exec -it jumpbox psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=verify-full"
-
-EXPECTED OUTPUT (SUCCESS):
---------------------------
-Password for user dba: [enter DBA_SecurePass_2024!]
-
-psql (XX.X)
-SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, bits: 256, compression: off)
-Type "help" for help.
-
-postgres=>
-
-WHAT THIS VALIDATES:
---------------------
-✓ SSL connection established
-✓ TLS 1.3 negotiated (modern protocol)
-✓ Strong cipher (AES-256-GCM)
-✓ Client certificate validated
-✓ Password also required (dual factor)
-
-TEST 4: Verify SSL Session Details
------------------------------------
-# From within the psql session above
-SELECT 
-    ssl,
-    version,
-    cipher,
-    bits,
-    client_dn
-FROM pg_stat_ssl
-WHERE pid = pg_backend_pid();
-
-EXPECTED OUTPUT:
-----------------
- ssl | version |        cipher         | bits |                          client_dn                           
------+---------+-----------------------+------+--------------------------------------------------------------
- t   | TLSv1.3 | TLS_AES_256_GCM_SHA384|  256 | /C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=DBAs/CN=dba
-
-WHAT THIS VALIDATES:
---------------------
-✓ SSL active (ssl=t)
-✓ TLS 1.3 in use
-✓ 256-bit encryption
-✓ Client certificate DN captured (proves cert was presented)
-✓ CN=dba matches connected user
-
-TEST 5: App Server SSL Connection
-----------------------------------
-docker exec -it app-srv psql "host=10.0.1.10 port=5432 user=app_user dbname=app_db sslmode=verify-full"
-
-EXPECTED OUTPUT (SUCCESS):
---------------------------
-Password for user app_user: [enter APP_SecurePass_2024!]
-
-psql (XX.X)
-SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, bits: 256)
-Type "help" for help.
-
-app_db=>
-
-# Verify from app side
-app_db=> SELECT ssl, version, cipher, client_dn FROM pg_stat_ssl WHERE pid = pg_backend_pid();
-
- ssl | version |        cipher         |                          client_dn                           
------+---------+-----------------------+--------------------------------------------------------------
- t   | TLSv1.3 | TLS_AES_256_GCM_SHA384| /C=US/ST=California/L=SanFrancisco/O=LabOrg/OU=Applications/CN=app_user
-
-WHAT THIS VALIDATES:
---------------------
-✓ Application tier SSL working
-✓ app_user client certificate validated
-✓ CN=app_user matches role name
-
-TEST 6: Connection With Wrong Client Certificate (Should FAIL)
----------------------------------------------------------------
-# Try connecting as app_user but using dba certificate
-docker exec -it jumpbox bash -c '
-cp /root/.postgresql/root.crt /tmp/root.crt.backup
-cp /root/.postgresql/dba.crt /root/.postgresql/postgresql.crt.backup
-cat /tmp/certs_app/app_user.crt > /root/.postgresql/postgresql.crt
-cat /tmp/certs_app/app_user.key > /root/.postgresql/postgresql.key
-chmod 600 /root/.postgresql/postgresql.key
-
-psql "host=10.0.2.20 port=5432 user=dba dbname=postgres sslmode=verify-full"
-'
+# Certificate CN is e.g., "wronguser" – verify-full fails
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslcert=/certs/client-wrong-cn.crt sslkey=/certs/client-wrong-cn.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
 
 EXPECTED OUTPUT (FAILURE):
 --------------------------
-Password for user dba: [enter DBA_SecurePass_2024!]
 psql: error: connection to server at "10.0.2.20", port 5432 failed:
 FATAL:  certificate authentication failed for user "dba"
-DETAIL:  Connection matched pg_hba.conf line X: "hostssl postgres dba 10.0.2.10/32 scram-sha-256 clientcert=verify-full"
+DETAIL:  Common Name "wronguser" does not match user name "dba"
 
-WHAT THIS VALIDATES:
---------------------
-✓ CN field validation working
-✓ Cannot use app_user cert to authenticate as dba
-✓ Prevents certificate stealing/reuse across roles
 
-# Restore correct certificate
-docker exec -it jumpbox bash -c '
-mv /root/.postgresql/postgresql.crt.backup /root/.postgresql/postgresql.crt
-'
+TEST M05: DBA Access via Jumpbox with Expired Certificate (FAIL)
+----------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslcert=/certs/client-expired.crt sslkey=/certs/client-expired.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+SSL error: certificate expired
+
+
+TEST M06: DBA Access via Jumpbox WITHOUT SSL (FAIL)
+---------------------------------------------------
+# hostssl rule requires SSL; non-SSL is rejected by earlier hostnossl reject rule
+docker exec -it jumpbox psql -h 10.0.2.20 -U dba -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [any]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "dba", database "postgres", SSL off
+
+
+TEST M07: DBA Access from Another IP in mgmt_zone (10.0.2.20) (FAIL)
+--------------------------------------------------------------------
+# Direct connection from pg-db's own mgmt IP – should be rejected by catch-all reject
+docker exec -it pg-db psql -h 10.0.2.20 -U dba -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.20", user "dba", database "postgres", SSL off
+
+
+TEST M08: DBA Access to Wrong Database (app_db) from Jumpbox (FAIL)
+-------------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=app_db user=dba \
+    sslmode=verify-full sslcert=/certs/client.crt sslkey=/certs/client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [any]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "dba", database "app_db", SSL on
+
+
+TEST M09: Wrong User (app_user) Access to postgres DB from Jumpbox (FAIL)
+-------------------------------------------------------------------------
+docker exec -it jumpbox psql "host=10.0.2.20 port=5432 dbname=postgres user=app_user \
+    sslmode=verify-full sslcert=/certs/client.crt sslkey=/certs/client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user app_user: [any]
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.2.10", user "app_user", database "postgres", SSL on
+
+
+TEST V01: App User Access to app_db with Valid Cert and Correct Password (SUCCESS)
+----------------------------------------------------------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=app_db user=app_user \
+    sslmode=verify-full sslcert=/certs/app_client.crt sslkey=/certs/app_client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user app_user: [enter App_User_Pass_2024!]
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST V02: App User Access from Another VPN IP (10.0.1.25) (SUCCESS)
+-------------------------------------------------------------------
+# Should match the /24 rule
+docker exec -it another-vpn-host psql "host=10.0.1.10 port=5432 dbname=app_db user=app_user \
+    sslmode=verify-full sslcert=/certs/app_client.crt sslkey=/certs/app_client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user app_user: [enter App_User_Pass_2024!]
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST V03: App User Access with NO Client Certificate (FAIL)
+-----------------------------------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=app_db user=app_user \
+    sslmode=verify-full sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  connection requires a valid client certificate
+
+
+TEST V04: App User Access with WRONG Password (FAIL)
+----------------------------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=app_db user=app_user \
+    sslmode=verify-full sslcert=/certs/app_client.crt sslkey=/certs/app_client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+# Enter wrong password
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user app_user: [wrong]
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  password authentication failed for user "app_user"
+
+
+TEST V05: App User Access WITHOUT SSL (FAIL)
+--------------------------------------------
+docker exec -it app-srv psql -h 10.0.1.10 -U app_user -d app_db -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.1.20", user "app_user", database "app_db", SSL off
+
+
+TEST V06: App User Attempts to Access postgres DB (FAIL)
+--------------------------------------------------------
+# Rule explicitly rejects any SSL connection to postgres DB from VPN zone
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=postgres user=app_user \
+    sslmode=verify-full sslcert=/certs/app_client.crt sslkey=/certs/app_client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user app_user: [any]
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  pg_hba.conf rejects connection for host "10.0.1.20", user "app_user", database "postgres", SSL on
+
+
+TEST V07: DBA Attempts to Access postgres DB from VPN (FAIL)
+------------------------------------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=postgres user=dba \
+    sslmode=verify-full sslcert=/certs/client.crt sslkey=/certs/client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user dba: [any]
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  pg_hba.conf rejects connection for host "10.0.1.20", user "dba", database "postgres", SSL on
+
+
+TEST V08: App User Access to Wrong Database (FAIL)
+--------------------------------------------------
+docker exec -it app-srv psql "host=10.0.1.10 port=5432 dbname=other_db user=app_user \
+    sslmode=verify-full sslcert=/certs/app_client.crt sslkey=/certs/app_client.key \
+    sslrootcert=/certs/ca.crt" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user app_user: [any]
+psql: error: connection to server at "10.0.1.10", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "10.0.1.20", user "app_user", database "other_db", SSL on
+
+
+TEST W01: Developer PC Attempts Any Connection with SSL (FAIL)
+--------------------------------------------------------------
+docker exec -it dev-pc psql "host=10.0.2.20 port=5432 dbname=postgres user=dba \
+    sslmode=require" -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  pg_hba.conf rejects connection for host "192.168.100.50", user "dba", database "postgres", SSL on
+
+
+TEST W02: Developer PC Attempts Non-SSL Connection (FAIL)
+---------------------------------------------------------
+docker exec -it dev-pc psql -h 10.0.2.20 -U dba -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  pg_hba.conf rejects connection for host "192.168.100.50", user "dba", database "postgres", SSL off
+
+
+TEST L01: Localhost TCP Connection with SSL (SUCCESS)
+-----------------------------------------------------
+# From the PostgreSQL container itself
+docker exec -it pg-db psql "host=127.0.0.1 port=5432 dbname=postgres user=postgres \
+    sslmode=require" -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+Password for user postgres: [enter postgres password]
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST L02: Localhost TCP Connection WITHOUT SSL (FAIL)
+-----------------------------------------------------
+docker exec -it pg-db psql -h 127.0.0.1 -U postgres -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+Password for user postgres: [any]
+psql: error: connection to server at "127.0.0.1", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "127.0.0.1", user "postgres", database "postgres", SSL off
+
+
+TEST L03: Unix Socket Connection as postgres OS User (SUCCESS)
+--------------------------------------------------------------
+# peer authentication – no password needed
+docker exec -it pg-db sudo -u postgres psql -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST L04: Unix Socket Connection as dba OS User (SUCCESS)
+---------------------------------------------------------
+docker exec -it pg-db sudo -u dba psql -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (SUCCESS):
+--------------------------
+ ?column? 
+----------
+        1
+(1 row)
+
+
+TEST L05: Unix Socket Connection as Unauthorized OS User (FAIL)
+---------------------------------------------------------------
+docker exec -it pg-db sudo -u nobody psql -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed:
+FATAL:  Peer authentication failed for user "nobody"
+
+
+TEST D01: Random External IP Attempts Connection (FAIL)
+-------------------------------------------------------
+# Simulate from a container with IP e.g., 203.0.113.5
+docker exec -it external-host psql -h 10.0.2.20 -U dba -d postgres -c "SELECT 1;"
+
+EXPECTED OUTPUT (FAILURE):
+--------------------------
+psql: error: connection to server at "10.0.2.20", port 5432 failed:
+FATAL:  no pg_hba.conf entry for host "203.0.113.5", user "dba", database "postgres", SSL off
 
 
 TASK 1.2 COMPLETION CHECKLIST:

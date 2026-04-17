@@ -19,6 +19,40 @@ mgmt_zone (10.0.2.0/24)
 dev_wifi (192.168.100.0/24)
   └─ dev-pc (192.168.100.50)
 
+pg-db
+├── /etc/postgresql/ssl/
+│   ├── server.crt → Server certificate
+│   ├── server.key → Server private key
+│   ├── ca.crt → Verify client certificates
+│   └── ca.crl → Certificate revocation list (optional)
+│
+├── /etc/postgresql/
+│   ├── pg_hba.conf → Authentication rules
+│   └── postgresql.conf → Main config (SSL settings)
+│
+└── /var/lib/postgresql/data/
+    └── pg_ident.conf → User mapping
+
+
+jumpbox
+└── ~dba/.postgresql/
+    ├── postgresql.crt → Client certificate
+    ├── postgresql.key → Client private key
+    └── root.crt → Verify server
+
+
+app-srv
+├── /opt/app/.postgresql/
+│   ├── postgresql.crt → Client certificate
+│   ├── postgresql.key → Client private key
+│   └── root.crt → Verify server
+│
+└── /opt/app/config/
+    └── database.yaml → Connection configuration
+
+
+dev-pc
+└── No access (blocked)
 ================================================================================
 CRITICAL SAFETY NOTES
 ================================================================================

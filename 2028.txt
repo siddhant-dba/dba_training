@@ -32,8 +32,8 @@ YEAR 1
 
 Category                                                    Items
 ─────────────────────────────────────────────────────────────────────────────
-Database Platforms (SQL Server + PostgreSQL)                   2
-Operating Systems & Scripting (Linux, Bash, Python, PS, Win)   5
+ # Database Platforms (SQL Server + PostgreSQL)                   2 -- Across Year
+ # Operating Systems & Scripting (Linux, Bash, Python, PS, Win)   5 -- Across Year
 Cloud Platforms (AWS + Azure aware + FinOps + Hybrid)          4
 High Availability & DR (SQL HA, PG HA, Backup)                 3
 Performance Tuning (Query, Wait Stats, Indexing)               3
@@ -43,7 +43,7 @@ Monitoring (Frameworks, Alerting)                              2
 Security & Compliance (Auth, Encryption, Governance)           3
 Incident Response (Emergency, Capacity)                        2
 Emerging Skills (pgvector, K8s)                                2
-Soft Skills (English, German A2, Blog, Soft)                   4
+ # Soft Skills (English, German A2, Blog, Soft)                   4 -- Across Year
 ─────────────────────────────────────────────────────────────────────────────
 TOTAL CHAPTERS - YEAR 1                                        33
 

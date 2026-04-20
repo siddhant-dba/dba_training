@@ -27,6 +27,96 @@ P2 = MEDIUM (Good to have)              → Target: 4-6/10
 P3 = OPTIONAL (Specialization/future)   → Target: 2-4/10
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+YEAR 1
+================================================================================
+
+Category                                                    Items
+─────────────────────────────────────────────────────────────────────────────
+Database Platforms (SQL Server + PostgreSQL)                   2
+Operating Systems & Scripting (Linux, Bash, Python, PS, Win)   5
+Cloud Platforms (AWS + Azure aware + FinOps + Hybrid)          4
+High Availability & DR (SQL HA, PG HA, Backup)                 3
+Performance Tuning (Query, Wait Stats, Indexing)               3
+Change Data Capture (CDC, CI/CD)                               2
+Infrastructure as Code (Terraform/Ansible)                     1
+Monitoring (Frameworks, Alerting)                              2
+Security & Compliance (Auth, Encryption, Governance)           3
+Incident Response (Emergency, Capacity)                        2
+Emerging Skills (pgvector, K8s)                                2
+Soft Skills (English, German A2, Blog, Soft)                   4
+─────────────────────────────────────────────────────────────────────────────
+TOTAL CHAPTERS - YEAR 1                                        33
+
+Deliverables - Year 1:
+  Certifications:         1 (AWS Database Specialty)
+  Portfolio Projects:     2 (pgvector demo + Performance Toolkit)
+  Blog Posts:             3-5
+  GitHub Scripts:         10+
+  Fire Drills:            12 (monthly)
+  German Level:           A2
+
+
+================================================================================
+YEAR 2
+================================================================================
+
+Category                                                    Items
+─────────────────────────────────────────────────────────────────────────────
+Database Platforms (Maintain SQL + PG)                         0
+Operating Systems & Scripting (Go - new)                       1
+Cloud Platforms (Azure deep + Multi-cloud)                     2
+High Availability & DR (Advanced patterns)                     1
+Performance Tuning (Advanced optimization)                     0
+Change Data Capture (Debezium deep + Kafka aware)              1
+Infrastructure as Code (Advanced Terraform/Ansible)            0
+Monitoring (Custom dashboards + SLOs)                          1
+Security & Compliance (Data Governance as Code)                1
+Incident Response (Runbooks + DR testing)                      1
+Emerging Skills (K8s deeper + DBRE start)                      2
+Soft Skills (German B1, more blogs, networking)                3
+─────────────────────────────────────────────────────────────────────────────
+TOTAL CHAPTERS - YEAR 2                                        13
+
+Deliverables - Year 2:
+  Certifications:         2 (Azure DB Admin + German B1)
+  Portfolio Projects:     1 (Hybrid Cloud Showcase - 50+ stars)
+  Blog Posts:             3-5 (total 6-10 by year end)
+  GitHub Scripts:         10+ (Python + Terraform + Ansible)
+  Fire Drills:            12 (monthly)
+  German Level:           B1
+
+
+================================================================================
+YEAR 3
+================================================================================
+
+Category                                                    Items
+─────────────────────────────────────────────────────────────────────────────
+Database Platforms (Maintain both)                             0
+Operating Systems & Scripting (Maintain)                       0
+Cloud Platforms (Multi-cloud patterns)                         1
+High Availability & DR (Multi-region, Active-Active)           1
+Performance Tuning (Advanced query tuning)                     0
+Change Data Capture (Production CDC)                           0
+Infrastructure as Code (Advanced modules)                      0
+Monitoring (Error budgets, SLO tracking)                       1
+Security & Compliance (Automated compliance)                   0
+Incident Response (Chaos engineering)                          1
+Emerging Skills (AI data platform + Data engineering aware)    2
+Soft Skills (German B2, speaking, mentoring)                   3
+─────────────────────────────────────────────────────────────────────────────
+TOTAL CHAPTERS - YEAR 3                                        9
+
+Deliverables - Year 3:
+  Certifications:         1 (AWS SA Associate OR Terraform)
+  Portfolio Projects:     1 (DBRE Automation Suite)
+  Blog Posts:             2-4 (total 8-12 by year end)
+  GitHub Stars Target:    50+ on showcase project
+  Fire Drills:            12 (monthly)
+  German Level:           B2
+
+
+
 CATEGORY 1: FOUNDATIONAL DATABASE PLATFORMS (P0)
 ================================================================================
 [ ] 1.1 SQL Server Core Administration (Target: 8/10)

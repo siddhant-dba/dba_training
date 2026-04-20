@@ -1,0 +1,941 @@
+================================================================================
+  DATABASE ADMINISTRATION — YEAR 2
+  Topic: Database Creation & Role Management
+  PostgreSQL & Microsoft SQL Server
+  Instructor: 20 Years Industry + Teaching Experience
+================================================================================
+
+
+Alright, everyone settle down. Close your laptops for the first ten minutes —
+I need you to actually listen before you start typing commands. Trust me, every
+batch of students I've had who skipped this part ended up breaking something
+in the labs. Every single batch.
+
+So. Today we are covering two things that are absolutely fundamental to your
+career as a DBA: creating databases properly, and managing who gets to do what
+inside them. Sounds simple. It is not simple. I have been doing this for twenty
+years and I still see experienced people get this wrong in production. So pay
+attention.
+
+We are going to cover both PostgreSQL and Microsoft SQL Server side by side.
+Why both? Because the job market does not care which one you prefer. You will
+walk into a company and they will have both. I've had clients running SQL Server
+for their ERP and PostgreSQL for their data platform — on the same floor. You
+need to be comfortable in both environments. That's non-negotiable.
+
+Okay. Let's start.
+
+
+================================================================================
+PART ONE — UNDERSTANDING WHAT YOU ARE ACTUALLY CREATING
+================================================================================
+
+Before you type a single CREATE statement, I want you to understand the
+architecture. Because if you don't understand the structure, you're just
+copying commands off the internet and hoping for the best. That is not a DBA.
+That is a liability.
+
+Let me explain PostgreSQL first.
+
+When PostgreSQL is running on a server, that running process is called an
+INSTANCE. Inside that instance, you have what's called a CLUSTER — and I know
+that word sounds like it means multiple servers, but in PostgreSQL, a cluster
+is just the collection of all databases that share the same data directory.
+Inside the cluster, you have individual DATABASES. Inside each database, you
+have SCHEMAS — think of schemas as folders that organize your objects. And
+inside schemas, you have your actual objects: tables, views, functions,
+sequences, and so on.
+
+So the hierarchy is:
+
+    Instance → Cluster → Database → Schema → Objects
+
+Got it? Good. Now SQL Server.
+
+In SQL Server, you also have an INSTANCE — the running SQL Server service.
+Now here's something important: unlike PostgreSQL, you can run MULTIPLE named
+instances on the same physical server. Instance 1 could be your production
+environment, Instance 2 could be your dev environment. They are completely
+separate. I've walked into shops where someone forgot this and connected to the
+wrong instance and ran a DELETE statement. Career-defining moment. Not in a
+good way.
+
+Inside a SQL Server instance, you have DATABASES. Each database is physically
+stored as files on disk — a primary data file ending in .mdf, optionally
+secondary data files ending in .ndf, and a transaction log file ending in .ldf.
+Inside each database, you again have SCHEMAS. The default schema in SQL Server
+is called "dbo" — database owner. You'll see dbo.Customers, dbo.Orders, and so
+on.
+
+So SQL Server hierarchy is:
+
+    Instance → Database → Schema → Objects
+
+The key difference you need to remember: in PostgreSQL, a database is more like
+a hard boundary. You cannot easily query across databases in PostgreSQL. In SQL
+Server, you can. You can write a query that joins tables from two different
+databases on the same instance. That flexibility has implications for how you
+design your security model, and we'll touch on that later.
+
+Any questions so far? No? Good. Let's get our hands on PostgreSQL first.
+
+
+================================================================================
+PART TWO — CREATING A DATABASE IN POSTGRESQL
+================================================================================
+
+Open your terminals. Connect to your PostgreSQL instance as the postgres
+superuser. Type this:
+
+    psql -U postgres
+
+Now. The absolute minimum command to create a database is this:
+
+    CREATE DATABASE mydb;
+
+Go ahead and run it. You'll see "CREATE DATABASE" returned. Congratulations,
+you made a database. Now, would I let you do that in production? Absolutely not.
+That command accepts all the defaults, and the defaults are not always what you
+want. Let me show you what a proper database creation looks like and explain
+every piece of it.
+
+Here is the full command I want you to type out. Don't just copy it — type it.
+Your fingers need to learn this:
+
+    CREATE DATABASE ecommerce_db
+        WITH
+            OWNER           = ecom_owner
+            TEMPLATE        = template0
+            ENCODING        = 'UTF8'
+            LC_COLLATE      = 'en_US.UTF-8'
+            LC_CTYPE        = 'en_US.UTF-8'
+            TABLESPACE      = pg_default
+            CONNECTION LIMIT = 200;
+
+Now let me walk you through each line.
+
+OWNER — this is the role that owns the database. By default, it's whoever runs
+the CREATE DATABASE command. In production, you never make a superuser the
+owner of an application database. You create a dedicated role for the
+application. Why? Least privilege. If the application's credentials are
+compromised, the attacker gets application-level access, not superuser access.
+This is basic security hygiene. You'd be surprised how many companies skip it.
+
+TEMPLATE — this one is important and people always get it wrong. When PostgreSQL
+creates a new database, it copies an existing template database. There are two
+built-in templates: template1 and template0. Template1 is the default. Here's
+the catch — anything you add to template1 gets copied into every new database
+you create. Some people add extensions to template1 thinking it's convenient,
+then wonder why all their databases have unexpected objects in them. Template0
+is a clean, pristine copy. And here's the rule: if you are specifying a custom
+ENCODING or LC_COLLATE, you MUST use template0. If you try to use template1
+with a different encoding than what template1 has, PostgreSQL will throw an
+error. I've seen this catch people off guard during setup. Always template0
+when you're customizing.
+
+ENCODING — almost always UTF8. Unicode. Supports every language and character
+set you'll encounter. The danger is when your application layer and database
+layer have mismatched encodings. I once spent two days debugging corrupted data
+in a client's database. Customer names were showing garbage characters. Turned
+out the application was sending Latin-1 encoded strings to a UTF8 database.
+Encoding mismatches are subtle, painful, and avoidable. Set it explicitly.
+Always.
+
+LC_COLLATE and LC_CTYPE — collation determines how strings are sorted and
+compared. LC_CTYPE determines character classification. If you're building an
+application that needs to sort names or run locale-sensitive searches, this
+matters enormously. 'C' collation is the fastest — it does pure byte comparison,
+no locale rules — but it won't sort "é" correctly alongside "e" for a French
+user. For most business applications, use 'en_US.UTF-8' or the locale relevant
+to your users.
+
+TABLESPACE — this tells PostgreSQL where on disk to store the database files.
+The default tablespace pg_default maps to the PostgreSQL data directory. In
+production, you'll create custom tablespaces pointing to specific mount points.
+For example, you might have a fast NVMe drive mounted at /mnt/fast_storage and
+you want your most active database there. You'd create a tablespace pointing to
+that mount and assign your database to it.
+
+CONNECTION LIMIT — maximum concurrent connections to this database. -1 means
+unlimited. In production, you set this. You do not leave it unlimited. Why?
+Because PostgreSQL has a maximum connection limit at the instance level
+(max_connections parameter, defaults to 100). If one runaway application opens
+500 connections, it starves everything else. Setting per-database limits is one
+of your tools for protecting shared resources. I typically work backwards from
+the max_connections setting and allocate accordingly.
+
+Now, before you create that database, the user ecom_owner needs to exist. So
+let's flip to role management for a moment, then come back. Actually — hold
+that thought, we'll do roles properly in their own section. For now, just know
+that the OWNER must exist before you run CREATE DATABASE.
+
+Let me show you something useful. After you create a database, run this query
+to see what you've got:
+
+    SELECT datname,
+           pg_encoding_to_char(encoding) AS encoding,
+           datcollate,
+           datctype,
+           datconnlimit
+    FROM pg_database
+    ORDER BY datname;
+
+You'll see all databases in your cluster along with their settings. This is your
+sanity check. Run it after every database creation.
+
+Now let's talk about what happens AFTER you create the database. You need to
+connect to it and set up your schemas. Connect like this:
+
+    \c ecommerce_db
+
+Now create your schemas:
+
+    CREATE SCHEMA catalog;
+    CREATE SCHEMA orders;
+    CREATE SCHEMA customers;
+    CREATE SCHEMA audit;
+
+Why schemas? Because putting everything in the public schema is what beginners
+do. In a real application, schemas give you logical separation, easier
+permission management, and cleaner organization. You can grant a user access to
+the orders schema without giving them access to the audit schema. That's
+powerful.
+
+One more thing before we move to SQL Server. The public schema in PostgreSQL has
+a default that bites people: by default, every user can CREATE objects in the
+public schema. This was changed in PostgreSQL 15 — thank goodness — but if
+you're on an older version, run this immediately after creating any database:
+
+    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+
+That command removes the default create privilege from all users on the public
+schema. The word PUBLIC in all caps means "all users" in PostgreSQL. Don't
+confuse it with the schema name "public" in lowercase. Yes, it's confusing. Yes,
+it trips up even experienced DBAs.
+
+
+================================================================================
+PART THREE — CREATING A DATABASE IN SQL SERVER
+================================================================================
+
+Alright, switch over to SQL Server Management Studio or Azure Data Studio —
+whichever your lab machine has. Connect to your local SQL Server instance.
+
+In SQL Server, the CREATE DATABASE syntax is more verbose because you're
+explicitly describing the physical files. Here's a basic version:
+
+    CREATE DATABASE MyDatabase;
+
+And here's what you'll actually write in a real environment:
+
+    CREATE DATABASE EcommerceDB
+    ON PRIMARY
+    (
+        NAME     = 'EcommerceDB_Data',
+        FILENAME = 'D:\SQLData\EcommerceDB_Data.mdf',
+        SIZE     = 512MB,
+        MAXSIZE  = 50GB,
+        FILEGROWTH = 256MB
+    )
+    LOG ON
+    (
+        NAME     = 'EcommerceDB_Log',
+        FILENAME = 'E:\SQLLogs\EcommerceDB_Log.ldf',
+        SIZE     = 256MB,
+        MAXSIZE  = 10GB,
+        FILEGROWTH = 128MB
+    );
+
+Let me explain each part.
+
+The ON PRIMARY section describes your primary data file — the .mdf file. You
+give it a logical NAME which SQL Server uses internally, and a FILENAME which
+is the actual path on disk. Notice I'm putting the data file on the D: drive.
+
+The LOG ON section describes your transaction log file. Notice I'm putting this
+on the E: drive. This is deliberate. Your data files and log files should be
+on SEPARATE physical drives. Why? Because during a checkpoint or heavy write
+operation, the database engine is writing to both simultaneously. If they're on
+the same disk, the disk head is thrashing back and forth between two locations.
+You kill your I/O performance. Separate drives eliminate that contention. In
+cloud environments, this means separate volumes. This is basic DBA architecture.
+I've walked into clients who had their entire SQL Server — data, logs, TempDB,
+backups — all on the same single disk. It was... painful.
+
+SIZE is the initial file size. Do not leave this at the default (8MB in older
+versions). Pre-allocate a reasonable size based on your expected data volume.
+Why? Because when a file needs to grow, SQL Server pauses all writes while it
+zeroes out the new space. These growth events are called auto-growth events and
+they show up as performance spikes. You want them to happen infrequently, during
+off-peak hours, and in large chunks — not every five minutes.
+
+MAXSIZE caps how large the file can grow. Always set this. Without it, SQL
+Server will grow the file until the disk is full. And when the disk is full,
+your database goes offline. I have had that phone call at 2am. It is not fun.
+
+FILEGROWTH is how much the file grows each time it needs to expand. Set this
+in megabytes, not percentages. Percentage-based growth sounds clever but
+causes problems — as the file gets larger, each growth event takes longer and
+longer. Fixed megabyte growth keeps your auto-growth events predictable.
+
+Now, after creating the database, switch to it and create your schemas:
+
+    USE EcommerceDB;
+    GO
+
+    CREATE SCHEMA catalog;
+    GO
+
+    CREATE SCHEMA orders;
+    GO
+
+    CREATE SCHEMA customers;
+    GO
+
+    CREATE SCHEMA audit;
+    GO
+
+In SQL Server, GO is a batch separator — it tells SSMS to send everything above
+it to the server as one batch. You'll see GO everywhere in SQL Server scripts.
+It's not a T-SQL command; it's a client-side instruction.
+
+Now let me show you something important about SQL Server that often confuses
+students: the system databases. When SQL Server installs, it creates four system
+databases automatically.
+
+master — Contains all server-level information: logins, server configuration,
+linked servers. If you lose master without a backup, you're in serious trouble.
+It should be backed up after any structural change.
+
+model — This is SQL Server's equivalent of PostgreSQL's template1. Every new
+database you create is based on a copy of model. Want every database to start
+with a certain setting or object? Put it in model. But be careful — most people
+should leave model alone.
+
+msdb — Used by SQL Server Agent for jobs, alerts, and backup history. Your
+scheduled maintenance jobs live here.
+
+tempdb — Shared temporary workspace. Temporary tables, table variables, sort
+operations, hash joins — they all use tempdb. Tempdb is recreated fresh every
+time SQL Server starts. It's also frequently a performance bottleneck. In
+production, you'll have multiple tempdb data files. But that's a later topic.
+
+Useful query to check your databases and file locations:
+
+    SELECT
+        d.name AS database_name,
+        d.state_desc,
+        mf.name AS logical_name,
+        mf.physical_name,
+        mf.type_desc,
+        CAST(mf.size * 8.0 / 1024 AS DECIMAL(10,2)) AS size_mb
+    FROM sys.databases d
+    JOIN sys.master_files mf ON d.database_id = mf.database_id
+    ORDER BY d.name, mf.type_desc;
+
+Run that. Get familiar with it. That's the kind of query you'll run every week
+in your job.
+
+
+================================================================================
+PART FOUR — ROLE MANAGEMENT IN POSTGRESQL
+================================================================================
+
+Alright. This is the part most students underestimate. Role management. Access
+control. Security. This is where you either have a secure, manageable system or
+you have chaos with superusers everywhere and nobody knows who can do what.
+
+In PostgreSQL, the concept of users and roles is unified. There is no separate
+CREATE USER and CREATE ROLE with different behaviors — well, there is a CREATE
+USER syntax, but it's just an alias for CREATE ROLE with LOGIN privilege. So
+let me say that clearly: in PostgreSQL, EVERYTHING is a role. Users are roles
+that can log in. Groups are roles that other roles belong to. That unified model
+is actually elegant once you understand it.
+
+Let me show you the basic CREATE ROLE syntax and then build up from there.
+
+The most basic form:
+
+    CREATE ROLE analyst;
+
+That creates a role with no special privileges and no login ability. It's just
+a name. Not very useful by itself.
+
+Let's make it a login role — a user:
+
+    CREATE ROLE john_smith
+        WITH
+            LOGIN
+            PASSWORD 'SecureP@ss2024!'
+            VALID UNTIL '2025-12-31'
+            CONNECTION LIMIT 5;
+
+Let me break this down.
+
+LOGIN — this is the crucial privilege that allows the role to connect to the
+database. Without it, the role exists but can't log in. By default, CREATE ROLE
+does NOT grant LOGIN. CREATE USER does. They're otherwise identical.
+
+PASSWORD — the login password. In production, you'd use SCRAM-SHA-256
+authentication, which is configured in pg_hba.conf. The password itself is
+stored as a hash in pg_authid. Never store plain-text passwords. Never.
+
+VALID UNTIL — password expiration date. Useful for contractor accounts or
+temporary access. After this date, the password is rejected. The role still
+exists, it just can't authenticate. I use this all the time for vendor access:
+create an account, set it to expire when the contract ends, and if someone
+forgets to disable it manually, it expires automatically.
+
+CONNECTION LIMIT — maximum simultaneous connections for this specific role.
+Again: protect your resources. A runaway application or a developer running a
+badly written script can exhaust connections. Per-role limits are your safety net.
+
+Now let me show you how I actually set up access in an enterprise environment.
+We use a role hierarchy. Here's the pattern:
+
+    -- Step 1: Create GROUP roles (no login, just permission containers)
+
+    CREATE ROLE readonly_role;
+    CREATE ROLE readwrite_role;
+    CREATE ROLE developer_role;
+    CREATE ROLE dba_role;
+
+    -- Step 2: Grant privileges to group roles
+
+    -- readonly_role: can SELECT from everything in orders schema
+    GRANT CONNECT ON DATABASE ecommerce_db TO readonly_role;
+    GRANT USAGE ON SCHEMA orders TO readonly_role;
+    GRANT SELECT ON ALL TABLES IN SCHEMA orders TO readonly_role;
+
+    -- Make this apply to future tables too
+    ALTER DEFAULT PRIVILEGES IN SCHEMA orders
+        GRANT SELECT ON TABLES TO readonly_role;
+
+    -- readwrite_role: can SELECT, INSERT, UPDATE, DELETE
+    GRANT CONNECT ON DATABASE ecommerce_db TO readwrite_role;
+    GRANT USAGE ON SCHEMA orders TO readwrite_role;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA orders
+        TO readwrite_role;
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA orders TO readwrite_role;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA orders
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO readwrite_role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA orders
+        GRANT USAGE ON SEQUENCES TO readwrite_role;
+
+    -- developer_role: can also CREATE objects
+    GRANT readwrite_role TO developer_role;
+    GRANT CREATE ON SCHEMA orders TO developer_role;
+
+    -- dba_role: full control
+    GRANT ALL PRIVILEGES ON DATABASE ecommerce_db TO dba_role;
+
+    -- Step 3: Create actual login users and assign them to group roles
+
+    CREATE ROLE reporting_user
+        WITH LOGIN PASSWORD 'R3port!ng2024' CONNECTION LIMIT 3;
+
+    CREATE ROLE app_service
+        WITH LOGIN PASSWORD 'AppS3rv1ce!2024' CONNECTION LIMIT 50;
+
+    CREATE ROLE dev_alice
+        WITH LOGIN PASSWORD 'Al!ce#Dev2024' CONNECTION LIMIT 10;
+
+    -- Step 4: Assign group roles to users
+
+    GRANT readonly_role TO reporting_user;
+    GRANT readwrite_role TO app_service;
+    GRANT developer_role TO dev_alice;
+
+Now why do I do it this way? Why not just grant privileges directly to users?
+
+Because people come and go. Alice leaves the company. You create a REVOKE
+statement for every single privilege she had individually? No. You just do:
+
+    REVOKE developer_role FROM dev_alice;
+
+One command. Done. All her permissions are gone. Then you hire Bob and want him
+to have the same access as Alice had:
+
+    GRANT developer_role TO dev_bob;
+
+One command. Done. Your permission model is in the roles, not in individual
+users. This is role-based access control and it is how you manage permissions
+in any system that has more than ten users.
+
+Now let me show you how to check what permissions exist:
+
+    -- See all roles
+    SELECT rolname, rolcanlogin, rolcreatedb, rolcreaterole, rolconnlimit
+    FROM pg_roles
+    ORDER BY rolname;
+
+    -- See role memberships
+    SELECT
+        r.rolname AS role,
+        m.rolname AS member_of
+    FROM pg_roles r
+    JOIN pg_auth_members am ON r.oid = am.member
+    JOIN pg_roles m ON am.roleid = m.oid
+    ORDER BY r.rolname;
+
+    -- See table-level permissions in a schema
+    SELECT grantee, table_schema, table_name, privilege_type
+    FROM information_schema.role_table_grants
+    WHERE table_schema = 'orders'
+    ORDER BY grantee, table_name;
+
+Run these. Print them if you want. These are your audit queries. You'll use
+them constantly.
+
+Now let me talk about REVOKING permissions, because CREATE and GRANT are only
+half the story.
+
+    -- Remove a specific privilege
+    REVOKE INSERT ON orders.order_items FROM readwrite_role;
+
+    -- Remove all privileges on a table
+    REVOKE ALL PRIVILEGES ON orders.orders FROM reporting_user;
+
+    -- Remove role membership
+    REVOKE developer_role FROM dev_alice;
+
+    -- Drop a role entirely (must have no owned objects and no privileges first)
+    -- First, reassign owned objects:
+    REASSIGN OWNED BY dev_alice TO postgres;
+    -- Then drop privileges:
+    DROP OWNED BY dev_alice;
+    -- Then drop the role:
+    DROP ROLE dev_alice;
+
+That sequence — REASSIGN OWNED, DROP OWNED, DROP ROLE — is something you'll use
+every time you offboard a user. Write it down. Memorize it. The DROP ROLE
+command will fail if the role still owns objects or has any remaining privileges.
+PostgreSQL is strict about this, and rightly so.
+
+One more advanced concept: the SUPERUSER privilege. In PostgreSQL, a superuser
+bypasses ALL permission checks. Everything. A superuser can read any table, drop
+any database, modify any configuration. You should have exactly one or two
+superuser accounts: the postgres system account, and maybe one personal named
+account for your DBA team. Application code NEVER runs as a superuser. If an
+application gets compromised and it's running as a superuser, you've handed the
+attacker the keys to everything. I've seen this happen. It is catastrophic.
+
+    -- Create a named DBA account (superuser — use very sparingly)
+    CREATE ROLE dba_michael
+        WITH SUPERUSER LOGIN PASSWORD 'Sup3rS3cure!DBA';
+
+    -- Verify superuser status
+    SELECT rolname, rolsuper FROM pg_roles WHERE rolsuper = true;
+
+
+================================================================================
+PART FIVE — ROLE MANAGEMENT IN SQL SERVER
+================================================================================
+
+Okay, switch back to SQL Server. The concepts are similar but the terminology
+and syntax are different. In SQL Server, you have a two-layer security model
+and this is important to understand.
+
+Layer 1 — SERVER LEVEL: Logins. These are server-wide identities. A login
+exists at the instance level. Without a login, you can't connect to the server
+at all.
+
+Layer 2 — DATABASE LEVEL: Users. These exist inside a specific database. A
+login must be mapped to a database user to access that database. One login can
+be mapped to users in multiple databases, but each mapping is separate.
+
+So the flow is: Login → connects to instance → mapped to → Database User →
+assigned to → Database Role → which has → Permissions.
+
+Let me show you this in practice.
+
+First, server-level logins:
+
+    -- Create a SQL Server Authentication login
+    CREATE LOGIN app_service
+        WITH PASSWORD = 'AppS3rv1ce!2024',
+             DEFAULT_DATABASE = EcommerceDB,
+             CHECK_EXPIRATION = ON,
+             CHECK_POLICY = ON;
+
+    -- Create a login for a Windows account (domain environments)
+    CREATE LOGIN [DOMAIN\john.smith]
+        FROM WINDOWS
+        WITH DEFAULT_DATABASE = EcommerceDB;
+
+Let me explain those options.
+
+PASSWORD — the login password. SQL Server Authentication requires you to manage
+passwords. In enterprise environments, most logins are Windows Authentication
+(Active Directory) because that's centrally managed, supports single sign-on,
+and doesn't require storing passwords in SQL Server. I always recommend Windows
+Auth in domain environments. SQL Auth is for application service accounts and
+situations where AD isn't available.
+
+CHECK_EXPIRATION — enforces the Windows password expiration policy. Keep this ON
+for human accounts.
+
+CHECK_POLICY — enforces the Windows password complexity policy on the SQL Server
+password. Keep this ON always. If it's OFF, someone can set the password to
+"abc" and your security team will not be happy.
+
+DEFAULT_DATABASE — which database the login connects to by default. If the
+database doesn't exist or the login isn't mapped to it, the connection falls
+back to master. This trips people up: they specify a default database, the
+login isn't mapped there yet, and the application gets a confusing error.
+
+Now, creating the database user and mapping it to the login:
+
+    USE EcommerceDB;
+    GO
+
+    -- Create a database user mapped to the login
+    CREATE USER app_service FOR LOGIN app_service;
+
+    -- Create a database user with a different name than the login
+    CREATE USER AppServiceAccount FOR LOGIN app_service;
+
+    -- Create a user without a login (for contained databases or special cases)
+    CREATE USER report_viewer WITH PASSWORD = 'R3port!2024';
+
+Notice that the user name and login name don't have to match. Sometimes they
+do by convention, sometimes companies use different naming standards. Just know
+that the mapping is explicit and intentional.
+
+Now let's set up database roles and permissions, similar to what we did in
+PostgreSQL:
+
+    USE EcommerceDB;
+    GO
+
+    -- Create custom database roles
+    CREATE ROLE db_readonly;
+    CREATE ROLE db_readwrite;
+    CREATE ROLE db_developer;
+
+    -- Grant permissions to the readonly role
+    GRANT SELECT ON SCHEMA::orders TO db_readonly;
+    GRANT SELECT ON SCHEMA::catalog TO db_readonly;
+
+    -- Grant permissions to the readwrite role
+    GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::orders TO db_readwrite;
+    GRANT EXECUTE ON SCHEMA::orders TO db_readwrite;
+
+    -- Developer gets additional DDL rights
+    GRANT ALTER ON SCHEMA::orders TO db_developer;
+    GRANT CREATE TABLE TO db_developer;
+
+    -- Now create users and assign to roles
+
+    CREATE USER reporting_user FOR LOGIN reporting_login;
+    CREATE USER app_service FOR LOGIN app_service;
+    CREATE USER dev_alice FOR LOGIN dev_alice_login;
+
+    -- Add users to roles
+    ALTER ROLE db_readonly ADD MEMBER reporting_user;
+    ALTER ROLE db_readwrite ADD MEMBER app_service;
+    ALTER ROLE db_developer ADD MEMBER dev_alice;
+
+SQL Server also has built-in fixed database roles that exist in every database.
+You should know these:
+
+    db_owner       — Full control of the database. Use sparingly.
+    db_datareader  — SELECT on all tables. Quick and convenient, but coarse.
+    db_datawriter  — INSERT, UPDATE, DELETE on all tables.
+    db_ddladmin    — Can run DDL: CREATE, ALTER, DROP. No data access.
+    db_securityadmin — Can manage role memberships and permissions.
+    db_backupoperator — Can back up the database.
+
+For application service accounts, I generally do NOT use db_datareader or
+db_datawriter. Why? Because they apply to ALL tables, including tables the
+application should never touch. I grant permissions explicitly on the schemas
+or tables the application needs. More work upfront, much better security
+posture.
+
+There are also fixed SERVER roles at the instance level:
+
+    sysadmin       — Equivalent to PostgreSQL superuser. Full power. Everything.
+    securityadmin  — Manages server-level logins.
+    dbcreator      — Can create, alter, drop databases.
+    diskadmin      — Manages disk files.
+    processadmin   — Can kill connections.
+    bulkadmin      — Can run BULK INSERT.
+    serveradmin    — Can change server-wide configuration.
+
+Again — sysadmin is god mode. Reserve it for actual DBAs. Application accounts
+never get sysadmin. Never.
+
+Removing access in SQL Server:
+
+    -- Remove a user from a role
+    ALTER ROLE db_readonly DROP MEMBER reporting_user;
+
+    -- Revoke a specific permission
+    REVOKE SELECT ON SCHEMA::orders FROM db_readonly;
+
+    -- Deny a permission explicitly (overrides any grants)
+    DENY SELECT ON orders.sensitive_data TO reporting_user;
+
+That DENY is important and unique. In SQL Server, DENY always wins. Even if a
+user is a member of a role that has SELECT, if you DENY SELECT to that user
+explicitly, they cannot SELECT. It's an absolute block. Use it when you want
+to ensure certain users NEVER access specific objects, regardless of role
+memberships they might acquire in the future.
+
+Drop a user and login when someone leaves:
+
+    USE EcommerceDB;
+    GO
+
+    -- First remove from all roles (or SQL Server will do it automatically on drop)
+    ALTER ROLE db_developer DROP MEMBER dev_alice;
+
+    -- Drop the database user
+    DROP USER dev_alice;
+    GO
+
+    -- Then drop the server login
+    USE master;
+    GO
+    DROP LOGIN dev_alice_login;
+
+Useful audit queries in SQL Server:
+
+    -- All logins on the instance
+    SELECT name, type_desc, is_disabled, create_date, modify_date
+    FROM sys.server_principals
+    WHERE type IN ('S', 'U', 'G')
+    ORDER BY name;
+
+    -- All users in a database
+    USE EcommerceDB;
+    GO
+    SELECT dp.name AS user_name, dp.type_desc,
+           sp.name AS mapped_login
+    FROM sys.database_principals dp
+    LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+    WHERE dp.type NOT IN ('R')
+    ORDER BY dp.name;
+
+    -- Role memberships in the current database
+    SELECT
+        roles.name AS role_name,
+        members.name AS member_name
+    FROM sys.database_role_members drm
+    JOIN sys.database_principals roles ON drm.role_principal_id = roles.principal_id
+    JOIN sys.database_principals members ON drm.member_principal_id = members.principal_id
+    ORDER BY roles.name, members.name;
+
+    -- Effective permissions for a user
+    EXECUTE AS USER = 'reporting_user';
+    SELECT * FROM fn_my_permissions(NULL, 'DATABASE');
+    REVERT;
+
+That last one — EXECUTE AS USER — lets you impersonate a user and see exactly
+what permissions they have. It's invaluable for auditing and debugging permission
+issues. You'll use it all the time when users call you saying "I can't access
+the table" and you need to verify what they can and can't do.
+
+
+================================================================================
+PART SIX — SECURITY BEST PRACTICES (BOTH PLATFORMS)
+================================================================================
+
+Before I let you loose on the lab exercises, I want to give you the principles
+I've developed over two decades. These aren't just theory — every one of these
+came from a real-world experience, usually a painful one.
+
+Principle 1: Least Privilege.
+Give users and applications the minimum permissions they need to do their job.
+Nothing more. An application that only reads data gets SELECT. It does not get
+INSERT, UPDATE, DELETE "just in case". Every extra permission is an attack
+surface. Every extra permission is a blast radius if something goes wrong.
+
+Principle 2: Never use the superuser or sysadmin account for application access.
+I will repeat this until you hear it in your sleep. Application code never runs
+as postgres or sa. Create a dedicated application role with only the permissions
+the application needs. Full stop.
+
+Principle 3: Use role groups, not individual grants.
+Grant permissions to roles. Assign users to roles. Never grant permissions
+directly to individual users. Ever. Your future self — six months from now when
+you've forgotten who has what — will thank you.
+
+Principle 4: Audit regularly.
+Run your audit queries monthly. Know who has access to what. Permissions drift
+over time. The developer who needed temporary access to a production table
+six months ago? Their access is probably still there. Audit and clean up.
+
+Principle 5: Document every access change.
+Every GRANT, every REVOKE, every new role — write it in your change log. Why
+was it created? Who requested it? When does it expire? Future DBAs, including
+future you, will need to know this.
+
+Principle 6: Set connection limits and password expiration.
+Unbounded connections can crash your server. Passwords that never expire are a
+security liability. Set limits. Set expiration. It takes thirty seconds to
+configure and can save you from catastrophe.
+
+Principle 7: Never store credentials in scripts or code.
+I've done code reviews where developers hardcoded the database password in a
+Python file checked into GitHub. That password needs to be rotated immediately
+and then you have to track down everywhere it was used. Use environment variables,
+secret managers, or vault solutions. Never plaintext credentials in code.
+
+Principle 8: Test your security model before go-live.
+Create a test user for each role. Log in as that user. Try to do things they
+should be able to do — verify it works. Try to do things they should NOT be
+able to do — verify it fails. Security that hasn't been tested is security you
+cannot trust.
+
+
+================================================================================
+LAB EXERCISES
+================================================================================
+
+Alright. Enough talking. You're going to do all of this now. Here are your lab
+tasks. I want both PostgreSQL AND SQL Server versions unless specified.
+
+Lab 1 — Database Creation
+    a) Create a database called "university_db" in PostgreSQL with UTF8 encoding,
+       template0, and a connection limit of 100.
+    b) Create the same database concept in SQL Server with explicit data and log
+       file sizing on separate logical paths.
+    c) In both databases, create three schemas: academics, administration, library.
+
+Lab 2 — Role Hierarchy Setup (PostgreSQL)
+    a) Create three group roles: student_role, faculty_role, registrar_role.
+    b) Grant student_role the ability to SELECT from all tables in the academics
+       schema.
+    c) Grant faculty_role SELECT and INSERT on academics schema tables.
+    d) Grant registrar_role full DML (SELECT, INSERT, UPDATE, DELETE) on the
+       administration schema.
+    e) Create three login users: stu_john, fac_sarah, reg_mike.
+    f) Assign each user to the appropriate group role.
+    g) Verify role memberships using the pg_auth_members catalog view.
+
+Lab 3 — Role Hierarchy Setup (SQL Server)
+    a) Create logins for: stu_john, fac_sarah, reg_mike.
+    b) Create corresponding database users in university_db.
+    c) Create database roles: StudentRole, FacultyRole, RegistrarRole.
+    d) Grant appropriate permissions to each role (mirror what you did in PostgreSQL).
+    e) Add users to their respective roles using ALTER ROLE.
+    f) Use EXECUTE AS to verify each user's effective permissions.
+
+Lab 4 — Access Revocation
+    a) In PostgreSQL: Remove fac_sarah's membership from faculty_role.
+       Then drop her user entirely (REASSIGN OWNED, DROP OWNED, DROP ROLE sequence).
+    b) In SQL Server: Disable the stu_john login. Then drop the user and login.
+    c) In SQL Server: DENY SELECT on the administration schema to stu_john before
+       dropping, and explain why DENY is more powerful than simply not granting.
+
+Lab 5 — Audit Queries
+    Run the audit queries from today's lecture on your databases. Capture the
+    output and explain in your own words what each result tells you about the
+    current state of access control in the database.
+
+
+================================================================================
+CLOSING — WHAT I WANT YOU TO TAKE AWAY TODAY
+================================================================================
+
+We covered a lot today. Database creation isn't just typing CREATE DATABASE —
+it's a deliberate set of decisions about encoding, storage, connection limits,
+and ownership that will affect performance and security for the lifetime of
+that database. Get them right at the start. It is much harder to change them
+later.
+
+Role management is the foundation of database security. The pattern is always
+the same: create roles, grant permissions to roles, assign users to roles. That
+pattern scales from a team of five to a company of fifty thousand.
+
+The differences between PostgreSQL and SQL Server are real but manageable. Once
+you understand the concepts — instances, databases, schemas, roles, grants,
+revokes — the syntax is just syntax. You can look up syntax. You cannot look up
+judgment, and judgment is what separates a DBA from someone who just runs SQL.
+
+Next week we're going to go deeper into tablespace management in PostgreSQL and
+filegroups in SQL Server. Make sure you have your lab environments ready because
+we're going to be moving files around and I want you comfortable at the command
+line before we do that.
+
+Any questions? No? Alright. Lab time. I'll be walking around. If you get stuck,
+try to figure it out for three minutes first, then ask me. That three minutes of
+struggle is where the learning happens.
+
+Get to work.
+
+
+================================================================================
+QUICK REFERENCE CARD — COMMANDS FROM TODAY'S LECTURE
+================================================================================
+
+POSTGRESQL
+----------
+Create database:
+  CREATE DATABASE dbname WITH OWNER=role TEMPLATE=template0
+  ENCODING='UTF8' LC_COLLATE='en_US.UTF-8' LC_CTYPE='en_US.UTF-8'
+  CONNECTION LIMIT=200;
+
+Create role (no login):
+  CREATE ROLE rolename;
+
+Create user (with login):
+  CREATE ROLE username WITH LOGIN PASSWORD 'pass' CONNECTION LIMIT 5;
+
+Grant schema usage:
+  GRANT USAGE ON SCHEMA schemaname TO rolename;
+
+Grant table privileges:
+  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA s TO r;
+
+Grant role to user:
+  GRANT group_role TO login_role;
+
+Default privileges:
+  ALTER DEFAULT PRIVILEGES IN SCHEMA s GRANT SELECT ON TABLES TO r;
+
+Revoke role:
+  REVOKE role_name FROM username;
+
+Drop user cleanly:
+  REASSIGN OWNED BY username TO postgres;
+  DROP OWNED BY username;
+  DROP ROLE username;
+
+MSSQL
+-----
+Create login:
+  CREATE LOGIN loginname WITH PASSWORD='pass', CHECK_POLICY=ON;
+
+Create database user:
+  CREATE USER username FOR LOGIN loginname;
+
+Create database role:
+  CREATE ROLE rolename;
+
+Grant schema permissions:
+  GRANT SELECT ON SCHEMA::schemaname TO rolename;
+
+Add user to role:
+  ALTER ROLE rolename ADD MEMBER username;
+
+Remove from role:
+  ALTER ROLE rolename DROP MEMBER username;
+
+Deny explicitly:
+  DENY SELECT ON schemaname.tablename TO username;
+
+Check effective permissions:
+  EXECUTE AS USER='username';
+  SELECT * FROM fn_my_permissions(NULL,'DATABASE');
+  REVERT;
+
+Drop login:
+  DROP USER username;   -- (in database context)
+  DROP LOGIN loginname; -- (in master context)
+
+================================================================================
+END OF LECTURE
+================================================================================

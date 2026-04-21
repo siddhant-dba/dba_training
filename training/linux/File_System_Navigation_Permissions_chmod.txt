@@ -1,0 +1,333 @@
+File System Navigation, Permissions, chmod, chown & ACLs
+Full Production Lecture — 20 Years of Hard-Won Knowledge
+
+1. Concept First, Then the Internals
+The Simple Mental Model
+Linux's permission system answers one question at every file access: who are you, what are you trying to do, and are you allowed?
+Every file and directory has three things attached to it: an owner (a user), a group, and a permission bitmask. The kernel checks these in strict order — owner first, then group, then everyone else — and stops at the first match. This is not negotiable and not obvious to newcomers: if you are the owner, the group bits don't apply to you, period.
+The Inode: Where Permissions Actually Live
+When you create a file, the filesystem allocates an inode — a fixed-size metadata structure on disk. The inode stores:
+
+Owner UID and GID (numbers, not names — /etc/passwd is just a lookup table)
+Permission bits (12 bits total)
+Timestamps: atime (last access), mtime (last modification), ctime (last inode change)
+File size, block pointers, link count
+
+The filename is stored in a directory entry (dentry), which is just a mapping of name → inode number. This is why chmod and chown don't care about the filename — they operate on the inode directly.
+bashstat /u01/app/oracle/oradata/orcl/system01.dbf
+# Shows inode number, permissions in octal, owner UID/GID, all three timestamps
+Permission Bits — The Full 12 Bits
+Most training stops at the 9 you know (rwxrwxrwx). The real story is 12 bits:
+  SUID  SGID  Sticky  |  Owner rwx  |  Group rwx  |  Other rwx
+   1     1      1     |   r  w  x   |   r  w  x   |   r  w  x
+   4     2      1         4  2  1       4  2  1       4  2  1
+SUID (Set User ID, bit 4000): When set on an executable, it runs as the file's owner, not the calling user. This is how passwd lets a normal user write to /etc/shadow. On a file, shown as s in the owner execute position. On a directory, SUID is ignored on Linux (unlike BSD).
+SGID (Set Group ID, bit 2000): On an executable, the process runs with the file's group. On a directory — and this is critical for DBAs — new files created inside inherit the directory's group, not the user's primary group. This is how Oracle's directory structure should be configured.
+Sticky Bit (bit 1000): On a directory, a user can only delete or rename files they own, even if they have write on the directory. Classic example: /tmp. Shown as t in the other execute position.
+bash# Reading this output correctly
+ls -la /tmp
+# drwxrwxrwt  — the 't' is sticky bit, execute also set
+# drwxrwxr-T  — 'T' means sticky but execute NOT set (rare)
+
+ls -la $(which passwd)
+# -rwsr-xr-x — 's' in owner position = SUID + execute
+# -rwSr-xr-x — 'S' = SUID but execute NOT set (broken SUID, won't work)
+How the Kernel Enforces Permissions at Runtime
+When a process calls open() on a file, the kernel's VFS layer does this:
+
+Resolve the path — walk each directory component, checking execute (x) permission on each directory along the path. You need x on every parent directory, not just the target.
+Check if euid == 0 (root). If yes, bypass almost everything.
+Check if euid == file UID. If yes, apply owner bits.
+Check if egid == file GID or any supplementary group matches. If yes, apply group bits.
+Apply other bits.
+Check requested operation (read/write/execute) against the matched bits.
+
+Root bypasses read and write checks but NOT execute — root cannot execute a file unless at least one execute bit is set somewhere. This matters for shell scripts.
+
+2. Why This Is Life or Death for DBAs
+Oracle
+Oracle's installer is pathologically sensitive to permissions. The classic failure modes:
+/u01 directory tree must be owned by oracle:oinstall (or oracle:dba depending on your setup). The dba group controls which OS users can connect AS SYSDBA. If your oracle binary's group isn't dba, or if SGID isn't set correctly, you'll get ORA-01031: insufficient privileges on local connections even with the right password.
+bash# Correct Oracle binary permissions
+ls -la $ORACLE_HOME/bin/oracle
+# -rwsr-s--x 1 oracle dba  — SUID + SGID both set
+# This means: runs as oracle user, runs with dba group, only dba members can execute
+If someone well-meaningly runs chmod -R 755 $ORACLE_HOME trying to fix a problem, they strip SGID off the oracle binary and break OS authentication. I've seen this destroy a production environment on a Sunday night.
+ASM and raw devices — ASM disk permissions must allow the oracle/grid user to read/write. On UDEV-managed systems, udev rules set permissions on /dev/sd* or /dev/oracleasm/* at boot. If those rules are wrong, ASM disks show as OFFLINE and you're in a world of pain.
+Oracle audit and trace directories — $ORACLE_BASE/diag/rdbms/<db>/<instance>/trace must be writable by the oracle user. Alert log goes there. If it's not writable, the database starts but you get no diagnostic output — the worst possible situation.
+PostgreSQL
+PostgreSQL is paranoid by design and refuses to start if permissions are wrong:
+FATAL:  data directory "/var/lib/pgsql/14/data" has wrong ownership
+HINT:  The server must be started by the user that owns the data directory.
+The data directory must be owned by the postgres user and must be mode 0700 — not 0755, not 0750, exactly 0700. The postmaster enforces this at startup. This is intentional: PostgreSQL refuses to run if anyone other than the owning user can read the data directory, because WAL files and data files contain unencrypted data.
+pg_hba.conf and postgresql.conf must be readable by the postgres user but ideally not world-readable since pg_hba.conf shows your authentication topology.
+Tablespace directories — if you create a tablespace at /pgdata/tbs01, that directory must exist and be owned by postgres before the CREATE TABLESPACE command runs. This bites people constantly.
+MySQL / MariaDB
+MySQL runs as the mysql user. The datadir (typically /var/lib/mysql) must be owned mysql:mysql with mode 750 or 755. The socket file at /var/lib/mysql/mysql.sock must be accessible.
+The classic MySQL permissions mistake: someone restores a backup by copying files as root, forgetting that all the files are now owned by root. MySQL starts, sees it can't write to its own datadir, and either refuses to start or corrupts the first write it attempts.
+Binary log directory — if you configure binary logs to a separate path (you should), that path must be writable by mysql. Missed this → replication breaks silently the first time the binary log tries to rotate.
+
+3. Critical Kernel / OS Parameters
+/proc/sys/fs/inotify/ — File Watch Limits
+bashcat /proc/sys/fs/inotify/max_user_watches     # default 8192, laughably low
+cat /proc/sys/fs/inotify/max_user_instances   # default 128
+Database monitoring tools (Prometheus node exporter, datadog agent, Oracle Enterprise Manager agent) consume inotify watches. When you hit the limit, the monitoring agent silently stops getting file change notifications. You lose alerting without knowing it.
+bash# /etc/sysctl.conf
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 512
+fs.file-max and nofile ulimits
+bashcat /proc/sys/fs/file-max        # system-wide open file limit
+ulimit -n                        # per-process limit for current shell
+cat /proc/<oracle_pid>/limits    # actual limits of a running process
+Oracle's recommendation is 65536 minimum for nofile. PostgreSQL with many connections benefits from higher. Set this in /etc/security/limits.conf and in the systemd service file — they are separate and the systemd one takes precedence for services:
+bash# /etc/security/limits.conf
+oracle soft nofile 65536
+oracle hard nofile 65536
+postgres soft nofile 65536
+postgres hard nofile 65536
+
+# For systemd services, in the [Service] section:
+LimitNOFILE=65536
+fs.aio-max-nr — Asynchronous I/O
+bashcat /proc/sys/fs/aio-max-nr      # default 65536
+Oracle uses Linux AIO (io_submit, io_getevents) for Direct Path I/O when filesystemio_options = setall. Each Oracle process can consume AIO slots. On a busy system with many Oracle processes, you hit this limit and io_submit starts returning EAGAIN. Oracle falls back to synchronous I/O silently — throughput tanks, nothing obvious in the alert log.
+bash# /etc/sysctl.conf
+fs.aio-max-nr = 1048576
+vm.swappiness — Impacts File Cache Behavior
+bashcat /proc/sys/vm/swappiness      # default 60, terrible for databases
+A high swappiness means the kernel aggressively pages out memory to swap in favor of file cache. For databases that manage their own cache (Oracle SGA, MySQL InnoDB buffer pool), you want this low:
+bashvm.swappiness = 10    # for database servers, some go to 1 or even 0
+Setting to 0 on RHEL 7+ means "avoid swap as much as possible but don't prohibit it." Setting to 1 is safer than 0 — a fully locked-out kernel that can't swap at all can OOM-kill your database process.
+
+4. Production War Stories
+War Story 1 — The Silent chmod -R Disaster
+A junior DBA was troubleshooting Oracle wallet permissions for TDE. Unable to identify the exact issue, they ran:
+bashchmod -R 777 $ORACLE_HOME
+The database was running, so nothing broke immediately. Six hours later, a scheduled root cron job noticed SUID binaries owned by oracle and ran a security hardening script that stripped all SUID bits from non-root-owned files. The oracle binary lost SUID. Every new connection attempt after that got ORA-01031. Existing sessions were fine — they'd already authenticated. New connections failed. The application showed random errors because some app servers had connection pools that recycled connections and others didn't. Took two hours to diagnose because the symptoms were inconsistent.
+Lesson: Never chmod -R an Oracle home. Ever. If you must fix permissions, Oracle provides $ORACLE_HOME/install/changePerm.sh and orainstRoot.sh.
+War Story 2 — The PostgreSQL Restore That Wasn't
+Team performs a disaster recovery drill. Restores PostgreSQL 14 data directory from backup onto a new server. Runs systemctl start postgresql-14. Service fails. Check logs:
+FATAL: data directory "/var/lib/pgsql/14/data" has group or world access
+DETAIL: Permissions should be u=rwx (0700) or u=rwx,g=rx (0750).
+The backup tool (tar without --same-owner flag) preserved file permissions but reset ownership to the root user who ran the restore. Team ran chown -R postgres:postgres /var/lib/pgsql/14/data, service started. But then:
+FATAL: lock file "postmaster.pid" already exists
+The old postmaster.pid from the backup was there. Deleted it. Started again. Worked. But data was 4 hours old because nobody had verified the backup included WAL files and the standby had been the actual restore source, not the primary.
+Lesson: DR scripts must include explicit chown, chmod, and pid file cleanup steps. Test them quarterly, not annually.
+War Story 3 — ACL Confusion on Shared NFS Mounts
+Oracle RAC environment. Shared NFS for ORACLE_HOME (bad idea, but legacy). Two nodes, node1 and node2. DBA creates a file on node1, it's readable on node2. New security policy requires ACLs for audit log access. DBA sets an ACL on node1:
+bashsetfacl -m u:auditor:r /nfs/oracle/logs/audit.log
+Auditor can read on node1, cannot read on node2. NFS v3 does not transmit ACLs. NFSv4 does, but only if both the NFS server and client are configured for NFSv4 ACLs and the underlying filesystem supports them. The environment was NFSv3. ACLs were silently ignored on the other node.
+Lesson: Always verify the NFS version (mount | grep nfs) before relying on ACLs over NFS. On NFSv3, ACLs require NFSACL protocol extension. On NFSv4, use nfs4_getfacl and nfs4_setfacl, not the POSIX getfacl/setfacl commands.
+War Story 4 — The SGID Directory That Wasn't
+New DBA sets up the PostgreSQL tablespace directory:
+bashmkdir /pgdata/tbs_history
+chown postgres:postgres /pgdata/tbs_history
+chmod 750 /pgdata/tbs_history
+Application team also needs to write backup scripts that land files in /pgdata/backups, a sibling directory. They use a service account pgbackup in the postgres group. Script runs fine for months. New tablespace created under /pgdata/tbs_history/ — PostgreSQL creates its files owned postgres:postgres with mode 600. The pgbackup user can't read them (they're in the postgres group but group bits on the files are 0). Backup script fails silently, validating file checksums against stale copies.
+The fix was SGID on the parent directory so new files inherit the group, combined with a proper umask:
+bashchmod g+s /pgdata/tbs_history
+# Now files created here get group 'postgres' regardless of creator's primary group
+And in PostgreSQL's startup environment: umask 027 so new files get 640 by default, allowing group reads.
+
+5. Certification Prep (RHCSA / RHCE / OCP)
+RHCSA Exam — What They Actually Test
+You will get a task like: "Configure /data/shared so that all new files created in that directory are owned by the group dbteam, regardless of which user creates them."
+The answer is SGID on the directory:
+bashchmod g+s /data/shared
+# OR
+chmod 2755 /data/shared
+You will get: "User alice should be able to read /etc/app.conf without making it world-readable."
+The answer is ACL:
+bashsetfacl -m u:alice:r /etc/app.conf
+getfacl /etc/app.conf   # verify — exam expects you to verify
+You will get: "Find all files owned by user bob and change their ownership to carol."
+bashfind / -user bob -exec chown carol {} \; 2>/dev/null
+# OR more efficient (find then xargs)
+find / -user bob 2>/dev/null | xargs chown carol
+Critical RHCSA gotcha: After setting ACLs, check for the + sign in ls -la output. If the + is there, ACLs are active. If the task says "verify," getfacl is the verification command. Examiners mark you down if you only show ls -la.
+Exam time traps:
+
+Setting permissions with symbolic notation (u+x) vs octal (chmod 755) — know both, octal is faster
+chown user:group file vs chown user file vs chown :group file — all valid, all different
+Default ACLs (setfacl -d -m) vs regular ACLs — default ACLs apply to new files created in a directory, not existing ones
+umask is subtracted from 666 for files and 777 for directories — a umask of 022 gives 644 files and 755 directories
+
+OCP (Oracle) Exam
+Know the Oracle-required permission structure cold:
+PathOwnerGroupPermissions$ORACLE_HOME/bin/oracleoracledba6751 (SUID+SGID)$ORACLE_BASEoracleoinstall755/etc/oraInst.locrootoinstall644$ORACLE_HOME/dbs/oracleoinstall755spfile*.ora, orapw*oracleoinstall640
+
+6. Hands-On Lab
+Work through these in order. Build muscle memory, not just theory.
+Lab 1 — Navigate and Understand
+bash# See the full picture of a file
+stat /etc/passwd
+stat /etc/shadow          # compare — shadow is 000 or 640 depending on distro
+ls -lai /etc/passwd       # -i shows inode number
+
+# Prove the inode/filename separation
+mkdir /tmp/lab && cd /tmp/lab
+touch myfile
+ln myfile hardlink        # same inode, different name
+ls -lai                   # both show same inode number
+stat myfile hardlink      # identical except name
+Lab 2 — Permission Bits Deep Dive
+bash# Understand numeric notation by building it
+touch testfile
+chmod 000 testfile && ls -la testfile    # ----------
+chmod 400 testfile && ls -la testfile    # -r--------
+chmod 640 testfile && ls -la testfile    # -rw-r-----
+chmod 755 testfile && ls -la testfile    # -rwxr-xr-x
+
+# Special bits
+mkdir testdir
+chmod 2755 testdir && ls -la | grep testdir   # drwxr-sr-x  (SGID)
+chmod 1777 testdir && ls -la | grep testdir   # drwxrwxrwt  (sticky)
+chmod 4755 testfile && ls -la testfile        # -rwsr-xr-x  (SUID)
+
+# Symbolic vs octal
+chmod u=rw,g=r,o= testfile && ls -la testfile     # -rw-r-----
+chmod u+x testfile && ls -la testfile             # -rwxr-----
+chmod a-x testfile && ls -la testfile             # -rw-r-----
+Lab 3 — chown Mastery
+bash# Create test user and group
+sudo useradd dbuser
+sudo groupadd dbagroup
+sudo usermod -aG dbagroup dbuser
+
+# chown variations
+sudo touch /tmp/testfile
+sudo chown dbuser /tmp/testfile              # change owner only
+sudo chown :dbagroup /tmp/testfile           # change group only
+sudo chown dbuser:dbagroup /tmp/testfile     # change both
+
+# Recursive with find (safer than -R for production)
+sudo mkdir -p /tmp/dbtree/{data,logs,backup}
+sudo touch /tmp/dbtree/data/file{1,2,3}
+find /tmp/dbtree -type f -exec chown dbuser:dbagroup {} \;
+find /tmp/dbtree -type d -exec chown dbuser:dbagroup {} \;
+# OR simply:
+sudo chown -R dbuser:dbagroup /tmp/dbtree
+Lab 4 — SGID Directory (Critical for DBAs)
+bash# Set up shared DBA directory
+sudo mkdir /dbawork
+sudo groupadd oinstall
+sudo chown root:oinstall /dbawork
+sudo chmod 2775 /dbawork       # SGID + group write
+
+# Test it
+sudo useradd -G oinstall user1
+sudo useradd -G oinstall user2
+
+sudo -u user1 touch /dbawork/user1file
+ls -la /dbawork/user1file
+# -rw-rw-r-- 1 user1 oinstall  <-- group is oinstall, not user1's primary group
+
+sudo -u user2 cat /dbawork/user1file   # succeeds because group oinstall can read
+Lab 5 — ACLs
+bash# Install ACL tools if needed
+sudo yum install acl -y    # or apt install acl
+
+# Ensure filesystem is mounted with ACL support (usually default on ext4/xfs)
+mount | grep " / "
+tune2fs -l /dev/sda1 | grep "Default mount options"   # for ext4
+
+# Basic ACL workflow
+sudo mkdir /acltest
+sudo touch /acltest/report.txt
+sudo chmod 640 /acltest/report.txt
+
+# Grant a specific user read access without changing group
+sudo setfacl -m u:dbuser:r /acltest/report.txt
+getfacl /acltest/report.txt
+ls -la /acltest/report.txt   # note the '+' at end of permissions
+
+# Default ACL — applies to NEW files created in directory
+sudo setfacl -d -m u:dbuser:rw /acltest
+sudo touch /acltest/newfile.txt
+getfacl /acltest/newfile.txt   # dbuser automatically gets rw
+
+# Remove a specific ACL entry
+sudo setfacl -x u:dbuser /acltest/report.txt
+
+# Remove ALL ACLs
+sudo setfacl -b /acltest/report.txt
+
+# Backup and restore ACLs (essential before migrations)
+getfacl -R /acltest > /tmp/acltest.acls
+setfacl --restore=/tmp/acltest.acls
+Lab 6 — Simulating the DBA Environment
+bash# Simulate Oracle-like structure and verify permissions
+sudo mkdir -p /u01/app/oracle/oradata/ORCL
+sudo useradd -g oinstall -G dba oracle 2>/dev/null || true
+sudo chown -R oracle:oinstall /u01
+sudo chmod -R 755 /u01
+sudo chmod 750 /u01/app/oracle/oradata/ORCL
+
+# Verify the permission chain — each parent must be traversable
+namei -l /u01/app/oracle/oradata/ORCL
+# namei walks the full path and shows permissions at each component
+# This is the command you use to debug "permission denied" on deep paths
+
+7. Quick-Reference Cheat Sheet
+Permission Octal Fast-Reference
+OctalBinarySymbolicMeaning7111rwxread + write + execute6110rw-read + write5101r-xread + execute4100r--read only0000---no permissions
+Special Bits
+BitOctal PrefixOn FileOn DirectorySUID4xxxRun as file ownerIgnored (Linux)SGID2xxxRun as file groupNew files inherit groupSticky1xxxIgnoredOnly owner can delete
+Essential Commands
+bash# Navigation
+namei -l /path/to/file          # show permissions at EVERY path component
+stat file                        # full inode info
+ls -lai                          # long + inode + all
+
+# chmod
+chmod 755 file                   # octal
+chmod u+x,g-w,o= file           # symbolic
+chmod -R 750 dir                 # recursive (use carefully)
+chmod --reference=ref file       # copy permissions from ref file
+
+# chown
+chown user file                  # change owner
+chown :group file                # change group
+chown user:group file            # change both
+chown -R user:group dir          # recursive
+
+# ACLs
+setfacl -m u:user:rwx file      # add user ACL
+setfacl -m g:group:rx file      # add group ACL
+setfacl -d -m u:user:rw dir     # default ACL (new files)
+setfacl -x u:user file          # remove one entry
+setfacl -b file                  # remove all ACLs
+getfacl file                     # show ACLs
+getfacl -R dir > acls.bak        # backup ACLs
+setfacl --restore=acls.bak       # restore ACLs
+
+# Find + fix permissions
+find /path -type f -perm -o+w    # find world-writable files
+find /path -user oracle          # find files by owner
+find /path -nouser               # find orphaned files (dangerous!)
+find /path -perm /4000           # find all SUID files
+find /path -perm /2000           # find all SGID files
+
+# Umask
+umask                            # show current umask
+umask 027                        # set: files=640, dirs=750
+DBA-Critical Permissions Reference
+bash# PostgreSQL
+/var/lib/pgsql/14/data          → 0700 postgres:postgres (enforced by postmaster)
+/var/lib/pgsql/14/data/*.conf   → 0600 postgres:postgres
+
+# Oracle
+$ORACLE_HOME/bin/oracle          → 6751 oracle:dba  (SUID+SGID mandatory)
+$ORACLE_BASE                     → 755  oracle:oinstall
+spfile, orapw files              → 640  oracle:oinstall
+audit_file_dest directory        → 750  oracle:oinstall
+
+# MySQL
+/var/lib/mysql                   → 750  mysql:mysql
+/var/lib/mysql/mysql.sock        → 777  mysql:mysql (socket, world-accessible by design)
+
+# Universal — always check
+find /db/data -perm -002         # any world-writable file in data directory = security incident
+find /db/data -nouser            # orphaned files after user deletion = ticking time bomb
+
+The single most important thing a DBA should internalize about Linux permissions: when you get a Permission denied error, don't randomly try chmod 777 and move on. Run namei -l /full/path and read every single component from left to right. The problem is almost always in a parent directory you didn't check, not the file itself. This one habit will save you hours every year.

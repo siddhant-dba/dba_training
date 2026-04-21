@@ -1,0 +1,2659 @@
+================================================================================
+LINUX SYSTEM ADMINISTRATION FOR DBAs
+FULL PRODUCTION LECTURE — 20 YEARS OF EXPERIENCE
+ALL TOPICS: PROCESS MGMT | DISK MGMT | NETWORK DIAGNOSTICS | LOG ANALYSIS |
+            USER/GROUP MGMT | PACKAGE MANAGEMENT | SYSTEMD SERVICE MANAGEMENT
+================================================================================
+Audience   : DBAs working with Oracle, PostgreSQL, MySQL/MariaDB
+Level      : Certification-grade + Production-hardened
+Structure  : Concept → Internals → DBA Impact → Kernel Params → War Stories →
+             Cert Tips → Hands-On Lab → Cheat Sheet
+================================================================================
+
+
+################################################################################
+TOPIC 1: PROCESS MANAGEMENT
+ps, top, htop, kill, signals, /proc, scheduling
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.1 CONCEPT — WHAT IS A PROCESS?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A process is a running instance of a program. The kernel gives each process:
+  - A unique PID (Process ID)
+  - A PPID (Parent Process ID) — every process except PID 1 has a parent
+  - Its own virtual address space (code, stack, heap, mapped files)
+  - File descriptor table (open files, sockets, pipes)
+  - Credentials: real UID/GID, effective UID/GID, supplementary groups
+  - CPU scheduling metadata (priority, nice value, scheduling class)
+  - Resource limits (ulimits)
+  - A current working directory and root directory
+
+Everything about a running process is exposed under /proc/<PID>/. This is not
+a real filesystem — it's a kernel interface that looks like files. Reading
+/proc/1234/status doesn't do disk I/O; the kernel generates the data on demand.
+
+PROCESS STATES (memorise these — they appear in ps output and explain hangs):
+
+  R  Running or runnable (on CPU or in run queue)
+  S  Sleeping (interruptible) — waiting for event, will wake on signal
+  D  Sleeping (uninterruptible) — waiting for I/O, CANNOT be killed with -9
+  Z  Zombie — process exited, parent hasn't called wait() to reap it
+  T  Stopped — received SIGSTOP or is being traced (strace/gdb)
+  I  Idle kernel thread (Linux 4.14+)
+
+STATE D IS THE DBA'S NIGHTMARE.
+A process in D state is stuck in a kernel syscall, usually waiting for disk I/O
+or an NFS mount. You cannot kill it. You cannot strace it. You wait for the I/O
+to complete or you reboot. When you see many D-state processes, your storage
+subsystem is the problem — not the database.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.2 DEEP INTERNALS — /proc, SCHEDULING, FORK/EXEC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE /proc FILESYSTEM — Your Real-Time Window Into Any Process
+
+  /proc/<PID>/status       — human-readable: name, state, UID, memory usage
+  /proc/<PID>/stat         — machine-readable: scheduler stats, CPU time
+  /proc/<PID>/cmdline      — full command line (null-byte separated)
+  /proc/<PID>/exe          -> symlink to the actual binary
+  /proc/<PID>/fd/          — directory of all open file descriptors
+  /proc/<PID>/fdinfo/      — fd flags, position, mountid
+  /proc/<PID>/maps         — virtual memory mappings (shared libs, heap, stack)
+  /proc/<PID>/smaps        — detailed memory per mapping (RSS, PSS, swap)
+  /proc/<PID>/limits       — current ulimits for this process
+  /proc/<PID>/net/         — network state from this process's network namespace
+  /proc/<PID>/task/        — sub-directory per thread (for multi-threaded apps)
+  /proc/<PID>/environ      — environment variables at process start
+
+EXAMPLES:
+  # What files does Oracle shadow process have open?
+  ls -la /proc/$(pgrep -f "ora_dbw0")/fd
+  
+  # What are the actual ulimits of the running postgres process?
+  cat /proc/$(pgrep -x postgres | head -1)/limits
+  
+  # Full command line of a process (ps sometimes truncates)
+  cat /proc/<PID>/cmdline | tr '\0' ' '
+  
+  # Which shared libraries is mysqld using?
+  cat /proc/$(pgrep mysqld)/maps | grep '\.so'
+
+LINUX CFS SCHEDULER (Completely Fair Scheduler)
+
+The kernel scheduler manages CPU time using a red-black tree ordered by
+"virtual runtime" (vruntime). The process with the smallest vruntime always
+runs next. Nice values (-20 to +19) influence how fast vruntime accumulates:
+
+  Nice -20 = vruntime grows slowly  = gets more CPU
+  Nice  0  = default
+  Nice +19 = vruntime grows fast    = gets less CPU
+
+For databases, the key insight is: nice value affects CPU fairness, NOT
+latency. If you want the database to get CPU faster when it needs it, nice
+value helps but RT scheduling (SCHED_FIFO, SCHED_RR) is more powerful —
+and dangerous on shared systems.
+
+  # Check scheduling class and priority of oracle processes
+  chrt -p $(pgrep -f ora_lgwr)   # lgwr often benefits from RT scheduling
+  
+  # Change to real-time (only if you know exactly what you're doing)
+  chrt -f -p 1 <PID>   # SCHED_FIFO priority 1
+
+FORK, EXEC, AND CLONE
+
+Every process is created by fork() — the kernel copies the parent's address
+space using Copy-on-Write (COW). Pages are only physically copied when written.
+exec() then replaces the process image with the new program.
+
+Oracle uses a dedicated server model: each client connection spawns a new
+"shadow process" via fork(). With 1000 connections you have 1000 processes.
+This is fundamentally different from PostgreSQL (also process-per-connection)
+and MySQL (thread-per-connection using pthreads/clone with CLONE_VM).
+
+This difference has enormous implications for monitoring:
+  - Oracle/PostgreSQL: each connection is a separate PID — visible in ps
+  - MySQL: all connections share one PID — you must query INFORMATION_SCHEMA
+    or use performance_schema to see per-connection info
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.3 THE ps COMMAND — MASTERY LEVEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ps has two syntaxes: BSD (no dash) and UNIX (with dash). Know both.
+
+MOST USEFUL ps COMMANDS FOR DBAs:
+
+  # All processes, full format, sorted by CPU
+  ps aux --sort=-%cpu | head -20
+  
+  # All processes, full format, sorted by memory
+  ps aux --sort=-%mem | head -20
+  
+  # Show process tree (parent-child relationships)
+  ps auxf          # ASCII tree
+  pstree -p        # cleaner tree with PIDs
+  
+  # Oracle-specific: show all oracle processes with their roles
+  ps -ef | grep ora_ | grep -v grep
+  # You'll see: ora_pmon, ora_smon, ora_dbw0, ora_lgwr, ora_ckpt, ora_arc0...
+  
+  # PostgreSQL: see all backend processes with their current query state
+  ps -ef | grep postgres | grep -v grep
+  
+  # Custom output columns (very powerful)
+  ps -eo pid,ppid,user,stat,pcpu,pmem,vsz,rss,comm --sort=-%cpu
+  
+  # Show threads of a specific process
+  ps -L -p <PID>          # -L shows threads, each with LWP (lightweight process ID)
+  ps -eLf | grep oracle   # all oracle threads
+  
+  # Find a process by name with its start time and elapsed time
+  ps -eo pid,user,lstart,etime,comm | grep postgres
+
+KEY ps OUTPUT COLUMNS:
+  VSZ   — Virtual memory size (all mapped memory, including not-yet-used)
+  RSS   — Resident Set Size (actually in RAM right now)
+  STAT  — Process state (R/S/D/Z/T + flags: s=session leader, l=multi-threaded)
+  TIME  — Cumulative CPU time consumed
+  %CPU  — CPU usage since last ps update (snapshot, not average)
+
+IMPORTANT: VSZ can be wildly misleading for Oracle. Oracle SGA is shared memory
+mapped into every shadow process's address space, so each shadow shows the
+full SGA size in VSZ even though it's shared. RSS is more honest but still
+includes the shared SGA. To find actual Oracle memory usage, use:
+  ipcs -m   (shows shared memory segments including SGA)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.4 top AND htop — REAL-TIME MONITORING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+top INTERACTIVE KEYS (these are tested on RHCSA):
+  1      — toggle per-CPU breakdown (shows all CPUs individually)
+  M      — sort by memory
+  P      — sort by CPU
+  T      — sort by cumulative time
+  k      — kill a process (prompts for PID and signal)
+  r      — renice a process
+  u      — filter by user (type 'oracle' to see only oracle processes)
+  H      — toggle thread view
+  V      — tree view (parent-child)
+  W      — write current config to ~/.toprc (persists your settings)
+  f      — field management (add/remove columns)
+  d      — change refresh interval
+
+READING THE top HEADER — what every DBA must understand:
+
+  top - 14:32:01 up 47 days, 3:21,  4 users,  load average: 2.45, 1.89, 1.23
+  
+  Load average: 2.45 (1 min), 1.89 (5 min), 1.23 (15 min)
+  
+  Load average = number of processes in R or D state (runnable + waiting for I/O)
+  On a 4-CPU system:
+    Load 1.0  = 25% utilized (fine)
+    Load 4.0  = 100% utilized (saturated)
+    Load 8.0  = 200% — double what the system can handle (serious problem)
+    Load 16.0 = your pager is going off
+  
+  Load > number_of_CPUs is your alert threshold.
+  
+  Tasks:  312 total,   3 running, 308 sleeping,   0 stopped,   1 zombie
+  
+  That 1 zombie should be investigated: ps -eo pid,ppid,stat | grep Z
+  
+  %Cpu(s):  45.2 us,  8.3 sy,  0.0 ni, 43.1 id,  2.8 wa,  0.0 hi,  0.6 si
+  
+  us = user space CPU     (your database is here)
+  sy = kernel/system CPU  (syscalls, I/O processing)
+  wa = I/O wait           (CPUs idle waiting for I/O — storage bottleneck)
+  hi = hardware interrupt (network cards, disk controllers)
+  si = software interrupt (network processing, mostly)
+  
+  For DBAs: HIGH wa (>10%) = storage problem. HIGH sy = too many syscalls
+  (could be network, could be excessive context switching from too many processes)
+
+htop ADVANTAGES OVER top:
+  - Mouse support
+  - Horizontal scrolling to see full command line
+  - Color coding by CPU core
+  - Easy tree view (F5)
+  - Send signals interactively (F9)
+  - Filter processes (F4)
+  - Strace a process directly (F9 → send signal → or use F12 for strace in some builds)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.5 SIGNALS AND kill — THE COMPLETE PICTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Signals are asynchronous notifications sent to processes. The kernel delivers
+them; the process can handle, ignore, or be killed by them.
+
+SIGNALS EVERY DBA MUST KNOW:
+
+  Signal  Number  Default Action  DBA Relevance
+  ------  ------  --------------  -------------
+  SIGHUP    1     Terminate       Reload config (nginx, PostgreSQL reload)
+  SIGINT    2     Terminate       Ctrl+C — graceful stop in many programs
+  SIGQUIT   3     Core dump       Ctrl+\ — quit with core dump
+  SIGKILL   9     Terminate*      Uncatchable kill — last resort ONLY
+  SIGUSR1  10     Terminate       Oracle: log switch trigger; PostgreSQL: rotate logs
+  SIGUSR2  12     Terminate       Oracle: archiver trace dump
+  SIGTERM  15     Terminate       Graceful shutdown (what systemctl stop sends)
+  SIGCHLD  17     Ignore          Parent notified when child exits
+  SIGCONT  18     Continue        Resume a stopped process
+  SIGSTOP  19     Stop*           Uncatchable pause
+  SIGTSTP  20     Stop            Ctrl+Z — suspends foreground process
+
+  * = cannot be caught, blocked, or ignored
+
+SIGKILL IS NOT "JUST KILL -9" — IT IS AN EMERGENCY BRAKE.
+
+For Oracle: kill -9 on a shadow process is recoverable (PMON cleans up).
+kill -9 on pmon, smon, dbwr, or lgwr = instance crash. Oracle will crash to
+protect data integrity. PMON and SMON are the cleanup processes — if they die,
+nothing else can clean up, so the kernel shuts the instance down.
+
+For PostgreSQL: kill -9 on a backend = that connection dies, postmaster
+detects it and initiates crash recovery on restart. The cluster survives.
+kill -9 on the postmaster itself = all backends get SIGQUIT, shared memory
+is cleaned up, recovery happens on next start.
+
+For MySQL: kill -9 on mysqld = InnoDB crash recovery on next start. Usually
+fine if you have clean shutdown configured. Binary log may need recovery.
+
+RULE OF THUMB:
+  1. Always try SIGTERM first (kill -15 or just kill)
+  2. Wait 30 seconds
+  3. Try SIGQUIT (kill -3) — may produce useful core dump
+  4. If process won't die and it's not in D state: kill -9
+  5. If process is in D state: fix the I/O, then reboot if necessary
+
+KILLING PROCESSES — SYNTAX:
+
+  kill <PID>              # sends SIGTERM (15) — polite
+  kill -9 <PID>           # sends SIGKILL — forceful
+  kill -TERM <PID>        # same as kill <PID>
+  kill -HUP <PID>         # send SIGHUP
+  
+  killall oracle          # kill all processes named "oracle" by name
+  pkill -u oracle         # kill all processes owned by user oracle
+  pkill -f "ora_dbw"      # kill by matching command line pattern
+  
+  # Kill a process group (all processes in same session)
+  kill -TERM -<PGID>      # negative PID = process group
+  
+  # Oracle-specific: force log switch
+  kill -USR1 $(cat $ORACLE_HOME/dbs/lk<SID>)   # sends SIGUSR1 to lgwr
+
+ZOMBIE PROCESSES:
+
+A zombie (Z state) is a process that has exited but whose parent hasn't called
+wait() to collect the exit status. The zombie holds a PID and an entry in the
+process table but uses no CPU or memory. It's the parent's responsibility.
+
+  # Find zombies and their parents
+  ps -eo pid,ppid,stat,comm | awk '$3~/^Z/ {print}'
+  
+  # Send SIGCHLD to the parent to prompt it to reap zombies
+  kill -CHLD <PPID>
+  
+  # If parent ignores SIGCHLD: kill the parent (its children are adopted by init/PID1)
+  # PID 1 (systemd) properly reaps all adopted zombies
+
+Many zombies = application bug (parent not reaping children). In Oracle
+environments this sometimes indicates a hung PL/SQL external procedure.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.6 WHY PROCESS MANAGEMENT MATTERS FOR DBAs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ORACLE PROCESS ARCHITECTURE — Know Every Background Process:
+
+  ora_pmon_<SID>  — Process Monitor: cleans up failed user processes, 
+                    releases resources, rolls back uncommitted transactions
+  ora_smon_<SID>  — System Monitor: instance recovery, space management,
+                    temp segment cleanup
+  ora_dbw0_<SID>  — Database Writer: writes dirty buffers from SGA to datafiles
+                    (there can be dbw0-dbw9 on busy systems)
+  ora_lgwr_<SID>  — Log Writer: writes redo from log buffer to online redo logs
+                    THE most latency-sensitive process in Oracle
+  ora_ckpt_<SID>  — Checkpoint: signals dbwr and updates control file/headers
+  ora_arc0_<SID>  — Archiver: copies full online redo logs to archive destination
+  ora_mmon_<SID>  — Manageability Monitor: AWR snapshots, alerts
+  ora_mmnl_<SID>  — Manageability Monitor Light: ASH data flush to disk
+  ora_reco_<SID>  — Recoverer: resolves in-doubt distributed transactions
+  ora_d000_<SID>  — Dispatcher (if MTS/shared server is configured)
+
+If lgwr disappears: Oracle crashes immediately. If archiver (arc0) gets stuck
+and archive destination fills up: the database hangs — all transactions stop
+until archive space is freed. This is the most common Oracle production emergency.
+
+CHECKING ORACLE PROCESS HEALTH:
+  # All Oracle background processes running?
+  ps -ef | grep "ora_" | grep $ORACLE_SID | grep -v grep
+  
+  # lgwr CPU and I/O (should be consistently active, not spiking)
+  pidstat -p $(pgrep -f ora_lgwr) 1 10
+  
+  # How many shadow processes (= active connections)?
+  ps -ef | grep "oracle" | grep -v "ora_" | grep -v grep | wc -l
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.7 KERNEL PARAMETERS FOR PROCESS MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  kernel.pid_max              — Maximum PID number (default 32768, max 4194304)
+                                On high-connection Oracle/PG systems, PID wrap-around
+                                can cause confusion in monitoring. Increase to 1048576.
+  
+  kernel.threads-max          — Maximum threads systemwide
+  
+  kernel.sched_migration_cost_ns — How long a task must run before the scheduler
+                                   considers migrating it to another CPU.
+                                   Higher value = less migration = better cache locality
+                                   For database workloads: increase to 5000000 (5ms)
+  
+  kernel.sched_autogroup_enabled — Groups processes into scheduling groups.
+                                   Disable (=0) for database servers — it hurts
+                                   throughput on dedicated database hosts.
+  
+  vm.overcommit_memory        — 0=heuristic, 1=always allow, 2=never overcommit
+                                PostgreSQL documentation recommends 2 to prevent OOM
+                                killer from hitting the backend processes.
+                                Oracle: set to 0 or 1 (SGA pre-allocation means OOM
+                                isn't typically a risk if sized correctly)
+
+  # View current scheduler stats
+  cat /proc/schedstat
+  cat /proc/<PID>/schedstat   # per-process: time on CPU, time waiting, # timeslices
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.8 WAR STORIES — PROCESS MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The OOM Killer Takes Out PostgreSQL
+
+Production PostgreSQL 12, 256GB RAM, well-tuned. shared_buffers=64GB,
+effective_cache_size=192GB. A rogue analytics query allocates a huge hash
+table in work_mem. The OOM killer wakes up. It scores each process by memory
+usage. The postmaster scores highest (because it accounts for shared memory in
+the kernel's view). OOM killer sends SIGKILL to the postmaster.
+
+All 300 backends immediately receive SIGQUIT. They flush dirty buffers as fast
+as possible. Shared memory is torn down. Users see connection drops.
+
+On restart, PostgreSQL runs crash recovery (replays WAL since last checkpoint).
+Took 4 minutes. Could have been prevented with:
+  vm.overcommit_memory = 2
+  vm.overcommit_ratio = 80    # don't commit more than 80% of RAM + swap
+
+Also: oom_score_adj — you can tell the OOM killer to never kill your database:
+  echo -1000 > /proc/$(pgrep -x postmaster)/oom_score_adj
+  # -1000 = completely exempt from OOM killing (root only)
+  # Add to systemd service: OOMScoreAdjust=-1000
+
+WAR STORY 2 — The Runaway Archiver
+
+Oracle 11g. Archive log destination running on NFS. NFS server has a network
+hiccup. arc0 gets stuck in D state waiting for the NFS write to complete.
+Archive log destination "becomes full" from Oracle's perspective because arc0
+can't write. Oracle halts all new transactions — the database is "hanging"
+from the application's perspective but is actually perfectly intact.
+
+Top shows arc0 in D state. We can't kill it. Fixing the NFS network issue
+takes 20 minutes. Once the network recovered, arc0 completed its write, and
+the database resumed. Total outage: 23 minutes.
+
+Lesson: Never put archive log destinations on NFS without hard timeouts
+configured. Use the Oracle rman "delete archivelog" only when absolutely sure
+of what you're deleting. Monitor arc0 lag, not just archive space.
+
+WAR STORY 3 — PID Wrap-Around in Monitoring
+
+High-traffic PostgreSQL system with 5000+ connections/day (short-lived queries,
+connection pooler with high churn). pid_max was default 32768. PIDs wrapped
+around within hours. Nagios check was tracking "the postgres process" by PID
+saved at boot time. After PID wrap-around, that PID was now a syslog-ng
+daemon. Nagios reported "PostgreSQL is running fine" while PostgreSQL had
+actually crashed and restarted under a different PID 45 minutes earlier.
+
+Monitor processes by name + parent relationship + socket + port, NOT by saved PID.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.9 CERTIFICATION TIPS — PROCESS MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RHCSA exam will test:
+  - Identify and kill processes by name and PID
+  - Change process priority with nice and renice
+  - Interpret top output and ps output
+  - Find processes by user, state, resource consumption
+
+Common exam tasks:
+  # Set process priority at launch
+  nice -n 10 ./my_backup_script.sh   # lower priority (higher nice = less CPU)
+  nice -n -5 mysqld                   # higher priority (negative = more CPU, root only)
+  
+  # Change priority of running process
+  renice -n 5 -p <PID>
+  renice -n -5 -u oracle              # renice all oracle user's processes
+  
+  # Find highest memory consumer
+  ps aux --sort=-%mem | head -5
+  
+  # Find and kill a process by name in one line
+  pkill -TERM httpd
+  killall -9 httpd    # more aggressive, kills all by that name
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1.10 HANDS-ON LAB — PROCESS MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAB 1.1 — Explore /proc
+  # Pick any running process
+  PID=$(pgrep -x bash | head -1)
+  
+  cat /proc/$PID/status
+  cat /proc/$PID/limits
+  cat /proc/$PID/cmdline | tr '\0' ' ' && echo
+  ls -la /proc/$PID/fd | head -20
+  cat /proc/$PID/maps | head -20
+
+LAB 1.2 — Process States
+  # Create a D-state simulation (requires root, use test environment only)
+  # Instead, observe real D states:
+  ps -eo pid,stat,comm | awk '$2~/^D/ {print}'
+  
+  # Create a zombie (educational demo)
+  cat << 'EOF' > /tmp/zombie_demo.c
+  #include <stdio.h>
+  #include <unistd.h>
+  int main() {
+    if (fork() == 0) { _exit(0); }  // child exits immediately
+    sleep(60);                        // parent sleeps without reaping
+    return 0;
+  }
+  EOF
+  gcc -o /tmp/zombie_demo /tmp/zombie_demo.c
+  /tmp/zombie_demo &
+  sleep 1
+  ps -eo pid,ppid,stat,comm | grep zombie_demo
+
+LAB 1.3 — Signals
+  # Background a process
+  sleep 300 &
+  BGPID=$!
+  
+  # Check it
+  ps -p $BGPID
+  
+  # Stop it (SIGSTOP)
+  kill -STOP $BGPID
+  ps -p $BGPID   # should show T state
+  
+  # Resume it
+  kill -CONT $BGPID
+  ps -p $BGPID   # should show S state again
+  
+  # Terminate it gracefully
+  kill -TERM $BGPID
+  ps -p $BGPID   # should be gone
+
+LAB 1.4 — Monitoring Under Load
+  # Install stress-ng if available
+  stress-ng --cpu 2 --timeout 60s &
+  
+  # Watch top
+  top -d 1
+  # Press 1 to see per-CPU
+  # Press P to sort by CPU
+  # Note the load average climbing
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROCESS MANAGEMENT — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Process listing
+  ps aux --sort=-%cpu          # by CPU
+  ps aux --sort=-%mem          # by memory
+  ps -ef                       # full format with PPID
+  ps auxf                      # tree view
+  ps -eo pid,stat,user,comm    # custom columns
+  
+  # Process search
+  pgrep oracle                 # PIDs matching name
+  pgrep -a -u oracle           # PIDs + cmdlines for user oracle
+  pidof mysqld                 # PID of exact binary name
+  
+  # Signals
+  kill -15 <PID>               # SIGTERM (graceful)
+  kill -9 <PID>                # SIGKILL (force)
+  kill -1 <PID>                # SIGHUP (reload)
+  pkill -u postgres            # kill by user
+  killall mysqld               # kill by name
+  
+  # Priority
+  nice -n 10 command           # launch with nice value 10
+  renice -n 5 -p <PID>         # change running process
+  
+  # /proc shortcuts
+  cat /proc/<PID>/status       # state, memory, uid
+  cat /proc/<PID>/limits       # ulimits
+  ls /proc/<PID>/fd | wc -l    # count open file descriptors
+  
+  # OOM protection
+  echo -1000 > /proc/<PID>/oom_score_adj
+
+
+################################################################################
+TOPIC 2: DISK MANAGEMENT
+df, du, lsblk, fdisk, parted, LVM operations
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.1 CONCEPT — THE LINUX STORAGE STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+From application to physical disk, the Linux storage stack has these layers:
+
+  Application (Oracle, PostgreSQL, MySQL)
+       ↓
+  VFS (Virtual Filesystem Switch) — unified interface
+       ↓
+  Filesystem (ext4, XFS, btrfs) — or bypass to block device directly
+       ↓
+  Page Cache — kernel's in-memory filesystem cache
+       ↓
+  Block Layer (elevator, I/O scheduler, merging, sorting)
+       ↓
+  Device Mapper (LVM, dm-multipath, dm-crypt, RAID)
+       ↓
+  Block Device Driver (SCSI, NVMe, virtio)
+       ↓
+  Physical Storage (SSD, HDD, SAN LUN, NVMe)
+
+Each layer adds capability but also latency and complexity. DBAs need to
+understand this stack because performance problems can occur at any layer,
+and the fix at one layer may not help if the bottleneck is elsewhere.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.2 VIEWING DISK LAYOUT — lsblk, fdisk, parted
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+lsblk — THE STARTING POINT FOR ANY DISK INVESTIGATION
+
+  lsblk                    # basic tree of all block devices
+  lsblk -f                 # include filesystem type and UUID
+  lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,UUID,MODEL   # custom columns
+  lsblk -d -o NAME,SIZE,ROTA,SCHED   # ROTA=1 means HDD, ROTA=0 means SSD/NVMe
+  
+  Example output:
+  NAME            MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT
+  sda               8:0    0   500G  0 disk
+  ├─sda1            8:1    0     1G  0 part /boot
+  ├─sda2            8:2    0     4G  0 part [SWAP]
+  └─sda3            8:3    0   495G  0 part
+    ├─vg_data-lv_data 253:0  0   300G  0 lvm  /u01
+    └─vg_data-lv_logs 253:1  0   195G  0 lvm  /u02
+  
+  MAJ:MIN — major:minor device numbers (major identifies the driver)
+  TYPE    — disk, part, lvm, raid1, crypt, etc.
+  ROTA    — 1=rotational (HDD), 0=SSD/NVMe
+
+fdisk — MBR PARTITION MANAGEMENT (up to 2TB per disk, max 4 primary partitions)
+
+  fdisk -l               # list all partition tables on all disks
+  fdisk -l /dev/sdb      # list specific disk
+  fdisk /dev/sdb         # interactive: creates/deletes/modifies partitions
+  
+  fdisk interactive commands:
+    m  — help (show menu)
+    p  — print partition table
+    n  — new partition
+    d  — delete partition
+    t  — change partition type (82=swap, 83=Linux, 8e=LVM, fd=RAID)
+    w  — write and exit (DESTRUCTIVE)
+    q  — quit without saving
+
+parted — GPT PARTITION MANAGEMENT (supports >2TB, unlimited partitions)
+
+  parted -l                              # list all disks and partitions
+  parted /dev/sdb print                  # show partition table
+  parted /dev/sdb mklabel gpt           # create GPT label (wipes disk!)
+  parted /dev/sdb mkpart primary 0% 100%  # create single partition using full disk
+  
+  # For LVM physical volumes, best practice: don't create a filesystem,
+  # just create the partition and let LVM manage it
+  parted /dev/sdb mkpart primary 1MiB 100%   # aligned start at 1MiB
+  parted /dev/sdb set 1 lvm on               # set LVM flag
+
+PARTITION ALIGNMENT — CRITICAL FOR SSDs AND SANs
+
+Misaligned partitions cause 2x I/O on many storage systems. The rule:
+  Start at 1MiB offset (2048 sectors at 512 bytes each)
+  
+  # Verify alignment
+  parted /dev/sdb align-check optimal 1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.3 LVM — LOGICAL VOLUME MANAGER (MASTERY LEVEL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LVM gives you:
+  - Online resize (extend volumes without downtime)
+  - Snapshots (critical for backup consistency)
+  - Striping across multiple disks (performance)
+  - Mirroring (local RAID-1 equivalent)
+  - Thin provisioning (allocate-on-write)
+
+LVM ARCHITECTURE:
+
+  Physical Storage
+       ↓
+  Physical Volumes (PV) — raw block devices prepared for LVM
+       ↓
+  Volume Groups (VG) — pool of storage from one or more PVs
+       ↓
+  Logical Volumes (LV) — flexible "partitions" carved from the VG
+       ↓
+  Filesystem / Database directly
+
+The key concept: LVM works in "extents" — fixed-size chunks (default 4MB).
+A VG is divided into Physical Extents (PEs). An LV is a collection of PEs.
+
+CREATING LVM FROM SCRATCH:
+
+  # Step 1: Create physical volumes
+  pvcreate /dev/sdb /dev/sdc /dev/sdd
+  pvs                    # list PVs
+  pvdisplay              # detailed PV info
+  
+  # Step 2: Create volume group
+  vgcreate vg_oracle /dev/sdb /dev/sdc /dev/sdd
+  vgs                    # list VGs
+  vgdisplay vg_oracle    # detailed VG info
+  
+  # Step 3: Create logical volumes
+  lvcreate -L 300G -n lv_data vg_oracle    # 300GB for data files
+  lvcreate -L 100G -n lv_logs vg_oracle    # 100GB for redo logs
+  lvcreate -L 50G  -n lv_temp vg_oracle    # 50GB for temp
+  lvs                    # list LVs
+  lvdisplay              # detailed LV info
+  
+  # Step 4: Create filesystems
+  mkfs.xfs /dev/vg_oracle/lv_data    # XFS for Oracle datafiles
+  mkfs.xfs /dev/vg_oracle/lv_logs    # XFS for redo logs
+  
+  # Step 5: Mount
+  mkdir -p /u01/oradata /u02/redologs
+  mount /dev/vg_oracle/lv_data /u01/oradata
+  mount /dev/vg_oracle/lv_logs /u02/redologs
+  
+  # Step 6: Add to /etc/fstab
+  /dev/vg_oracle/lv_data  /u01/oradata  xfs  defaults,noatime  0 2
+  /dev/vg_oracle/lv_logs  /u02/redologs xfs  defaults,noatime  0 2
+
+EXTENDING A LOGICAL VOLUME ONLINE (most common DBA task):
+
+  # Scenario: /u01 is 90% full, need to add 100GB
+  # First: do you have free space in the VG?
+  vgdisplay vg_oracle | grep "Free"
+  
+  # If yes — extend the LV and filesystem in one shot
+  lvextend -L +100G -r /dev/vg_oracle/lv_data
+  # -r = resize filesystem automatically (works with ext4 and XFS)
+  
+  # Verify
+  df -h /u01/oradata
+  
+  # If VG has no free space — add a new disk to the VG first
+  pvcreate /dev/sde
+  vgextend vg_oracle /dev/sde
+  # Now proceed with lvextend
+
+REDUCING A LOGICAL VOLUME (DANGEROUS — DO NOT DO THIS ON XFS):
+
+  # XFS cannot be shrunk. Ever. Period.
+  # ext4 can be shrunk but you must unmount first:
+  umount /mount/point
+  e2fsck -f /dev/vg/lv          # mandatory fsck before shrink
+  resize2fs /dev/vg/lv 200G     # shrink filesystem first
+  lvreduce -L 200G /dev/vg/lv   # then shrink LV
+  mount /dev/vg/lv /mount/point
+
+LVM SNAPSHOTS — THE DBA'S BEST FRIEND FOR BACKUPS:
+
+A snapshot creates a point-in-time view of an LV. The original LV continues
+working. Changed blocks are stored in the snapshot's "COW" space.
+
+  # Create snapshot of Oracle data volume (10GB COW space)
+  # Must quiesce Oracle first (begin backup mode or use RMAN)
+  
+  # For PostgreSQL: issue checkpoint first
+  psql -c "CHECKPOINT;"
+  
+  # Create snapshot
+  lvcreate -L 10G -s -n lv_data_snap /dev/vg_oracle/lv_data
+  
+  # Mount and backup
+  mkdir /mnt/snap
+  mount -o ro /dev/vg_oracle/lv_data_snap /mnt/snap
+  rsync -av /mnt/snap/ /backup/oracle/$(date +%Y%m%d)/
+  
+  # Remove snapshot when done
+  umount /mnt/snap
+  lvremove /dev/vg_oracle/lv_data_snap
+
+SNAPSHOT SIZING WARNING: If your snapshot COW space fills up, the snapshot
+becomes INVALID. Monitor snapshot usage:
+  lvs -o lv_name,snap_percent
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.4 FILESYSTEM SPACE ANALYSIS — df AND du
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+df — DISK FREE (FILESYSTEM-LEVEL)
+
+  df -h                        # human-readable, all filesystems
+  df -h /u01                   # specific filesystem
+  df -hT                       # include filesystem type
+  df -i                        # inode usage (CRITICAL — often missed)
+  df -i /var                   # check /var/log inode exhaustion
+  
+  # Inode exhaustion is a hidden killer:
+  # Filesystem shows plenty of space, but you can't create new files.
+  # This happens in /var/spool/mail, /tmp, archive log directories.
+  # Error: "No space left on device" even with df -h showing space available.
+
+du — DISK USAGE (DIRECTORY/FILE-LEVEL)
+
+  du -sh /u01/oradata          # total size of directory
+  du -sh /u01/*                # size of each subdirectory
+  du -h --max-depth=2 /u01     # 2-level breakdown
+  du -sh /u01/* | sort -rh     # sorted by size, largest first
+  
+  # Find the top 20 largest files under /u01
+  find /u01 -type f -printf '%s %p\n' | sort -rn | head -20
+  
+  # Find files larger than 1GB
+  find /u01 -type f -size +1G -ls
+
+THE df vs du DISCREPANCY — A COMMON TRAP:
+
+df shows filesystem is 80% full. du of all directories shows only 60% used.
+Where's the missing 20%?
+
+DELETED FILES HELD OPEN BY PROCESSES.
+
+When a process has a file open and another process deletes it, the directory
+entry is removed but the inode and disk blocks remain until the file descriptor
+is closed. The space is not reclaimed until the process closes (or is killed).
+
+  # Find deleted files still held open
+  lsof | grep deleted
+  lsof +L1               # show files with link count < 1 (deleted but open)
+  
+  # Common cause: Oracle trace files, PostgreSQL WAL segments, MySQL binary logs
+  # Solution: RMAN delete archivelog all; or PostgreSQL pg_switch_wal() and 
+  # let WAL archiving clean up; or restart the holding process (last resort).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.5 FILESYSTEM CHOICE FOR DBAs — ext4 vs XFS vs btrfs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+XFS IS THE RIGHT CHOICE FOR ORACLE AND POSTGRESQL DATA DIRECTORIES. Period.
+
+Why XFS wins for databases:
+  - Excellent performance with large files (database data files are large)
+  - Extents-based allocation reduces fragmentation
+  - Online defragmentation (xfs_fsr) and online grow
+  - Direct I/O and async I/O are highly optimized
+  - Metadata scalability for directories with millions of files
+  - Delayed allocation helps batch small writes
+  - Allocation groups allow parallel I/O to different disk regions
+
+XFS weaknesses:
+  - Cannot shrink (ever — plan your sizing carefully)
+  - Historically worse at many small file workloads (less relevant now)
+  - Replay of journal can occasionally be slow after crash
+
+MOUNT OPTIONS THAT MATTER FOR DATABASES:
+
+  noatime     — Don't update access time on every read. Critical for databases
+                where every data page read would otherwise trigger a metadata write.
+  
+  nodiratime  — Don't update directory access time. Subset of noatime.
+  
+  nobarrier   — (ext4) Remove write barriers. Use ONLY with battery-backed cache.
+                Dangerous without BBU — can cause corruption on power failure.
+  
+  discard     — Enable TRIM for SSD. For databases: DON'T enable online discard.
+                Use fstrim scheduled weekly instead. Online discard adds latency
+                to every delete/free operation.
+  
+  logbufs=8   — (XFS) More log buffers for write-heavy workloads
+  
+  largeio     — (XFS) Optimize for large I/O operations (good for datafiles)
+  
+  Recommended for Oracle/PostgreSQL data directory:
+  /dev/vg_oracle/lv_data /u01/oradata xfs defaults,noatime,nodiratime 0 2
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.6 CRITICAL KERNEL PARAMETERS FOR DISK/I/O
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # I/O Scheduler — per device
+  cat /sys/block/sda/queue/scheduler
+  echo mq-deadline > /sys/block/sda/queue/scheduler    # good for HDDs
+  echo none > /sys/block/nvme0n1/queue/scheduler       # for NVMe: none/noop
+  
+  # Read-ahead — how much to pre-read for sequential I/O
+  blockdev --getra /dev/sda                # current value (in 512-byte sectors)
+  blockdev --setra 4096 /dev/sda           # set to 2MB (4096 * 512)
+  # For databases doing random I/O: REDUCE read-ahead (256 or even 128)
+  # For sequential scan workloads: INCREASE read-ahead (8192+)
+  
+  vm.dirty_ratio = 15                      # % of RAM that can be dirty before
+                                           # processes are forced to write
+  vm.dirty_background_ratio = 5           # % where background writeback starts
+  # For databases: lower these values to reduce write stalls
+  # Recommended for database servers: dirty_ratio=10, dirty_background_ratio=3
+  
+  vm.dirty_expire_centisecs = 500          # dirty pages written after 5 seconds
+  vm.dirty_writeback_centisecs = 100       # writeback thread runs every 1 second
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.7 WAR STORIES — DISK MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The LVM Snapshot That Ate the Database
+
+Junior DBA creates LVM snapshot for backup on production Oracle system.
+Allocates 5GB for snapshot COW space on a system that generates 2GB/hour
+of dirty writes (heavy OLTP). Nobody monitors snapshot usage. After 2.5 hours,
+snapshot is 100% full and becomes INVALID.
+
+The PROBLEM: on older kernel versions (pre-3.x), an invalid LVM snapshot could
+cause I/O errors on the ORIGIN volume too, not just the snapshot. The database
+starts throwing "I/O error" on some data blocks. Alert log fills with ORA-01578
+(physical block corruption). Emergency shutdown. 3-hour recovery.
+
+Lesson:
+  1. Always monitor snapshot usage: watch -n 60 'lvs -o lv_name,snap_percent'
+  2. Size snapshot COW space generously (at least 20% of change rate * backup duration)
+  3. Script snapshot removal before it hits 80% full if backup hasn't completed
+  4. Test snapshot procedure in non-production first
+
+WAR STORY 2 — Inode Exhaustion in /var
+
+Oracle 12c on RHEL 7. Database is up, alerts going to /var/log. Oracle's
+auditing is enabled with default settings — AUDIT_TRAIL=OS — writing one
+file per audited operation to $ORACLE_BASE/admin/<SID>/adump/. High-traffic
+system with 50,000 connections per day = 50,000 audit files per day.
+
+After 6 months: /var partition shows 40% space used. But cron jobs start failing.
+SSH logins intermittently fail. /var/log/messages stops updating. syslog dies.
+
+  df -i /var
+  # Filesystem     Inodes  IUsed    IFree IUse%
+  # /dev/sda4      524288  524288       0  100%
+
+Inode exhaustion. The ext4 filesystem was created with default inode density
+(1 inode per 16KB). 50,000 audit files per day × 180 days = 9,000,000 files.
+Only 524,288 inodes. No new files of any kind could be created on /var.
+
+Fix:
+  - Move audit files off /var to XFS filesystem (XFS creates inodes dynamically,
+    so this situation cannot happen on XFS)
+  - Purge old audit files: find $ORACLE_BASE/admin/*/adump/ -mtime +30 -delete
+  - Add cron job to clean audit files regularly
+  - Change AUDIT_TRAIL to DB or XML so audit records go to a database table, not files
+
+WAR STORY 3 — "No Space Left" with 500GB Free
+
+PostgreSQL server. df -h shows /pgdata at 45% used, 500GB free. PostgreSQL
+throws ERROR: could not extend file "base/16384/1259": No space left on device.
+
+This is not a disk space issue. This is an OS-level file size limit.
+
+  ulimit -f         # file size limit in 512-byte blocks
+  # unlimited — not this
+
+  cat /proc/$(pgrep -x postgres | head -1)/limits | grep "file size"
+  # Max file size           unlimited
+
+Investigation: /pgdata is on a 32-bit ext2 filesystem on an old storage
+appliance. ext2 with 4KB blocks has a max file size of 2TB, but this appliance
+had a firmware bug capping individual files at 2GB. PostgreSQL table files
+(segment files) are split at 1GB by default precisely for this reason, but
+someone had changed the segment_size compile option. That single 2.1GB file
+hit the appliance limit.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2.8 HANDS-ON LAB — DISK MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAB 2.1 — Disk Exploration
+  lsblk -f
+  lsblk -d -o NAME,SIZE,ROTA,SCHED   # identify SSD vs HDD
+  fdisk -l
+  parted -l
+
+LAB 2.2 — Space Analysis
+  df -hT
+  df -i    # check inode usage on all filesystems
+  du -sh /* 2>/dev/null | sort -rh | head -10    # top consumers at root
+  du -sh /var/* 2>/dev/null | sort -rh | head -10
+  
+  # Find deleted-but-open files
+  lsof +L1 2>/dev/null | head -20
+
+LAB 2.3 — LVM Setup (requires free disk /dev/sdb — use loop devices in test env)
+  # Create loop device for testing (no real disk needed)
+  dd if=/dev/zero of=/tmp/disk1.img bs=1M count=1024
+  dd if=/dev/zero of=/tmp/disk2.img bs=1M count=1024
+  LOOP1=$(losetup -f --show /tmp/disk1.img)
+  LOOP2=$(losetup -f --show /tmp/disk2.img)
+  
+  # Build LVM stack
+  pvcreate $LOOP1 $LOOP2
+  vgcreate vg_test $LOOP1 $LOOP2
+  lvcreate -L 500M -n lv_data vg_test
+  lvcreate -L 200M -n lv_logs vg_test
+  
+  # Create filesystem and mount
+  mkfs.xfs /dev/vg_test/lv_data
+  mkdir /mnt/testdata
+  mount /dev/vg_test/lv_data /mnt/testdata
+  df -h /mnt/testdata
+  
+  # Extend it online
+  lvcreate -L 200M -n lv_extra vg_test
+  vgextend vg_test || true   # may not be needed
+  lvextend -L +200M -r /dev/vg_test/lv_data
+  df -h /mnt/testdata   # should show 700MB now
+  
+  # Snapshot
+  lvcreate -L 100M -s -n lv_data_snap /dev/vg_test/lv_data
+  mkdir /mnt/snap
+  mount -o ro /dev/vg_test/lv_data_snap /mnt/snap
+  ls /mnt/snap
+  lvs -o lv_name,snap_percent   # check snapshot usage
+  
+  # Cleanup
+  umount /mnt/snap /mnt/testdata
+  lvremove -f /dev/vg_test/lv_data_snap
+  vgremove -f vg_test
+  pvremove $LOOP1 $LOOP2
+  losetup -d $LOOP1 $LOOP2
+  rm /tmp/disk1.img /tmp/disk2.img
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DISK MANAGEMENT — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # View
+  lsblk -f                           # devices + filesystems
+  df -hT                             # space + type
+  df -i                              # inodes
+  du -sh /path/* | sort -rh          # size of contents, sorted
+  
+  # LVM creation
+  pvcreate /dev/sdX                  # init PV
+  vgcreate VG_NAME /dev/sdX         # create VG
+  lvcreate -L SIZE -n LV_NAME VG    # create LV
+  mkfs.xfs /dev/VG/LV               # create filesystem
+  
+  # LVM info
+  pvs / pvdisplay
+  vgs / vgdisplay
+  lvs / lvdisplay
+  
+  # LVM expand
+  pvcreate /dev/sdY                  # new disk
+  vgextend VG_NAME /dev/sdY         # add to VG
+  lvextend -L +SIZE -r /dev/VG/LV   # extend LV + filesystem
+  
+  # Snapshot
+  lvcreate -L SIZE -s -n SNAP_NAME /dev/VG/LV
+  lvs -o lv_name,snap_percent        # monitor usage
+  lvremove /dev/VG/SNAP_NAME        # destroy when done
+  
+  # Deleted files
+  lsof +L1                           # find deleted files held open
+  
+  # I/O scheduler
+  echo mq-deadline > /sys/block/sda/queue/scheduler
+  echo none > /sys/block/nvme0n1/queue/scheduler
+
+
+################################################################################
+TOPIC 3: NETWORK DIAGNOSTICS
+ss, netstat, ping, telnet, nc, tcpdump basics
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.1 CONCEPT — WHAT DBAs NEED TO KNOW ABOUT NETWORKING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Databases are network services. Every query travels over a TCP connection.
+Network issues present as:
+  - Connection timeouts during peak hours
+  - Mysterious ORA-12541 (TNS no listener) or FATAL connection errors in PG
+  - Replication lag that correlates with time of day (network congestion)
+  - Half-open connections consuming database resources
+  - Firewall rules silently dropping keep-alive packets
+
+DBAs who understand network diagnostics catch these in minutes. DBAs who don't
+spend hours looking at database internals for a problem that's in the network.
+
+KEY NETWORKING CONCEPTS:
+
+TCP STATE MACHINE — know these states:
+  LISTEN      — server socket waiting for connections
+  SYN_SENT    — client sent SYN, waiting for SYN-ACK
+  SYN_RECV    — server received SYN, sent SYN-ACK
+  ESTABLISHED — connection is up and working
+  FIN_WAIT1   — local side sent FIN (closing)
+  FIN_WAIT2   — waiting for remote FIN
+  TIME_WAIT   — both sides closed, waiting for late packets to expire
+                (default 60-120 seconds — fills up connection tables on OLTP systems)
+  CLOSE_WAIT  — remote side closed, local hasn't yet
+  LAST_ACK    — waiting for final ACK on our FIN
+  CLOSED      — connection fully terminated
+
+For DBAs: many TIME_WAIT connections = normal on high-traffic systems.
+Many CLOSE_WAIT connections = problem (your database isn't closing connections
+properly, or the application isn't, or there's a bug in the connection pooler).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.2 ss — THE MODERN REPLACEMENT FOR netstat
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ss reads directly from the kernel's socket tables via netlink. It is faster
+and more detailed than netstat, which reads /proc/net/* files.
+
+  ss -tlnp       # TCP listening, numeric, show process
+  ss -tlnp4      # same, IPv4 only
+  ss -tlnp6      # same, IPv6 only
+  ss -an         # all sockets, numeric
+  ss -tn         # all TCP sockets
+  ss -tp         # TCP with process info
+  ss -s          # summary statistics
+  
+  # Database-specific queries
+  # Who is connected to Oracle listener (port 1521)?
+  ss -tnp sport = :1521
+  
+  # Who is connected to PostgreSQL (port 5432)?
+  ss -tnp dport = :5432 or sport = :5432
+  
+  # Count connections by state
+  ss -tn | awk 'NR>1 {print $1}' | sort | uniq -c | sort -rn
+  
+  # Count connections per source IP to port 5432
+  ss -tn dst :5432 | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn
+  
+  # Show socket buffers (useful for tuning)
+  ss -tnm    # -m shows memory/buffer info
+  
+  # Show TCP keepalive settings per socket
+  ss -tnoi   # -i shows internal TCP info including keepalive state
+  
+  # Find which process is listening on port 1521
+  ss -tlnp | grep 1521
+  # Output: LISTEN 0 128 0.0.0.0:1521 0.0.0.0:* users:(("tnslsnr",pid=1234,fd=7))
+
+READING ss OUTPUT:
+
+  Netid  State    Recv-Q  Send-Q    Local Address:Port   Peer Address:Port
+  tcp    ESTAB    0       0         10.0.1.5:5432        10.0.1.100:54312
+  
+  Recv-Q — bytes received but not yet read by the application
+           If consistently > 0 on a LISTEN socket: application too slow to accept
+           If consistently > 0 on ESTABLISHED: application can't process fast enough
+  
+  Send-Q — bytes sent but not yet acknowledged by the peer
+           If consistently > 0: network congestion or slow client
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.3 netstat — LEGACY BUT STILL PRESENT EVERYWHERE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+netstat is part of net-tools, deprecated but installed on most systems.
+
+  netstat -tlnp          # listening TCP ports with PIDs
+  netstat -an            # all connections
+  netstat -s             # per-protocol statistics (very detailed)
+  netstat -rn            # routing table (same as ip route)
+  netstat -i             # interface statistics
+  
+  # Equivalent ss commands (prefer ss on modern systems):
+  netstat -tlnp  →  ss -tlnp
+  netstat -an    →  ss -an
+  netstat -rn    →  ip route
+  netstat -i     →  ip -s link
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.4 CONNECTIVITY TESTING — ping, telnet, nc
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ping — ICMP ECHO (tests IP reachability, not port availability)
+
+  ping -c 4 db-server-01          # 4 pings then stop
+  ping -c 100 -i 0.2 db-server    # 100 pings, 200ms interval (flood-ish)
+  ping -s 8192 db-server          # large packet test (tests MTU path)
+  
+  IMPORTANT: ping success does NOT mean the database port is accessible.
+  Firewalls can allow ICMP but block TCP/1521. Never conclude "network is fine"
+  from ping alone.
+  
+  MTU ISSUES — a subtle killer for replication and large queries:
+  ping -M do -s 8972 remote-host  # test 9000-byte jumbo frames (8972 + 28 header)
+  # If this fails but smaller pings succeed: MTU mismatch between network segments
+  # Symptoms in databases: replication works for small transactions,
+  # fails or stalls on large transactions
+
+telnet — TCP PORT TEST (mostly replaced by nc, but widely installed)
+
+  telnet db-server 1521            # test Oracle listener port
+  telnet db-server 5432            # test PostgreSQL port
+  # Connected = port is open and accepting connections
+  # Connection refused = nothing listening on that port
+  # No response/timeout = firewall blocking
+
+nc (netcat) — THE SWISS ARMY KNIFE FOR NETWORK TESTING
+
+  # Test if a port is open
+  nc -zv db-server 1521            # -z=scan, -v=verbose
+  nc -zv db-server 5432
+  nc -zvw3 db-server 3306          # -w3 = 3 second timeout
+  
+  # Test multiple ports
+  nc -zv db-server 1521 5432 3306
+  
+  # Test UDP
+  nc -zuv db-server 53
+  
+  # Send data to test a service response
+  echo "QUIT" | nc db-server 3306  # MySQL banner + quit
+  
+  # Transfer files between servers (useful for DBA data migration tests)
+  # On receiving server:
+  nc -l 9999 > /tmp/received_file
+  # On sending server:
+  nc db-server 9999 < /tmp/sending_file
+  
+  # Quick port scan (don't do this on production without authorization)
+  nc -zv db-server 1500-1530       # scan range
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.5 KERNEL PARAMETERS FOR NETWORK PERFORMANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # TCP socket buffer sizes — critical for high-bandwidth database replication
+  net.core.rmem_max = 134217728      # 128MB max receive buffer
+  net.core.wmem_max = 134217728      # 128MB max send buffer
+  net.ipv4.tcp_rmem = 4096 87380 134217728  # min default max receive
+  net.ipv4.tcp_wmem = 4096 65536 134217728  # min default max send
+  
+  # TIME_WAIT handling for OLTP systems with many short-lived connections
+  net.ipv4.tcp_tw_reuse = 1          # reuse TIME_WAIT sockets for new connections
+                                     # safe to enable, helps with connection churn
+  net.ipv4.tcp_fin_timeout = 15      # reduce FIN_WAIT2 timeout (default 60s)
+  
+  # Connection backlog — for databases with burst connection patterns
+  net.core.somaxconn = 65535         # max socket listen backlog (default 128!)
+  net.ipv4.tcp_max_syn_backlog = 65535  # max SYN queue
+  
+  # TCP keepalive — critical for database connections through firewalls
+  net.ipv4.tcp_keepalive_time = 60   # start keepalive probes after 60s idle (default 7200!)
+  net.ipv4.tcp_keepalive_intvl = 10  # probe interval
+  net.ipv4.tcp_keepalive_probes = 6  # drop after 6 failed probes
+  
+  # Why keepalive matters for DBAs:
+  # Firewalls silently drop idle connections after timeouts (typically 5-30 minutes).
+  # Oracle connection pools and PgBouncer keep connections that appear alive to the
+  # application but are dead to the network. First query on that connection fails.
+  # With keepalive_time=60, the OS detects dead connections in ~2 minutes instead of
+  # the default ~2 hours.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.6 WAR STORIES — NETWORK DIAGNOSTICS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The Firewall That Ate Replication
+
+PostgreSQL streaming replication. Primary and standby both healthy. After 6pm
+every weekday, replication lag climbs from 0 to 10+ minutes. Recovers by 10pm.
+Repeat every day. Developer queries? Network congestion? Vacuum running?
+
+None of the above. The corporate firewall had a rule that inspected and
+rate-limited all traffic on port 5432 during business hours to "prevent
+data exfiltration." The security team had added this rule six weeks earlier.
+It applied during business hours across all environments including production.
+
+Discovery:
+  iperf3 -s                         # on standby, start server
+  iperf3 -c standby-host -p 5432    # on primary, test throughput on port 5432
+  iperf3 -c standby-host -p 9999    # test same hosts on different port
+
+5432: 12 Mbps during business hours. 9999: 940 Mbps. Case closed.
+
+WAR STORY 2 — CLOSE_WAIT Accumulation Kills Connection Pool
+
+Java application using HikariCP connection pool to PostgreSQL. After 4 hours
+of production load, new requests start timing out acquiring connections.
+PostgreSQL shows idle connections. Pool shows all connections "in use."
+
+  ss -tn | grep 5432 | awk '{print $1}' | sort | uniq -c
+  # CLOSE_WAIT: 487
+  # ESTABLISHED: 13
+
+487 sockets in CLOSE_WAIT. PostgreSQL had closed its side of the connection
+(sent FIN) because it hit idle_in_transaction_session_timeout. The Java pool
+hadn't noticed (no validation query configured, no keepalive). The kernel held
+the sockets in CLOSE_WAIT. HikariCP thought those connections were alive and
+kept handing them to application threads, which then got connection errors.
+
+Fix:
+  1. Set PostgreSQL: tcp_keepalives_idle=60 in postgresql.conf
+  2. Set HikariCP: connectionTestQuery, keepaliveTime, maxLifetime
+  3. Set OS: net.ipv4.tcp_keepalive_time=60
+
+WAR STORY 3 — MTU Black Hole Killing Large Oracle Queries
+
+Oracle Data Guard standby. Small transactions replicate instantly. Queries
+that generate more than ~4000 bytes of redo log data stall for 30+ seconds
+then complete. Sporadic, can't reproduce on demand.
+
+tcpdump on the redo log shipping port showed SYN, SYN-ACK, data packets up
+to ~1400 bytes, then silence for 30 seconds, then retransmission. Classic MTU
+path issue — some packets were being silently dropped at an intermediate router
+that didn't support jumbo frames.
+
+  # On Oracle Data Guard:
+  # Check SQLNET.ora for SDU (Session Data Unit) size
+  # Default SDU is 8192 bytes. Set to 1460 (safe for standard Ethernet):
+  # SQLNET.ora: DEFAULT_SDU_SIZE=1460
+
+  # More direct fix: reduce MTU on the replication network interface
+  ip link set eth1 mtu 1400   # force safe MTU for the redo shipping interface
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3.7 HANDS-ON LAB — NETWORK DIAGNOSTICS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAB 3.1 — Socket Inspection
+  ss -tlnp                              # what's listening?
+  ss -tn                                # all TCP connections
+  ss -s                                 # summary
+  
+  # Count connections by state
+  ss -an | awk '{print $1, $2}' | sort | uniq -c | sort -rn
+
+LAB 3.2 — Port Testing
+  nc -zv localhost 22                   # test SSH port
+  nc -zv localhost 5432                 # test PostgreSQL (if installed)
+  nc -zvw3 8.8.8.8 53                   # test DNS port on Google
+  
+  # Start a test listener
+  nc -l 9999 &
+  nc -zv localhost 9999                 # should connect
+  kill %1                               # kill listener
+
+LAB 3.3 — TCP Keepalive Check
+  cat /proc/sys/net/ipv4/tcp_keepalive_time
+  cat /proc/sys/net/ipv4/tcp_keepalive_intvl
+  cat /proc/sys/net/ipv4/tcp_keepalive_probes
+  
+  # Temporarily change (revert after lab)
+  sysctl -w net.ipv4.tcp_keepalive_time=60
+  sysctl net.ipv4.tcp_keepalive_time   # verify
+
+LAB 3.4 — Connection Count Simulation
+  # Simulate many connections
+  for i in $(seq 1 20); do nc -l $((9000+i)) & done
+  ss -tlnp | grep nc
+  
+  # Kill them all
+  pkill -x nc
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NETWORK DIAGNOSTICS — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Socket inspection
+  ss -tlnp                    # listening TCP ports + processes
+  ss -tn                      # all TCP connections
+  ss -s                       # connection counts summary
+  ss -tnm                     # with buffer sizes
+  
+  # Connection counting
+  ss -tn | awk '{print $1}' | sort | uniq -c   # by state
+  
+  # Port testing
+  nc -zv host port            # test port open
+  nc -zvw3 host port          # with 3s timeout
+  telnet host port            # alternative
+  
+  # Keepalive verification
+  ss -tnoi | grep keepalive
+  
+  # TCP parameter view
+  sysctl net.ipv4.tcp_keepalive_time
+  sysctl net.core.somaxconn
+  sysctl net.ipv4.tcp_tw_reuse
+
+
+################################################################################
+TOPIC 4: LOG ANALYSIS
+tail, grep, awk, sed, journalctl — DBA Edition
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.1 THE PHILOSOPHY OF LOG ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Logs are the flight recorder of your database system. When something goes wrong
+at 3am, logs are all you have. A DBA who can't quickly extract signal from log
+noise is a liability. The following tools are your scalpel.
+
+KEY LOG LOCATIONS FOR DBAs:
+  Oracle   : $ORACLE_BASE/diag/rdbms/<db>/<instance>/trace/alert_<SID>.log
+  PostgreSQL: /var/lib/pgsql/<ver>/data/log/postgresql-*.log  OR  journalctl -u postgresql
+  MySQL    : /var/log/mysql/error.log OR /var/lib/mysql/<hostname>.err
+  System   : /var/log/messages (RHEL), /var/log/syslog (Debian)
+  Auth     : /var/log/secure (RHEL), /var/log/auth.log (Debian)
+  Kernel   : /var/log/kern.log OR journalctl -k
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.2 tail — REAL-TIME LOG MONITORING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  tail -f /path/to/alert_ORCL.log        # follow — updates as file grows
+  tail -F /path/to/log                   # follow with re-open (survives log rotation)
+  tail -n 100 /path/to/log               # last 100 lines
+  tail -n +50 /path/to/log               # from line 50 to end
+  
+  # Follow multiple files simultaneously
+  tail -f /var/log/messages /var/log/secure /u01/app/oracle/.../alert_ORCL.log
+  
+  # Combine tail with grep — live filtered view
+  tail -F /alert_ORCL.log | grep -E "ORA-|Error|WARNING|LGWR|CKPT"
+  
+  # For PostgreSQL — follow and filter for errors only
+  tail -F /var/lib/pgsql/14/data/log/postgresql-*.log | grep -E "ERROR|FATAL|PANIC"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.3 grep — FAST PATTERN SEARCHING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Basic search
+  grep "ORA-00600" alert_ORCL.log        # internal Oracle error (always serious)
+  grep -i "error" postgresql.log         # case-insensitive
+  grep -c "ORA-" alert_ORCL.log          # count matching lines
+  grep -n "ORA-" alert_ORCL.log          # show line numbers
+  
+  # Context — critical for understanding surrounding events
+  grep -B 5 -A 10 "ORA-00600" alert.log  # 5 lines before, 10 lines after
+  grep -C 5 "DEADLOCK" postgresql.log    # 5 lines of context both sides
+  
+  # Extended regex — multiple patterns
+  grep -E "ORA-00600|ORA-07445|ORA-04031" alert.log
+  grep -E "FATAL|PANIC|ERROR: could not" postgresql.log
+  
+  # Invert match — everything except
+  grep -v "^$" alert.log | grep -v "^#"  # remove blank lines and comments
+  
+  # Recursive search across multiple log files
+  grep -r "ORA-01555" /u01/app/oracle/diag/
+  
+  # Search compressed logs without decompressing
+  zgrep "ORA-" /var/log/oracle/alert.log.gz
+  zgrep -E "ERROR|FATAL" /var/log/postgresql/postgresql-2024*.log.gz
+  
+  # DBA-CRITICAL: Find all unique ORA- errors in alert log
+  grep -oE 'ORA-[0-9]+' alert_ORCL.log | sort | uniq -c | sort -rn
+  
+  # Find time range (for Oracle logs with timestamp format)
+  grep "2024-11-15 14:" alert_ORCL.log   # everything in a specific hour
+  
+  # Performance: use fixed-string when you don't need regex
+  grep -F "ORA-01031" alert.log          # -F = fixed string, faster than regex
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.4 awk — THE REPORT GENERATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+awk processes text line by line, splitting each line into fields ($1, $2, etc.).
+It's the tool for extracting and summarizing structured log data.
+
+  # Basic field extraction
+  # PostgreSQL log format: 2024-11-15 14:32:01 UTC [12345] user@db ERROR: ...
+  awk '{print $1, $2, $4, $NF}' postgresql.log   # date, time, pid, last field
+  
+  # Count errors per hour from PostgreSQL log
+  awk '/ERROR/ {print substr($2,1,2)}' postgresql.log | sort | uniq -c | sort -n
+  
+  # Extract slow queries (duration lines from PostgreSQL with log_min_duration_statement)
+  awk '/duration:/ {print $NF, $0}' postgresql.log | sort -rn | head -20
+  
+  # Sum up total execution time of slow queries
+  awk '/duration:/ {gsub(/ms/,"",$NF); total+=$NF} END {print "Total ms:", total}' pg.log
+  
+  # Oracle alert log: find all checkpoint intervals
+  awk '/Completed checkpoint/ {print $1, $2, $3}' alert_ORCL.log
+  
+  # Extract connection counts per minute from Oracle listener log
+  awk -F'*' '/establish/ {print substr($2,1,16)}' listener.log | sort | uniq -c
+  
+  # MySQL slow query log: extract queries over 5 seconds
+  awk '/Query_time:/ {if ($2 > 5) print}' /var/log/mysql/slow-query.log
+  
+  # Process syslog-style logs (field 5 is program name)
+  awk '$5 ~ /kernel/' /var/log/messages | tail -20
+  
+  # Conditional and arithmetic
+  awk '
+    /ERROR/ { errors++ }
+    /FATAL/ { fatals++ }
+    END { print "Errors:", errors, "Fatals:", fatals }
+  ' postgresql.log
+  
+  # Print lines between two patterns (extract a time range)
+  awk '/14:00:00/,/15:00:00/' postgresql.log
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.5 sed — STREAM EDITOR FOR LOG TRANSFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+sed is best for search-and-replace and line selection. For complex analysis,
+awk is usually better.
+
+  # Basic substitution
+  sed 's/ORA-01555/SNAPSHOT_TOO_OLD/g' alert.log
+  
+  # Delete blank lines
+  sed '/^$/d' alert.log
+  
+  # Delete lines matching a pattern
+  sed '/^Dump file/d' alert.log         # remove dump file header lines
+  
+  # Print specific line range
+  sed -n '100,200p' alert.log           # lines 100-200
+  
+  # Print lines matching a pattern (like grep but with sed power)
+  sed -n '/ORA-00600/p' alert.log
+  
+  # Extract lines between two patterns
+  sed -n '/Thread 1 advanced/,/End of redo/p' alert.log
+  
+  # In-place edit (modify file directly) — USE WITH CAUTION ON LOGS
+  sed -i 's/old_hostname/new_hostname/g' pg_hba.conf  # better on config files
+  
+  # Real-world: strip timestamps for comparison
+  sed 's/^[0-9-]* [0-9:.]* [A-Z]*//' postgresql.log | grep ERROR | head
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.6 journalctl — SYSTEMD JOURNAL FOR DBAs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+On RHEL 7+, Debian 8+, all logs from systemd services go to the journal.
+PostgreSQL, MySQL, and any DB managed by systemd will be in here.
+
+  # Basic viewing
+  journalctl                            # all logs (huge, use with filters)
+  journalctl -u postgresql-14           # PostgreSQL service logs
+  journalctl -u mysqld                  # MySQL
+  journalctl -k                         # kernel messages only
+  journalctl -b                         # since last boot
+  journalctl -b -1                      # previous boot (before last reboot)
+  
+  # Real-time follow
+  journalctl -u postgresql-14 -f        # follow PostgreSQL logs live
+  journalctl -f -p err                  # follow all error-level logs systemwide
+  
+  # Time-based filtering
+  journalctl --since "2024-11-15 14:00" --until "2024-11-15 16:00"
+  journalctl --since "1 hour ago"
+  journalctl --since "yesterday"
+  journalctl -u postgresql-14 --since "2024-11-15 14:30"
+  
+  # Priority filtering (syslog levels: 0=emerg 1=alert 2=crit 3=err 4=warn 5=notice 6=info 7=debug)
+  journalctl -p err                     # errors and above
+  journalctl -p warning -u mysqld       # warnings and above for MySQL
+  journalctl -p 0..3 -b                 # emergency through error since boot
+  
+  # Output formats
+  journalctl -u postgresql-14 -o json | python3 -m json.tool   # JSON output
+  journalctl -u postgresql-14 -o short-iso    # ISO timestamps
+  journalctl -o verbose -u mysqld | head      # all fields
+  
+  # Disk usage of journal
+  journalctl --disk-usage
+  
+  # Vacuum old journal entries
+  journalctl --vacuum-size=500M         # keep only 500MB
+  journalctl --vacuum-time=30d          # keep only last 30 days
+  
+  # Combine journalctl with grep for complex analysis
+  journalctl -u postgresql-14 --since "1 hour ago" | grep -E "ERROR|FATAL"
+  
+  # Find OOM killer events (critical — explains mysterious process deaths)
+  journalctl -k | grep -i "oom\|out of memory\|killed process"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.7 PIPELINES — THE REAL POWER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Real log analysis is always a pipeline. Build these habits:
+
+  # Top 10 most frequent errors in PostgreSQL log this week
+  journalctl -u postgresql-14 --since "1 week ago" \
+    | grep "ERROR:" \
+    | sed 's/.*ERROR: //' \
+    | sort | uniq -c | sort -rn | head -10
+  
+  # Find all slow queries (>1000ms) in PostgreSQL log, sorted by duration
+  grep "duration:" /var/lib/pgsql/14/data/log/postgresql-*.log \
+    | grep -oE 'duration: [0-9]+\.[0-9]+ ms' \
+    | awk '{print $2}' \
+    | sort -rn | head -20
+  
+  # Oracle alert log: list all ORA- errors with count, last 24 hours
+  find $ORACLE_BASE/diag/rdbms -name "alert*.log" \
+    | xargs grep -h "ORA-" \
+    | grep -oE "ORA-[0-9]+" \
+    | sort | uniq -c | sort -rn
+  
+  # MySQL: extract slow query durations and get statistics
+  grep "Query_time" /var/log/mysql/slow-query.log \
+    | awk '{print $2}' \
+    | sort -n \
+    | awk 'BEGIN{n=0; sum=0} {n++; sum+=$1; a[n]=$1} 
+           END{print "Count:", n, "\nMin:", a[1], "\nMax:", a[n], 
+               "\nAvg:", sum/n, "\nP95:", a[int(n*0.95)]}'
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4.8 WAR STORIES — LOG ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The Alert Log That Cried ORA-00060
+
+ORA-00060 = deadlock detected. Oracle alert log was receiving about 500 ORA-00060
+entries per hour during business hours. Application team said "deadlocks happen
+sometimes, it's fine." DBA dug into the log:
+
+  grep -A 20 "ORA-00060" alert_ORCL.log | grep "Wait List" | sort | uniq -c | sort -rn
+
+Found that 95% of deadlocks involved the same two tables: ORDERS and ORDER_ITEMS.
+Application was updating them in reverse order in two different code paths.
+Classic deadlock pattern — took 10 minutes to find with log analysis, had been
+a mystery for 3 months because nobody actually read the logs carefully.
+
+WAR STORY 2 — PostgreSQL PANIC Hidden in Journal Noise
+
+PostgreSQL service showed as "active (running)" in systemctl. Application
+reporting intermittent connection errors. DBAs checking postgresql.conf,
+pg_hba.conf, connection counts — all fine.
+
+  journalctl -u postgresql-14 -b | grep -i "panic\|fatal"
+  
+Output showed 3 PANIC entries in the last 2 hours, each followed by
+"LOG: database system was shut down" and "LOG: database system is ready to
+accept connections" — PostgreSQL had been crashing and auto-restarting
+so fast that systemd showed it as continuously "running."
+
+The PANIC message: "PANIC: could not write to file pg_wal/000000010000001E:
+No space left on device"
+
+WAL directory was on a separate mountpoint that was 100% full. PostgreSQL was
+crashing, replaying WAL on restart (which freed no space), then crashing again
+seconds later. Each restart took ~8 seconds. Applications experienced 8-second
+outages, but monitoring showed the service as up.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LOG ANALYSIS — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # tail
+  tail -f file                          # follow
+  tail -F file                          # follow + reopen on rotation
+  tail -n 100 file                      # last 100 lines
+  
+  # grep
+  grep -E "ORA-|ERROR|FATAL" log        # extended regex multi-pattern
+  grep -C 5 "ORA-00600" log            # 5 lines context around match
+  grep -oE "ORA-[0-9]+" log | sort | uniq -c | sort -rn  # count ORA errors
+  zgrep "pattern" file.gz              # search compressed file
+  
+  # awk
+  awk '/ERROR/ {count++} END {print count}' log   # count errors
+  awk '/duration:/ {print $NF}' log | sort -rn    # extract durations
+  
+  # journalctl
+  journalctl -u service -f             # follow service logs
+  journalctl -u service -p err         # errors only
+  journalctl --since "1 hour ago"      # time filter
+  journalctl -k | grep oom             # OOM killer events
+  journalctl --disk-usage              # journal size
+  journalctl --vacuum-time=30d         # clean old journals
+
+
+################################################################################
+TOPIC 5: USER AND GROUP MANAGEMENT
+/etc/passwd, /etc/shadow, /etc/group, sudo, PAM
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5.1 THE IDENTITY FILES — INTERNALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/etc/passwd — USER DATABASE (world-readable, no passwords stored here)
+
+Format: username:password:UID:GID:GECOS:home:shell
+
+  oracle:x:54321:54321:Oracle Software Owner:/home/oracle:/bin/bash
+  postgres:x:26:26:PostgreSQL Server:/var/lib/pgsql:/bin/bash
+  mysql:x:27:27:MySQL Server:/var/lib/mysql:/sbin/nologin
+  
+  Field by field:
+  oracle   — username (max 32 chars on Linux)
+  x        — password placeholder (actual hash is in /etc/shadow)
+  54321    — UID (User ID — the number the kernel actually uses)
+  54321    — GID (primary group ID)
+  Oracle.. — GECOS (comment field, ignored by OS)
+  /home/oracle — home directory
+  /bin/bash    — login shell (/sbin/nologin or /bin/false for service accounts)
+
+IMPORTANT: The kernel uses UIDs/GIDs, not names. /etc/passwd is just a lookup
+table. File ownership is stored as UID in the inode. If you delete a user and
+create a new user with the same UID, the new user owns the old files.
+
+/etc/shadow — PASSWORD DATABASE (readable only by root)
+
+Format: username:hash:lastchange:mindays:maxdays:warndays:inactivedays:expiry:reserved
+
+  oracle:$6$rounds=5000$salt$hash...:19500:0:99999:7:::
+  
+  $6$  — SHA-512 hashing algorithm (most modern)
+  $5$  — SHA-256
+  $1$  — MD5 (insecure, legacy)
+  
+  19500  — last password change in days since epoch (Jan 1, 1970)
+  0      — minimum days between password changes
+  99999  — maximum days until password must be changed (99999 ≈ never)
+  7      — warn user 7 days before expiry
+  
+  Locked account: hash starts with ! or *
+  oracle:!$6$hash...:  — account locked
+  mysql:!!:            — no password ever set, account locked
+
+/etc/group — GROUP DATABASE
+
+Format: groupname:password:GID:member-list
+
+  dba:x:54322:oracle,grid
+  oinstall:x:54321:oracle
+  postgres:x:26:
+  
+  Members listed here are SUPPLEMENTARY group members. The primary group is
+  defined in /etc/passwd. A user can be in up to 32 supplementary groups.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5.2 USER MANAGEMENT COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CREATING THE ORACLE USER — CORRECTLY:
+
+  # Create groups first
+  groupadd -g 54321 oinstall
+  groupadd -g 54322 dba
+  groupadd -g 54323 oper
+  groupadd -g 54324 backupdba
+  groupadd -g 54325 dgdba
+  groupadd -g 54326 kmdba
+  groupadd -g 54327 racdba
+  
+  # Create oracle user
+  useradd -u 54321 \
+          -g oinstall \
+          -G dba,oper,backupdba,dgdba,kmdba,racdba \
+          -d /home/oracle \
+          -s /bin/bash \
+          -c "Oracle Software Owner" \
+          oracle
+  
+  # Set password
+  passwd oracle
+  
+  # Verify groups
+  id oracle
+  groups oracle
+
+COMMON useradd FLAGS:
+  -u UID     — specify UID (important for NFS environments where UIDs must match)
+  -g GRP     — primary group
+  -G GRP,..  — supplementary groups (comma-separated, no spaces)
+  -d DIR     — home directory
+  -s SHELL   — login shell
+  -r         — create system account (UID < 1000, no home dir, no cron)
+  -M         — don't create home directory
+  -c TEXT    — comment/GECOS field
+
+USER MODIFICATION:
+
+  # Add oracle to an additional group (without removing existing groups)
+  usermod -aG asmadmin oracle     # -a = append (CRITICAL — without -a, removes all other groups)
+  
+  # Change home directory and move files
+  usermod -d /u01/home/oracle -m oracle
+  
+  # Lock an account
+  usermod -L oracle               # lock (prepends ! to password hash)
+  passwd -l oracle                # alternative
+  
+  # Unlock
+  usermod -U oracle
+  passwd -u oracle
+  
+  # Set account expiry
+  usermod -e 2024-12-31 contractor_user
+  chage -E 2024-12-31 contractor_user    # more granular control
+  
+  # Check password aging
+  chage -l oracle
+
+USER DELETION:
+
+  userdel oracle                  # delete user only
+  userdel -r oracle               # delete user AND home directory AND mail spool
+  
+  # Before deleting: find and handle files owned by this user
+  find / -user oracle 2>/dev/null     # find all files
+  find / -uid 54321 2>/dev/null       # by UID (works even after user deleted)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5.3 sudo — THE RIGHT WAY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+sudo allows controlled privilege escalation. /etc/sudoers is the configuration.
+ALWAYS edit it with visudo — it validates syntax before saving. A corrupted
+sudoers file locks you out of sudo permanently.
+
+/etc/sudoers SYNTAX:
+
+  # Format: who  where=(as_who) command
+  oracle  ALL=(root) /sbin/reboot, /usr/sbin/fdisk
+  
+  # DBA sudoers best practice — specific allowed commands
+  oracle  ALL=(root) NOPASSWD: /usr/bin/systemctl start oracle*, \
+                               /usr/bin/systemctl stop oracle*, \
+                               /usr/sbin/fdisk -l, \
+                               /usr/sbin/parted -l
+  
+  # Group-based (% prefix = group)
+  %dba    ALL=(root) NOPASSWD: /usr/bin/systemctl * postgresql-14
+  
+  # Allow sudo to specific user
+  oracle  ALL=(postgres) /usr/bin/psql   # oracle can run psql as postgres
+  
+  # WRONG — never do this in production
+  oracle  ALL=(ALL) NOPASSWD: ALL        # root access without audit trail
+
+SUDOERS BEST PRACTICES FOR DBAs:
+  1. Use /etc/sudoers.d/ directory for per-user/per-team files
+     (create /etc/sudoers.d/oracle with mode 0440)
+  2. Always specify exact paths, not wildcards for commands
+  3. Use NOPASSWD only for automation/non-interactive scripts
+  4. sudo logs to /var/log/secure (RHEL) or /var/log/auth.log — audit trail
+  5. Use aliases for cleaner rules:
+
+  # /etc/sudoers.d/dba-team
+  User_Alias  DBAS = oracle, postgres, dbauser1, dbauser2
+  Cmnd_Alias  DB_CMDS = /usr/bin/systemctl * postgresql-14, \
+                        /usr/bin/systemctl * oracle*, \
+                        /sbin/service mysqld *
+  
+  DBAS ALL=(root) NOPASSWD: DB_CMDS
+
+CHECKING sudo ACCESS:
+  sudo -l                      # list what current user can sudo
+  sudo -l -U oracle            # list what oracle can sudo (run as root)
+  sudo -u postgres psql        # run psql as postgres user
+  sudo -i                      # start interactive root shell
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5.4 WAR STORIES — USER MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The Missing -a Flag
+
+DBA needs to add oracle user to the "asmdba" group for Oracle ASM setup:
+  usermod -G asmdba oracle        # MISSING the -a flag
+
+This replaces ALL supplementary groups with just "asmdba". Oracle user loses
+membership in oinstall, dba, oper, backupdba, etc. The database is running, so
+nothing breaks immediately. Next connection attempt to Oracle via OS auth fails.
+Next RMAN backup fails. Archive log monitoring breaks. Audit log writing fails.
+Cascade of failures over the next hour as various scheduled jobs run.
+
+Fix:
+  usermod -aG dba,oper,oinstall,backupdba,asmdba oracle
+  
+Lesson: ALWAYS use -a with -G in usermod. Muscle memory.
+
+WAR STORY 2 — UID Collision After Migration
+
+Migrating PostgreSQL from old server to new server. Old server: postgres user
+has UID 26. New server was set up by a different team: postgres user has UID
+1001. All data files on shared NFS: owned by UID 26.
+
+PostgreSQL on new server starts as UID 1001. Cannot read data directory (owned
+by UID 26). Team creates new postgres user with UID 26 on new server. But UID
+1001 is already assigned to "appuser". Now "appuser" has UID 1001 but there's
+a naming conflict. Emergency: multiple users now have conflicting UIDs.
+
+Fix:
+  usermod -u 26 postgres    # change postgres to UID 26
+  usermod -u 1002 appuser   # move appuser to UID 1002
+  find / -uid 1001 -exec chown appuser {} \;  # fix files formerly owned by appuser
+
+Lesson: In multi-server environments, always use LDAP/FreeIPA for central
+identity management, OR document and standardize UIDs across all servers.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+USER MANAGEMENT — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # User info
+  id username                    # UID, GID, groups
+  groups username                # list all groups
+  finger username                # full info (if installed)
+  chage -l username              # password aging info
+  
+  # Create
+  useradd -u UID -g GRP -G GRP1,GRP2 -d HOME -s SHELL -c "comment" username
+  passwd username
+  
+  # Modify
+  usermod -aG group username     # add to group (ALWAYS use -a)
+  usermod -L username            # lock
+  usermod -U username            # unlock
+  chage -E YYYY-MM-DD username   # set expiry
+  
+  # Delete
+  userdel -r username            # delete + home + mail
+  
+  # Groups
+  groupadd -g GID groupname
+  groupmod -n newname oldname
+  groupdel groupname
+  
+  # sudo
+  visudo                         # edit sudoers safely
+  sudo -l                        # list my sudo privileges
+  sudo -l -U user                # list user's sudo privileges
+  sudo -u user command           # run as specific user
+
+
+################################################################################
+TOPIC 6: PACKAGE MANAGEMENT
+apt / yum / dnf — For DBAs Managing Database Software
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6.1 CONCEPT — PACKAGE MANAGEMENT INTERNALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A package manager tracks installed software, their versions, dependencies,
+and file locations. The package database is the source of truth for what is
+installed on the system.
+
+RPM DATABASE (RHEL/CentOS/OracleLinux/SLES):
+  Located at /var/lib/rpm/
+  Berkeley DB format (legacy) or SQLite (dnf/rpm 4.16+)
+  
+  The database records: package name, version, release, architecture,
+  all files installed, file checksums, dependencies, pre/post scripts,
+  changelog. This is how you verify system integrity after a breach.
+
+DEB DATABASE (Debian/Ubuntu):
+  Located at /var/lib/dpkg/info/ (per-package file lists)
+  /var/lib/dpkg/status (all package status)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6.2 YUM / DNF — RHEL FAMILY (Oracle Linux, CentOS, Rocky, Alma)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+dnf is the replacement for yum (RHEL 8+). Syntax is nearly identical.
+On RHEL 7: use yum. On RHEL 8+: use dnf (yum is aliased to dnf).
+
+ESSENTIAL COMMANDS:
+
+  # Search and information
+  dnf search postgresql                     # find package by name
+  dnf info postgresql14-server              # detailed package info
+  dnf provides /usr/bin/psql                # which package provides this file?
+  dnf provides libpthread.so.0             # which package provides this library?
+  dnf list installed                        # all installed packages
+  dnf list installed | grep postgres        # filter installed
+  dnf list available | grep mysql          # packages available in repos
+  
+  # Install / Update / Remove
+  dnf install postgresql14-server           # install
+  dnf install -y postgresql14-server        # install without confirmation
+  dnf install /path/to/local.rpm            # install from local file
+  dnf update                                # update all packages
+  dnf update postgresql14*                  # update specific package family
+  dnf upgrade --security                    # security updates only
+  dnf remove postgresql14-server            # remove
+  dnf autoremove                            # remove orphaned dependencies
+  
+  # History — critical for auditing changes
+  dnf history                               # list all transactions
+  dnf history info 15                       # details of transaction 15
+  dnf history undo 15                       # undo transaction 15 (rollback)
+  dnf history rollback 12                   # rollback to state at transaction 12
+  
+  # Groups (install collection of related packages)
+  dnf group list                            # show available groups
+  dnf group install "Development Tools"     # install group
+  
+  # Repository management
+  dnf repolist                              # list enabled repos
+  dnf repolist all                          # all repos (including disabled)
+  dnf config-manager --enable epel          # enable a repo
+  dnf config-manager --disable epel         # disable a repo
+  
+  # Check updates without installing
+  dnf check-update
+  
+  # Clean cache
+  dnf clean all                             # clean all cached data
+  dnf makecache                             # rebuild cache
+
+RPM — LOW-LEVEL PACKAGE TOOL:
+
+  # Query installed packages
+  rpm -qa                                   # all installed packages
+  rpm -qa | grep oracle                     # filter
+  rpm -qi oracle-database-ee-21c           # detailed info on one package
+  rpm -ql oracle-database-ee-21c           # list files in package
+  rpm -qc postgresql14-server              # list config files
+  rpm -qd postgresql14-server              # list documentation files
+  
+  # Query a file
+  rpm -qf /usr/bin/psql                    # which package owns this file?
+  rpm -qf /etc/postgresql/14/main/postgresql.conf
+  
+  # Verify package integrity (critical for security audits)
+  rpm -V postgresql14-server               # verify installed files vs package
+  # Output: 5 = checksum change, S = size change, T = timestamp change
+  # M = permissions change, U = user change, G = group change, c = config file
+  
+  rpm -Va 2>/dev/null | grep -v "^..5....c"  # show modified non-config files
+  # This is how you detect binary tampering after a security incident
+  
+  # Install/remove without dependency checking (dangerous)
+  rpm -ivh package.rpm                     # install
+  rpm -Uvh package.rpm                     # upgrade
+  rpm -e package                           # erase/remove
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6.3 APT — DEBIAN/UBUNTU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Update package list (always do this before installing)
+  apt update
+  
+  # Install / Remove
+  apt install postgresql-14                 # install
+  apt install -y postgresql-14              # no confirmation
+  apt remove postgresql-14                  # remove (keep config)
+  apt purge postgresql-14                   # remove + config files
+  apt autoremove                            # remove orphaned packages
+  
+  # Search and info
+  apt search postgresql                     # search
+  apt show postgresql-14                    # package details
+  apt list --installed | grep postgres      # installed packages
+  apt list --upgradeable                    # packages with available upgrades
+  
+  # Update packages
+  apt upgrade                               # upgrade all
+  apt upgrade postgresql-14                 # upgrade specific
+  apt full-upgrade                          # upgrade with dependency changes
+  
+  # Hold a package at current version (prevent accidental upgrades)
+  apt-mark hold postgresql-14              # prevent upgrade
+  apt-mark unhold postgresql-14            # allow upgrade again
+  apt-mark showhold                         # list held packages
+  
+  # dpkg — low level (like rpm)
+  dpkg -l | grep postgres                  # list installed, filtered
+  dpkg -L postgresql-14                    # files in package
+  dpkg -S /etc/postgresql/14/main/pg_hba.conf   # which package owns file?
+  dpkg -V postgresql-14                    # verify package integrity
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6.4 DBA-SPECIFIC PACKAGE MANAGEMENT TASKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INSTALLING POSTGRESQL FROM PGDG REPOSITORY (not distro repo — get newer versions):
+
+  # On RHEL/OracleLinux 8:
+  dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+  dnf -qy module disable postgresql          # disable distro's built-in module
+  dnf install -y postgresql14-server postgresql14-contrib
+  /usr/pgsql-14/bin/postgresql-14-setup initdb
+  systemctl enable --now postgresql-14
+
+INSTALLING MYSQL 8 FROM ORACLE REPO:
+  dnf install -y https://dev.mysql.com/get/mysql80-community-release-el8-4.noarch.rpm
+  dnf install -y mysql-community-server
+  systemctl enable --now mysqld
+  grep "temporary password" /var/log/mysqld.log   # find initial root password
+  mysql_secure_installation
+
+PREVENTING ACCIDENTAL OS UPDATES THAT BREAK DATABASE KERNEL REQUIREMENTS:
+
+  # Oracle has specific kernel version requirements
+  # Lock the kernel to current version:
+  dnf install -y python3-dnf-plugin-versionlock
+  dnf versionlock add kernel-$(uname -r)         # lock current kernel
+  dnf versionlock list                            # see locked packages
+  
+  # On Ubuntu:
+  apt-mark hold linux-image-$(uname -r)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6.5 WAR STORIES — PACKAGE MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — The Security Update That Broke Oracle
+
+Security team runs monthly security patch cycle. Automated patch management
+runs "yum update --security" on all servers, including the Oracle database
+server. Among the security patches: an update to glibc (GNU C Library).
+
+Oracle 12.1.0.2 is tested against specific glibc versions. New glibc version
+has subtle changes in memory allocation behavior that interact badly with
+Oracle's memory management. Starting the day after patching: sporadic ORA-04031
+(shared pool memory allocation failure) and eventual instance crashes.
+
+Oracle MOS (My Oracle Support) confirms glibc version is not on Oracle's
+certified matrix for this database release.
+
+Fix: 
+  rpm -e --nodeps glibc-2.28-211.el8.x86_64   # remove new glibc
+  rpm -ivh glibc-2.28-164.el8.x86_64          # reinstall certified version
+  dnf versionlock add glibc                    # lock it
+
+Lesson: Never apply OS patches to database servers without checking Oracle's
+certification matrix (MOS Doc 1304727.1). Use versionlock for libraries that
+Oracle is sensitive to. ALWAYS test patches on non-production first.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PACKAGE MANAGEMENT — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  dnf / yum (RHEL family):
+  dnf install PKG -y              # install
+  dnf remove PKG                  # remove
+  dnf update PKG                  # update specific
+  dnf search NAME                 # find package
+  dnf provides FILE               # what provides this file?
+  dnf info PKG                    # details
+  dnf list installed | grep PKG   # is it installed?
+  dnf history                     # transaction history
+  dnf history undo N              # rollback transaction
+  dnf versionlock add PKG         # pin version
+
+  rpm (queries):
+  rpm -qa | grep PKG              # installed?
+  rpm -ql PKG                     # list files
+  rpm -qf /path/to/file           # who owns this file?
+  rpm -V PKG                      # verify integrity
+  rpm -Va 2>/dev/null             # verify all packages
+
+  apt / dpkg (Debian family):
+  apt install PKG -y              # install
+  apt remove / apt purge          # remove
+  apt update && apt upgrade       # update all
+  apt-mark hold PKG               # pin version
+  dpkg -l | grep PKG              # installed?
+  dpkg -L PKG                     # list files
+  dpkg -S /path/to/file           # who owns this?
+
+
+################################################################################
+TOPIC 7: SYSTEMD SERVICE MANAGEMENT
+systemctl, service unit files, timers, journals
+################################################################################
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.1 WHAT IS SYSTEMD AND WHY DOES IT MATTER FOR DBAs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+systemd is PID 1 on modern Linux. It replaces SysVinit. As PID 1, it:
+  - Starts all system services in the correct dependency order
+  - Manages service lifecycle (start, stop, restart, reload)
+  - Collects stdout/stderr from all services into the journal
+  - Handles service restart on failure (with configurable policies)
+  - Enforces resource limits per service (cgroups integration)
+  - Manages mount points, timers, sockets, devices, swap
+
+For DBAs: every managed database service (PostgreSQL, MySQL, MongoDB) runs
+under systemd. Understanding systemd means you understand how the database
+starts, what limits it runs under, and how to configure its environment.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.2 systemctl — COMPLETE COMMAND REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SERVICE CONTROL:
+
+  systemctl start postgresql-14         # start service
+  systemctl stop postgresql-14          # stop service
+  systemctl restart postgresql-14       # stop + start
+  systemctl reload postgresql-14        # reload config without restart (if supported)
+  systemctl reload-or-restart svc       # reload if supported, else restart
+  systemctl try-restart svc             # restart only if currently running
+  
+  # Enable/disable at boot
+  systemctl enable postgresql-14        # start at boot
+  systemctl disable postgresql-14       # don't start at boot
+  systemctl enable --now postgresql-14  # enable AND start immediately
+  systemctl disable --now postgresql-14 # disable AND stop immediately
+  systemctl is-enabled postgresql-14    # enabled/disabled/masked?
+  
+  # Mask — prevents service from being started by anyone (even manually)
+  systemctl mask postgresql-14          # absolute prevention
+  systemctl unmask postgresql-14        # remove mask
+
+STATUS AND INSPECTION:
+
+  systemctl status postgresql-14        # comprehensive status + recent logs
+  systemctl is-active postgresql-14     # active/inactive (exit code 0/non-0)
+  systemctl is-failed postgresql-14     # failed state check
+  
+  # List services
+  systemctl list-units --type=service   # all active services
+  systemctl list-units --type=service --state=failed   # only failed
+  systemctl list-unit-files             # all unit files and their enable state
+  systemctl list-unit-files | grep postgresql
+  
+  # Show unit file
+  systemctl cat postgresql-14           # display the unit file
+  systemctl show postgresql-14          # all properties (low-level)
+  systemctl show postgresql-14 -p LimitNOFILE   # specific property
+
+DEPENDENCY MANAGEMENT:
+
+  systemctl list-dependencies postgresql-14       # what postgresql depends on
+  systemctl list-dependencies --reverse postgresql-14  # what depends on postgresql
+
+SYSTEM STATE:
+
+  systemctl get-default                 # default boot target (multi-user, graphical)
+  systemctl set-default multi-user.target  # set to multi-user (no GUI) — for DB servers
+  systemctl isolate rescue.target       # drop to rescue mode (DANGEROUS)
+  systemctl reboot                      # reboot
+  systemctl poweroff                    # shutdown
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.3 UNIT FILES — ANATOMY AND DBA CONFIGURATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Unit files live in:
+  /usr/lib/systemd/system/   — package-installed unit files (don't edit these)
+  /etc/systemd/system/       — local overrides and custom units (edit here)
+
+To override a package unit file WITHOUT modifying it (survives package updates):
+  systemctl edit postgresql-14           # creates /etc/systemd/system/postgresql-14.service.d/override.conf
+  systemctl edit --full postgresql-14    # full copy in /etc/systemd/system/
+
+ANATOMY OF A SERVICE UNIT FILE:
+
+  [Unit]
+  Description=PostgreSQL 14 Database Server
+  Documentation=https://www.postgresql.org/docs/14/
+  After=network.target     # start after network is up
+  Requires=local-fs.target # requires local filesystems mounted
+  
+  [Service]
+  Type=notify              # daemon signals systemd when ready (smart)
+                           # forking = old-style daemon that forks
+                           # simple = process itself is the service
+                           # oneshot = runs once and exits (scripts)
+  
+  User=postgres            # run as this user
+  Group=postgres           # run as this group
+  
+  Environment=PGPORT=5432
+  EnvironmentFile=-/etc/postgresql/14/main/environment   # optional env file
+  
+  ExecStart=/usr/pgsql-14/bin/postmaster -D /var/lib/pgsql/14/data
+  ExecReload=/bin/kill -HUP $MAINPID    # reload command
+  ExecStop=/usr/pgsql-14/bin/pg_ctl stop -D /var/lib/pgsql/14/data -m fast
+  
+  KillMode=mixed           # send SIGTERM to main process, SIGKILL to rest
+  KillSignal=SIGINT        # signal for graceful stop (PostgreSQL wants SIGINT)
+  
+  Restart=on-failure       # restart if exits with non-zero
+  RestartSec=10            # wait 10 seconds before restart
+  
+  # Resource limits (override /etc/security/limits.conf for this service)
+  LimitNOFILE=65536        # open file descriptor limit
+  LimitNPROC=16384         # max processes
+  LimitMEMLOCK=infinity    # needed for hugepages with Oracle/PG
+  
+  # OOM protection
+  OOMScoreAdjust=-1000     # exempt from OOM killer
+  
+  # Security hardening (optional but recommended)
+  PrivateTmp=true          # private /tmp (isolates from other services)
+  ProtectSystem=full       # /usr and /boot are read-only
+  
+  [Install]
+  WantedBy=multi-user.target   # enable in multi-user (normal) mode
+
+CREATING A CUSTOM SERVICE FOR ORACLE (Oracle doesn't ship a systemd unit):
+
+  # /etc/systemd/system/oracle@.service  (@ makes it a template)
+  [Unit]
+  Description=Oracle Database %I
+  After=network.target oracleasm.target
+  
+  [Service]
+  Type=forking
+  User=oracle
+  Group=oinstall
+  
+  Environment=ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+  Environment=ORACLE_SID=%i
+  Environment=ORACLE_BASE=/u01/app/oracle
+  
+  ExecStart=/u01/app/oracle/product/19.0.0/dbhome_1/bin/dbstart /u01/app/oracle/product/19.0.0/dbhome_1
+  ExecStop=/u01/app/oracle/product/19.0.0/dbhome_1/bin/dbshut /u01/app/oracle/product/19.0.0/dbhome_1
+  
+  RemainAfterExit=yes      # service considered active after ExecStart exits
+  
+  TimeoutStartSec=900      # Oracle can take 15 minutes to start
+  TimeoutStopSec=900
+  
+  LimitMEMLOCK=infinity    # required for HugePages
+  LimitNOFILE=65536
+  
+  [Install]
+  WantedBy=multi-user.target
+  
+  # Enable for specific SID (e.g., ORCL):
+  systemctl enable oracle@ORCL
+  systemctl start oracle@ORCL
+
+OVERRIDING RESOURCE LIMITS WITHOUT TOUCHING THE UNIT FILE:
+
+  # Create an override drop-in
+  mkdir -p /etc/systemd/system/postgresql-14.service.d/
+  cat > /etc/systemd/system/postgresql-14.service.d/limits.conf << EOF
+  [Service]
+  LimitNOFILE=131072
+  LimitNPROC=32768
+  OOMScoreAdjust=-1000
+  EOF
+  
+  systemctl daemon-reload              # reload unit file changes
+  systemctl restart postgresql-14
+  systemctl show postgresql-14 -p LimitNOFILE   # verify
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.4 SYSTEMD TIMERS — REPLACING CRON FOR DBAs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+systemd timers are the modern replacement for cron. Advantages:
+  - Logged to journal (cron output goes to email or /dev/null)
+  - Can be started manually for testing (systemctl start mytimer.service)
+  - Accurate to the millisecond
+  - Can be relative to system boot or activation events
+  - Integrates with dependencies (don't run backup if network is down)
+
+CREATING A POSTGRESQL VACUUM TIMER:
+
+  # /etc/systemd/system/pg-vacuum.service
+  [Unit]
+  Description=PostgreSQL Manual VACUUM ANALYZE
+  After=postgresql-14.service
+  Requires=postgresql-14.service
+  
+  [Service]
+  Type=oneshot
+  User=postgres
+  ExecStart=/usr/pgsql-14/bin/vacuumdb --all --analyze-only --quiet
+  
+  # /etc/systemd/system/pg-vacuum.timer
+  [Unit]
+  Description=Run PostgreSQL VACUUM ANALYZE daily
+  
+  [Timer]
+  OnCalendar=*-*-* 02:00:00    # daily at 2am
+  AccuracySec=30min             # can shift by up to 30 min to spread load
+  Persistent=true               # catch up if missed (system was down)
+  
+  [Install]
+  WantedBy=timers.target
+  
+  systemctl enable --now pg-vacuum.timer
+  systemctl list-timers                  # see all timers and next run time
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.5 CGROUPS — SYSTEMD RESOURCE CONTROL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+systemd uses cgroups (control groups) to enforce resource limits per service.
+This is more reliable than ulimits for containerized or complex environments.
+
+  # In unit file [Service] section:
+  CPUQuota=200%          # limit to 2 CPUs worth of time (200% of 1 CPU)
+  CPUWeight=500          # relative weight (default 100; more = more CPU time)
+  MemoryMax=32G          # hard memory limit (process killed if exceeded)
+  MemoryHigh=28G         # soft limit (throttled above this)
+  IOWeight=100           # relative I/O weight
+  
+  # View resource usage by service right now
+  systemd-cgtop          # real-time cgroup resource view (like top but per service)
+  systemctl status postgresql-14 | grep CGroup
+  cat /sys/fs/cgroup/system.slice/postgresql-14.service/memory.current
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.6 WAR STORIES — SYSTEMD SERVICE MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WAR STORY 1 — Restart=always Masks Real Problem
+
+Production MySQL running under systemd with Restart=always, RestartSec=5.
+Alerting shows MySQL "blips" but service stays up (monitoring checks every 30s,
+service restarts in 5s). For two weeks, MySQL crashes silently 3-4 times per
+day. InnoDB crash recovery on each restart. Gradually, tables get slightly
+corrupted. Application sees occasional "Table doesn't exist" errors (corrupted
+table cache), chalked up to "MySQL quirks."
+
+  journalctl -u mysqld --since "2 weeks ago" | grep "starting"
+  # Shows 47 unexpected restarts in 2 weeks
+
+Root cause: a specific stored procedure called by a cron job was triggering
+a MySQL assertion failure in a specific version. The fix: update MySQL patch
+release. The Restart=always was doing its job but masking the real problem.
+
+Lesson: Set StartLimitIntervalSec and StartLimitBurst to stop auto-restart
+after N failures. Alert on service restarts. Don't let Restart=always hide
+crashlooping.
+
+  # In unit file:
+  [Service]
+  Restart=on-failure
+  RestartSec=10
+  StartLimitInterval=120   # within 120 seconds...
+  StartLimitBurst=3        # ...only allow 3 restarts, then give up
+
+WAR STORY 2 — LimitNOFILE Ignored Because Wrong Place
+
+DBA sets LimitNOFILE=65536 in /etc/security/limits.conf for postgres user.
+PostgreSQL still showing "too many open files" errors. Checks:
+
+  cat /proc/$(pgrep -x postmaster)/limits | grep "open files"
+  # Max open files: 1024
+
+limits.conf is read by PAM at login time. systemd services don't go through
+PAM. They use the limits defined in the unit file. The correct place:
+
+  # /etc/systemd/system/postgresql-14.service.d/override.conf
+  [Service]
+  LimitNOFILE=65536
+  
+  systemctl daemon-reload
+  systemctl restart postgresql-14
+  cat /proc/$(pgrep -x postmaster)/limits | grep "open files"
+  # Max open files: 65536
+
+Lesson: For systemd-managed services, ALWAYS set limits in the unit file
+or a drop-in override, not in limits.conf. Verify with /proc/<PID>/limits.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.7 CERTIFICATION TIPS — SYSTEMD (RHCSA)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RHCSA exam will test:
+  - Start, stop, restart, reload services
+  - Enable and disable services at boot
+  - Identify failed services
+  - Configure a service to start automatically
+  - Interpret systemctl status output
+
+Exam tasks you will see:
+  # Configure service to start on boot and start it now
+  systemctl enable --now <service>    # one command does both
+  
+  # Check why a service failed
+  systemctl status <service>          # read the output carefully
+  journalctl -u <service> -b          # logs since last boot
+  journalctl -u <service> -p err      # just errors
+  
+  # Mask a service so it can never be started
+  systemctl mask <service>
+  
+  # Create a simple service unit and start it
+  # (examiners will ask you to write a basic unit file)
+  # Know the [Unit], [Service], [Install] sections
+  # Know Type=simple vs Type=forking vs Type=oneshot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7.8 HANDS-ON LAB — SYSTEMD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAB 7.1 — Service Inspection
+  systemctl status sshd
+  systemctl cat sshd                    # view unit file
+  systemctl show sshd | grep -i limit   # see resource limits
+  systemctl list-dependencies sshd      # dependency tree
+  journalctl -u sshd --since "1 hour ago"
+
+LAB 7.2 — Service Control
+  # Start/stop/restart a safe service (use chronyd or rsyslog)
+  systemctl stop rsyslog
+  systemctl status rsyslog              # should show inactive
+  systemctl start rsyslog
+  systemctl restart rsyslog
+
+LAB 7.3 — Create a Custom Service
+  # Create a simple test service
+  cat > /etc/systemd/system/dba-test.service << 'EOF'
+  [Unit]
+  Description=DBA Test Service
+  After=network.target
+  
+  [Service]
+  Type=simple
+  User=root
+  ExecStart=/bin/bash -c 'while true; do echo "DBA service running $(date)"; sleep 30; done'
+  Restart=on-failure
+  RestartSec=5
+  StandardOutput=journal
+  
+  [Install]
+  WantedBy=multi-user.target
+  EOF
+  
+  systemctl daemon-reload
+  systemctl start dba-test
+  systemctl status dba-test
+  journalctl -u dba-test -f            # watch it output every 30 seconds
+  systemctl stop dba-test
+  systemctl disable dba-test
+  rm /etc/systemd/system/dba-test.service
+  systemctl daemon-reload
+
+LAB 7.4 — Resource Limits Override
+  # Check current limits for sshd
+  cat /proc/$(pgrep sshd | head -1)/limits
+  
+  # Create override with higher file limit
+  mkdir -p /etc/systemd/system/sshd.service.d/
+  cat > /etc/systemd/system/sshd.service.d/limits.conf << 'EOF'
+  [Service]
+  LimitNOFILE=32768
+  EOF
+  
+  systemctl daemon-reload
+  systemctl restart sshd
+  cat /proc/$(pgrep sshd | head -1)/limits | grep "open files"
+  # Should now show 32768
+  
+  # Cleanup
+  rm -rf /etc/systemd/system/sshd.service.d/
+  systemctl daemon-reload
+  systemctl restart sshd
+
+LAB 7.5 — Systemd Timer
+  # Create a simple timer that logs every minute
+  cat > /etc/systemd/system/dba-heartbeat.service << 'EOF'
+  [Unit]
+  Description=DBA Heartbeat
+  [Service]
+  Type=oneshot
+  ExecStart=/bin/bash -c 'echo "Heartbeat at $(date)" >> /tmp/heartbeat.log'
+  EOF
+  
+  cat > /etc/systemd/system/dba-heartbeat.timer << 'EOF'
+  [Unit]
+  Description=DBA Heartbeat Timer
+  [Timer]
+  OnBootSec=1min
+  OnUnitActiveSec=1min
+  [Install]
+  WantedBy=timers.target
+  EOF
+  
+  systemctl daemon-reload
+  systemctl enable --now dba-heartbeat.timer
+  systemctl list-timers | grep heartbeat
+  sleep 90 && tail /tmp/heartbeat.log   # should see entries
+  
+  # Cleanup
+  systemctl disable --now dba-heartbeat.timer
+  rm /etc/systemd/system/dba-heartbeat.*
+  systemctl daemon-reload
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SYSTEMD SERVICE MANAGEMENT — QUICK REFERENCE CHEAT SHEET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Control
+  systemctl start/stop/restart/reload SVC
+  systemctl enable/disable SVC          # boot persistence
+  systemctl enable --now SVC            # enable + start
+  systemctl mask/unmask SVC             # hard prevent
+  
+  # Status
+  systemctl status SVC                  # full status + recent logs
+  systemctl is-active SVC               # active?
+  systemctl is-enabled SVC              # boot enabled?
+  systemctl is-failed SVC               # in failed state?
+  
+  # List
+  systemctl list-units --type=service --state=failed
+  systemctl list-unit-files | grep SVC
+  systemctl list-timers                 # all timers + next run
+  
+  # Unit files
+  systemctl cat SVC                     # show unit file
+  systemctl edit SVC                    # create override
+  systemctl daemon-reload               # reload after changes
+  
+  # Resource limits (in unit file [Service]):
+  LimitNOFILE=65536
+  LimitMEMLOCK=infinity
+  OOMScoreAdjust=-1000
+  Restart=on-failure
+  RestartSec=10
+  StartLimitBurst=3
+  StartLimitInterval=120
+  
+  # Logging
+  journalctl -u SVC -f                  # follow logs
+  journalctl -u SVC -p err              # errors only
+  journalctl -u SVC --since "1 hour ago"
+  journalctl -u SVC -b                  # since boot
+  
+  # Real-time resource usage
+  systemd-cgtop                         # cgroup resource view
+
+
+================================================================================
+MASTER CROSS-TOPIC REFERENCE — CRITICAL SEQUENCES FOR PRODUCTION
+================================================================================
+
+WHEN THE DATABASE WON'T START — SYSTEMATIC APPROACH:
+
+  1. systemctl status <db-service>          # what does systemd say?
+  2. journalctl -u <db-service> -b -p err   # any startup errors in journal?
+  3. Check the database's own log:
+       Oracle:  tail -100 $ORACLE_BASE/diag/rdbms/.../alert_<SID>.log
+       PG:      tail -100 /var/lib/pgsql/14/data/log/postgresql-$(date +%a).log
+       MySQL:   tail -100 /var/log/mysqld.log
+  4. df -h          # is disk full?
+  5. df -i          # are inodes full?
+  6. cat /proc/sys/fs/file-nr  # are we out of file descriptors system-wide?
+  7. free -h        # is RAM completely exhausted?
+  8. ss -tlnp | grep <port>   # is the port already in use?
+  9. namei -l /path/to/datadir  # are permissions correct at every path level?
+  10. cat /proc/$PID/limits   # are ulimits set correctly?
+
+WHEN A USER CAN'T CONNECT TO THE DATABASE:
+
+  1. nc -zv db-host <db-port>          # can we reach the port at all?
+  2. ss -tlnp | grep <port>            # is the listener/daemon running?
+  3. systemctl status <db-service>     # is the service up?
+  4. Check pg_hba.conf / sqlnet.ora    # authentication rules correct?
+  5. Check user account: id username   # user exists, correct groups?
+  6. journalctl -u <db-service> -f     # watch for auth errors in real-time
+  7. Check firewall:
+       iptables -L -n | grep <port>
+       firewall-cmd --list-all
+
+WHEN DISK IS FILLING UP FAST:
+
+  1. df -h                               # where is it?
+  2. du -sh /var/* /tmp/* /u01/* 2>/dev/null | sort -rh | head -10
+  3. lsof +L1                            # deleted files held open
+  4. Oracle: check archive log destination, trace files, audit files
+     PG: check pg_wal directory size, log directory
+     MySQL: check binary logs, slow query log
+  5. find /u01 -name "*.trc" -mtime +7 -size +10M  # old large trace files
+  6. LVM: vgdisplay — do we have free extents to expand?
+
+PERFORMANCE DEGRADATION CHECKLIST:
+
+  1. top           — CPU, load, wa% (I/O wait)
+  2. iostat -x 1   — per-device I/O utilization and await time
+  3. vmstat 1      — memory, swap activity, context switches
+  4. ss -s         — connection counts
+  5. ps aux --sort=-%cpu | head -10   — what's consuming CPU?
+  6. cat /proc/$(pgrep <db>)/status | grep VmRSS   — actual memory usage
+  7. lsof | wc -l  — total open file descriptors
+  8. dmesg | tail  — any kernel errors?
+  9. journalctl -k --since "1 hour ago" | grep -i "error\|warn\|oom"
+
+================================================================================
+END OF LECTURE
+Generated: Linux System Administration for DBAs
+Topics: Process Mgmt | Disk Mgmt | Network Diagnostics | Log Analysis |
+        User/Group Mgmt | Package Management | Systemd Service Management
+Word count: ~12,000+ words
+Coverage: Concept → Internals → DBA Impact → Kernel Params →
+          War Stories → Cert Tips → Hands-On Labs → Cheat Sheets
+================================================================================

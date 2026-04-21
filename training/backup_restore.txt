@@ -1,0 +1,391 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — SESSION LECTURE NOTES
+  Topic  : pg_basebackup, pg_dump / pg_restore Operations
+  Format : Spoken Classroom Lecture | PostgreSQL | 3 Hours + Labs
+================================================================================
+
+
+Alright, let's get started. Close your laptops halfway — I need your eyes up here for the first ten minutes, then we'll get our hands dirty.
+
+So. Backups.
+
+I know, I know. You're thinking — "we signed up to learn about databases, not to talk about backups." Let me tell you something. In twenty years of doing this work, I have been in a war room at 2am more times than I care to count, and every single time, the conversation eventually comes down to one question: "When was the last backup, and can we actually restore from it?"
+
+Not "can we back up." Can we RESTORE. There's a difference, and we're going to talk about that difference today until it's burned into your brain.
+
+Last session, we went deep on role management — CREATE ROLE, GRANT, the whole permission model. Remember that? Remember I told you that creating the right roles before you do anything else is a form of discipline? Same discipline applies here. The DBAs who have solid backup strategies aren't the ones who read the most documentation. They're the ones who've either been burned themselves, or they learned from someone who was. Today, you learn from me, so you don't have to get burned.
+
+There are two completely different tools we're talking about today, and I want you to understand why they exist separately, because students mix them up all the time and it causes real problems in production.
+
+The first is pg_basebackup. This is a physical backup tool. It copies the actual binary files that make up your PostgreSQL cluster — the data directory, the WAL files, all of it. Think of it like taking a snapshot of the entire engine of a car, not just the user manual inside the glove box.
+
+The second is pg_dump and pg_restore. These are logical backup tools. They work at the SQL level — they understand your tables, your data, your schemas. They can back up a single table if you want, or a single database, and they output something human-readable or structured that you can selectively restore from.
+
+Both have their place. Neither one replaces the other. Let me say that again — neither one replaces the other. I've seen junior DBAs at companies that only had pg_dump schedules and then their disk corrupted and they needed a point-in-time recovery. And I've seen the opposite — teams that only had base backups and then accidentally dropped a table and had no clean way to pull just that object back. You need both. We're going to do both today.
+
+
+---  pg_basebackup — Let's Start Here  ---
+
+
+Go ahead and open your terminal. I want you to have a live PostgreSQL instance running. If you set yours up the way we did last session, you should be good to go.
+
+pg_basebackup is a command-line utility that ships with PostgreSQL. You don't run it inside psql — you run it from your operating system shell. Important distinction. Say it with me: shell, not psql.
+
+Here's the basic form. Type this out so your fingers know it:
+
+    pg_basebackup -h localhost -U replicator -D /var/backups/pgbase -Ft -z -P
+
+Let me walk you through every single flag, because in an exam and in the field, you need to know what each one does.
+
+-h localhost
+    This is your host. In production, this might be an IP address or a hostname. For today, we're working locally, so localhost is fine.
+
+-U replicator
+    This is the role you're connecting as. Now — here's where last session connects directly. Remember we talked about creating roles and granting privileges? A user running pg_basebackup needs the REPLICATION privilege. Not superuser — REPLICATION. Go ahead and in a new terminal, run psql and let's create that role properly.
+
+In psql:
+
+    CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'securepass123';
+
+That's it. You're not granting this user the ability to do SELECT or INSERT. It doesn't need that. Principle of least privilege — we talked about this. You grant what's needed, nothing more.
+
+Back to the flags.
+
+-D /var/backups/pgbase
+    This is your destination directory. Where do you want the backup to land? The directory must exist before you run the command, or PostgreSQL will complain. Go ahead and create it:
+
+    mkdir -p /var/backups/pgbase
+
+-Ft
+    The "F" is for format, and "t" means tar. So your backup output will be a tar archive. The alternative is -Fp, which means plain — it copies the actual directory structure as-is. For most use cases, tar is cleaner for storage and transfer. But in recovery situations, plain format is easier to work with directly. I'll show you both.
+
+-z
+    Compression. This wraps the tar in gzip. On a large production database, this can make a massive difference in storage costs. I've seen base backups go from 400GB down to 90GB just with compression, depending on the data type distribution.
+
+-P
+    Progress. This just shows you a progress indicator so you're not sitting there wondering if the thing crashed or is still running. In production automation you might strip this out, but when you're learning, keep it.
+
+So the full command again:
+
+    pg_basebackup -h localhost -U replicator -D /var/backups/pgbase -Ft -z -P
+
+Run it. You'll be prompted for the password. Type it in.
+
+What you're going to see is something like:
+
+    34672/34672 kB (100%), 1/1 tablespace
+
+That means it completed. Go look in your backup directory:
+
+    ls -lh /var/backups/pgbase/
+
+You should see two files: base.tar.gz and pg_wal.tar.gz. The base is your data directory. The WAL file contains the write-ahead log segments needed for recovery. Never delete pg_wal when you're storing these — I've seen it happen. Someone writes a cleanup script, gets the glob pattern wrong, and suddenly your base backup is useless because you don't have the WAL to make it consistent.
+
+
+--- One More Variation You Need to Know ---
+
+
+Sometimes you want the backup in plain format because you're going to restore directly onto a standby server and you want it ready to go without unpacking tars. That looks like this:
+
+    pg_basebackup -h localhost -U replicator -D /var/backups/pgbase_plain -Fp -P
+
+No compression flag because plain format doesn't tar-compress by default. The output is a direct copy of the data directory. If you've ever set up streaming replication — and we'll cover that later in this course — this is exactly how you'd seed a standby. Good to know now.
+
+
+--- THE INSTRUCTOR WARNING. PAY ATTENTION. ---
+
+
+I need everyone to stop typing for a second and look up here.
+
+If you are running pg_basebackup against a PRODUCTION server, and you are writing the backup to a directory ON THE SAME DISK as your PostgreSQL data directory — you are not making a backup. You are making a liability.
+
+I once consulted at a mid-sized e-commerce company. Their DBA — an experienced guy, not a beginner — had set up nightly pg_basebackup jobs. Looked great on paper. Automated, logs showing success, management was happy. What nobody noticed was that the backup destination was /var/lib/postgresql/backups — a subdirectory sitting on the exact same physical disk as the data. One disk failure. Everything gone. The backup and the live data, both dead.
+
+Your backup must live somewhere physically separate. A different disk, a mounted NAS, an S3 bucket, a backup server across the network — somewhere that a single hardware failure cannot destroy both your live database and your backup simultaneously. This is not optional. This is the first rule of backups. Write it down somewhere you'll see it.
+
+
+--- Now Let's Talk pg_dump ---
+
+
+Alright, pg_basebackup is great, but now let's talk about the tool you'll probably use more often day to day, and that's pg_dump.
+
+pg_dump is for logical backups. It understands your database objects — tables, views, sequences, indexes, foreign keys — and it exports them as SQL or as a custom archive format that pg_restore can read back.
+
+Let's start with the simplest version. In your shell, type:
+
+    pg_dump -U postgres -d myappdb > /var/backups/myappdb_plain.sql
+
+What did that do? It connected to the database called myappdb as the postgres user, dumped everything to standard output, and you redirected that output to a file. That file is a plain SQL script. You can open it in any text editor and read it. CREATE TABLE statements, COPY commands for the data, all of it.
+
+This is great for small databases, for quick one-offs, for sharing schemas with developers. But this format has a limitation — if you want to restore just one table, or restore in parallel across multiple CPU cores, this format can't do that. For that, you want the custom format.
+
+Type this:
+
+    pg_dump -U postgres -d myappdb -Fc -f /var/backups/myappdb.dump
+
+-Fc means format custom. That's pg_dump's own binary format. It's compressed by default, it's faster, and most importantly, it gives pg_restore a lot of power over how you restore.
+
+-f is the output file path. When you use -Fc, you specify the file with -f instead of redirecting stdout.
+
+Run it. You'll get a .dump file. Don't try to open it with a text editor — it's binary and it'll look like garbage. Trust the tool.
+
+Now let's talk about the directory format, because this one's underused and it's excellent for large databases:
+
+    pg_dump -U postgres -d myappdb -Fd -f /var/backups/myappdb_dir -j 4
+
+-Fd is format directory. Instead of one file, you get a directory with one file per table. And -j 4 means use 4 parallel workers. On a large database, this can cut your dump time dramatically. I used this format on a 600GB database once and dropped the dump time from 4 hours to about 45 minutes. Four to one. That's the difference between a backup window that works and one that bleeds into business hours.
+
+
+--- Dumping Just a Schema, Just a Table, Just the Structure ---
+
+
+Let me show you a few targeted variations because these come up constantly in real work.
+
+Dump only the schema (no data):
+
+    pg_dump -U postgres -d myappdb --schema-only -f /var/backups/myappdb_schema_only.sql
+
+This is incredibly useful when you're setting up a new environment and you need to clone the structure without the data. Think dev environment setup, QA environment resets.
+
+Dump only one specific table:
+
+    pg_dump -U postgres -d myappdb -t orders -f /var/backups/orders_only.dump -Fc
+
+The -t flag takes a table name. You can use it multiple times for multiple tables. I use this when a developer says "hey, I accidentally deleted some rows from the orders table in production, can you restore just that?" — yes I can, and this is how.
+
+Dump only the data, no DDL:
+
+    pg_dump -U postgres -d myappdb --data-only -f /var/backups/myappdb_data_only.sql
+
+This is useful for refreshing data in a schema that already exists at the target.
+
+
+--- pg_restore — Getting Your Data Back ---
+
+
+Alright, now for the moment of truth. You've never really tested a backup until you've restored from it. Always. Test. Your. Restores. I'm going to say this one more time before this class ends, I promise.
+
+pg_restore works with custom and directory format dumps. It does NOT work with plain SQL dumps — those you feed directly to psql, which I'll show you in a second.
+
+First, create a fresh database to restore into:
+
+In psql:
+
+    CREATE DATABASE myappdb_restored;
+
+Now in your shell:
+
+    pg_restore -U postgres -d myappdb_restored /var/backups/myappdb.dump
+
+That's the baseline. It takes your .dump file and rebuilds everything in the target database. Tables, indexes, constraints, data, all of it.
+
+But pg_restore has some powerful options. Let me show you the ones you'll actually use.
+
+Restore with verbose output so you can see what it's doing:
+
+    pg_restore -U postgres -d myappdb_restored -v /var/backups/myappdb.dump
+
+Restore only one specific table:
+
+    pg_restore -U postgres -d myappdb_restored -t orders /var/backups/myappdb.dump
+
+This is where custom format shines. You have a 50-table database in your dump, but you only need the orders table. pg_restore is smart enough to pull just that object out of the binary archive. You can't do this with a plain SQL dump — you'd have to manually edit the file, which is a nightmare on large databases.
+
+Restore in parallel (matches the parallel dump we did earlier):
+
+    pg_restore -U postgres -d myappdb_restored -j 4 /var/backups/myappdb_dir
+
+Notice this uses the directory format backup. Parallel restore needs parallel dump output. They go together.
+
+Now, for plain SQL dumps, you use psql:
+
+    psql -U postgres -d myappdb_restored < /var/backups/myappdb_plain.sql
+
+The angle bracket is input redirection. You're feeding the SQL file into psql, which executes it statement by statement. Simple, effective, but no parallelism and no selective restore.
+
+
+--- pg_dumpall — The Cluster-Level Backup ---
+
+
+Before we move to labs, I want to mention one more tool that often gets forgotten: pg_dumpall.
+
+pg_dump backs up one database. pg_dumpall backs up the entire PostgreSQL cluster — every database, AND the global objects that pg_dump misses. What global objects? Roles and tablespaces. Remember last session when we created roles? Those aren't stored in any individual database — they're cluster-level. pg_dump won't capture them. pg_dumpall will.
+
+    pg_dumpall -U postgres -f /var/backups/full_cluster.sql
+
+This outputs a plain SQL file. For roles, tablespaces, and then each database in sequence. It's not the fastest tool for large multi-database servers, but for small to medium setups, or just for backing up your global objects, it's essential.
+
+If you only want the global objects and not the database contents:
+
+    pg_dumpall -U postgres --globals-only -f /var/backups/globals_only.sql
+
+I use that one a lot when migrating a server. Dump globals on the old server, restore them on the new server, then pg_dump/pg_restore each database. Clean workflow.
+
+
+--- Putting It Together: A Realistic Backup Strategy ---
+
+
+Let me describe what a real backup strategy looks like at a small to medium company. Not theory — what I actually helped set up for a SaaS client about three years ago.
+
+They had a 120GB PostgreSQL database running their core product. Here's what we implemented:
+
+Every night at 1am — pg_basebackup in tar+gzip format, shipped to an S3 bucket via a script. This gave us the ability to do point-in-time recovery when combined with WAL archiving.
+
+Every 6 hours — pg_dump in custom format (-Fc) of the most critical databases — the ones containing customer orders, billing, user accounts. These went to a different storage location. Why separate? Because if something corrupts the data at the logical level — bad query, bad deploy, data poisoning — we want a logical snapshot that's recent.
+
+Once a week — pg_dumpall --globals-only, to capture any role changes, because those don't show up in individual database dumps.
+
+And once a month — a full restore test. We spun up a blank PostgreSQL instance on a test server and actually restored from backup and verified the data. No exceptions.
+
+That last one. The restore test. That saved them. About eight months in, during a routine restore test, we discovered that our pg_basebackup script had a subtle misconfiguration — it was completing successfully from a logging standpoint but one of the tablespaces wasn't being included. If we hadn't tested, we wouldn't have known until disaster struck. The backup log said "success." The actual backup was incomplete.
+
+Test your restores. Not someday. On a schedule.
+
+
+--- LAB TIME ---
+
+
+Okay. Here's what I want you to do on your own. This is your lab for today. Take about 45 minutes. Work through each one, and if you get stuck, raise your hand before you start guessing — guessing in backup/restore scenarios on production has ended careers.
+
+
+LAB EXERCISE 1 — Physical Backup with pg_basebackup
+-----------------------------------------------------
+a) Create a role called 'backup_agent' with the REPLICATION privilege and LOGIN.
+b) Run pg_basebackup as backup_agent to back up your local cluster into /var/backups/lab_base in tar format with gzip compression.
+c) Verify the output files exist and check their sizes.
+d) BONUS: Re-run in plain format (-Fp) and compare the output structure.
+
+
+LAB EXERCISE 2 — Logical Backup with pg_dump
+---------------------------------------------
+a) Make sure you have a database called 'labdb' with at least 2 tables and some data. (If you don't have one, create it now — a few CREATE TABLE and INSERT statements are fine.)
+b) Dump the entire database in custom format to /var/backups/labdb.dump
+c) Dump only the schema (no data) to /var/backups/labdb_schema.sql
+d) Dump only one of your tables to /var/backups/one_table.dump in custom format.
+e) Run pg_dumpall --globals-only and save the output. Open the file and find where your roles are listed.
+
+
+LAB EXERCISE 3 — Restore Operations
+-------------------------------------
+a) Create a new empty database called 'labdb_restored'.
+b) Restore labdb.dump into labdb_restored using pg_restore.
+c) Connect to labdb_restored and verify your tables and data are there.
+d) Drop one table in labdb_restored, then use pg_restore to restore just that table from the dump.
+e) BONUS: Time your restore using the 'time' command prefix. Note how long it takes. Then try with -j 2 and compare.
+
+
+LAB EXERCISE 4 — Plain SQL Dump Round-Trip
+-------------------------------------------
+a) Dump labdb as plain SQL to /var/backups/labdb_plain.sql
+b) Create another empty database called 'labdb_plain_restored'.
+c) Restore using psql and the < redirect method.
+d) Verify the result.
+
+
+--- CLOSING ---
+
+
+Before you start the lab — let me say this.
+
+What we covered today isn't glamorous. Nobody gives you a pat on the back for a clean backup strategy. Nobody notices when backups work. But the day they're needed — and in twenty years I have never met a DBA who didn't eventually need them — that's the day that defines your reputation in an organization.
+
+The developers get the glory. The DBAs keep the lights on.
+
+You're learning this the right way — understanding why the tools exist, not just copying commands. That's what separates a DBA who lasts in this industry from one who has a very bad week and updates their resume.
+
+Get into the labs. Ask questions. And remember — if you're not sure whether your backup is good, the answer is always to test it, not to assume.
+
+Let's go.
+
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD
+  pg_basebackup | pg_dump | pg_restore
+================================================================================
+
+PHYSICAL BACKUP (pg_basebackup)
+--------------------------------
+# Tar + gzip backup
+pg_basebackup -h localhost -U replicator -D /backups/base -Ft -z -P
+
+# Plain format backup (for standby seeding)
+pg_basebackup -h localhost -U replicator -D /backups/base_plain -Fp -P
+
+# Required role setup
+CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'yourpass';
+
+
+LOGICAL BACKUP (pg_dump)
+--------------------------
+# Plain SQL dump (entire database)
+pg_dump -U postgres -d mydb > /backups/mydb.sql
+
+# Custom format (recommended)
+pg_dump -U postgres -d mydb -Fc -f /backups/mydb.dump
+
+# Directory format with parallel workers
+pg_dump -U postgres -d mydb -Fd -f /backups/mydb_dir -j 4
+
+# Schema only (no data)
+pg_dump -U postgres -d mydb --schema-only -f /backups/mydb_schema.sql
+
+# Data only (no DDL)
+pg_dump -U postgres -d mydb --data-only -f /backups/mydb_data.sql
+
+# Single table
+pg_dump -U postgres -d mydb -t tablename -Fc -f /backups/table.dump
+
+# Entire cluster (all databases + global objects)
+pg_dumpall -U postgres -f /backups/cluster.sql
+
+# Global objects only (roles, tablespaces)
+pg_dumpall -U postgres --globals-only -f /backups/globals.sql
+
+
+RESTORE (pg_restore / psql)
+-----------------------------
+# Restore custom format dump
+pg_restore -U postgres -d targetdb /backups/mydb.dump
+
+# Restore with verbose output
+pg_restore -U postgres -d targetdb -v /backups/mydb.dump
+
+# Restore single table from dump
+pg_restore -U postgres -d targetdb -t tablename /backups/mydb.dump
+
+# Parallel restore (use with directory format)
+pg_restore -U postgres -d targetdb -j 4 /backups/mydb_dir
+
+# Restore plain SQL dump
+psql -U postgres -d targetdb < /backups/mydb.sql
+
+# Restore full cluster dump
+psql -U postgres < /backups/cluster.sql
+
+
+FORMAT REFERENCE
+-----------------
+-Fp   Plain SQL text (psql to restore)
+-Fc   Custom binary (pg_restore, selective restore, compressed)
+-Fd   Directory (parallel dump/restore, one file per table)
+-Ft   Tar archive (pg_basebackup default)
+
+
+KEY FLAGS
+----------
+-h    Host                    -P    Progress indicator
+-U    Username                -v    Verbose
+-d    Database name           -j N  Parallel workers
+-f    Output file             -t    Target table
+-F    Format                  -z    Gzip compression
+--schema-only   Structure only, no data
+--data-only     Data only, no DDL
+--globals-only  Roles and tablespaces only (pg_dumpall)
+
+
+THE RULE
+---------
+Backup destination must NEVER be on the same disk as your live data.
+Always test restores on a schedule — not just when disaster strikes.
+
+================================================================================

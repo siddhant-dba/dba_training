@@ -1,0 +1,773 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — SESSION LECTURE TRANSCRIPT
+  Topic  : VACUUM, ANALYZE, and Autovacuum Tuning
+  Level  : Advanced (Certification Prep)
+  Length : 3-Hour Session with Labs
+  Platform: PostgreSQL
+================================================================================
+
+
+Alright, let's get started. Grab your coffee, wake up — because I promise you,
+what we're covering today is the difference between a DBA who keeps their job
+and one who gets a 2 AM phone call about a database that's ground to a halt.
+I've gotten that call. More than once. And almost every time, VACUUM was
+somewhere in the story.
+
+So before I dive in, let me just set the stage for where we are in this course.
+We've done role management, pg_basebackup, pg_dump, authentication with
+pg_hba.conf — all of that foundational stuff. Today we go deeper into something
+that lives right at the heart of PostgreSQL's engine. This is architecture-level
+stuff. And if you're sitting the certification exam, I can almost guarantee you
+something about autovacuum tuning will be on it. Almost guarantee.
+
+Let me start with a question. Raise your hand if you've ever deleted a million
+rows from a table and then wondered why the table didn't get any smaller on disk.
+
+...Yeah. That's what I thought. Every hand goes up eventually. Let me explain
+why that happens, because once you understand it, VACUUM will make complete
+sense.
+
+
+--- WHY VACUUM EXISTS: THE MVCC STORY ---
+
+PostgreSQL uses something called MVCC — Multi-Version Concurrency Control.
+We've touched on this tangentially before, but today it becomes central. Here's
+what MVCC means in plain English: when you UPDATE or DELETE a row in Postgres,
+the database doesn't actually remove it. Not right away. Instead, it marks that
+old version of the row as "dead" — invisible to new transactions — but it leaves
+the bytes sitting there on disk.
+
+Why? Because some other transaction that started before your DELETE might still
+be reading that row. Postgres has to honor that. It can't yank the rug out from
+under an open transaction. So the dead row sits there, waiting.
+
+Now, these dead rows are called "dead tuples." And they accumulate. If you're
+running a busy OLTP system with thousands of updates per second, you can end up
+with millions of dead tuples. The table bloats. Your indexes get fat. Query
+plans start misfiring because the statistics are stale. Eventually — and I mean
+this literally — the database can freeze entirely if you ignore this long enough.
+I'll come back to that freeze point because it is terrifying and you need to
+understand it.
+
+VACUUM is the process that cleans those dead tuples up. It's the garbage
+collector for PostgreSQL. And ANALYZE is the process that updates the statistics
+the query planner uses to make smart decisions.
+
+They sound simple. They are not simple in production. Let me show you.
+
+
+--- UNDERSTANDING DEAD TUPLES HANDS-ON ---
+
+Let's build something we can actually watch. Go ahead and open psql and connect
+to whatever test database you've got running. If you don't have one, create one
+real quick — you already know how to do that from our first session.
+
+Type this:
+
+    CREATE TABLE bloat_demo (
+        id SERIAL PRIMARY KEY,
+        payload TEXT DEFAULT repeat('x', 100)
+    );
+
+This creates a simple table with a text column padded to about 100 characters.
+Good enough to generate some measurable bloat.
+
+Now let's load some data into it:
+
+    INSERT INTO bloat_demo (payload)
+    SELECT repeat('x', 100)
+    FROM generate_series(1, 100000);
+
+That gives us 100,000 rows. Now let's check the size:
+
+    SELECT pg_size_pretty(pg_total_relation_size('bloat_demo'));
+
+Write that number down. Commit it to memory. Now let's update every single row:
+
+    UPDATE bloat_demo SET payload = repeat('y', 100);
+
+Go ahead and run that. It's going to take a second. What just happened? Postgres
+wrote 100,000 NEW row versions to disk, and marked the old 100,000 as dead.
+Your table just doubled in size — on disk — even though the logical row count
+is exactly the same.
+
+Check the size again:
+
+    SELECT pg_size_pretty(pg_total_relation_size('bloat_demo'));
+
+See the difference? Now let's look at the dead tuple count directly:
+
+    SELECT
+        relname,
+        n_live_tup,
+        n_dead_tup,
+        last_vacuum,
+        last_autovacuum
+    FROM pg_stat_user_tables
+    WHERE relname = 'bloat_demo';
+
+You should see n_dead_tup sitting at around 100,000. That's the pile of garbage
+we just created. Now let's clean it up:
+
+    VACUUM bloat_demo;
+
+Run it. Now check pg_stat_user_tables again:
+
+    SELECT
+        relname,
+        n_live_tup,
+        n_dead_tup,
+        last_vacuum,
+        last_autovacuum
+    FROM pg_stat_user_tables
+    WHERE relname = 'bloat_demo';
+
+Dead tuples should be gone or near zero. Good. But here's the thing that trips
+people up every single time. Check the table size again:
+
+    SELECT pg_size_pretty(pg_total_relation_size('bloat_demo'));
+
+It didn't shrink, did it? The size is still about the same as after the UPDATE.
+And this is where I get a lot of angry students who feel like VACUUM is lying
+to them. It's not. Here's what's actually happening.
+
+VACUUM cleans up dead tuples and marks that space as "reusable." But it does
+NOT return that space to the operating system. The file on disk stays the same
+size. Postgres just knows internally that it can use those pages for new data.
+
+If you want to actually return disk space to the OS, you need VACUUM FULL.
+Let me run that so you can see it:
+
+    VACUUM FULL bloat_demo;
+
+Now check the size:
+
+    SELECT pg_size_pretty(pg_total_relation_size('bloat_demo'));
+
+That's the real size. VACUUM FULL actually rewrites the entire table into a new
+file and releases the old one. It works. But it comes with a brutal cost that I
+need to warn you about right now.
+
+
+--- !! INSTRUCTOR WARNING — DO NOT GET THIS WRONG IN PRODUCTION !! ---
+
+VACUUM FULL takes an ACCESS EXCLUSIVE lock on the table. That means while it's
+running, NOTHING can read from or write to that table. Zero. A SELECT will
+block. An INSERT will block. Everything blocks.
+
+On a small table, no big deal. On a 500 GB table in a production system?
+You just brought down your application. I watched a junior DBA do this once on
+a major e-commerce platform. It was a Wednesday evening. They thought it would
+run for "just a few minutes." It ran for four hours. Four hours of the
+application sitting there completely unable to read from that table.
+
+Do not run VACUUM FULL on large production tables during business hours. And
+honestly, question whether you need it at all. For most cases, regular VACUUM —
+which does NOT lock reads and writes — is what you want. VACUUM FULL is a last
+resort for extreme bloat situations, and you run it during a proper maintenance
+window with the application taken offline.
+
+If you need to reclaim space without locking, look at pg_repack — it's a
+third-party extension that does essentially what VACUUM FULL does but without
+the exclusive lock. It's not built into Postgres, but it's production-safe and
+widely used. I'm not covering it today but write the name down.
+
+VACUUM FULL = exclusive lock = application downtime. Burn that into your brain.
+
+---
+
+Okay. Warning delivered. Let's keep moving.
+
+
+--- VACUUM VERBOSE: READING THE REPORT ---
+
+One of my favourite things to show students is VACUUM VERBOSE because it
+demystifies what the engine is actually doing. Run this:
+
+    VACUUM VERBOSE bloat_demo;
+
+Look at the output. You'll see things like:
+
+  - "pages: N removed, N remain"
+  - "tuples: N removed"
+  - "index scans performed"
+  - "buffer usage"
+
+This is your diagnostic tool when something feels off. If you're seeing vacuum
+run but your bloat isn't clearing, VERBOSE output will tell you why. Maybe
+there's a long-running transaction holding back the removal of dead tuples —
+Postgres won't remove a dead row if there's still an open transaction that
+predates it. That situation has a name: transaction ID horizon blocking.
+
+Check the oldest transaction on your system like this:
+
+    SELECT pid, usename, state, xact_start, query
+    FROM pg_stat_activity
+    WHERE state != 'idle'
+    ORDER BY xact_start;
+
+If you see a transaction that's been running for hours, that thing is preventing
+VACUUM from cleaning up anything created before it started. Find whoever owns
+that connection, have a conversation with them, or terminate it if necessary.
+This is genuinely one of the most common reasons I see tables bloating out of
+control in real systems.
+
+
+--- ANALYZE: THE QUERY PLANNER'S FUEL ---
+
+Let me talk about ANALYZE now because it's often lumped in with VACUUM but it
+does something different. ANALYZE goes through your table and builds statistical
+samples — it figures out how many distinct values exist in each column, what the
+distribution looks like, how large the average row is. It stores all of this
+in pg_statistic, which feeds the query planner.
+
+When you write a query and Postgres decides whether to use a seq scan or an
+index scan, it's doing math based on those statistics. If your stats are stale,
+the planner makes bad decisions. I've seen cases where a table grew from a
+million rows to 50 million rows and nobody ran ANALYZE, and the planner was
+still using an index that made total sense at a million rows but was catastrophic
+at 50 million. Queries that took 200 milliseconds started taking 40 seconds.
+
+Run ANALYZE like this:
+
+    ANALYZE bloat_demo;
+
+Or run both together:
+
+    VACUUM ANALYZE bloat_demo;
+
+This is actually very common in maintenance scripts — you do the cleanup and
+the stat refresh in one shot.
+
+You can inspect the statistics Postgres is using like this:
+
+    SELECT
+        attname,
+        n_distinct,
+        correlation
+    FROM pg_stats
+    WHERE tablename = 'bloat_demo';
+
+The n_distinct value tells you how many distinct values Postgres estimates in
+that column. A value of -1 means every row is unique (like a primary key).
+The correlation tells you how physically ordered the data is — a value near 1.0
+means the data on disk is in the same order as the index, which makes index
+scans very efficient. Near 0? Not so much.
+
+Now here's something you should know: ANALYZE uses sampling by default. It
+doesn't read every row. It reads a sample proportional to the default_statistics_target
+parameter. The default is 100, which means it collects about 300 * 100 = 30,000
+sample rows. For most tables this is fine. For tables with very skewed data
+distributions — think a column that has 99% of rows as NULL and then some
+specific values — you might want to bump that target.
+
+You can do it per column:
+
+    ALTER TABLE bloat_demo
+    ALTER COLUMN payload
+    SET STATISTICS 500;
+
+Then run ANALYZE again and the planner will have a richer picture of that
+column. But be thoughtful — higher statistics targets mean longer ANALYZE runs
+and more memory used by the planner. Don't set everything to 500 just because
+you can.
+
+
+--- TRANSACTION ID WRAPAROUND: THE REAL HORROR STORY ---
+
+Okay. I said I'd come back to the freeze. Let me tell you a story first.
+
+Years ago — I'm talking maybe my sixth or seventh year in the industry — I was
+called in to consult on a database that had simply stopped accepting writes. Not
+slow. Not intermittent. Completely stopped. The application could read data but
+could not write anything. The error? Something like "database is not accepting
+commands to avoid wraparound data loss."
+
+The DBA team had disabled autovacuum on their primary tables because it was
+"causing performance problems." They'd been meaning to tune it but never got
+around to it. They ran that system for about eight months without autovacuum
+doing its job. And then, one morning, Postgres looked at the transaction counter
+and said: I cannot continue. I will not continue. And it put the entire database
+into a protective read-only mode.
+
+Here's why that happens. PostgreSQL uses 32-bit transaction IDs. That means it
+has about 4.2 billion possible transaction IDs. When it gets close to wrapping
+around — about 200 million transactions away from the limit — Postgres panics.
+Because if the counter wraps and a row has an old transaction ID that's now
+"in the future," Postgres can't tell whether you can see that row or not.
+Data integrity falls apart.
+
+The solution? VACUUM is responsible for a process called "freezing" — it marks
+old rows with a special frozen transaction ID that's always visible. This
+resets the clock. If VACUUM isn't running, old transaction IDs never get frozen,
+and you march toward that 4.2 billion limit.
+
+You can check how far you are from the danger zone right now:
+
+    SELECT
+        datname,
+        age(datfrozenxid) AS xid_age,
+        2000000000 - age(datfrozenxid) AS transactions_remaining
+    FROM pg_database
+    ORDER BY age(datfrozenxid) DESC;
+
+The age() function here returns how many transactions ago that database's oldest
+unfrozen XID was created. When age gets above 200 million, autovacuum becomes
+very aggressive automatically. When it gets above 1.6 billion — that's when you
+need to be in emergency mode.
+
+The fix is simple: don't disable autovacuum. But since we're in a tuning class,
+let me show you how to make sure it's actually doing its job.
+
+
+--- AUTOVACUUM: YOUR ALWAYS-ON MAINTENANCE WORKER ---
+
+So here's the thing about regular VACUUM — it's manual. You have to invoke it.
+In a production system you cannot sit there manually running VACUUM on every
+table. That's what autovacuum is for. It's a background process that monitors
+your tables and runs VACUUM and ANALYZE automatically when thresholds are crossed.
+
+Let's look at the default configuration:
+
+    SHOW autovacuum;
+    SHOW autovacuum_vacuum_threshold;
+    SHOW autovacuum_vacuum_scale_factor;
+    SHOW autovacuum_analyze_threshold;
+    SHOW autovacuum_analyze_scale_factor;
+
+Run those one at a time and look at the values. The defaults are:
+
+    autovacuum_vacuum_threshold    = 50
+    autovacuum_vacuum_scale_factor = 0.2
+    autovacuum_analyze_threshold   = 50
+    autovacuum_analyze_scale_factor = 0.1
+
+These work together as a formula. Autovacuum triggers a VACUUM on a table when:
+
+    dead_tuples > threshold + (scale_factor * table_size)
+
+So for a table with 10,000 rows, the trigger is:
+    50 + (0.2 * 10,000) = 2,050 dead tuples
+
+For a table with 10,000,000 rows:
+    50 + (0.2 * 10,000,000) = 2,000,050 dead tuples
+
+You see the problem? On a huge table, you need TWO MILLION dead tuples before
+autovacuum fires. If that table is getting updated constantly, the dead tuple
+count can outrun autovacuum. Bloat accumulates faster than it gets cleaned.
+
+This is the most common autovacuum tuning problem I see in real production
+databases. The defaults were set years ago when "large tables" were a few
+million rows. Now people have tables with a billion rows and the defaults
+are completely inappropriate.
+
+
+--- TUNING AUTOVACUUM FOR LARGE TABLES ---
+
+Here's how you fix it. PostgreSQL lets you set autovacuum storage parameters on
+individual tables using ALTER TABLE. This is extremely useful because you don't
+want to change the global defaults and affect every table — you want to tune
+the tables that actually need it.
+
+For a large, heavily-updated table, you want to lower the scale factor so
+autovacuum fires more frequently:
+
+    ALTER TABLE bloat_demo SET (
+        autovacuum_vacuum_scale_factor = 0.01,
+        autovacuum_vacuum_threshold = 100,
+        autovacuum_analyze_scale_factor = 0.005,
+        autovacuum_analyze_threshold = 100
+    );
+
+With a scale factor of 0.01, autovacuum will now fire on our 10 million row
+table when there are only about 100,100 dead tuples. That's much more
+aggressive and appropriate for a busy table.
+
+Now let me show you how to find the tables that actually need this kind of
+attention. This query is something I keep in my toolbox and run regularly
+on client systems:
+
+    SELECT
+        schemaname,
+        relname AS table_name,
+        n_live_tup,
+        n_dead_tup,
+        ROUND(n_dead_tup::numeric / NULLIF(n_live_tup, 0) * 100, 2) AS dead_ratio_pct,
+        last_vacuum,
+        last_autovacuum,
+        last_analyze,
+        last_autoanalyze
+    FROM pg_stat_user_tables
+    WHERE n_live_tup > 1000
+    ORDER BY dead_ratio_pct DESC NULLS LAST
+    LIMIT 20;
+
+This shows you your top 20 tables by dead tuple ratio. If you see anything
+above 10%, that's worth investigating. If you see 50% or above — that's a
+bloat emergency and something is wrong with your autovacuum configuration.
+
+Let me show you one more query that's really useful. This one checks whether
+autovacuum is currently running and what it's doing:
+
+    SELECT
+        pid,
+        datname,
+        relid::regclass AS table_name,
+        phase,
+        heap_blks_total,
+        heap_blks_scanned,
+        ROUND(100.0 * heap_blks_scanned / NULLIF(heap_blks_total, 0), 1) AS pct_done
+    FROM pg_stat_progress_vacuum;
+
+Run this when you suspect autovacuum is stuck or working too slowly. The
+phase column will tell you exactly what stage it's in — scanning heap,
+vacuuming indexes, truncating heap. Very useful for diagnostics.
+
+
+--- AUTOVACUUM COST THROTTLING ---
+
+Here's something that trips people up. By default, autovacuum is deliberately
+throttled — it has a cost delay built in so that it doesn't hammer your I/O
+and impact normal queries. This is good for most situations. But on very large
+tables that are badly bloated, this throttling can mean autovacuum is too slow
+to keep up.
+
+The parameters to look at are:
+
+    SHOW autovacuum_vacuum_cost_delay;
+    SHOW autovacuum_vacuum_cost_limit;
+
+The default cost_delay is 2 milliseconds. After every "cost_limit" amount of
+I/O work, autovacuum sleeps for cost_delay milliseconds. Think of it as
+pacing. If you want autovacuum to work harder and faster, you lower the delay
+or raise the limit.
+
+For a very busy table that's falling behind, you can configure this at the
+table level:
+
+    ALTER TABLE bloat_demo SET (
+        autovacuum_vacuum_cost_delay = 2,
+        autovacuum_vacuum_cost_limit = 800
+    );
+
+The default cost limit is 200. Raising it to 800 effectively lets autovacuum
+do 4x more I/O work per cost cycle before pausing. On a modern SSD-based
+system, this is often completely fine. On spinning disks in a shared environment,
+be more conservative.
+
+One more thing on autovacuum workers. You can check how many are running
+simultaneously:
+
+    SHOW autovacuum_max_workers;
+
+Default is 3. If you have many large tables all needing vacuum simultaneously,
+3 workers might not be enough. But don't just crank this up blindly — more
+workers means more I/O, and more I/O means potential contention. On a dedicated
+database server with good hardware, 5 or 6 is often reasonable. On a shared
+server, be careful.
+
+
+--- MANUAL VACUUM IN MAINTENANCE WINDOWS ---
+
+Even with autovacuum perfectly tuned, there are times you'll want to run
+VACUUM manually. After a massive bulk delete. After a data migration. Before
+an important reporting run where you want fresh statistics. Here's how I
+approach it.
+
+For a full manual vacuum with statistics refresh on a specific table:
+
+    VACUUM ANALYZE bloat_demo;
+
+For the entire database — and this is something you might run during a quiet
+maintenance window:
+
+    VACUUMDB --analyze --verbose mydb
+
+That's the command-line tool. It runs VACUUM ANALYZE across all tables in the
+specified database. Remember when we covered pg_basebackup and I mentioned
+that taking a backup is ideally done after maintenance? This is part of that
+picture — clean tables, fresh statistics, then backup.
+
+If you want to run a freeze cycle manually — especially useful if you've
+just done a huge ETL load and you know those rows won't change:
+
+    VACUUM FREEZE bloat_demo;
+
+This marks all existing rows as frozen, resetting their XID age to zero.
+Very useful after bulk loads to avoid those rows eating into your XID budget.
+
+For checking what databases need attention from a freeze perspective — I showed
+you the XID age query earlier, but here it is again cleaned up for your notes:
+
+    SELECT
+        datname,
+        age(datfrozenxid) AS xid_age,
+        pg_size_pretty(pg_database_size(datname)) AS db_size
+    FROM pg_database
+    WHERE datname NOT IN ('template0')
+    ORDER BY age(datfrozenxid) DESC;
+
+Anything with an XID age above 500 million is worth watching. Above 1 billion,
+that's your weekend project right there.
+
+
+--- PUTTING IT ALL TOGETHER: THE PRODUCTION APPROACH ---
+
+So let me summarize the mental model I want you carrying out of here today.
+
+VACUUM cleans dead tuples and marks space as reusable. It does not shrink the
+file on disk. It does not require downtime. Run it regularly.
+
+ANALYZE refreshes statistics so the query planner makes good decisions. Run it
+after significant data changes.
+
+VACUUM FULL compacts the table and returns space to the OS. It requires an
+exclusive lock. It causes downtime on that table. Use it sparingly.
+
+Autovacuum handles routine cleanup automatically. But it uses defaults that
+break down on large tables. Your job as a DBA is to monitor it, understand
+when it's falling behind, and tune per-table parameters for the tables that need
+it.
+
+The XID wraparound is not a theoretical problem. It is a real emergency that
+has taken down real production systems. Never disable autovacuum. If autovacuum
+is causing performance issues, tune it — don't turn it off.
+
+And the workflow for a new production system? In the first few weeks, watch
+pg_stat_user_tables obsessively. Look at dead tuple ratios. Look at last_autovacuum
+timestamps. Find the tables that autovacuum is struggling with and tune them.
+Set up alerting on XID age. That's the professional approach.
+
+Remember how we talked about authentication methods and how pg_hba.conf has to
+be tuned per environment? Same mindset here. The defaults are a starting point,
+not a prescription.
+
+
+================================================================================
+  LAB EXERCISES — DO THESE YOURSELF
+================================================================================
+
+Complete all exercises in your test PostgreSQL instance. Write down your
+observations after each one.
+
+---
+
+LAB 1 — Observing Bloat Creation and Cleanup (30 minutes)
+
+  Step 1.
+  Create a table called lab_orders with at least 4 columns
+  (id, customer_id, amount, status). Load 500,000 rows into it using
+  generate_series. Note the initial table size.
+
+  Step 2.
+  Update the "status" column on every row to a new value. Check the dead tuple
+  count using pg_stat_user_tables. Note how much the table size grew.
+
+  Step 3.
+  Run VACUUM VERBOSE lab_orders. Read the output carefully. How many dead
+  tuples were removed? How many pages were affected?
+
+  Step 4.
+  Check the table size again. Did it shrink? Why or why not? Write a one
+  paragraph explanation in your own words.
+
+  Step 5.
+  Now run VACUUM FULL lab_orders. Check the size again. Note the difference.
+
+  Question to answer: If lab_orders were a 200 GB production table with active
+  users hitting it every second, what would be the risk of running VACUUM FULL?
+  What alternative would you consider?
+
+---
+
+LAB 2 — Autovacuum Threshold Tuning (25 minutes)
+
+  Step 1.
+  On your lab_orders table, check the current autovacuum settings:
+
+      SELECT reloptions FROM pg_class WHERE relname = 'lab_orders';
+
+  Step 2.
+  Calculate what the current autovacuum trigger threshold is for lab_orders
+  based on its row count and the default scale factor (0.2 and threshold 50).
+  Show your math.
+
+  Step 3.
+  Reconfigure lab_orders for a more aggressive autovacuum appropriate for a
+  high-update table:
+    - vacuum scale factor: 0.01
+    - vacuum threshold: 200
+    - analyze scale factor: 0.005
+    - analyze threshold: 200
+
+  Step 4.
+  Recalculate the new autovacuum trigger threshold. How many dead tuples will
+  now trigger autovacuum? What's the difference from the default?
+
+  Step 5.
+  Generate exactly 1,000 dead tuples by updating 1,000 rows. Watch
+  pg_stat_progress_vacuum in a second psql session to see if autovacuum fires.
+  (You may need to wait up to 60 seconds for the autovacuum daemon to check.)
+
+---
+
+LAB 3 — XID Age Monitoring (20 minutes)
+
+  Step 1.
+  Run the XID age query across all your databases:
+
+      SELECT
+          datname,
+          age(datfrozenxid) AS xid_age,
+          pg_size_pretty(pg_database_size(datname)) AS db_size
+      FROM pg_database
+      WHERE datname NOT IN ('template0')
+      ORDER BY age(datfrozenxid) DESC;
+
+  Step 2.
+  Run VACUUM FREEZE on your lab_orders table. Check the XID age of that
+  database again. Did the number change?
+
+  Step 3.
+  Write a brief monitoring strategy (3-4 sentences): at what XID age threshold
+  would you want an alert? Who would that alert go to? What action would the
+  on-call DBA take in response?
+
+---
+
+LAB 4 — CHALLENGE: Finding Bloated Tables (20 minutes)
+
+  Using pg_stat_user_tables and pg_class, write a single query that returns
+  the top 10 tables by dead tuple ratio, but ONLY for tables with more than
+  10,000 live rows, and includes:
+    - table name
+    - live row count
+    - dead row count
+    - dead tuple percentage (rounded to 2 decimal places)
+    - last autovacuum timestamp
+    - whether the table has custom autovacuum settings (hint: check pg_class.reloptions)
+
+  There's no single right answer for structure. Work it out. If you get stuck,
+  compare with a classmate — but write your own query.
+
+---
+
+BONUS LAB (if you finish early):
+
+  Look up the pg_stat_progress_vacuum view documentation and write a query that
+  shows running vacuum jobs with their estimated percent complete. Then, trigger
+  a manual VACUUM on your largest table and watch the progress view update in
+  real time from a second session. Capture a screenshot of the output.
+
+
+================================================================================
+  CLOSING THOUGHTS
+================================================================================
+
+Look — VACUUM is one of those topics that a lot of DBAs treat as background
+noise. Set autovacuum, forget about it, move on. Don't be that DBA. The systems
+that go sideways are almost always the ones where nobody was paying attention
+to dead tuple accumulation for months, and then one day traffic spikes, the
+query planner starts making insane choices because the stats are garbage, and
+now you're in a firefight on a Friday night.
+
+The stuff we did today — monitoring dead tuples, tuning per-table autovacuum,
+watching XID age — this is proactive DBA work. This is the work that keeps
+you out of the 2 AM phone calls. And in your certification exam, when they ask
+you about autovacuum scale factor or transaction ID wraparound, you'll know
+exactly what to say and why it matters.
+
+You've been doing great work this semester. Labs are due next session.
+If you get stuck tonight, come back to the queries we built together today —
+they're all you need to diagnose 90% of VACUUM-related problems in the real world.
+
+Good luck. Now go vacuum something.
+
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD
+  VACUUM, ANALYZE, and Autovacuum — PostgreSQL
+================================================================================
+
+BASIC OPERATIONS
+----------------
+VACUUM tablename;                         -- Clean dead tuples, reuse space
+VACUUM VERBOSE tablename;                 -- Clean with diagnostic output
+VACUUM ANALYZE tablename;                 -- Clean + refresh stats
+VACUUM FREEZE tablename;                  -- Clean + freeze old XID ages
+VACUUM FULL tablename;                    -- Compact + return disk space (LOCKS TABLE)
+ANALYZE tablename;                        -- Refresh stats only
+VACUUMDB --analyze --verbose mydb         -- CLI: vacuum entire database
+
+PER-TABLE AUTOVACUUM TUNING
+----------------------------
+ALTER TABLE t SET (
+    autovacuum_vacuum_scale_factor  = 0.01,   -- Trigger at 1% dead tuples
+    autovacuum_vacuum_threshold     = 100,    -- Minimum dead tuples to trigger
+    autovacuum_analyze_scale_factor = 0.005,  -- Trigger analyze at 0.5% changes
+    autovacuum_analyze_threshold    = 100,
+    autovacuum_vacuum_cost_delay    = 2,      -- ms sleep between I/O bursts
+    autovacuum_vacuum_cost_limit    = 800     -- I/O work units per burst
+);
+
+AUTOVACUUM TRIGGER FORMULA
+---------------------------
+Fires when: dead_tuples > threshold + (scale_factor * n_live_tup)
+
+MONITORING QUERIES
+------------------
+-- Dead tuple ratios
+SELECT schemaname, relname, n_live_tup, n_dead_tup,
+    ROUND(n_dead_tup::numeric / NULLIF(n_live_tup,0) * 100, 2) AS dead_pct,
+    last_autovacuum, last_autoanalyze
+FROM pg_stat_user_tables
+WHERE n_live_tup > 1000
+ORDER BY dead_pct DESC NULLS LAST LIMIT 20;
+
+-- XID wraparound danger check
+SELECT datname, age(datfrozenxid) AS xid_age,
+    2000000000 - age(datfrozenxid) AS txns_remaining
+FROM pg_database ORDER BY xid_age DESC;
+
+-- Live vacuum progress
+SELECT pid, datname, relid::regclass AS table_name, phase,
+    ROUND(100.0 * heap_blks_scanned / NULLIF(heap_blks_total,0), 1) AS pct_done
+FROM pg_stat_progress_vacuum;
+
+-- Blocking transactions (hold back vacuum cleanup)
+SELECT pid, usename, state, xact_start, query
+FROM pg_stat_activity
+WHERE state != 'idle' ORDER BY xact_start;
+
+-- Custom autovacuum settings per table
+SELECT relname, reloptions
+FROM pg_class
+WHERE reloptions IS NOT NULL;
+
+-- Per-column statistics target
+ALTER TABLE t ALTER COLUMN col SET STATISTICS 500;
+ANALYZE t;
+
+GLOBAL PARAMETERS (postgresql.conf)
+-------------------------------------
+autovacuum                     = on          -- Never turn this off
+autovacuum_max_workers         = 3           -- Default; increase for busy systems
+autovacuum_vacuum_threshold    = 50
+autovacuum_vacuum_scale_factor = 0.2
+autovacuum_analyze_threshold   = 50
+autovacuum_analyze_scale_factor = 0.1
+autovacuum_vacuum_cost_delay   = 2           -- ms (lower = faster, more I/O)
+autovacuum_vacuum_cost_limit   = 200         -- Higher = faster, more aggressive
+default_statistics_target      = 100         -- Higher = better stats, slower analyze
+
+DANGER THRESHOLDS TO ALERT ON
+-------------------------------
+  dead_tuple_ratio > 10%     -- Investigate autovacuum config
+  dead_tuple_ratio > 50%     -- Bloat emergency
+  xid_age         > 500M     -- Monitor closely
+  xid_age         > 1B       -- Take action immediately
+  xid_age         > 1.6B     -- Emergency: force VACUUM FREEZE now
+
+================================================================================
+  END OF LECTURE
+================================================================================

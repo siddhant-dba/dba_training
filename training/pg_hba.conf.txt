@@ -1,0 +1,845 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — SESSION 7 OF 10
+  TOPIC: pg_hba.conf Authentication Methods
+  (scram-sha-256 | peer | md5)
+  Duration: 3-Hour Session with Labs
+  Platform: PostgreSQL
+================================================================================
+
+
+Alright, let's get settled. Grab your coffee, open up your terminal, and get
+a psql session ready — we're going to be bouncing between the config file and
+live database commands a lot today.
+
+Before I start, quick show of hands — who here has ever been locked out of a
+PostgreSQL instance because of a pg_hba.conf mistake? ...Yeah, every hand in
+the room goes up, including mine. And if your hand isn't up, it will be. That's
+not a threat, that's a promise. This file is deceptively simple-looking and
+absolutely unforgiving. By the end of today, you're going to understand *why*
+it works the way it does, not just what to put in it.
+
+Let's talk about what we're covering today: pg_hba.conf — the Host-Based
+Authentication configuration file. This is the gatekeeper of your PostgreSQL
+instance. Every single connection attempt — every one — passes through this
+file before PostgreSQL even looks at whether your password is right or wrong.
+Think of it as the bouncer at the door before you even get to the coat check.
+
+Now, you remember when we set up roles last week? CREATE ROLE, GRANT, all of
+that? You might have walked away thinking, "okay, I've got users, I've got
+permissions, I'm good." Nope. Not even close. You could have the most perfectly
+crafted role structure in the world, and if pg_hba.conf doesn't let that user
+in the front door, they're not getting in. The two systems — role management
+and HBA authentication — they're partners. They don't replace each other.
+
+
+------------------------------------------------------------------------
+WHAT IS pg_hba.conf AND WHERE DOES IT LIVE?
+------------------------------------------------------------------------
+
+HBA stands for Host-Based Authentication. The file itself is plain text, and
+it lives in your PostgreSQL data directory. Let's find it. Go ahead and type
+this in your terminal:
+
+    sudo -u postgres psql -c "SHOW hba_file;"
+
+You'll get something back like:
+
+    /etc/postgresql/16/main/pg_hba.conf
+
+or maybe:
+
+    /var/lib/postgresql/16/main/pg_hba.conf
+
+It depends on your distro and how you installed Postgres. On Debian/Ubuntu
+systems it's usually under /etc/postgresql. On a compiled-from-source install
+or a container, it's likely inside the PGDATA directory. Either way, that
+command will tell you exactly where it is. Use that. Don't guess.
+
+Now go ahead and open it:
+
+    sudo nano /etc/postgresql/16/main/pg_hba.conf
+
+Or use vim, whatever you prefer. Let's look at what's in there.
+
+The file is going to look like a mess of comments at first — PostgreSQL ships
+it with a lot of explanatory text, which is actually pretty decent
+documentation if you read it. Scroll past all the comments and you'll see the
+actual rules. They look like this:
+
+    # TYPE   DATABASE   USER   ADDRESS      METHOD
+    local    all        all                 peer
+    host     all        all    127.0.0.1/32 scram-sha-256
+    host     all        all    ::1/128      scram-sha-256
+
+Five columns. Every rule has five columns. The TYPE, the DATABASE, the USER,
+the ADDRESS, and the METHOD. And here's the most important thing about how
+this file works — it's read top to bottom, first match wins. That's it. Once
+PostgreSQL finds a rule that matches the incoming connection, it applies that
+rule and stops reading. It doesn't find the "best" match. It finds the FIRST
+match. Remember that. We'll come back to it.
+
+
+------------------------------------------------------------------------
+THE FIVE COLUMNS — WHAT THEY MEAN
+------------------------------------------------------------------------
+
+Let me walk through each column quickly because I see people get confused by
+them even at the advanced level.
+
+TYPE: This tells PostgreSQL how the connection is coming in.
+
+  "local" means a Unix domain socket connection — no network involved at all.
+  This is what happens when you're physically on the server and you do:
+      sudo -u postgres psql
+  That connection goes through a socket file, not TCP/IP.
+
+  "host" means a TCP/IP connection. Could be from localhost, could be from
+  another server across the network.
+
+  "hostssl" means TCP/IP but ONLY if SSL is being used. I always recommend
+  this over plain "host" for any remote connection in production.
+
+  "hostnossl" is the opposite — only allows non-SSL connections. You almost
+  never want this in production. Mostly useful for troubleshooting.
+
+DATABASE: Which database does this rule apply to?
+  "all" means any database. You can also specify a specific database name like
+  "myapp_prod" or "billing". You can even specify a comma-separated list.
+
+USER: Which PostgreSQL user (role) does this apply to?
+  "all" means any role. Again, you can name specific roles.
+
+ADDRESS: For "host" type connections, this is the IP range using CIDR notation.
+  127.0.0.1/32 means exactly one IP — the IPv4 loopback.
+  ::1/128 means the IPv6 loopback.
+  10.0.0.0/8 would mean any IP starting with 10.
+  For "local" connections, this column is blank — there's no IP because
+  it's a socket, not a network connection.
+
+METHOD: This is today's main topic. How does PostgreSQL verify who this user
+  claims to be? This is where scram-sha-256, peer, md5, and others live.
+
+Alright, let's dig into the methods.
+
+
+------------------------------------------------------------------------
+METHOD 1: peer — "I Trust the OS, Not the Password"
+------------------------------------------------------------------------
+
+Peer authentication is elegant in its simplicity. When you use peer auth,
+PostgreSQL says: "I'm not going to ask for a password. Instead, I'm going to
+ask the operating system: who is the user running this process? And then I'm
+going to check if a PostgreSQL role with that same name exists."
+
+This only works for local connections — the TYPE must be "local" — because
+you need a Unix socket to query the OS about the connecting process.
+
+So when you do this on the server:
+
+    sudo -u postgres psql
+
+The OS says "this process is running as the 'postgres' OS user." PostgreSQL
+checks: does a role called 'postgres' exist? Yes. Does the HBA rule allow peer
+auth for this scenario? Yes. You're in. No password needed.
+
+Let me show you where this comes into play with the role setup we did last
+week. Remember when we created that app role?
+
+    sudo -u postgres psql
+    CREATE ROLE appuser WITH LOGIN;
+    \q
+
+Now, if you wanted 'appuser' to be able to connect via peer auth, you'd need
+an OS user with the same name. Let's check if one exists:
+
+    id appuser
+
+If it doesn't exist, create it:
+
+    sudo useradd -m appuser
+
+Now your pg_hba.conf rule would look like:
+
+    local   all   appuser   peer
+
+And then, as the appuser OS account:
+
+    sudo -u appuser psql -U appuser -d postgres
+
+And you're in. No password prompt at all.
+
+Now here's when peer is GREAT: internal service accounts. I used peer auth for
+a backup user on a client's server for years. The backup script ran as the
+'pgbackup' OS user, there was a 'pgbackup' PostgreSQL role, and the pg_hba.conf
+had a peer rule. No password stored anywhere in the backup script. Clean, simple,
+no credential exposure. That's the right use case for peer.
+
+Here's when peer is a TRAP: using it for application users where the app server
+is remote. Peer only works on local sockets. The moment your app is on a
+different machine, peer is not even an option. And I've seen developers get
+confused about this — they test locally with peer, it works great, they deploy,
+and suddenly nothing connects. Know your connection types before you pick
+your auth method.
+
+
+------------------------------------------------------------------------
+METHOD 2: md5 — "The Old Reliable That You Should Retire"
+------------------------------------------------------------------------
+
+Let me be straight with you: md5 authentication in PostgreSQL is password-based.
+The client sends a password, it's hashed with MD5, and PostgreSQL compares it
+against the stored hash. It's been around since the early days of PostgreSQL
+and it works.
+
+The problem — and this is important for your certification — is that MD5 as a
+hashing algorithm is considered cryptographically broken for security purposes.
+It's vulnerable to collision attacks and preimage attacks. In 2024, there is
+genuinely no good reason to use md5 if you're setting up something new. But
+you WILL see it in the wild, constantly, because so many installations were
+set up years ago and nobody changed it.
+
+To set a role's password and have md5 work, you'd do:
+
+    sudo -u postgres psql
+    ALTER ROLE someuser WITH PASSWORD 'somepassword';
+
+And the pg_hba.conf entry:
+
+    host   mydb   someuser   192.168.1.0/24   md5
+
+When a client connects, the server sends a random challenge, the client
+combines the challenge with the password hash, and sends it back. The actual
+password never travels over the wire in plaintext — that part is fine. The
+weakness is the hashing algorithm itself and how PostgreSQL stores the hash.
+
+Here's a quick way to check what method a role's password was hashed with:
+
+    SELECT rolname, rolpassword FROM pg_authid WHERE rolname = 'someuser';
+
+If you see "md5" at the start of the rolpassword string, it's stored as an
+md5 hash. If you see "SCRAM-SHA-256$..." it's been stored with scram. You're
+going to want to migrate those md5 passwords. I'll show you how in a minute.
+
+For now, just know: md5 works, md5 is everywhere, md5 is legacy. Don't
+start new projects with it.
+
+
+------------------------------------------------------------------------
+METHOD 3: scram-sha-256 — "This Is What You Should Be Using"
+------------------------------------------------------------------------
+
+scram-sha-256 was introduced in PostgreSQL 10, and as of PostgreSQL 14+, it's
+the DEFAULT for new password-based connections. SCRAM stands for Salted
+Challenge Response Authentication Mechanism. It's defined by RFC 5802 if you
+want to read the spec, but here's what you need to know practically:
+
+1. The password is never sent over the wire. Not even hashed. The protocol
+   uses a challenge-response mechanism where what gets transmitted is derived
+   from the password but cannot be reversed to recover the password.
+
+2. The server stores the password with a unique salt AND uses SHA-256 as the
+   underlying hash. SHA-256 is not broken. MD5 is.
+
+3. Even if someone captures the authentication exchange in a packet trace,
+   they can't use what they captured to authenticate. The challenge is different
+   every time.
+
+4. It protects against server-side database leaks too. Even if someone steals
+   your pg_authid table, recovering the original passwords is dramatically
+   harder than with md5.
+
+Let's set this up properly. First, let's make sure your postgresql.conf has
+the right setting for how passwords get stored. Type this:
+
+    sudo -u postgres psql -c "SHOW password_encryption;"
+
+If it says "md5", change it. Open postgresql.conf:
+
+    sudo nano /etc/postgresql/16/main/postgresql.conf
+
+Find the line with password_encryption and set it to:
+
+    password_encryption = scram-sha-256
+
+Save that. Now reload PostgreSQL — not restart, reload:
+
+    sudo systemctl reload postgresql
+
+Let me be clear about something here. Changing password_encryption doesn't
+automatically re-hash your existing passwords. It only affects passwords you
+SET from this point on. Existing users still have their old md5 hashes stored.
+You have to explicitly reset their passwords to upgrade them. I'll show you
+that in a moment.
+
+Now, set a user's password and it will be stored as scram:
+
+    sudo -u postgres psql
+    ALTER ROLE someuser WITH PASSWORD 'newstrongpassword';
+    SELECT rolname, rolpassword FROM pg_authid WHERE rolname = 'someuser';
+
+You should now see something like:
+    SCRAM-SHA-256$4096:<base64-salt>$<base64-storedkey>:<base64-serverkey>
+
+That's your scram hash. That's what you want.
+
+And your pg_hba.conf rule for scram-sha-256 looks like:
+
+    host   mydb   someuser   192.168.1.0/24   scram-sha-256
+
+Clean. Simple.
+
+
+------------------------------------------------------------------------
+A STORY FROM THE FIELD
+------------------------------------------------------------------------
+
+I want to tell you about a situation I walked into about eight years ago —
+one of the most expensive config mistakes I've ever seen that could have been
+prevented with ten minutes of thought.
+
+I was called in as a consultant to a mid-sized e-commerce company. They'd had
+a security incident — not a full breach, but someone had gotten access to their
+staging database. The investigation found that their pg_hba.conf had a rule
+that looked like this:
+
+    host   all   all   0.0.0.0/0   md5
+
+"All databases, all users, from anywhere on the internet, password auth." I
+want you to let that sink in. I walked in and that was sitting there. The
+password for their staging 'admin' role was 'admin1234'. MD5-hashed but
+trivially brute-forced.
+
+The developer who wrote it said — and I'm quoting almost exactly — "I just
+wanted to be able to connect from anywhere when I was working remotely."
+
+Two words: VPN. Use a VPN.
+
+The rule I wrote as a replacement that afternoon was:
+
+    host   staging_db   developer_role   10.8.0.0/24   scram-sha-256
+
+10.8.0.0/24 was their VPN subnet. Developers connect to VPN, they can reach
+the database. No VPN, no access. Problem solved.
+
+The point of that story is: the METHOD matters, but it only matters after
+you've thought about the ADDRESS column. Scram-sha-256 won't save you if you're
+allowing connections from 0.0.0.0/0.
+
+
+------------------------------------------------------------------------
+MIGRATING FROM md5 TO scram-sha-256
+------------------------------------------------------------------------
+
+Okay, real world scenario — you've inherited a PostgreSQL instance running
+Postgres 12 or 13, and everything is using md5. Management wants it secured.
+Here's how you do it without locking everyone out.
+
+Step 1 — change password_encryption in postgresql.conf:
+
+    password_encryption = scram-sha-256
+
+Reload:
+
+    sudo systemctl reload postgresql
+
+Step 2 — find all roles using md5 hashes. Here's a query that will help you:
+
+    SELECT rolname, 
+           CASE 
+             WHEN rolpassword LIKE 'md5%' THEN 'MD5 - needs migration'
+             WHEN rolpassword LIKE 'SCRAM-SHA-256%' THEN 'SCRAM - OK'
+             WHEN rolpassword IS NULL THEN 'No password'
+             ELSE 'Unknown'
+           END AS password_status
+    FROM pg_authid
+    WHERE rolcanlogin = true
+    ORDER BY rolname;
+
+Run that and you'll see exactly who needs their password reset.
+
+Step 3 — reset passwords for each user. If you know the passwords:
+
+    ALTER ROLE appuser WITH PASSWORD 'their_current_password';
+
+Yes, you have to set it again even if it's the same password. That's the only
+way to force PostgreSQL to re-hash it with the new algorithm.
+
+If you don't know their passwords (which is common — you shouldn't know
+everyone's passwords), you need to coordinate with each user or application
+owner to reset. For application service accounts, generate new strong passwords
+and update the application config at the same time.
+
+Step 4 — once ALL users have been migrated, update pg_hba.conf to change
+"md5" entries to "scram-sha-256". If you do this BEFORE resetting a user's
+password, that user will be locked out because their stored hash is still
+md5-formatted and scram-sha-256 won't accept it.
+
+    Do the password resets FIRST. Update pg_hba.conf SECOND.
+
+Step 5 — reload again:
+
+    sudo systemctl reload postgresql
+
+That's the migration path. Sequential, deliberate, nobody gets locked out.
+
+
+------------------------------------------------------------------------
+THE FIRST-MATCH RULE — AND HOW IT BITES PEOPLE
+------------------------------------------------------------------------
+
+I mentioned this earlier and I want to come back to it because it causes more
+confusion than almost anything else about this file.
+
+PostgreSQL reads pg_hba.conf from top to bottom. The moment it finds a rule
+that matches the connection — same TYPE, DATABASE matches, USER matches,
+ADDRESS matches — it uses that rule. Period. It does not look for a more
+specific rule further down. It does not look for a "better" rule. First match
+wins. Everything below it is ignored for that connection.
+
+Watch what happens here. Say your pg_hba.conf has these two rules in this order:
+
+    host   all   all   192.168.0.0/16   md5
+    host   all   all   192.168.1.50/32  scram-sha-256
+
+You're thinking: "The second rule is more specific, so connections from
+192.168.1.50 should use scram-sha-256." Wrong. A connection from 192.168.1.50
+matches the FIRST rule — because 192.168.1.50 IS within 192.168.0.0/16. The
+first rule is matched, md5 is used, and the second rule is never consulted.
+
+If you want the more specific rule to apply, put it FIRST:
+
+    host   all   all   192.168.1.50/32  scram-sha-256
+    host   all   all   192.168.0.0/16   md5
+
+More specific rules go above more general rules. Always. Without exception.
+
+This applies to user matching too. If you want a special rule for the 'postgres'
+superuser, put it before the "all" rule that covers everyone else.
+
+
+------------------------------------------------------------------------
+!!! INSTRUCTOR WARNING — DO NOT DO THIS IN PRODUCTION !!!
+------------------------------------------------------------------------
+
+I need every one of you to stop what you're doing and really listen to me for
+the next two minutes. This is the most dangerous mistake I see people make
+with pg_hba.conf, and I've seen it cause actual outages at real companies.
+
+NEVER edit pg_hba.conf without having a fallback plan for getting back in.
+
+Here is the scenario: You're on a production server. You edit pg_hba.conf to
+change an authentication rule. You reload PostgreSQL. The change has a typo, or
+the logic is wrong, or you accidentally blocked the one user that your monitoring
+and your backup systems use to connect. Now nothing can connect. Your app is
+down. Your backup job is failing. And you're staring at a terminal wondering
+what just happened.
+
+Here are the rules I personally follow — every time, no exceptions:
+
+RULE 1: Always have a "break glass" local rule at the TOP of pg_hba.conf for
+the postgres superuser via local socket:
+
+    local   all   postgres   peer
+
+This means you can always do "sudo -u postgres psql" directly on the server,
+even if every network rule is broken. Never remove this line. Never put it
+below a conflicting rule. It lives at the very top.
+
+RULE 2: Before you reload, validate your syntax. PostgreSQL has a built-in
+tool for this:
+
+    sudo -u postgres pg_hba_ctl verify -f /etc/postgresql/16/main/pg_hba.conf
+
+Or simply do a config test with:
+
+    sudo -u postgres postgres --config-file=/etc/postgresql/16/main/postgresql.conf -C hba_file
+
+Actually, the simplest way is to use pg_ctl:
+
+    sudo -u postgres pg_ctl reload -D /var/lib/postgresql/16/main
+
+Watch the output carefully. But even better — in PostgreSQL 16+, you can use
+pg_file_settings and pg_hba_file_rules to check your config before reloading:
+
+    sudo -u postgres psql -c "SELECT * FROM pg_hba_file_rules;"
+
+That view reads and parses your current pg_hba.conf and shows you the rules
+as PostgreSQL sees them. If there's a parse error, you'll see error entries
+instead of valid rules. Check this BEFORE you reload.
+
+RULE 3: Make a backup of pg_hba.conf BEFORE editing:
+
+    sudo cp /etc/postgresql/16/main/pg_hba.conf \
+            /etc/postgresql/16/main/pg_hba.conf.backup.$(date +%Y%m%d_%H%M%S)
+
+Three seconds. It takes three seconds. And it has saved me an enormous amount
+of pain over the years.
+
+RULE 4: Test your changes with a non-critical user before disconnecting your
+current session. Open a SECOND terminal, try to connect as the affected user.
+If it works, great. If not, you still have your first terminal session open
+to fix the problem.
+
+That's it. Four rules. If you follow them, you will never be completely stuck.
+If you skip them — especially that first one — you're rolling the dice.
+
+
+------------------------------------------------------------------------
+RELOADING vs. RESTARTING
+------------------------------------------------------------------------
+
+Quick but important: pg_hba.conf changes take effect on RELOAD, not RESTART.
+
+    sudo systemctl reload postgresql    <-- this is what you want
+
+A reload sends a SIGHUP to the PostgreSQL process, which causes it to re-read
+the configuration files — including pg_hba.conf — without terminating existing
+connections. New connections will use the new rules. Existing connections are
+not affected.
+
+A restart kills all existing connections, shuts down the server, and starts
+it back up. You generally don't need a restart for pg_hba.conf changes. You DO
+need a restart for some postgresql.conf parameters (like changing max_connections
+or shared_buffers). Not pg_hba.conf.
+
+When in production, if someone tells you "just restart Postgres," ask if a
+reload will do. Often it will, and a reload is much less disruptive.
+
+You can also reload from inside psql if you're already connected as a superuser:
+
+    SELECT pg_reload_conf();
+
+That's handy during a live session. It returns 't' if the reload was successful.
+Check your pg_hba_file_rules view again after calling that to confirm the new
+rules are loaded.
+
+
+------------------------------------------------------------------------
+CHECKING YOUR WORK — USEFUL DIAGNOSTIC QUERIES
+------------------------------------------------------------------------
+
+Let me give you a few queries I use regularly for pg_hba troubleshooting.
+
+To see the current parsed rules (as I mentioned):
+
+    SELECT line_number, type, database, user_name, address, auth_method, error
+    FROM pg_hba_file_rules
+    ORDER BY line_number;
+
+Pay attention to the 'error' column. If there's a parsing problem with any
+rule, it shows up there. Any non-null value in 'error' is a problem.
+
+To see active connections and what authentication method they used... well,
+PostgreSQL doesn't log the auth method per connection by default. But you can
+see current connections:
+
+    SELECT pid, usename, application_name, client_addr, state
+    FROM pg_stat_activity
+    WHERE state IS NOT NULL;
+
+And to check if SSL is being used on a connection (relevant for hostssl rules):
+
+    SELECT ssl, version, cipher, bits
+    FROM pg_stat_ssl
+    WHERE pid = pg_backend_pid();
+
+That last one, you can run from inside any psql session to see whether YOUR
+current connection is SSL-protected.
+
+
+------------------------------------------------------------------------
+PUTTING IT ALL TOGETHER — A REALISTIC pg_hba.conf
+------------------------------------------------------------------------
+
+Let me show you what a production-ready pg_hba.conf might actually look like
+for a typical three-tier application — web app, API layer, admin users.
+
+First, open it up again:
+
+    sudo nano /etc/postgresql/16/main/pg_hba.conf
+
+Here's a realistic, commented example. I want you to type this or follow
+along as I explain each line:
+
+    # TYPE   DATABASE      USER          ADDRESS           METHOD
+
+    # === LOCAL ADMIN ACCESS ===
+    # Postgres superuser — always accessible locally via OS user
+    local    all           postgres                        peer
+
+    # Local backup user — OS-level user 'pgbackup' maps to role 'pgbackup'
+    local    all           pgbackup                        peer
+
+    # === APPLICATION CONNECTIONS ===
+    # App server connects from specific IP subnet — scram only
+    host     appdb         appuser       10.0.10.0/24      scram-sha-256
+
+    # Read-only reporting user — from analytics server subnet
+    host     appdb         readonly      10.0.20.0/24      scram-sha-256
+
+    # === ADMIN / DBA ACCESS ===
+    # DBAs connect via SSL from management network only
+    hostssl  all           dba_team      10.0.5.0/24       scram-sha-256
+
+    # === LOCALHOST ===
+    # IPv4 localhost — local tools like pgAdmin on the server
+    host     all           all           127.0.0.1/32      scram-sha-256
+
+    # IPv6 localhost
+    host     all           all           ::1/128           scram-sha-256
+
+    # === DEFAULT DENY ===
+    # Anything not matched above is implicitly denied.
+    # (No need for an explicit deny rule — no match = deny.)
+
+Walk through what I've done here:
+
+The postgres superuser is at the top — local socket, peer auth. That's our
+break-glass rule. It's always there, it's always first.
+
+The backup user is also local socket with peer — clean, no credentials in
+scripts.
+
+Application users connect from specific subnets, NOT from 0.0.0.0/0. If your
+app server is at 10.0.10.x, that's the only place appuser should be connecting
+from. Tight address ranges are not optional — they're required.
+
+DBA connections use hostssl — requiring SSL — from the management network. In
+a real shop, that management network might be your VPN subnet, so DBAs connect
+to VPN first, then to the database.
+
+Notice what's NOT here: an md5 rule. Not one. And no 0.0.0.0/0 rule.
+
+After editing, run through your checklist:
+1. Backup made ✓
+2. Verify the file parses:
+
+    sudo -u postgres psql -c "SELECT line_number, error FROM pg_hba_file_rules WHERE error IS NOT NULL;"
+
+3. If no errors, reload:
+
+    sudo systemctl reload postgresql
+
+4. In a second terminal, test a connection as the app user:
+
+    psql -h 127.0.0.1 -U appuser -d appdb
+
+5. Confirm it works. Then close the second terminal.
+
+
+------------------------------------------------------------------------
+ONE MORE THING — THE "trust" AND "reject" METHODS
+------------------------------------------------------------------------
+
+I'd be doing you a disservice if I didn't mention two other methods quickly.
+
+"trust" means no authentication whatsoever. Anyone who matches the rule is in.
+The only legitimate use of trust is for local socket connections in a tightly
+controlled environment, like a containerized development setup where the whole
+container is trusted. In production? Never. I mean it. Never.
+
+"reject" explicitly rejects a connection. This is useful when you want to
+explicitly block certain users or IPs before a catch-all rule:
+
+    host   all   badactor   10.1.2.3/32   reject
+    host   all   all        10.0.0.0/8    scram-sha-256
+
+That first rule will explicitly reject connections from 'badactor' at that IP,
+and the second rule handles everyone else on that subnet. The reject rule stops
+processing and returns an authentication failure immediately. It's a good
+tool for explicit blocks.
+
+
+------------------------------------------------------------------------
+LAB EXERCISES
+------------------------------------------------------------------------
+
+Alright. Let's put you to work. You've got about 40-45 minutes for these labs.
+Work through them in order — they build on each other. I'll walk around and
+check in. If you're stuck for more than five minutes on any one step, raise
+your hand and I'll come by.
+
+You'll need a Linux system with PostgreSQL 16 running and sudo access.
+
+
+LAB 1: Auditing Your Current State (10 minutes)
+------------------------------------------------
+a) Find your pg_hba.conf file using the SQL query we covered.
+
+b) Make a timestamped backup of it.
+
+c) Run the pg_hba_file_rules query and capture the output. How many rules
+   do you have? Are there any errors?
+
+d) Run the pg_authid query to see which users have md5 hashes vs scram hashes.
+   Write down the results — you'll need them for Lab 2.
+
+e) Check what password_encryption is currently set to in your instance.
+
+
+LAB 2: Setting Up Users and Auth Methods (15 minutes)
+------------------------------------------------------
+a) Create three PostgreSQL roles:
+   - 'webappuser' with a password
+   - 'reportuser' with a password
+   - 'localadmin' as a login role (no password needed for this one)
+
+b) Create an OS user called 'localadmin':
+       sudo useradd -m localadmin
+
+c) Set password_encryption to scram-sha-256 in postgresql.conf if it isn't
+   already. Reload.
+
+d) Set passwords for webappuser and reportuser. Verify they are stored as
+   SCRAM hashes using the pg_authid query.
+
+
+LAB 3: Editing pg_hba.conf (15 minutes)
+----------------------------------------
+a) Edit your pg_hba.conf to implement these rules (in this order):
+   1. Local peer auth for 'postgres'
+   2. Local peer auth for 'localadmin'
+   3. scram-sha-256 for 'webappuser' connecting from 127.0.0.1/32
+   4. scram-sha-256 for 'reportuser' connecting from 127.0.0.1/32
+
+b) Before reloading, query pg_hba_file_rules and verify no errors.
+
+c) Reload PostgreSQL.
+
+d) Test each connection:
+   - sudo -u postgres psql (should work via peer)
+   - sudo -u localadmin psql -U localadmin -d postgres (should work via peer)
+   - psql -h 127.0.0.1 -U webappuser -d postgres (should prompt for password)
+   - psql -h 127.0.0.1 -U reportuser -d postgres (should prompt for password)
+
+e) Add a line that explicitly REJECTS 'webappuser' from 10.0.0.0/8, ABOVE
+   the scram-sha-256 rules. Reload and test. (Yes, even though you don't
+   have a machine on that subnet — test the syntax and rule parsing.)
+
+
+LAB 4: Challenge Lab (10 minutes — advanced)
+--------------------------------------------
+This one is a thinking exercise more than a typing one.
+
+Scenario: Your team has a pg_hba.conf with this rule as the first host entry:
+
+    host   all   all   0.0.0.0/0   md5
+
+Your task: design the replacement ruleset for a production PostgreSQL server
+with the following requirements:
+
+  - Postgres superuser is only accessible locally via peer
+  - A 'deploy_user' role can connect from 10.10.1.0/24 using scram-sha-256
+    to a database called 'production'
+  - A 'monitoring_user' role can connect from 10.10.2.5/32 using scram-sha-256
+    to any database
+  - DBAs can connect from 10.10.0.0/24 using SSL (hostssl) and scram-sha-256
+  - No other connections are allowed
+
+Write out the pg_hba.conf rules in the correct order. Then explain why the
+order you chose is correct.
+
+
+------------------------------------------------------------------------
+CLOSING — BEFORE YOU GO
+------------------------------------------------------------------------
+
+Look — pg_hba.conf is one of those things that looks like a five-minute topic
+until you're on a call at 2am because someone changed one line and brought
+down three services. The reason I spend a full session on this is because I've
+seen what happens when people treat it as an afterthought.
+
+You are advanced DBAs. You're going into production environments where the
+decisions you make with this file have real consequences — security breaches,
+compliance failures, outages. The technical content today isn't that
+complicated when you slow down and think about it. TYPE, DATABASE, USER,
+ADDRESS, METHOD. Five columns. Top to bottom. First match wins.
+
+What's going to separate you from the DBAs who make expensive mistakes is the
+habits — the backup before you edit, the syntax check before you reload, the
+second terminal before you close your session, the tight CIDR ranges instead of
+0.0.0.0/0. Those aren't clever tricks. They're discipline.
+
+For certification: know your auth methods cold. Know the difference between
+peer, md5, and scram-sha-256. Know that scram is the modern standard and why.
+Know the first-match rule. Know the difference between reload and restart.
+
+Next session we're moving into physical replication — pg_basebackup is going to
+come back into play in a big way, and you'll see how authentication config
+matters for replication users specifically. Everything connects.
+
+Good work today. Go take a break.
+
+
+================================================================================
+QUICK REFERENCE COMMAND CARD
+================================================================================
+
+FIND THE FILE
+    psql -c "SHOW hba_file;"
+    psql -c "SHOW data_directory;"
+
+BACK UP BEFORE EDITING (ALWAYS)
+    cp /etc/postgresql/16/main/pg_hba.conf \
+       /etc/postgresql/16/main/pg_hba.conf.bak.$(date +%Y%m%d_%H%M%S)
+
+CHECK SYNTAX BEFORE RELOADING
+    psql -c "SELECT line_number, type, database, user_name, address, auth_method, error
+             FROM pg_hba_file_rules ORDER BY line_number;"
+
+RELOAD (NOT RESTART) AFTER CHANGES
+    sudo systemctl reload postgresql
+    -- OR from inside psql:
+    SELECT pg_reload_conf();
+
+SET PASSWORD ENCRYPTION (postgresql.conf)
+    password_encryption = scram-sha-256
+
+SET / RESET A USER PASSWORD (triggers re-hash with current algorithm)
+    ALTER ROLE username WITH PASSWORD 'newpassword';
+
+AUDIT PASSWORD HASH TYPES
+    SELECT rolname,
+           CASE
+             WHEN rolpassword LIKE 'md5%'         THEN 'MD5 - migrate!'
+             WHEN rolpassword LIKE 'SCRAM-SHA-256%' THEN 'SCRAM - OK'
+             WHEN rolpassword IS NULL              THEN 'No password'
+             ELSE 'Unknown'
+           END AS status
+    FROM pg_authid
+    WHERE rolcanlogin = true
+    ORDER BY rolname;
+
+CHECK SSL ON CURRENT CONNECTION
+    SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+
+VIEW ACTIVE CONNECTIONS
+    SELECT pid, usename, client_addr, state FROM pg_stat_activity;
+
+pg_hba.conf COLUMN ORDER
+    # TYPE   DATABASE   USER   ADDRESS         METHOD
+    local    all        all                    peer
+    host     mydb       myuser 10.0.0.0/8      scram-sha-256
+    hostssl  all        dbas   10.0.5.0/24     scram-sha-256
+    host     all        all    127.0.0.1/32    scram-sha-256
+    host     all        all    ::1/128         scram-sha-256
+
+AUTH METHOD SUMMARY
+    peer         -- Local socket only. OS username must match role name.
+                    No password. Best for local service accounts.
+    scram-sha-256 -- Password-based. Modern, secure. Use this for new setups.
+    md5          -- Password-based. Legacy, cryptographically weak. Migrate away.
+    trust        -- No auth. Never in production.
+    reject       -- Explicitly denies matching connections.
+
+THE GOLDEN RULES
+    1. Most specific rules go FIRST. General rules go LAST.
+    2. First match wins — PostgreSQL stops reading after it matches a rule.
+    3. Keep 'local all postgres peer' as your FIRST rule. Always.
+    4. Tight CIDR ranges. Never 0.0.0.0/0 in production.
+    5. Reload (not restart) to apply pg_hba.conf changes.
+    6. Test in a second terminal BEFORE closing your current session.
+
+================================================================================
+END OF SESSION 7
+================================================================================

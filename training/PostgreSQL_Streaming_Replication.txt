@@ -1,0 +1,961 @@
+================================================================================
+  2-YEAR DBA TECHNICAL DIPLOMA — SESSION TRANSCRIPT
+  Topic: PostgreSQL Streaming Replication (Primary / Standby Setup)
+  Duration: 3-Hour Session with Labs
+  Platform: PostgreSQL
+  Audience: Advanced DBAs — Certification Track
+================================================================================
+
+
+Alright, settle down everyone, grab your coffee — you're going to need it today. 
+I mean that seriously. What we're covering this session is the kind of thing that 
+will either make your career or end it, depending on how well you understand it. 
+Streaming replication. Primary-standby setup. This is the beating heart of every 
+serious PostgreSQL production environment I've touched in 20 years, and I've 
+touched a lot of them.
+
+Before we dive in, let me give you a quick story, because I think it sets the 
+stage for why today matters.
+
+Back in 2009, I was a senior DBA at a mid-sized financial firm. We had a single 
+PostgreSQL primary server. No standby. No replication. The argument from management 
+was "we do pg_dump every night, we're fine." You already know pg_dump — we covered 
+it two sessions ago. And yes, pg_dump is great, I love it for logical backups. But 
+pg_dump is not a high-availability strategy. It's a recovery strategy, and there's 
+a massive difference between those two things.
+
+One Friday afternoon, the primary disk controller failed. Server went down at 2:47 PM. 
+By Monday morning, we had restored from the previous night's dump — meaning we lost 
+a full business day of financial transaction data. Seventeen hours of data, gone. 
+The fallout from that incident funded three DBA headcount positions and a complete 
+infrastructure overhaul. It also aged me about five years in two weeks.
+
+That was the last time I ever managed a production PostgreSQL system without 
+streaming replication. And that's what you're learning today, so you don't have 
+to learn it the hard way like I did.
+
+
+WHAT IS STREAMING REPLICATION, EXACTLY?
+----------------------------------------
+
+Let me make sure we're all on the same page conceptually before we touch a single 
+command. Streaming replication in PostgreSQL is a mechanism where one server — the 
+primary — continuously streams its Write-Ahead Log, the WAL, to one or more standby 
+servers in near real-time. The standby applies those WAL records and stays in sync 
+with the primary.
+
+Now, you already know what WAL is from our autovacuum and VACUUM sessions, even if 
+we didn't call it out explicitly. Every write operation PostgreSQL makes — every 
+INSERT, UPDATE, DELETE — gets written to the WAL first. That's the durability 
+guarantee. WAL is the truth. Everything else is derived from it.
+
+Streaming replication takes that WAL stream and ships it across the network to a 
+standby server, which replays it continuously. The standby is essentially saying: 
+"Tell me everything you've done, in order, and I'll do the exact same thing."
+
+The standby is in a read-only state while it's receiving and applying WAL. This 
+is called "hot standby" mode, and it's incredibly useful — your applications can 
+run read queries against the standby while the primary handles writes. We'll come 
+back to that.
+
+There are two replication modes you need to know:
+
+ASYNCHRONOUS replication — the primary doesn't wait for the standby to confirm 
+it received the WAL before acknowledging a commit to the client. Faster, but there's 
+a small window where the standby could be behind if the primary crashes suddenly.
+
+SYNCHRONOUS replication — the primary waits for at least one standby to confirm 
+WAL receipt before acknowledging the commit. Zero data loss, but adds latency to 
+every write transaction.
+
+For the certification exam and for most production setups, you'll configure async 
+first and then make a deliberate decision about sync based on your RPO requirements. 
+RPO — Recovery Point Objective — how much data can you afford to lose? If the answer 
+is "none," you want synchronous. If the answer is "a few seconds," async is usually fine.
+
+Okay. Let's build this thing.
+
+
+THE LAB ENVIRONMENT
+-------------------
+
+For today's session, I want everyone to have two virtual machines or two PostgreSQL 
+instances running. I'll refer to them as:
+
+  PRIMARY  — IP: 192.168.1.10   (the server that takes writes)
+  STANDBY  — IP: 192.168.1.20   (the server that replicates from primary)
+
+If you're on a single machine, you can run two PostgreSQL clusters on different 
+ports — use port 5432 for primary and 5433 for standby. Either way, the concepts 
+are identical.
+
+I'm assuming PostgreSQL 15 or 16 here, which is what you'll see on the cert exam. 
+Most of what I show you is the same back to version 12, but there are a few 
+configuration parameter name changes in older versions I'll flag as we go.
+
+
+STEP 1: CONFIGURE THE PRIMARY SERVER
+--------------------------------------
+
+Start on your PRIMARY machine. Open postgresql.conf. You know this file — we were 
+in it when we tuned autovacuum. Let's find it:
+
+  SHOW config_file;
+
+Go ahead and type that in psql. It'll tell you exactly where your config file lives. 
+On most systems it's /etc/postgresql/15/main/postgresql.conf or wherever your 
+data directory is.
+
+Now, open that file in your editor and find — or add — these parameters:
+
+
+  # Tell PostgreSQL to operate in a mode that allows replication
+  wal_level = replica
+
+  # How many WAL sender processes to allow (one per standby, plus headroom)
+  max_wal_senders = 10
+
+  # How much WAL to keep on disk so a lagging standby can catch up
+  wal_keep_size = 1GB
+
+  # Enable hot standby reads on the standby
+  hot_standby = on
+
+
+Let me walk through each of these because every single one matters.
+
+wal_level = replica
+
+This tells PostgreSQL to write enough information to the WAL to support replication. 
+The default used to be "minimal" in old versions, which doesn't include enough 
+information for a standby to replay changes correctly. "replica" is what you need. 
+There's also "logical" for logical replication — different topic, different session. 
+Set it to "replica" for streaming replication.
+
+max_wal_senders = 10
+
+Each connected standby needs one WAL sender process. I set this to 10 because it 
+costs almost nothing when idle, and it gives you room to add more standbys, plus 
+pg_basebackup connections, without having to restart. And by the way — remember 
+when we used pg_basebackup in our backup session? pg_basebackup also connects as 
+a WAL sender to stream the base backup. So if you set max_wal_senders = 1 and 
+your standby is connected, you can't take a base backup simultaneously. I've seen 
+junior DBAs hit that wall during disaster recovery drills at the worst possible 
+time.
+
+wal_keep_size = 1GB
+
+This keeps at least 1 gigabyte of WAL files on the primary, even after they've 
+been checkpointed. Why? Because if your standby falls behind — maybe a network 
+blip, maybe a brief restart — it needs to be able to catch up from where it left 
+off. If you don't keep enough WAL around, the primary recycles those files, and 
+the standby can't catch up. What happens then? The standby is invalidated and you 
+have to rebuild it from scratch. I've done that rebuild at 3 AM more times than 
+I care to remember.
+
+An alternative to wal_keep_size — and often a better one in production — is 
+a replication slot, which I'll cover after we get the basics working. Slots are 
+more reliable but come with their own risks.
+
+hot_standby = on
+
+This allows read queries on the standby while it's in recovery mode. Without this, 
+the standby just sits there applying WAL and refusing all connections. With it, 
+you can point your reporting queries, your analytics jobs, your read replicas — 
+all at the standby. This is the foundation of read scaling in PostgreSQL.
+
+Save those changes. But don't reload yet — we have one more file to touch.
+
+
+STEP 2: CONFIGURE pg_hba.conf ON THE PRIMARY
+----------------------------------------------
+
+Remember pg_hba.conf from our authentication session? The one we used to set up 
+scram-sha-256? This is where that connects. The standby needs to authenticate to 
+the primary to receive WAL. We have to explicitly allow that connection.
+
+Open pg_hba.conf on the PRIMARY and add this line:
+
+  # TYPE   DATABASE     USER          ADDRESS           METHOD
+  host     replication  replicator    192.168.1.20/32   scram-sha-256
+
+Let me break this down:
+
+"host" means a TCP/IP connection. If you're on the same machine, you could use 
+"local" with a Unix socket, but in production your primary and standby are on 
+different machines, so "host" is what you want.
+
+"replication" is a special pseudo-database name in PostgreSQL that means 
+"replication connections specifically." You're not connecting to a database called 
+replication — it's a keyword that grants replication privileges.
+
+"replicator" is the role we're about to create. You could call it anything, 
+but please — don't use a superuser for replication. I've seen teams just use 
+the postgres superuser for everything. That's sloppy and it's a security risk. 
+Make a dedicated replication user.
+
+"192.168.1.20/32" locks this down to just the standby's IP. Don't put 0.0.0.0/0 
+here. Don't put a wide subnet unless you have multiple standbys that need it. 
+Least privilege. Always.
+
+"scram-sha-256" because we're using modern authentication. We covered this. 
+Use it.
+
+Now, let's create that replication role. On the PRIMARY, in psql:
+
+  CREATE ROLE replicator
+    WITH REPLICATION
+    LOGIN
+    PASSWORD 'choose_a_strong_password_here';
+
+The REPLICATION attribute is what matters here. It grants this role the specific 
+privilege to initiate a replication connection. Regular login roles don't have 
+this unless you grant it. Notice I also gave it LOGIN — it needs to be able to 
+actually authenticate. And it needs a password because we're using scram-sha-256 
+authentication.
+
+Now reload the configuration on the primary:
+
+  SELECT pg_reload_conf();
+
+Or from the OS:
+
+  pg_ctlcluster 15 main reload
+
+Either works. The reload picks up pg_hba.conf changes without a full restart. 
+The postgresql.conf changes we made — specifically wal_level and max_wal_senders 
+— those actually require a full restart to take effect. So go ahead and do that:
+
+  pg_ctlcluster 15 main restart
+
+Or with systemd:
+
+  systemctl restart postgresql@15-main
+
+Check that it came back clean:
+
+  systemctl status postgresql@15-main
+
+And verify your settings took effect:
+
+  SHOW wal_level;
+  SHOW max_wal_senders;
+
+Both should reflect what you set. If wal_level still shows "minimal," the restart 
+didn't work or your config file path is wrong. Fix that before proceeding.
+
+
+STEP 3: CREATE THE BASE BACKUP ON THE STANDBY
+----------------------------------------------
+
+Now move over to your STANDBY machine. This is where pg_basebackup comes back in — 
+remember that from our backup session? It's doing double duty here. We use it to 
+take an initial copy of the primary's data directory so the standby has a starting 
+point to replay WAL from.
+
+First, make sure PostgreSQL is NOT running on the standby. If it is, stop it:
+
+  pg_ctlcluster 15 main stop
+
+Now, we're going to wipe the standby's data directory and replace it with a fresh 
+copy from the primary. This is intentional. Type carefully here:
+
+  rm -rf /var/lib/postgresql/15/main/*
+
+Yes, I know that looks scary. You're on the standby machine. The primary is fine. 
+You're clearing the standby's data directory to make room for the base backup. 
+Just double-check you're on the right machine before you hit enter. I've seen 
+that mistake exactly once in my career and it made someone cry.
+
+Now run pg_basebackup:
+
+  pg_basebackup \
+    -h 192.168.1.10 \
+    -U replicator \
+    -D /var/lib/postgresql/15/main \
+    -P \
+    -Xs \
+    -R
+
+Let me go through every flag:
+
+-h 192.168.1.10  — connect to the primary server
+
+-U replicator    — use our replication role
+
+-D /var/lib/postgresql/15/main  — destination: the standby's data directory
+
+-P  — show progress. On large databases this takes a while, you want to see 
+      that something is happening.
+
+-Xs  — this is important. The "X" means "include WAL in the backup." The "s" 
+       means use the "stream" method — it opens a second connection to stream 
+       WAL during the backup so we don't need extra wal_keep_size. Without this, 
+       you might finish the backup and find the WAL you need has already been 
+       recycled.
+
+-R  — this is the magic flag. It automatically creates the standby.signal file 
+      and writes a basic postgresql.auto.conf with the connection info. It sets 
+      up the standby so it's ready to connect to the primary and start replicating. 
+      Without -R, you'd have to do all that manually. Let pg_basebackup do it.
+
+It'll prompt for the replicator password. Enter it and watch the progress bar. 
+On a small database this is fast. On a 2-terabyte database I've waited four hours. 
+Plan accordingly in production.
+
+When it's done, look at what -R created:
+
+  cat /var/lib/postgresql/15/main/postgresql.auto.conf
+
+You should see something like:
+
+  primary_conninfo = 'host=192.168.1.10 port=5432 user=replicator password=...'
+
+And check for the signal file:
+
+  ls /var/lib/postgresql/15/main/standby.signal
+
+That standby.signal file is how PostgreSQL knows this instance should start in 
+standby/recovery mode rather than as a normal primary. It's just an empty file. 
+Its existence is the signal. In older versions (pre-12), this was done with a 
+file called recovery.conf — if you're studying for the cert and see recovery.conf 
+questions, know that it was deprecated in PostgreSQL 12. The standby.signal file 
+and postgresql.auto.conf replaced it.
+
+Now let's also set the primary_conninfo properly. The auto-generated one might 
+be missing a few things. Edit postgresql.auto.conf on the standby:
+
+  primary_conninfo = 'host=192.168.1.10 port=5432 user=replicator 
+                      password=your_password application_name=standby1'
+
+The application_name is useful for monitoring — we'll use it in a moment.
+
+Now fix the permissions on the data directory:
+
+  chown -R postgres:postgres /var/lib/postgresql/15/main
+  chmod 700 /var/lib/postgresql/15/main
+
+And start the standby:
+
+  pg_ctlcluster 15 main start
+
+Watch the logs:
+
+  tail -f /var/log/postgresql/postgresql-15-main.log
+
+You should see messages like:
+
+  LOG:  entering standby mode
+  LOG:  redo starts at ...
+  LOG:  consistent recovery state reached at ...
+  LOG:  database system is ready to accept read-only connections
+
+That last line is your indicator that replication is working. The standby is up, 
+it's connected to the primary, it's applying WAL, and it's accepting read queries.
+
+
+STEP 4: VERIFY REPLICATION IS WORKING
+---------------------------------------
+
+Back on the PRIMARY, run this query — this is one you should memorize, honestly:
+
+  SELECT 
+    client_addr,
+    application_name,
+    state,
+    sent_lsn,
+    write_lsn,
+    flush_lsn,
+    replay_lsn,
+    (sent_lsn - replay_lsn) AS replication_lag_bytes,
+    sync_state
+  FROM pg_stat_replication;
+
+If you see a row here, congratulations — your standby is connected and replicating. 
+Let me tell you what the columns mean:
+
+state         — should be "streaming." If it says "startup" it's still initializing. 
+                If it's empty, the connection dropped.
+
+sent_lsn      — how much WAL the primary has sent to this standby
+write_lsn     — how much the standby has written to its WAL files
+flush_lsn     — how much has been flushed to standby disk
+replay_lsn    — how much the standby has actually applied
+
+The gap between sent_lsn and replay_lsn tells you your replication lag in bytes. 
+You can convert this to approximate time lag with:
+
+  SELECT now() - pg_last_xact_replay_timestamp();
+
+Run that on the STANDBY. It tells you how far behind the standby is in time. 
+Under normal conditions, this should be under a second. If it's growing, something 
+is wrong — the standby is falling behind, possibly due to a long-running transaction 
+on the standby, a slow network, or disk I/O problems.
+
+sync_state will show "async" for asynchronous replication, which is what we 
+have right now.
+
+Let's do a quick sanity test. On the PRIMARY:
+
+  CREATE TABLE replication_test (id serial, ts timestamptz default now());
+  INSERT INTO replication_test DEFAULT VALUES;
+  INSERT INTO replication_test DEFAULT VALUES;
+  INSERT INTO replication_test DEFAULT VALUES;
+
+Now immediately go to the STANDBY and run:
+
+  SELECT * FROM replication_test;
+
+You should see those three rows. If you do — beautiful. Your data is flowing from 
+primary to standby in real-time. That's streaming replication working.
+
+Try running an INSERT on the standby:
+
+  INSERT INTO replication_test DEFAULT VALUES;
+
+You'll get:
+
+  ERROR: cannot execute INSERT in a read-only transaction
+
+Perfect. The standby is in hot standby mode — reads work, writes are rejected. 
+That's exactly what you want.
+
+
+================================================================================
+  INSTRUCTOR WARNING — STOP AND PAY ATTENTION
+================================================================================
+
+I'm going to pause here because what I'm about to tell you is something I've 
+watched DBAs get wrong in production, and it is catastrophic when it happens. 
+This is not a theoretical risk. I have personally witnessed this cause data loss 
+and unplanned downtime.
+
+The warning is about REPLICATION SLOTS.
+
+I mentioned earlier that replication slots are an alternative to wal_keep_size. 
+Here's how they work: instead of keeping a fixed amount of WAL based on size, 
+a replication slot causes the primary to keep ALL WAL that a specific standby 
+hasn't consumed yet. The primary will never recycle WAL that a slot holder 
+hasn't received.
+
+This sounds great, right? The standby will never fall too far behind to catch up.
+
+Here's the problem: if your standby goes offline for an extended period — 
+maintenance, network partition, hardware failure — the primary keeps accumulating 
+WAL. Forever. Until it fills up your disk. And when your primary's disk fills up, 
+PostgreSQL panics and shuts down. Your primary goes down. Not the standby. 
+The PRIMARY.
+
+I was called in as a consultant to a company in 2018. They had set up replication 
+slots — great idea, they thought. One standby went down for a "quick" maintenance 
+window that turned into a week-long hardware saga. Nobody noticed the primary's 
+disk was filling. On day six, the primary ran out of disk space and shut down. 
+They had no HA setup for the primary either, so this was a complete production 
+outage. Eight hours of downtime. For a company that does e-commerce.
+
+The fix is simple:
+
+  -- If you use replication slots, always monitor this:
+  SELECT 
+    slot_name,
+    active,
+    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS lag_size
+  FROM pg_replication_slots;
+
+If lag_size starts climbing into gigabytes on an inactive slot, you need to either 
+bring the standby back online or drop the slot:
+
+  SELECT pg_drop_replication_slot('slot_name');
+
+I'm not saying don't use replication slots. I use them in production. I'm saying: 
+if you use them, you must monitor them. Alert on lag size. Alert on inactive slots. 
+This is non-negotiable in production.
+
+For today's lab we'll use wal_keep_size instead so we don't have to worry about 
+this for the exercises. But know how to create a slot too:
+
+  -- On the PRIMARY:
+  SELECT pg_create_physical_replication_slot('standby1_slot');
+
+  -- Then in postgresql.auto.conf on the STANDBY, add:
+  primary_slot_name = 'standby1_slot'
+
+And then monitor that slot religiously.
+
+Okay. Warning delivered. Moving on.
+================================================================================
+
+
+STEP 5: CONFIGURING SYNCHRONOUS REPLICATION (OPTIONAL BUT IMPORTANT)
+----------------------------------------------------------------------
+
+I want to show you synchronous replication even if you don't use it today, 
+because it will absolutely come up on your certification exam.
+
+With async replication, there's a small window where committed transactions 
+exist on the primary but haven't been received by the standby yet. For most 
+applications, this is fine. For financial systems, healthcare, anywhere where 
+data loss means regulatory problems or significant money — you want synchronous.
+
+On the PRIMARY, in postgresql.conf:
+
+  synchronous_standby_names = 'standby1'
+
+That 'standby1' matches the application_name we set in primary_conninfo on 
+the standby. That's why I told you to set application_name — here's where it 
+matters.
+
+Reload the primary:
+
+  SELECT pg_reload_conf();
+
+Now check pg_stat_replication again:
+
+  SELECT application_name, sync_state FROM pg_stat_replication;
+
+You should see sync_state = 'sync' for your standby.
+
+With this setting active, every COMMIT on the primary will wait until at least 
+one synchronous standby confirms it has written and flushed that WAL. No data 
+loss, but every write transaction gets slightly slower.
+
+You can get more granular. In PostgreSQL 10+, you can specify:
+
+  synchronous_standby_names = 'FIRST 1 (standby1, standby2)'
+
+This means "at least one of these must confirm before commit." Or:
+
+  synchronous_standby_names = 'ANY 2 (standby1, standby2, standby3)'
+
+"Any two of these three must confirm." That's quorum-based synchronous 
+replication, and it's very powerful for multi-datacenter setups.
+
+For today's single-standby lab, just know the basic form. Set it, verify it, 
+then set it back to async (empty string) for the rest of the lab:
+
+  -- Reset to async for the rest of today:
+  -- In postgresql.conf, set:
+  synchronous_standby_names = ''
+  -- Then reload:
+  SELECT pg_reload_conf();
+
+
+MONITORING REPLICATION HEALTH
+------------------------------
+
+A replication setup you can't monitor is worse than no replication — you'll think 
+you're protected when you're not. Let me give you the monitoring queries you should 
+build dashboards or alerts around.
+
+On the PRIMARY — check all connected standbys and their lag:
+
+  SELECT
+    application_name,
+    client_addr,
+    state,
+    sync_state,
+    pg_size_pretty(sent_lsn - replay_lsn) AS total_lag,
+    write_lag,
+    flush_lag,
+    replay_lag
+  FROM pg_stat_replication;
+
+write_lag, flush_lag, and replay_lag are interval columns added in PostgreSQL 10. 
+They give you time-based lag directly. Very useful.
+
+On the STANDBY — check replication receiver status:
+
+  SELECT * FROM pg_stat_wal_receiver;
+
+This tells you whether the standby is connected to the primary, what LSN it's at, 
+and when it last received a WAL message. If status = 'streaming' you're good.
+
+On the STANDBY — check how far behind in time:
+
+  SELECT 
+    now() - pg_last_xact_replay_timestamp() AS replication_delay,
+    pg_is_in_recovery() AS is_standby,
+    pg_last_wal_receive_lsn() AS received_lsn,
+    pg_last_wal_replay_lsn() AS replayed_lsn;
+
+pg_is_in_recovery() returns true on a standby and false on a primary. This is 
+also how your applications can detect whether they're talking to a primary or 
+standby — useful if you're writing connection logic.
+
+
+PROMOTION: WHAT HAPPENS WHEN THE PRIMARY FAILS
+------------------------------------------------
+
+This is the moment everyone dreads and everyone needs to understand. The primary 
+goes down. Your standby is running and healthy. How do you promote it?
+
+PostgreSQL makes this straightforward. On the STANDBY:
+
+  pg_ctlcluster 15 main promote
+
+Or using pg_ctl directly:
+
+  pg_ctl promote -D /var/lib/postgresql/15/main
+
+That's it. PostgreSQL will:
+1. Finish applying any WAL it has received
+2. Create a timeline history file
+3. Remove the standby.signal file
+4. Start accepting write connections
+
+You'll see in the logs:
+
+  LOG:  received promote request
+  LOG:  redo in progress
+  LOG:  selected new timeline ID: 2
+  LOG:  archive recovery complete
+  LOG:  database system is ready to accept connections
+
+Notice "selected new timeline ID: 2." PostgreSQL uses timelines to track the 
+history of a server's WAL stream. After promotion, the new primary is on timeline 2. 
+This matters when you try to re-add the old primary as a standby after it comes 
+back — you have to handle the timeline correctly. pg_basebackup handles this 
+automatically if you rebuild the old primary from scratch.
+
+You can also promote via SQL in PostgreSQL 12+:
+
+  SELECT pg_promote();
+
+This is particularly useful if your monitoring system wants to trigger failover 
+programmatically.
+
+Now — after promotion, your application needs to point at the new primary. How 
+you handle that depends on your architecture. Pgpool-II, Patroni, HAProxy with 
+health checks — these are all tools for automating failover and connection routing. 
+Those are advanced topics for the next session, but understand that promotion 
+itself is just that one command. The orchestration around it is where the 
+complexity lives.
+
+
+STEP 6: RE-ADDING THE OLD PRIMARY AS A STANDBY
+------------------------------------------------
+
+Let's say the old primary came back. The common pattern is to rebuild it as a 
+standby from the newly promoted primary. This is often called a "reinstatement" 
+or "re-sync."
+
+Stop the old primary if it's running (it might auto-start):
+
+  pg_ctlcluster 15 main stop
+
+Clear its data directory:
+
+  rm -rf /var/lib/postgresql/15/main/*
+
+Run pg_basebackup from the new primary:
+
+  pg_basebackup \
+    -h 192.168.1.20 \
+    -U replicator \
+    -D /var/lib/postgresql/15/main \
+    -P \
+    -Xs \
+    -R
+
+Note that now we're pointing at 192.168.1.20 — the former standby, now primary. 
+Everything else is the same. Start it up, verify pg_stat_replication on the new 
+primary shows it connected. You now have a healthy primary-standby pair again, 
+with the roles reversed.
+
+Some teams automate this entire process. Some handle it manually. Either way, 
+you need to know how to do it by hand.
+
+
+QUICK PERFORMANCE NOTES
+------------------------
+
+A couple of things about standby performance that come up in production:
+
+Hot standby queries can conflict with recovery. When the primary runs VACUUM 
+and cleans up dead rows, it writes those cleanup actions to the WAL. If the standby 
+is running a long query that still needs those rows, there's a conflict — the 
+standby can't apply that WAL without interrupting the query. PostgreSQL handles 
+this with a parameter called:
+
+  max_standby_streaming_delay = 30s
+
+This tells the standby: wait up to 30 seconds before cancelling conflicting 
+queries to apply the WAL. If you have long-running reports on the standby, tune 
+this up. If you have very tight replication lag requirements, tune it down. 
+Set this on the standby in postgresql.conf.
+
+Also — the standby's postgresql.conf is mostly ignored while it's in recovery 
+mode, because it's using the primary's config through replicated WAL. But a few 
+standby-specific parameters — like hot_standby, max_standby_streaming_delay, 
+and recovery-related settings — are read from the standby's own config. Don't 
+get confused when you change something on the standby's postgresql.conf and it 
+seemingly has no effect — that's probably a primary-side parameter.
+
+
+================================================================================
+  LAB EXERCISES — DO THESE YOURSELF
+================================================================================
+
+Okay. You've sat still long enough. Here are your lab exercises. I'll be walking 
+around, but I want you to try each one before you call me over.
+
+
+LAB 1: BASIC REPLICATION SETUP (30 minutes)
+---------------------------------------------
+
+Set up a primary and standby from scratch using the steps we covered.
+
+Requirements:
+- Configure the primary with wal_level = replica
+- Create the replicator role with the REPLICATION attribute
+- Configure pg_hba.conf to allow the replication connection
+- Use pg_basebackup with -R to initialize the standby
+- Start the standby and verify with pg_stat_replication
+- Create a table on the primary, insert rows, and verify they appear on the standby
+- Try inserting on the standby and confirm you get the read-only error
+
+Success criteria: pg_stat_replication shows state = 'streaming' and you can 
+see data replicate within one second of inserting on the primary.
+
+
+LAB 2: MONITORING QUERIES (20 minutes)
+----------------------------------------
+
+On your running replication setup:
+
+a) Query pg_stat_replication on the primary. Record the values of 
+   write_lag, flush_lag, and replay_lag under normal load.
+
+b) Query pg_stat_wal_receiver on the standby. What does the status field show?
+
+c) On the standby, run this query. What does it return?
+
+     SELECT pg_is_in_recovery();
+
+d) Generate some load on the primary using pg_bench:
+
+     pgbench -i -s 10 postgres
+     pgbench -c 5 -T 30 postgres
+
+   While it runs, watch replication lag on the primary in another terminal:
+
+     watch -n 1 "psql -c \"SELECT application_name, write_lag, replay_lag 
+                 FROM pg_stat_replication;\""
+
+   Does lag increase under load? By how much?
+
+e) Write a single SQL query that returns: current timestamp, replication delay, 
+   and whether this server is in recovery mode. Run it on both servers.
+
+
+LAB 3: REPLICATION SLOT (20 minutes)
+--------------------------------------
+
+a) On the primary, create a physical replication slot:
+
+     SELECT pg_create_physical_replication_slot('lab_slot');
+
+b) Verify it appears in pg_replication_slots:
+
+     SELECT slot_name, slot_type, active, restart_lsn 
+     FROM pg_replication_slots;
+
+c) Add the slot to the standby's postgresql.auto.conf:
+
+     primary_slot_name = 'lab_slot'
+
+   Restart the standby. Verify the slot is now active (active = true).
+
+d) Check the replication lag size for your slot:
+
+     SELECT slot_name, 
+            pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) 
+     FROM pg_replication_slots;
+
+e) IMPORTANT: Drop the slot when you're done with the lab:
+
+     SELECT pg_drop_replication_slot('lab_slot');
+
+   Why is this important? Be ready to explain it.
+
+
+LAB 4: PROMOTION AND FAILOVER (30 minutes — do this last)
+-----------------------------------------------------------
+
+This one is the big one. Take your time.
+
+a) On the standby, note the current replay LSN:
+
+     SELECT pg_last_wal_replay_lsn();
+
+b) Stop the primary (simulate a failure):
+
+     pg_ctlcluster 15 main stop
+
+c) Promote the standby:
+
+     pg_ctlcluster 15 main promote
+
+   Or:
+     SELECT pg_promote();   -- if you can still connect during the transition
+
+d) Wait for the promotion to complete. Check the logs:
+
+     tail -f /var/log/postgresql/postgresql-15-main.log
+
+e) Verify the promoted standby is now accepting writes:
+
+     CREATE TABLE failover_test (id serial, msg text);
+     INSERT INTO failover_test (msg) VALUES ('this is the new primary');
+
+f) Check the timeline:
+
+     SELECT timeline_id FROM pg_control_checkpoint();
+
+   What timeline are you on now?
+
+g) Bonus: Reinstate the old primary as a standby by running pg_basebackup 
+   against the new primary, starting it, and verifying it appears in 
+   pg_stat_replication.
+
+
+================================================================================
+  CLOSING THOUGHTS
+================================================================================
+
+I know that was a lot. Three hours of replication setup, monitoring, failover — 
+there's a reason this is a full session. But here's what I want you to leave 
+with today.
+
+Streaming replication is not magic. It's a WAL pipeline. The primary writes WAL. 
+The standby receives and replays WAL. Every parameter we touched — wal_level, 
+max_wal_senders, wal_keep_size, hot_standby — they're all just knobs on that 
+pipeline. Once you understand the pipeline, the knobs make sense.
+
+The commands you learned today are not just cert exam material. These are the 
+commands you will type in production. Maybe at 2 AM when the on-call phone rings. 
+Maybe during a planned DR drill. Maybe during an actual disaster. The fact that 
+you practiced them in a lab environment today means that when it matters, your 
+hands will know what to do even when your brain is running on fear and caffeine.
+
+One thing I always tell my students: the first time you promote a standby should 
+NOT be during a real outage. Run DR drills. Promote your standby intentionally in 
+a staging environment. Practice the failback. Understand your timeline history. 
+By the time the real event happens, it should feel boring — like something you've 
+done a dozen times. Because you have.
+
+You're preparing for a certification, and you know what certifications are actually 
+about? They're about proving to yourself and everyone else that you didn't just get 
+lucky — that you actually know this stuff at depth. After today, you know streaming 
+replication at depth. The cert exam is just paperwork at this point.
+
+Go home, rebuild your lab from scratch without looking at notes, and see how far 
+you get. That's the real test.
+
+See you next session. We'll be covering Patroni and automatic failover orchestration 
+— everything we built today becomes the foundation for that. Don't miss it.
+
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD
+  PostgreSQL Streaming Replication
+================================================================================
+
+PRIMARY SETUP
+--------------
+# postgresql.conf
+wal_level = replica
+max_wal_senders = 10
+wal_keep_size = 1GB
+hot_standby = on
+
+# Create replication role
+CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'strongpassword';
+
+# pg_hba.conf entry
+host  replication  replicator  <standby_ip>/32  scram-sha-256
+
+# Apply changes
+SELECT pg_reload_conf();
+systemctl restart postgresql@15-main
+
+STANDBY INIT
+-------------
+# Stop standby, clear data dir
+pg_ctlcluster 15 main stop
+rm -rf /var/lib/postgresql/15/main/*
+
+# Base backup from primary
+pg_basebackup -h <primary_ip> -U replicator -D /var/lib/postgresql/15/main -P -Xs -R
+
+# Fix permissions, start standby
+chown -R postgres:postgres /var/lib/postgresql/15/main
+chmod 700 /var/lib/postgresql/15/main
+pg_ctlcluster 15 main start
+
+MONITORING
+-----------
+# On PRIMARY — check standby connections and lag
+SELECT application_name, state, sync_state,
+       write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+
+# On STANDBY — check receiver status
+SELECT * FROM pg_stat_wal_receiver;
+
+# On STANDBY — check replication delay
+SELECT now() - pg_last_xact_replay_timestamp() AS delay,
+       pg_is_in_recovery() AS is_standby;
+
+# Check replication slots and lag
+SELECT slot_name, active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+FROM pg_replication_slots;
+
+REPLICATION SLOTS
+------------------
+# Create slot (on primary)
+SELECT pg_create_physical_replication_slot('standby1_slot');
+
+# Attach slot (postgresql.auto.conf on standby)
+primary_slot_name = 'standby1_slot'
+
+# Drop slot (when standby is removed)
+SELECT pg_drop_replication_slot('standby1_slot');
+
+SYNCHRONOUS REPLICATION
+------------------------
+# postgresql.conf on primary
+synchronous_standby_names = 'standby1'   -- matches application_name
+# OR
+synchronous_standby_names = 'ANY 1 (standby1, standby2)'
+
+# Disable (back to async)
+synchronous_standby_names = ''
+
+FAILOVER / PROMOTION
+---------------------
+# Promote standby to primary
+pg_ctlcluster 15 main promote
+# OR
+SELECT pg_promote();
+
+# Check current timeline
+SELECT timeline_id FROM pg_control_checkpoint();
+
+# Check if server is in recovery (standby)
+SELECT pg_is_in_recovery();
+
+STANDBY-SPECIFIC TUNING (standby postgresql.conf)
+---------------------------------------------------
+hot_standby = on
+max_standby_streaming_delay = 30s
+
+SIGNAL FILES
+-------------
+standby.signal     -- presence = instance starts as standby (PostgreSQL 12+)
+# (recovery.conf is deprecated — do not use in PostgreSQL 12+)
+
+================================================================================
+  END OF SESSION
+================================================================================

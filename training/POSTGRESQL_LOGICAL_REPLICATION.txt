@@ -1,0 +1,1065 @@
+================================================================================
+  POSTGRESQL LOGICAL REPLICATION: PUBLICATIONS & SUBSCRIPTIONS
+  DBA Technical Diploma — Session Lecture Notes (3-Hour Class)
+  Platform: PostgreSQL | Level: Advanced | Instructor-Led
+================================================================================
+
+Alright, settle in. Grab your coffee. We've got a lot of ground to cover today
+and I want you actually understanding this, not just copying commands.
+
+So — logical replication. I'm going to be honest with you upfront. This is one
+of those topics where I've seen experienced DBAs — people who've been doing this
+for years — walk into production and make a mess of things because they assumed
+it worked exactly like streaming replication. It doesn't. It's fundamentally
+different in philosophy, in mechanics, and in the failure modes. And that
+difference matters enormously.
+
+Let me start with a story.
+
+A few years back, I was consulting for a mid-sized SaaS company. They had a
+perfectly healthy streaming replication setup — primary, two standbys, the
+whole thing. Good setup. One day they come to me and say, "We need to migrate
+from Postgres 13 to Postgres 15, zero downtime, and we can't afford more than
+30 seconds of application disruption." And I'm sitting there thinking — okay,
+streaming replication is not going to save you here. You can't stream between
+major versions. That's just not a thing. But logical replication? That's
+exactly what logical replication was built for.
+
+We ended up running Postgres 13 and Postgres 15 side by side, with logical
+replication keeping the new cluster in sync, then did a cutover in about 22
+seconds. The CTO sent me a very nice bottle of whiskey.
+
+That's the kind of thing logical replication unlocks. And once you understand
+it properly, it becomes one of the most powerful tools in your kit.
+
+
+--------------------------------------------------------------------------------
+  PHYSICAL vs LOGICAL: THE ACTUAL DIFFERENCE
+--------------------------------------------------------------------------------
+
+Now before we type a single command, let's make sure we have the mental model
+right, because if you don't, nothing that follows will stick.
+
+Remember when we set up streaming replication? What was actually being
+replicated? WAL records. Raw, binary, block-level changes. The standby server
+was essentially replaying "write these bytes to this offset in this file." It
+didn't know — didn't care — whether that was an INSERT into the orders table
+or an UPDATE on some internal catalog. It was all just bytes.
+
+That's physical replication. It's fast, it's complete, and it's also completely
+inflexible. You're replicating the entire cluster. Same major version. Same
+architecture. Same tablespace layout. No exceptions.
+
+Logical replication is different in a fundamental way. Instead of shipping raw
+WAL bytes, it decodes those WAL records into logical operations. Actual INSERT,
+UPDATE, DELETE events on actual tables. It understands the data. And because it
+understands the data, it can be selective. You can say "replicate just this
+table, to this other database, running on a completely different Postgres major
+version, on a different operating system, and by the way only send me rows where
+the region column equals 'APAC'."
+
+That kind of flexibility is what makes logical replication a completely
+different animal.
+
+Here's a quick comparison I want you to keep in your head:
+
+  Physical Replication          Logical Replication
+  ----------------------------  ----------------------------
+  Entire cluster                Specific tables or databases
+  Block-level changes           Row-level logical operations
+  Same major version required   Cross-version capable
+  Read-only standby             Standby can be writable
+  No filtering                  Row and column filtering
+  Uses replication slots        Uses replication slots
+  Fast failover built-in        No built-in failover
+
+That last column is important. Logical replication does NOT replace streaming
+replication for HA. I want to be clear about that. They solve different
+problems. In a production environment, you'll often use both.
+
+
+--------------------------------------------------------------------------------
+  HOW LOGICAL REPLICATION ACTUALLY WORKS
+--------------------------------------------------------------------------------
+
+Okay so let's talk mechanics. PostgreSQL uses something called the "logical
+decoding" engine under the hood. It reads WAL and instead of just forwarding
+those records, it interprets them using the table schema — the column
+definitions, primary keys, replica identity settings — and emits them as
+logical change events.
+
+The architecture has two core objects:
+
+  A PUBLICATION — defined on the source (publisher) database. It says:
+  "Here is a set of tables, and here are the operations I'm willing to share."
+
+  A SUBSCRIPTION — defined on the target (subscriber) database. It says:
+  "I want to receive changes from that publication over there."
+
+When you create a subscription, PostgreSQL does something important that I want
+you to pay attention to. It doesn't just start streaming changes from that
+moment forward. It first does an initial data synchronization — essentially a
+snapshot copy of the current data in the published tables. This is done using
+the COPY protocol under the hood. Once the initial sync is done, it switches
+to streaming incremental changes.
+
+And critically — during all of this, it uses a replication slot on the
+publisher side to make sure no WAL gets discarded before the subscriber has
+consumed it. Which brings me to something I want to plant in your brain right
+now and we'll come back to it.
+
+Replication slots are your friend and your enemy. They guarantee no data is
+lost. They also guarantee your publisher's disk fills up and your whole cluster
+catches fire if the subscriber goes away and stops consuming WAL. I will say
+more about this. A lot more.
+
+Let's get our hands dirty.
+
+
+--------------------------------------------------------------------------------
+  SETTING UP THE ENVIRONMENT
+--------------------------------------------------------------------------------
+
+For today's lab, we're going to work with two PostgreSQL instances on the same
+machine. In a real environment these would be on separate servers, but the
+mechanics are identical. We'll call them the publisher and the subscriber.
+
+I'm going to assume you've got two clusters set up — publisher on port 5432 and
+subscriber on port 5433. If you're following along and you only have one
+instance, I'll show you how to spin up a second one in a moment.
+
+First, let's make sure the publisher is configured correctly for logical
+replication. This is the single most important config change you need.
+
+Go ahead and connect to your publisher:
+
+  psql -p 5432 -U postgres
+
+Now check this parameter:
+
+  SHOW wal_level;
+
+If it says 'replica', we have a problem. For logical replication, we need:
+
+  wal_level = logical
+
+This is the one setting that unlocks the logical decoding engine. Without it,
+nothing works. So let's set it. Open postgresql.conf on the publisher:
+
+  -- In postgresql.conf:
+  wal_level = logical
+
+Now — here's something important. Unlike shared_buffers that you can change and
+just reload, wal_level requires a full restart. A restart. Not a reload.
+Remember when we covered postgresql.conf tuning? Some parameters are
+context = 'postmaster'. This is one of them. So:
+
+  -- After editing postgresql.conf:
+  pg_ctl restart -D /path/to/publisher/data
+
+Or using systemctl if that's how your system is set up:
+
+  systemctl restart postgresql@14-main   -- adjust version/name as needed
+
+While we're at it, let's also make sure max_replication_slots is adequate.
+The default in modern PostgreSQL versions is 10, which is usually fine, but
+let's verify:
+
+  SHOW max_replication_slots;
+
+And max_wal_senders, which controls how many concurrent WAL sender processes
+can run:
+
+  SHOW max_wal_senders;
+
+You want max_wal_senders to be at least the number of standbys (physical) plus
+the number of subscriptions (logical) plus a couple extra for pg_basebackup
+and your own monitoring queries. I usually set it to 20 in production and call
+it a day.
+
+
+--------------------------------------------------------------------------------
+  AUTHENTICATION — DON'T FORGET THIS
+--------------------------------------------------------------------------------
+
+Remember pg_hba.conf from earlier in the course? This is where it connects.
+The subscriber needs to be able to connect to the publisher as a replication
+user. Not just a regular connection — a replication connection. There's a
+distinction in pg_hba.conf.
+
+On the publisher, your pg_hba.conf needs an entry like this:
+
+  host  replication  replicator_user  subscriber_ip/32  scram-sha-256
+
+The 'replication' in the database column is a special keyword. It's not an
+actual database named "replication." It's saying: allow replication protocol
+connections. We covered this when we did streaming replication setup, so you
+already know this. But I see people forget it constantly when setting up
+logical replication on new servers.
+
+Let's create a dedicated replication user on the publisher. Using a dedicated
+user is a best practice — don't use the postgres superuser for replication.
+
+  CREATE ROLE replicator_user
+    WITH REPLICATION
+    LOGIN
+    PASSWORD 'choose_a_strong_password';
+
+The REPLICATION attribute is required. Without it, the subscription will fail
+to connect with a misleading error. Also note — for logical replication, the
+user also needs SELECT permission on the tables being published. Let's cover
+that properly when we create the publication.
+
+
+--------------------------------------------------------------------------------
+  CREATING A PUBLICATION
+--------------------------------------------------------------------------------
+
+Alright, let's build something. I'm going to create a sample database with
+a couple of tables. Follow along.
+
+On the PUBLISHER (port 5432):
+
+  CREATE DATABASE sales_db;
+  \c sales_db
+
+  CREATE TABLE orders (
+      order_id    SERIAL PRIMARY KEY,
+      customer_id INTEGER NOT NULL,
+      order_date  TIMESTAMPTZ DEFAULT NOW(),
+      total       NUMERIC(10,2),
+      region      TEXT
+  );
+
+  CREATE TABLE products (
+      product_id   SERIAL PRIMARY KEY,
+      product_name TEXT NOT NULL,
+      price        NUMERIC(10,2),
+      stock_qty    INTEGER
+  );
+
+  -- Insert some test data
+  INSERT INTO orders (customer_id, order_date, total, region)
+  SELECT
+      (random() * 1000)::int,
+      NOW() - (random() * INTERVAL '90 days'),
+      (random() * 500)::numeric(10,2),
+      (ARRAY['APAC','EMEA','AMER'])[ceil(random()*3)]
+  FROM generate_series(1, 10000);
+
+  INSERT INTO products (product_name, price, stock_qty)
+  VALUES
+      ('Widget A', 29.99, 500),
+      ('Widget B', 49.99, 300),
+      ('Gadget Pro', 99.99, 150);
+
+Good. Now let's create the publication. The simplest form publishes all tables:
+
+  CREATE PUBLICATION my_publication FOR ALL TABLES;
+
+That's it. That's the whole command. But let's talk about what this actually
+does before we move on.
+
+When you say FOR ALL TABLES, you're telling PostgreSQL: "Publish INSERT, UPDATE,
+and DELETE operations for every table in this database, including tables created
+in the future." That last part — future tables — is important. If you create a
+new table on the publisher, it's automatically included. The subscriber will
+not automatically know about it though. We'll come back to that.
+
+Now, more commonly in production, you want to be selective. Let me drop that
+and create a more targeted publication:
+
+  DROP PUBLICATION my_publication;
+
+  CREATE PUBLICATION orders_publication
+      FOR TABLE orders, products;
+
+This publishes only the orders and products tables. You can also specify which
+operations to publish:
+
+  CREATE PUBLICATION inserts_only_pub
+      FOR TABLE orders
+      WITH (publish = 'insert');
+
+The publish parameter accepts a comma-separated list of: insert, update, delete,
+truncate. The default is all four.
+
+And here's something relatively newer — row filtering. This was added in
+PostgreSQL 15 and it is genuinely useful:
+
+  CREATE PUBLICATION apac_orders_pub
+      FOR TABLE orders
+      WHERE (region = 'APAC');
+
+Now only rows where region is 'APAC' get published. This is great for
+multi-tenant scenarios, regional data distribution, or just keeping
+subscriber databases small.
+
+Let me also show you column filtering, also added in PostgreSQL 15:
+
+  CREATE PUBLICATION orders_pub_filtered
+      FOR TABLE orders (order_id, customer_id, order_date, total);
+
+That publication will NOT send the region column to subscribers. Useful when
+you're shipping data to a downstream system that doesn't need every column,
+or when you have sensitive columns you want to exclude.
+
+Let's check what we've got:
+
+  SELECT * FROM pg_publication;
+
+  SELECT * FROM pg_publication_tables;
+
+Those two catalog views are your friends. pg_publication shows the publications,
+pg_publication_tables shows which tables and with which options are included.
+
+For today's lab let's use a clean single publication:
+
+  -- Clean up and use this one
+  DROP PUBLICATION IF EXISTS orders_publication;
+  DROP PUBLICATION IF EXISTS inserts_only_pub;
+  DROP PUBLICATION IF EXISTS apac_orders_pub;
+  DROP PUBLICATION IF EXISTS orders_pub_filtered;
+
+  CREATE PUBLICATION sales_pub
+      FOR TABLE orders, products
+      WITH (publish = 'insert, update, delete, truncate');
+
+  -- Grant SELECT to the replication user
+  GRANT SELECT ON orders, products TO replicator_user;
+
+That GRANT is easy to forget. And when you forget it, the subscription will
+error with a permission denied message during the initial sync that can be
+confusing if you're not expecting it.
+
+
+--------------------------------------------------------------------------------
+  REPLICA IDENTITY — THIS ONE MATTERS
+--------------------------------------------------------------------------------
+
+Before we set up the subscription, I need to talk about something called
+replica identity. This is one of those things that bites people hard and I
+don't want it biting you.
+
+PostgreSQL needs to be able to identify which row is being updated or deleted
+on the subscriber side. How does it know which row to update? It looks at the
+replica identity of the table on the publisher to decide what to include in the
+WAL record for that row.
+
+The default replica identity is DEFAULT, which means it uses the primary key.
+If your table has a primary key — and it should, every table should have a
+primary key, I will die on this hill — then DEFAULT is fine. The primary key
+value is included in the WAL record, the subscriber finds the row by primary
+key, done.
+
+But what if you don't have a primary key? Then PostgreSQL falls back to FULL
+replica identity, which means it logs the entire old row for every UPDATE and
+DELETE. This works but it's expensive — more WAL, more network traffic, slower.
+
+And here's the thing I've seen burn people: if a table has no primary key and
+replica identity is DEFAULT, then UPDATE and DELETE operations on that table
+will fail on the subscriber. Not silently fail — they'll error out. The
+subscription will log errors and those rows won't be updated or deleted on the
+subscriber. Your data will drift. And you might not notice for a while.
+
+Let's check the replica identity of our tables:
+
+  SELECT relname, relreplident
+  FROM pg_class
+  WHERE relname IN ('orders', 'products');
+
+You'll see:
+  'd' = DEFAULT (primary key)
+  'f' = FULL (entire row)
+  'i' = index
+  'n' = nothing (DO NOT USE THIS, UPDATE/DELETE will not replicate)
+
+Our orders and products tables have primary keys, so we're fine. But let me
+show you what to do if you had a problem table:
+
+  -- If you had a table without a PK, you'd do:
+  ALTER TABLE some_problem_table REPLICA IDENTITY FULL;
+
+  -- Or better yet, add a primary key:
+  ALTER TABLE some_problem_table ADD COLUMN id BIGSERIAL PRIMARY KEY;
+
+Always fix the root cause. REPLICA IDENTITY FULL is a band-aid.
+
+
+--------------------------------------------------------------------------------
+  *** INSTRUCTOR WARNING — READ THIS CAREFULLY ***
+--------------------------------------------------------------------------------
+
+I am going to stop here and say something very directly. Listen to me on this.
+
+REPLICATION SLOTS DO NOT CLEAN THEMSELVES UP.
+
+When a subscription is created, PostgreSQL creates a replication slot on the
+publisher. That slot tracks how far the subscriber has consumed WAL. As long as
+the slot exists, PostgreSQL will NOT discard WAL beyond what the subscriber has
+consumed. This is by design — it's how data integrity is guaranteed.
+
+But here's the danger: if your subscriber goes down, or if you drop the
+subscription improperly, or if you create a subscription and then abandon it —
+the replication slot on the publisher keeps accumulating WAL. Unbounded. Forever.
+Until your disk fills up. And when your disk fills up, your entire PostgreSQL
+cluster stops accepting writes. Not just replication — everything. The whole
+server goes down.
+
+I have personally seen this happen in production. A developer created a
+subscription for testing, tested what they needed, deleted the subscriber
+DATABASE — not the subscription, the database — and walked away. The replication
+slot on the publisher kept growing. Three days later, at 2am, the publisher
+ran out of disk. Every application hit errors. It was a bad night.
+
+Here is how you monitor this. Run this on the PUBLISHER regularly:
+
+  SELECT
+      slot_name,
+      plugin,
+      slot_type,
+      active,
+      active_pid,
+      pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal
+  FROM pg_replication_slots;
+
+That retained_wal column tells you how much WAL each slot is holding back. If
+you see an inactive slot with a large retained_wal value — alert. Investigate
+immediately. If it's truly abandoned, drop it:
+
+  SELECT pg_drop_replication_slot('slot_name_here');
+
+I would make this a monitoring alert in your production environments. Any
+inactive replication slot holding more than, say, 1GB of WAL should fire an
+alert. And any inactive slot that's been inactive for more than an hour should
+be flagged for investigation.
+
+You can also set a safety valve. The parameter max_slot_wal_keep_size (added in
+PostgreSQL 13) lets you set a limit on how much WAL a slot can retain. When the
+limit is hit, the slot is invalidated rather than letting the disk fill. This
+doesn't save your replication — the subscriber will need to be resynchronized —
+but it does save your server. In production, I set this as a backstop:
+
+  -- In postgresql.conf on the publisher:
+  max_slot_wal_keep_size = 10GB
+
+That way even if something goes wrong, the publisher protects itself. Your
+replication breaks, but your server lives.
+
+Okay. Warning delivered. Let's move on.
+
+
+--------------------------------------------------------------------------------
+  CREATING A SUBSCRIPTION
+--------------------------------------------------------------------------------
+
+Now we set up the subscriber. Switch to your subscriber instance (port 5433):
+
+  psql -p 5433 -U postgres
+
+Create the target database and tables. This is important — the tables must
+already exist on the subscriber. The schema is NOT replicated automatically.
+Only the data is. Schema management is your responsibility.
+
+  CREATE DATABASE sales_db;
+  \c sales_db
+
+  -- Create the SAME schema as the publisher
+  CREATE TABLE orders (
+      order_id    SERIAL PRIMARY KEY,
+      customer_id INTEGER NOT NULL,
+      order_date  TIMESTAMPTZ DEFAULT NOW(),
+      total       NUMERIC(10,2),
+      region      TEXT
+  );
+
+  CREATE TABLE products (
+      product_id   SERIAL PRIMARY KEY,
+      product_name TEXT NOT NULL,
+      price        NUMERIC(10,2),
+      stock_qty    INTEGER
+  );
+
+The column names, types, and constraints need to be compatible. They don't have
+to be byte-for-byte identical — the subscriber can have extra columns (with
+defaults or nullable), it can have additional indexes, it can have columns in
+a different order. What it cannot do is be missing columns that the publisher
+is sending, or have incompatible types.
+
+Now create the subscription:
+
+  CREATE SUBSCRIPTION sales_sub
+      CONNECTION 'host=localhost port=5432 dbname=sales_db user=replicator_user password=choose_a_strong_password'
+      PUBLICATION sales_pub;
+
+Let's break that down line by line because every part matters.
+
+  CREATE SUBSCRIPTION sales_sub
+    — This creates a subscription named sales_sub. Pick something meaningful.
+
+  CONNECTION '...'
+    — This is a libpq connection string pointing to the PUBLISHER. In
+      production this would be host=publisher-server.internal, obviously.
+      You can also use SSL parameters here — sslmode=require is a good idea
+      in production.
+
+  PUBLICATION sales_pub
+    — This names the publication on the publisher side we want to subscribe to.
+      If you have multiple publications, you can subscribe to several at once:
+      PUBLICATION pub1, pub2
+
+Now when you hit enter on that command, watch what happens. PostgreSQL will:
+  1. Connect to the publisher
+  2. Create a replication slot on the publisher
+  3. Take a snapshot of the current data
+  4. Begin copying that snapshot to the subscriber (initial sync)
+  5. Once sync is done, begin streaming live changes
+
+For our 10,000 rows it'll be nearly instant. For a table with 500 million rows,
+this initial sync takes time. Plan for it.
+
+Let's check the status:
+
+  -- On the subscriber:
+  SELECT * FROM pg_stat_subscription;
+
+  SELECT * FROM pg_subscription;
+
+  -- On the publisher:
+  SELECT * FROM pg_stat_replication;
+
+  SELECT * FROM pg_replication_slots;
+
+pg_stat_subscription is particularly useful. Look at the 'status' column. You
+want to see 'streaming'. During initial sync you might see 'copying'. If you
+see 'down' or errors, something went wrong.
+
+Also look at 'received_lsn' vs the publisher's pg_current_wal_lsn(). The
+difference tells you how far behind the subscriber is. This is your replication
+lag, and you'll want to monitor it. In fact let me give you a proper lag query:
+
+  -- Run this on the PUBLISHER to see subscriber lag:
+  SELECT
+      sub.subname,
+      slot.slot_name,
+      slot.active,
+      pg_size_pretty(
+          pg_wal_lsn_diff(pg_current_wal_lsn(), slot.confirmed_flush_lsn)
+      ) AS replication_lag_bytes,
+      (NOW() - stat.last_msg_receipt_time) AS time_since_last_message
+  FROM pg_subscription sub
+  JOIN pg_replication_slots slot ON slot.slot_name = sub.subslotname
+  LEFT JOIN pg_stat_replication stat ON stat.application_name = sub.subname
+  ORDER BY replication_lag_bytes DESC NULLS LAST;
+
+Bookmark that query. Pin it to your monitoring dashboard. It will save you
+one day.
+
+Let's verify the data actually synced:
+
+  -- On the subscriber:
+  SELECT COUNT(*) FROM orders;
+  SELECT COUNT(*) FROM products;
+
+Should show 10,000 and 3 rows respectively. Now let's test live replication:
+
+  -- On the PUBLISHER:
+  \c sales_db
+  INSERT INTO orders (customer_id, total, region)
+  VALUES (9999, 999.99, 'APAC');
+
+  -- On the SUBSCRIBER (immediately after):
+  \c sales_db
+  SELECT * FROM orders WHERE customer_id = 9999;
+
+You should see that row appear on the subscriber almost instantly. That's
+logical replication working.
+
+
+--------------------------------------------------------------------------------
+  MANAGING PUBLICATIONS AND SUBSCRIPTIONS
+--------------------------------------------------------------------------------
+
+In the real world you're going to need to modify these things. Publications and
+subscriptions are not set-it-and-forget-it. Let me walk you through the most
+common operations.
+
+Adding a table to an existing publication:
+
+  -- On the publisher:
+  ALTER PUBLICATION sales_pub ADD TABLE order_items;
+
+Or set it to all tables in the schema:
+
+  ALTER PUBLICATION sales_pub SET TABLE orders, products, order_items;
+
+The SET TABLE version replaces the table list entirely, so be careful with that.
+I've seen people accidentally remove tables from a publication by using SET TABLE
+when they meant ADD TABLE. Double check your table list before you run SET TABLE.
+
+On the subscriber, when you add a table to a publication, the subscription
+doesn't automatically start syncing that table. You need to explicitly refresh it:
+
+  -- On the subscriber:
+  ALTER SUBSCRIPTION sales_sub REFRESH PUBLICATION;
+
+This tells the subscription: go look at what's in the publication now and
+start syncing any new tables. It will trigger an initial data copy for the
+newly added tables.
+
+Temporarily disabling a subscription (useful during maintenance):
+
+  -- On the subscriber:
+  ALTER SUBSCRIPTION sales_sub DISABLE;
+
+  -- Re-enable when ready:
+  ALTER SUBSCRIPTION sales_sub ENABLE;
+
+When disabled, the replication slot on the publisher is still there, still
+retaining WAL. So don't leave it disabled for long periods without a good
+reason. Remember what I said about disk space.
+
+Changing the connection string (publisher moved to a new IP, new password, etc.):
+
+  ALTER SUBSCRIPTION sales_sub
+      CONNECTION 'host=new-publisher-host port=5432 dbname=sales_db user=replicator_user password=newpassword';
+
+Properly dropping a subscription:
+
+  -- On the subscriber:
+  DROP SUBSCRIPTION sales_sub;
+
+This does the right thing — it drops the subscription AND drops the
+corresponding replication slot on the publisher. Notice I said "the right
+thing." There's a wrong way to do this. If you drop the subscriber database
+without first dropping the subscription, the replication slot on the publisher
+is orphaned. You then have to go manually clean it up with pg_drop_replication_slot().
+
+So the order of operations when tearing down is:
+  1. DROP SUBSCRIPTION on the subscriber
+  2. Verify the slot is gone on the publisher with pg_replication_slots
+  3. Then do whatever else you were going to do
+
+Write that on a Post-it note and stick it to your monitor if you need to.
+
+
+--------------------------------------------------------------------------------
+  CONFLICT HANDLING
+--------------------------------------------------------------------------------
+
+This is where logical replication gets complicated in practice. Because the
+subscriber database can be writable — you can INSERT, UPDATE, DELETE directly
+on the subscriber — it's possible to get conflicts.
+
+Imagine this scenario: a row with order_id = 5001 is inserted on the publisher
+and replicated. Then someone inserts a row with order_id = 5001 directly on the
+subscriber. Then on the publisher, order_id = 5001 gets updated. Now the
+replication tries to update a row that, from the publisher's perspective, should
+exist, but on the subscriber the row has a different state.
+
+PostgreSQL's built-in conflict resolution for logical replication is...
+minimal. By default, on a conflict, the replication worker logs an error and
+STOPS. Completely stops. Your subscription goes into an error state. No more
+changes are applied until you fix it.
+
+Let me show you how to see conflicts:
+
+  -- On the subscriber, check the logs. Also:
+  SELECT * FROM pg_stat_subscription;
+
+  -- Look at the 'last_error_message' and 'last_error_time' columns
+
+To handle a conflict manually, you typically have a few options:
+
+  Option 1: Skip the conflicting transaction
+  -- On the subscriber:
+  ALTER SUBSCRIPTION sales_sub
+      SKIP (lsn = 'X/XXXXXXXX');
+  -- The LSN comes from the error message in the logs
+
+  Option 2: Fix the data on the subscriber to remove the conflict,
+  then the next attempt to apply will succeed.
+
+  Option 3: If the subscriber's data doesn't matter (it's purely a
+  replica), truncate the conflicting table and let it resync:
+  -- On the subscriber:
+  ALTER SUBSCRIPTION sales_sub DISABLE;
+  TRUNCATE orders;  -- or whatever table conflicted
+  ALTER SUBSCRIPTION sales_sub ENABLE;
+  ALTER SUBSCRIPTION sales_sub REFRESH PUBLICATION;
+
+In practice, the cleanest way to avoid conflicts entirely is to not write
+directly to replicated tables on the subscriber. If the subscriber is meant
+to be a read replica, treat it like one. Enforce that at the application level
+or by revoking write permissions on the subscriber.
+
+PostgreSQL 15 and 16 have improved conflict handling with more options, and
+there are third-party solutions for more sophisticated conflict resolution
+if you need it. But for most use cases, the disciplined approach is: keep your
+subscriber read-only for replicated tables.
+
+
+--------------------------------------------------------------------------------
+  COMMON USE CASES IN PRODUCTION
+--------------------------------------------------------------------------------
+
+Let me give you a quick tour of how I've actually used logical replication in
+production, because understanding the use cases helps you understand when to
+reach for this tool.
+
+USE CASE 1: ZERO-DOWNTIME MAJOR VERSION UPGRADES
+
+This is the one I told you about at the start. You run old and new version
+side-by-side, logical replication keeps new in sync with old, you flip the
+application connection string, you're done. The key detail: you need to
+replicate in BOTH directions during the cutover window or handle writes
+exclusively on the new server once you start the cutover.
+
+USE CASE 2: SELECTIVE READ REPLICAS
+
+Maybe you have an analytics team that only needs certain tables — and they
+run expensive queries that you don't want anywhere near your production OLTP
+tables. You create a logical replica with just the tables they need. They
+get their data, your production system doesn't suffer.
+
+USE CASE 3: DATA DISTRIBUTION / SHARDING
+
+Publishing subsets of data to different downstream systems. Remember that row
+filter feature? WHERE (region = 'APAC')? You can have one subscriber that gets
+APAC data and another that gets EMEA data. Each regional database gets only
+what it needs.
+
+USE CASE 4: CROSS-DATABASE REPLICATION WITHIN SAME CLUSTER
+
+Sometimes you need data from one database to appear in another database on the
+same PostgreSQL instance. Streaming replication operates at the cluster level,
+not the database level. Logical replication doesn't care — publisher and
+subscriber can be on the same server, different databases, and it works fine.
+
+USE CASE 5: MIGRATION TO/FROM OTHER SYSTEMS
+
+With the right logical decoding plugins (pglogical, Debezium), you can even
+stream PostgreSQL changes to non-PostgreSQL systems. Kafka, MySQL, Elasticsearch.
+That's beyond today's scope, but know that the logical decoding infrastructure
+is what makes that ecosystem possible.
+
+
+--------------------------------------------------------------------------------
+  MONITORING IN PRODUCTION
+--------------------------------------------------------------------------------
+
+You already know pg_stat_* views from our monitoring session. Let me tie that
+into what you need to watch specifically for logical replication.
+
+This is your essential monitoring query set. Type these and save them.
+
+  -- 1. Overall subscription health (on subscriber)
+  SELECT
+      subname,
+      pid,
+      relid::regclass AS table_name,
+      status,
+      received_lsn,
+      last_error_message,
+      last_error_time
+  FROM pg_stat_subscription
+  LEFT JOIN pg_stat_subscription_stats USING (subid);
+
+  -- 2. Replication slot health (on publisher) -- RUN THIS REGULARLY
+  SELECT
+      slot_name,
+      slot_type,
+      active,
+      active_pid,
+      pg_size_pretty(
+          pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+      ) AS wal_retained,
+      invalidation_reason
+  FROM pg_replication_slots
+  ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC;
+
+  -- 3. Publication contents (on publisher)
+  SELECT
+      p.pubname,
+      pt.schemaname,
+      pt.tablename,
+      p.pubinsert,
+      p.pubupdate,
+      p.pubdelete,
+      p.pubtruncate
+  FROM pg_publication p
+  JOIN pg_publication_tables pt ON pt.pubname = p.pubname
+  ORDER BY p.pubname, pt.tablename;
+
+  -- 4. Check for tables missing primary keys (which could cause UPDATE/DELETE issues)
+  SELECT
+      schemaname,
+      tablename
+  FROM pg_tables
+  WHERE schemaname = 'public'
+  AND tablename NOT IN (
+      SELECT t.relname
+      FROM pg_class t
+      JOIN pg_index i ON t.oid = i.indrelid
+      WHERE i.indisprimary = true
+  );
+
+That last query is something I run after any schema change in a database that
+uses logical replication. If a developer adds a table without a primary key,
+you want to know immediately, not when replication breaks.
+
+
+--------------------------------------------------------------------------------
+  CONNECTING BACK TO WHAT YOU KNOW
+--------------------------------------------------------------------------------
+
+Let me take a moment to connect some dots with things we covered earlier.
+
+PITR and WAL archiving — remember when we set up WAL archiving? Logical
+replication uses replication slots, which also interact with WAL retention.
+If you have both WAL archiving AND logical replication slots, you need to make
+sure your wal_keep_size and archive_cleanup_command settings don't conflict
+with what the replication slots need. The most conservative setting is to
+let the slots drive WAL retention and make sure your archive is keeping up.
+
+VACUUM and autovacuum — this is actually really important for logical
+replication. The logical decoding process needs to be able to reconstruct
+old row versions to produce correct change events. This relies on the visibility
+map and old tuple versions being available. If autovacuum aggressively vacuums
+a table that has a slow subscriber, you can get errors about needed tuple
+versions being removed. The way to handle this: don't let your subscriber fall
+too far behind. Monitor lag. And make sure vacuum_defer_cleanup_age is set
+appropriately. By default it's 0, which is fine when replication is healthy.
+
+Transaction ID wraparound — we covered this in detail, remember? Logical
+replication does NOT help with wraparound. The subscriber still needs its own
+VACUUM cycles and its own wraparound monitoring. A lot of people set up a
+logical replica, make it read-only, and forget that it still needs regular
+maintenance. The subscriber has its own pg_database catalog and its own XID
+counter. I have seen a subscriber database get XID wraparound because someone
+treated it as a "passive" system that didn't need maintenance. It doesn't end
+well.
+
+
+--------------------------------------------------------------------------------
+  A FEW MORE PRODUCTION TIPS
+--------------------------------------------------------------------------------
+
+SSL for replication connections. In production, always add sslmode=require to
+your subscription connection string. Replication traffic flows continuously and
+you don't want sensitive data crossing the network in plaintext:
+
+  CREATE SUBSCRIPTION prod_sub
+      CONNECTION 'host=publisher.internal port=5432 dbname=mydb
+                  user=replicator_user password=secret
+                  sslmode=require sslrootcert=/etc/ssl/certs/ca.crt'
+      PUBLICATION my_pub;
+
+Synchronous commits. By default, subscribers apply changes asynchronously.
+The publisher commits, the change is sent, the subscriber applies it when it
+can. There's no synchronous mode for logical replication the way there is for
+streaming replication. Design your applications accordingly — if you read from
+the subscriber, you might see slightly stale data.
+
+Two-phase commit. PostgreSQL 15 added support for replicating prepared
+transactions (two-phase commit). If you're using distributed transactions with
+PREPARE TRANSACTION / COMMIT PREPARED, you can now replicate those correctly.
+Enable it at the subscription level:
+
+  CREATE SUBSCRIPTION two_phase_sub
+      CONNECTION '...'
+      PUBLICATION my_pub
+      WITH (two_phase = on);
+
+Schema changes are NOT replicated. I want to be really clear about this.
+If you ALTER TABLE on the publisher — add a column, rename a column, change a
+type — the subscriber does not automatically get that change. You have to
+manually apply the DDL on the subscriber BEFORE applying it on the publisher
+(or in a carefully orchestrated sequence). Getting this order wrong can break
+replication. Many teams use a database migration tool (Flyway, Liquibase, or
+even custom scripts) to manage this coordination.
+
+
+--------------------------------------------------------------------------------
+  LAB EXERCISES
+--------------------------------------------------------------------------------
+
+Alright, you've got everything you need. Now let's see if you can actually use
+it. These labs are meant to take you about 45 minutes total. Work through them
+in order. Do not peek at your neighbor's screen.
+
+LAB 1 — BASIC SETUP (10 minutes)
+---------------------------------
+On the publisher (port 5432):
+  a) Create a database called lab_db
+  b) Create a table called employees with columns:
+       emp_id (SERIAL PRIMARY KEY), name (TEXT), department (TEXT),
+       salary (NUMERIC), hired_at (TIMESTAMPTZ DEFAULT NOW())
+  c) Insert at least 100 rows using generate_series
+  d) Create a publication called emp_pub that publishes only INSERT and UPDATE
+     (not DELETE) on the employees table
+  e) Verify the publication exists in pg_publication and pg_publication_tables
+
+LAB 2 — SUBSCRIBER SETUP (10 minutes)
+---------------------------------------
+On the subscriber (port 5433):
+  a) Create database lab_db
+  b) Create the employees table with the SAME schema
+  c) Create a subscription to emp_pub
+  d) Verify the initial data sync completed (check row counts)
+  e) Run the replication slot monitoring query on the publisher —
+     confirm the slot is active
+
+LAB 3 — LIVE REPLICATION TEST (10 minutes)
+-------------------------------------------
+  a) On the publisher, insert 5 new employees
+  b) On the subscriber, confirm those 5 rows appear
+  c) On the publisher, update the salary of all employees in the 'Engineering'
+     department by 10%
+  d) On the subscriber, confirm the salaries updated
+  e) On the publisher, DELETE one employee
+  f) On the subscriber — what happened? Why? (Hint: look at your publish setting)
+
+LAB 4 — PUBLICATION MODIFICATION (10 minutes)
+----------------------------------------------
+  a) Add DELETE to the emp_pub publication using ALTER PUBLICATION
+  b) Refresh the subscription on the subscriber
+  c) Now delete an employee on the publisher
+  d) Confirm the delete replicated this time
+  e) Add a new table called departments (dept_id SERIAL PRIMARY KEY, dept_name TEXT)
+     to both databases (create it on subscriber first, then add to pub on publisher)
+  f) Use ALTER PUBLICATION to add departments to emp_pub
+  g) Refresh the subscription and verify it picks up the departments table
+
+LAB 5 — MONITORING AND CLEANUP (5 minutes)
+-------------------------------------------
+  a) Run the WAL retained query on the publisher — screenshot the output
+  b) Check pg_stat_subscription on the subscriber — is status 'streaming'?
+  c) Properly drop the subscription (on the subscriber)
+  d) Verify on the publisher that the replication slot is gone (check pg_replication_slots)
+  e) What would have happened if you dropped the database instead of the subscription?
+
+BONUS LAB (if you finish early)
+--------------------------------
+  a) Re-create the subscription
+  b) Create a row filter publication that only publishes employees from
+     the 'Engineering' department
+  c) Create a separate subscription on the subscriber to this filtered publication
+  d) Insert employees into both 'Engineering' and other departments on the publisher
+  e) Confirm only Engineering employees replicate through the filtered subscription
+
+
+--------------------------------------------------------------------------------
+  CLOSING
+--------------------------------------------------------------------------------
+
+You've just covered one of the more powerful features in the PostgreSQL toolkit.
+I want to be straight with you: logical replication is not something you should
+deploy in production and then ignore. It needs active monitoring. It needs
+someone who understands how replication slots work and what happens when they
+get stuck. But the teams that really know this stuff? They can do things that
+look like magic to everyone else. Zero-downtime major version upgrades. Live
+data feeds to analytics systems. Regional data distribution. All of it possible
+because you understand publications and subscriptions.
+
+The DBAs who go into their certification exam having actually built and
+troubleshot this stuff — not just read about it — those are the ones who walk
+out with high scores. More importantly, those are the ones who get called at
+2am, fix the problem in 20 minutes, and go back to sleep while everyone else
+is still figuring out which way is up.
+
+That's what I want for all of you. Now go do the labs.
+
+
+================================================================================
+  QUICK REFERENCE COMMAND CARD
+  PostgreSQL Logical Replication
+================================================================================
+
+PREREQUISITES (publisher postgresql.conf)
+  wal_level = logical
+  max_replication_slots = 10      -- or higher
+  max_wal_senders = 20            -- or higher
+  max_slot_wal_keep_size = 10GB   -- safety net (PG13+)
+
+REPLICATION USER
+  CREATE ROLE replicator_user WITH REPLICATION LOGIN PASSWORD '...';
+  GRANT SELECT ON table_name TO replicator_user;
+
+PUBLICATION MANAGEMENT (on publisher)
+  -- Create
+  CREATE PUBLICATION pub_name FOR TABLE t1, t2;
+  CREATE PUBLICATION pub_name FOR ALL TABLES;
+  CREATE PUBLICATION pub_name FOR TABLE t1 WITH (publish = 'insert,update');
+  CREATE PUBLICATION pub_name FOR TABLE t1 WHERE (col = 'value');   -- PG15+
+  CREATE PUBLICATION pub_name FOR TABLE t1 (col1, col2);            -- PG15+
+
+  -- Modify
+  ALTER PUBLICATION pub_name ADD TABLE t3;
+  ALTER PUBLICATION pub_name SET TABLE t1, t2, t3;
+  ALTER PUBLICATION pub_name DROP TABLE t3;
+
+  -- Inspect
+  SELECT * FROM pg_publication;
+  SELECT * FROM pg_publication_tables;
+
+SUBSCRIPTION MANAGEMENT (on subscriber)
+  -- Create
+  CREATE SUBSCRIPTION sub_name
+      CONNECTION 'host=... port=... dbname=... user=... password=...'
+      PUBLICATION pub_name;
+
+  -- Modify
+  ALTER SUBSCRIPTION sub_name DISABLE;
+  ALTER SUBSCRIPTION sub_name ENABLE;
+  ALTER SUBSCRIPTION sub_name REFRESH PUBLICATION;
+  ALTER SUBSCRIPTION sub_name CONNECTION '...';
+  ALTER SUBSCRIPTION sub_name SKIP (lsn = 'X/XXXXXXXX');  -- skip conflict
+
+  -- Drop (drops replication slot on publisher too)
+  DROP SUBSCRIPTION sub_name;
+
+  -- Inspect
+  SELECT * FROM pg_subscription;
+  SELECT * FROM pg_stat_subscription;
+
+REPLICA IDENTITY
+  ALTER TABLE t1 REPLICA IDENTITY DEFAULT;  -- use primary key (default)
+  ALTER TABLE t1 REPLICA IDENTITY FULL;     -- use entire row
+  ALTER TABLE t1 REPLICA IDENTITY USING INDEX idx_name;
+
+  -- Check current setting
+  SELECT relname, relreplident FROM pg_class WHERE relname = 'tablename';
+  -- d=default(PK), f=full, i=index, n=nothing (avoid!)
+
+REPLICATION SLOT MONITORING (on publisher — run frequently)
+  SELECT slot_name, active,
+      pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal,
+      invalidation_reason
+  FROM pg_replication_slots;
+
+  -- Drop an orphaned slot:
+  SELECT pg_drop_replication_slot('slot_name');
+
+LAG MONITORING (on publisher)
+  SELECT
+      sub.subname,
+      pg_size_pretty(
+          pg_wal_lsn_diff(pg_current_wal_lsn(), slot.confirmed_flush_lsn)
+      ) AS lag_bytes,
+      (NOW() - stat.last_msg_receipt_time) AS lag_time
+  FROM pg_subscription sub
+  JOIN pg_replication_slots slot ON slot.slot_name = sub.subslotname
+  LEFT JOIN pg_stat_replication stat ON stat.application_name = sub.subname;
+
+KEY REMINDERS
+  ! Schema changes are NOT replicated — apply DDL manually on subscriber first
+  ! Tables need a PRIMARY KEY for UPDATE/DELETE to replicate correctly
+  ! Dropping the subscriber DB without DROP SUBSCRIPTION orphans the slot
+  ! Monitor pg_replication_slots — inactive slots accumulate WAL indefinitely
+  ! Subscribers still need VACUUM — don't neglect maintenance on read replicas
+  ! Logical replication does NOT replace streaming replication for HA/failover
+
+================================================================================
+  END OF LECTURE
+================================================================================

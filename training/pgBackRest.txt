@@ -1,0 +1,798 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — SESSION LECTURE NOTES (INSTRUCTOR COPY)
+  Topic   : pgBackRest for Backup Automation
+  Platform: PostgreSQL
+  Duration: 3-hour session with labs
+================================================================================
+
+
+Alright, let's get going. Close your laptops for just the first five minutes —
+I want to talk to you before we touch a single command, because what we're
+covering today is the topic where I have seen the most careers take a hit.
+Not replication. Not query tuning. Backups. Specifically, the moment when
+someone who thought they had backups discovers they didn't.
+
+I've been doing this for twenty years. I've sat in war rooms at 2 a.m. more
+times than I'd like to count. And I can tell you, the single most gut-dropping
+feeling in this profession is opening what you thought was a backup file and
+finding it's either corrupt, incomplete, or — and this actually happened to
+someone I mentored early in my career — it's backing up the wrong server
+entirely. He'd set up pg_dump to run nightly on what he thought was production.
+Turned out the cron job had the wrong IP. He was backing up the staging
+database for eight months. Nobody checked. When production crashed, the most
+recent real backup was eight months old.
+
+That person is now very, very careful about backup validation.
+
+Today we're going to make sure that never happens to you. We're going to do
+it right, with pgBackRest — which is, in my honest opinion, the tool you
+should be running in every PostgreSQL production environment. Not pg_dump.
+Not pg_basebackup alone. pgBackRest.
+
+Let me explain why, and then we'll build the whole thing from scratch.
+
+
+--- WHY pgBackRest AND NOT JUST pg_dump ---
+
+Now, some of you are probably thinking — we already know pg_dump, why are we
+adding another tool? Fair question. Here's how I think about it.
+
+pg_dump is a logical backup tool. It gives you SQL. It's great for migrating
+data, cloning a schema, moving a single table. But for a real production
+disaster recovery scenario? It has real problems. It's slow on large databases.
+It doesn't give you point-in-time recovery by default. And restoring a 500GB
+database from a pg_dump means you're sitting there for hours while every
+INSERT replays.
+
+Remember when we set up streaming replication a couple weeks ago? We talked
+about WAL — Write Ahead Log — and how changes flow from primary to standby.
+That's the key insight here. pgBackRest is WAL-aware. It takes physical
+backups — actual copies of the data files — AND it archives your WAL segments
+continuously. That combination is what gives you true point-in-time recovery.
+It means I can say: "Restore the database to exactly 9:47 AM on Tuesday, two
+seconds before that bad deployment went in." That is a superpower. pg_dump
+cannot do that.
+
+pgBackRest also does something pg_dump can never do: it does incremental and
+differential backups. A full backup of a 2TB database takes time and space.
+With pgBackRest, after your first full backup, subsequent backups only capture
+what changed. Your backup windows shrink dramatically.
+
+And it does parallel compression and transfer. Multiple cores, multiple streams.
+On a big database, this is not a small thing.
+
+Alright. Let's build it.
+
+
+--- THE ARCHITECTURE WE'RE BUILDING TODAY ---
+
+Here's what our setup looks like. We have one PostgreSQL primary server —
+same setup you've been working with. We're going to add a backup repository.
+In a real production shop this repository would be a separate physical machine,
+or an NFS mount, or an S3-compatible object store. For our lab today we're
+using a second directory on the same machine to keep things simple, but I'm
+going to show you the config you'd use for a real remote repository as well
+because I want you to see it.
+
+pgBackRest has three main concepts you need to lock in your head right now:
+
+  1. The stanza. Think of this as a named configuration for one PostgreSQL
+     cluster. You'll hear me say "stanza" a lot. It's just the logical grouping
+     that ties together your PostgreSQL instance and your backup repository.
+
+  2. The repository. This is where backups actually live. pgBackRest manages
+     it — you don't go poking around in there manually. Seriously, don't.
+
+  3. The backup types: full, differential, incremental. We'll do all three.
+
+
+--- INSTALLATION ---
+
+Let's get our hands dirty. Go ahead and open your terminal. We're on the
+PostgreSQL server here.
+
+First, let's make sure we have the pgBackRest package available. On Ubuntu
+or Debian:
+
+    sudo apt-get update
+    sudo apt-get install pgbackrest
+
+On RHEL/Rocky/CentOS you'd use:
+
+    sudo yum install pgbackrest
+
+Check the version after install:
+
+    pgbackrest version
+
+You want to see something 2.x or higher. The 2.x line has all the good stuff —
+parallel processing, S3 support, Azure, GCS. As of right now we're in the
+2.50-something range. If you're seeing 1.x in a job interview scenario, that
+system has been neglected.
+
+
+--- CONFIGURATION FILE ---
+
+pgBackRest is configured in /etc/pgbackrest/pgbackrest.conf — that's the
+default location. Let's create it. I'll walk through every line because this
+is where people make mistakes.
+
+    sudo mkdir -p /etc/pgbackrest
+    sudo nano /etc/pgbackrest/pgbackrest.conf
+
+Now type this out. I'll explain as we go:
+
+    [global]
+    repo1-path=/var/lib/pgbackrest
+    repo1-retention-full=2
+    repo1-retention-diff=4
+    start-fast=y
+    log-level-console=info
+    log-level-file=debug
+    log-path=/var/log/pgbackrest
+
+    [demo]
+    pg1-path=/var/lib/postgresql/14/main
+
+Let me walk through this with you.
+
+The [global] section is your default settings that apply everywhere.
+
+repo1-path is where your backups live. You can have multiple repositories —
+repo1, repo2, and so on. In a DR setup I've managed, we had repo1 pointing to
+local NFS and repo2 pointing to S3. That way if the datacenter burned down we
+still had a copy. More on that in a minute.
+
+repo1-retention-full=2 means keep the last two full backups. When a third full
+backup completes, the oldest one gets expired automatically. This is pgBackRest
+managing your disk space for you.
+
+repo1-retention-diff=4 means keep four differential backups between full backup
+cycles. Again — automatic cleanup. You don't have to write cron jobs to purge
+old backups. I love this.
+
+start-fast=y — this is important. Without it, pgBackRest waits for a checkpoint
+to happen naturally before starting a backup. On a busy system that could take
+minutes. start-fast=y forces an immediate checkpoint so your backup window
+starts right now. On production I always set this.
+
+The log settings — I keep console at info so I can see what's happening when
+I run commands manually. I keep file at debug because when something goes wrong
+at 3 AM I want ALL the detail in that log file. Storage is cheap. Debuggability
+is priceless.
+
+Now the [demo] section — that's your stanza name. I called it "demo" for today.
+In real life you'd call it something meaningful like "prod-db1" or "ecommerce".
+pg1-path points to your actual PostgreSQL data directory. Make sure this matches
+your real pg_data location.
+
+Let's verify your PostgreSQL data directory:
+
+    sudo -u postgres psql -c "SHOW data_directory;"
+
+Whatever that returns — that's your pg1-path. Don't guess it. Check it.
+
+Now set the right ownership:
+
+    sudo chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
+    sudo chmod 640 /etc/pgbackrest/pgbackrest.conf
+
+And create the backup directory:
+
+    sudo mkdir -p /var/lib/pgbackrest
+    sudo chown postgres:postgres /var/lib/pgbackrest
+    sudo chmod 750 /var/lib/pgbackrest
+
+And the log directory:
+
+    sudo mkdir -p /var/log/pgbackrest
+    sudo chown postgres:postgres /var/log/pgbackrest
+
+
+--- CONFIGURING POSTGRESQL FOR WAL ARCHIVING ---
+
+Here's where it connects to what we learned in our streaming replication
+session. Remember when we set archive_mode and archive_command on the primary?
+We were shipping WAL to the standby. Same concept here, but now we're archiving
+WAL to pgBackRest's repository.
+
+Let's edit postgresql.conf:
+
+    sudo nano /etc/postgresql/14/main/postgresql.conf
+
+Find and set these parameters — or add them if they're not there:
+
+    archive_mode = on
+    archive_command = 'pgbackrest --stanza=demo archive-push %p'
+    wal_level = replica
+    max_wal_senders = 3
+
+Let's talk through these.
+
+archive_mode = on tells PostgreSQL: "Hey, when you're done with a WAL segment,
+call the archive_command before you recycle it."
+
+archive_command is the shell command PostgreSQL calls. The %p is a placeholder
+— PostgreSQL substitutes the actual file path there. So every completed WAL
+segment gets pushed into pgBackRest's archive. This is the magic that enables
+point-in-time recovery.
+
+wal_level = replica — you already know this one from our replication work.
+You need at least replica level to have enough WAL detail for recovery.
+
+max_wal_senders — this was relevant for our standby setup. It's still relevant
+here because pgBackRest backup processes use replication protocol during backups.
+Make sure you have enough slots.
+
+Now reload PostgreSQL:
+
+    sudo systemctl reload postgresql
+
+Or if you prefer the SQL way from inside psql:
+
+    SELECT pg_reload_conf();
+
+Both work. I usually use pg_reload_conf() when I'm already in a psql session
+because I don't have to leave. Personal preference.
+
+
+--- INITIALIZING THE STANZA ---
+
+Okay, this is the moment. We're going to tell pgBackRest to initialize our
+stanza. This sets up the repository structure, creates some catalog files,
+and verifies that pgBackRest can talk to PostgreSQL.
+
+Run this as the postgres user:
+
+    sudo -u postgres pgbackrest --stanza=demo stanza-create
+
+Watch the output. You should see something like:
+
+    INFO: stanza-create command begin ...
+    INFO: stanza-create for stanza 'demo' on repo1
+    INFO: stanza-create command end: completed successfully
+
+If you see errors here, 90% of the time it's one of three things:
+wrong data directory path, PostgreSQL isn't running, or a permissions problem
+on the repository directory. Check all three before you panic.
+
+Now let's verify everything is wired up correctly:
+
+    sudo -u postgres pgbackrest --stanza=demo check
+
+This is a dry run that verifies: PostgreSQL is accessible, WAL archiving works,
+the repository is writable. If this comes back clean, you're in great shape.
+
+Let it run — it actually pushes a test WAL segment and confirms it arrived.
+You might see it take ten or fifteen seconds. That's normal.
+
+
+--- YOUR FIRST FULL BACKUP ---
+
+Alright. Take a breath. We're about to run our first real backup.
+
+    sudo -u postgres pgbackrest --stanza=demo --type=full backup
+
+Watch what happens. You'll see output like:
+
+    INFO: backup command begin ...
+    INFO: execute non-exclusive pg_start_backup(): backup begins after the next
+          regular checkpoint completes
+    INFO: backup start archive = 000000010000000000000003, lsn = 0/3000028
+    INFO: full backup size = 23.2MB
+    INFO: backup stop lsn = 0/3000100
+    INFO: execute non-exclusive pg_stop_backup() and wait for all WAL segments
+          to archive
+    INFO: backup command end: completed successfully
+
+See those LSN values? That's your backup's position in the WAL stream. That's
+exactly what you'd use for point-in-time recovery targeting.
+
+Notice it calls pg_start_backup() and pg_stop_backup(). If you've done manual
+base backups before, you recognize those. pgBackRest is automating all of that
+for you, cleanly, with proper WAL handling.
+
+Now let's see what we've got:
+
+    sudo -u postgres pgbackrest --stanza=demo info
+
+This is your backup inventory. You'll see the full backup we just took, its
+size, when it was taken, and the WAL range it covers. Get into the habit of
+running this regularly. On my current client's systems I have this running
+in a monitoring check every hour — not to take a backup, just to verify the
+backup catalog looks healthy.
+
+
+--- INCREMENTAL AND DIFFERENTIAL BACKUPS ---
+
+Now let's do an incremental backup. In the real world, you'd schedule your
+full backup weekly and incrementals nightly. Let's simulate that:
+
+    sudo -u postgres pgbackrest --stanza=demo --type=incr backup
+
+Fast, right? Because it only captured the blocks that changed since the last
+backup. On a large production database with maybe 5-10% daily churn, an
+incremental can be ninety percent smaller than a full backup. Your ops team
+will love you.
+
+Let's also do a differential:
+
+    sudo -u postgres pgbackrest --stanza=demo --type=diff backup
+
+Differential captures everything changed since the LAST FULL backup — not
+since the last backup of any type. So your differential grows a bit each day
+until the next full backup resets the baseline. The tradeoff: differential
+is slightly larger than incremental but recovery is faster because you only
+need the full + one differential, versus full + potentially many incrementals.
+
+Run info again and look at the tree:
+
+    sudo -u postgres pgbackrest --stanza=demo info
+
+You'll see the relationship between your backups now. pgBackRest knows which
+incrementals depend on which full. When you expire the full, all its
+dependents get cleaned up automatically.
+
+
+--- [ INSTRUCTOR WARNING — READ THIS CAREFULLY ] ---
+
+I want to stop here and tell you something important. This is the thing I see
+intermediate DBAs get wrong most often, and it can cost you in a real disaster.
+
+DO NOT TEST YOUR RESTORE PROCEDURE FOR THE FIRST TIME DURING AN ACTUAL DISASTER.
+
+I know that sounds obvious when I say it out loud. But I cannot count the number
+of shops I've walked into as a consultant where they have pgBackRest running,
+backups completing successfully every night, and nobody has ever done a restore
+drill. Not once. And then something breaks, and it's the first time anyone has
+actually run the restore command under pressure, in the dark, with executives
+breathing down your neck.
+
+The restore command stops PostgreSQL. It overwrites your data directory. If
+you've never done it in a controlled environment, the first time you run it
+will be terrifying and full of surprises.
+
+Here is what I require in every shop I set up: a monthly restore drill to a
+separate test server. Automated if possible. You restore, you start PostgreSQL,
+you run a few sanity queries, you verify the data is actually there and makes
+sense. Log it. Date it. Show it to your manager.
+
+Some organizations I've worked with had excellent backup monitoring — green
+lights everywhere — but the restore had been silently failing for months because
+the test server ran out of disk space and nobody noticed. The backups were fine.
+The restore process was broken. Those are two different things.
+
+Test your restores. Please. I'm being serious right now.
+
+---
+
+
+--- POINT-IN-TIME RECOVERY ---
+
+Okay, let me show you the thing that makes all of this worth it. Point-in-time
+recovery. PITR.
+
+First, let's create some test data so we have something to recover to a specific
+moment:
+
+Connect to PostgreSQL:
+
+    sudo -u postgres psql
+
+Run this:
+
+    CREATE TABLE pitr_test (
+        id SERIAL PRIMARY KEY,
+        message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    INSERT INTO pitr_test (message) VALUES ('Before the mistake');
+
+Now note the timestamp:
+
+    SELECT NOW();
+
+Write down what it returns. Literally write it down. That's our recovery target.
+
+Now simulate a "mistake":
+
+    DROP TABLE pitr_test;
+
+Oops. Table gone. In a real scenario this might be a developer running a
+DELETE without a WHERE clause, or a botched migration, or someone dropping
+the wrong schema. It happens. I've seen it happen to very experienced people.
+
+Now let's recover. Exit psql:
+
+    \q
+
+Stop PostgreSQL:
+
+    sudo systemctl stop postgresql
+
+Now here's the restore command. Pay attention to every flag:
+
+    sudo -u postgres pgbackrest --stanza=demo \
+      --delta \
+      --type=time \
+      "--target=2024-01-15 09:47:00.000000+00" \
+      --target-action=promote \
+      restore
+
+Replace the target timestamp with the one you wrote down — just before you
+dropped the table.
+
+Let me explain the flags:
+
+--delta means pgBackRest will intelligently copy only the files that differ
+from what's already in the data directory. Much faster than wiping everything
+and starting fresh. On a big database this saves enormous time.
+
+--type=time means we're targeting a specific timestamp. You can also target
+by LSN (--type=lsn) or by transaction ID (--type=xid). Time is the most
+common in practice.
+
+--target-action=promote means after recovery reaches that point, promote the
+instance to a normal read-write database. Without this it stays in standby
+mode waiting for instruction.
+
+Now start PostgreSQL back up:
+
+    sudo systemctl start postgresql
+
+Connect and check:
+
+    sudo -u postgres psql -c "SELECT * FROM pitr_test;"
+
+Your data is back. The table that was dropped is there again, with your row
+in it. That's PITR. That's why we archive WAL. That's why this whole setup
+is worth the effort.
+
+
+--- SETTING UP AUTOMATED BACKUP SCHEDULES ---
+
+In production you don't run backups manually. Let's set up cron jobs.
+
+    sudo -u postgres crontab -e
+
+Add these lines:
+
+    # Full backup every Sunday at 1 AM
+    0 1 * * 0 pgbackrest --stanza=demo --type=full backup
+
+    # Differential backup Mon-Sat at 1 AM
+    0 1 * * 1-6 pgbackrest --stanza=demo --type=diff backup
+
+    # Optional: incremental every 6 hours
+    0 */6 * * * pgbackrest --stanza=demo --type=incr backup
+
+Now — and this is something I feel strongly about — don't just set up the
+backup crons and walk away. Set up monitoring that alerts you if a backup
+DOESN'T complete. I've seen setups where cron was silently failing for weeks
+because the postgres user's crontab wasn't loading environment variables
+correctly. Add something like this after your backup command:
+
+    0 1 * * 0 pgbackrest --stanza=demo --type=full backup && \
+      echo "$(date): Full backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): Full backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+Your monitoring system should alert if "FAILED" appears in that log. Simple
+but effective.
+
+
+--- REMOTE REPOSITORY CONFIGURATION ---
+
+Let me show you quickly what the config looks like when you're doing this
+properly with a remote repository — either another server or S3. Because in
+production, backing up to the same machine as your database is not a real
+backup strategy. If that server's disks fail, you lose everything.
+
+For a remote server (let's call it backup-server), you'd set up SSH key
+exchange first:
+
+    sudo -u postgres ssh-keygen -t ed25519 -f /var/lib/postgresql/.ssh/id_ed25519
+    ssh-copy-id -i /var/lib/postgresql/.ssh/id_ed25519.pub \
+      pgbackrest@backup-server
+
+Then in pgbackrest.conf on the primary, you'd change your repo section to:
+
+    [global]
+    repo1-host=backup-server
+    repo1-host-user=pgbackrest
+    repo1-path=/var/lib/pgbackrest
+    repo1-retention-full=2
+
+And on the backup server you'd have pgbackrest.conf pointing back:
+
+    [global]
+    repo1-path=/var/lib/pgbackrest
+
+    [demo]
+    pg1-path=/var/lib/postgresql/14/main
+    pg1-host=primary-server
+    pg1-host-user=postgres
+
+For S3, your repo section would look like:
+
+    repo1-type=s3
+    repo1-path=/pgbackrest
+    repo1-s3-bucket=my-pg-backups
+    repo1-s3-endpoint=s3.amazonaws.com
+    repo1-s3-region=us-east-1
+    repo1-s3-key=YOUR_ACCESS_KEY
+    repo1-s3-key-secret=YOUR_SECRET_KEY
+
+I'm not going to drill into S3 today because that's a whole session by itself,
+but I want you to know the capability is there. At my last full-time employer
+we had primary backups going to a local NFS mount with repo1, and a second
+S3 copy with repo2 for off-site DR. Automatic, parallel, encrypted. Beautiful.
+
+
+--- ENCRYPTION ---
+
+Speaking of encrypted — let me mention this because it's often overlooked.
+
+If your backups contain PII, financial data, health data — basically anything
+regulated — your backups must be encrypted at rest. pgBackRest supports this
+natively. Add to your [global] section:
+
+    repo1-cipher-type=aes-256-cbc
+    repo1-cipher-pass=your-very-strong-passphrase-here
+
+That's it. All backup files get encrypted with AES-256. Keep that passphrase
+somewhere safe and separate from the backup server. A secrets manager like
+HashiCorp Vault or AWS Secrets Manager is ideal. If you lose the passphrase,
+you lose the backups. Store it like it's your production database password —
+because effectively it is.
+
+
+--- BACKUP VERIFICATION WITH CHECK AND VERIFY ---
+
+Two more commands I want you to know.
+
+The check command we already ran during setup. But run it anytime you're
+uncertain — after a config change, after a server restart, whenever you want
+to confirm WAL archiving is still flowing:
+
+    sudo -u postgres pgbackrest --stanza=demo check
+
+The verify command is newer and more powerful. It actually reads backup files
+from the repository and verifies their checksums:
+
+    sudo -u postgres pgbackrest --stanza=demo verify
+
+This is what you'd run after a restore drill — verify the remaining backups
+in the catalog are all intact. It can take a while on a large repository but
+it gives you genuine confidence, not just "the files are there" confidence.
+
+I run verify once a week on production systems. Usually in a low-traffic window.
+
+
+--- CONNECTING THIS BACK TO REPLICATION ---
+
+Before we get to labs I want to tie this back to what we covered in our
+replication sessions, because these systems interact.
+
+If you're running a primary-standby streaming replication setup, you have
+a choice about where to run your pgBackRest backups from. You can back up
+from the standby instead of the primary. This has a real operational advantage:
+the backup I/O doesn't hit the primary server at all. Your production read-write
+instance doesn't feel the disk pressure.
+
+To do this you'd add a pg2 entry in your stanza pointing to the standby,
+and run backups with:
+
+    sudo -u postgres pgbackrest --stanza=demo --pg1-host=standby backup
+
+The primary still handles WAL archiving — that hasn't changed. But the actual
+data file copy comes from the standby. In a high-throughput OLTP system,
+this is a meaningful win. Your users don't notice backup windows at all.
+
+For our logical replication folks — if you set up a logical subscription on
+a downstream node, be aware that pgBackRest backups of the upstream publisher
+won't capture the subscription state. You need to back up each node
+independently and understand what each backup represents. Don't assume a
+backup of the publisher is a backup of your whole logical replication topology.
+
+
+--- FINAL THOUGHTS BEFORE LABS ---
+
+Let me give you the mental model that I think ties all of this together.
+
+A backup without a tested restore process is just a file. It might be a
+perfectly formed file. It might have green checkmarks in your monitoring
+dashboard. But until you've actually restored from it and verified the data
+is correct and complete, you don't have a backup. You have a hope.
+
+pgBackRest gives you powerful tools. But the discipline has to come from you.
+Schedule the drills. Document the procedures. Make sure someone other than
+you knows how to do a restore — because disasters have a way of happening
+when you're on vacation.
+
+I genuinely believe that the DBAs who master backup and recovery are the ones
+who become indispensable to their organizations. It's not glamorous work.
+Nobody throws a party when backups complete successfully. But when things go
+wrong — and in a long enough career they will — you want to be the person
+who walks in, runs the restore, and has the database back up in an hour.
+
+That person is not replaceable. That person gets the call at any hour and
+they answer it confidently. That's who I want you to be.
+
+Alright. Labs time.
+
+
+================================================================================
+  LAB EXERCISES — COMPLETE THESE ON YOUR OWN
+  (Estimated time: 60-75 minutes)
+================================================================================
+
+LAB 1 — INITIAL SETUP AND FIRST BACKUP (20 minutes)
+-----------------------------------------------------
+1. Install pgBackRest on your lab PostgreSQL server.
+2. Create /etc/pgbackrest/pgbackrest.conf with a stanza named after yourself
+   (your first name, lowercase). Set up a local repository at
+   /var/lib/pgbackrest.
+3. Configure postgresql.conf with WAL archiving pointing to your stanza.
+4. Run stanza-create and then check. Resolve any errors before proceeding.
+5. Run a full backup and confirm it completes successfully.
+6. Run pgbackrest info and screenshot or write down the backup details shown.
+
+DELIVERABLE: Show the instructor your pgbackrest info output with one
+successful full backup.
+
+
+LAB 2 — BACKUP TYPES AND RETENTION (15 minutes)
+-------------------------------------------------
+1. Run a differential backup after your full backup.
+2. Create a small table in PostgreSQL and insert five rows of test data.
+3. Run an incremental backup.
+4. Run pgbackrest info again and identify the three backups and their
+   relationship in the output.
+5. Manually expire one backup by temporarily setting repo1-retention-full=1
+   and running: pgbackrest --stanza=YOURNAME expire
+6. Check info again — confirm the oldest full and its dependents were removed.
+7. Set retention back to 2 and run a new full backup.
+
+DELIVERABLE: Explain to the person next to you what "expire" did and why.
+
+
+LAB 3 — POINT-IN-TIME RECOVERY (25 minutes)
+--------------------------------------------
+This one matters. Take your time.
+
+1. Connect to PostgreSQL and create a table called recovery_test with
+   columns: id (serial primary key), event_name (text), ts (timestamptz
+   defaulting to now()).
+2. Insert a row: ('initial data loaded')
+3. Record the current timestamp with SELECT NOW(). Write it down.
+4. Wait 30 seconds.
+5. Insert another row: ('this row should disappear')
+6. Wait 10 more seconds.
+7. Drop the table entirely.
+8. Stop PostgreSQL.
+9. Perform a PITR restore targeting the timestamp you wrote down (after the
+   first insert, before the second insert).
+10. Start PostgreSQL.
+11. Verify: recovery_test table exists, first row is there, second row is NOT.
+
+CHALLENGE: What happens if you set --target-action=pause instead of promote?
+Try it. What do you observe when PostgreSQL starts?
+
+DELIVERABLE: Walk the instructor through what you see in the recovery output
+and what the table contained after recovery.
+
+
+LAB 4 — BONUS CHALLENGE (if time permits)
+------------------------------------------
+1. Set up a cron schedule for your stanza (full weekly, diff nightly).
+2. Add a log entry line to your cron commands as shown in the lecture.
+3. Enable AES-256 encryption on your repository. Run a new full backup.
+4. Run pgbackrest verify against your encrypted backup catalog.
+5. Document the commands you ran and what the verify output showed.
+
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+You're going to walk out of this room today having built something real. A
+functioning, WAL-archiving, PITR-capable backup system. Most working DBAs have
+never built one from scratch — they inherited something or they're still running
+pg_dump scripts from 2011.
+
+The certification exam will test your conceptual knowledge of backup types,
+WAL archiving, and recovery targets. You now have hands-on experience with all
+of it. When the exam asks you about the difference between differential and
+incremental, or what archive_command does, or what --type=time means in a
+restore — you don't just know the answer. You've done it. That's a different
+kind of knowing, and it shows.
+
+One last thing I'll say: the discipline you bring to backup practices is a
+direct reflection of how seriously you take your role as a data steward.
+Someone trusted you with their data. That's not nothing. Treat it accordingly.
+
+See you next session. We'll be doing high availability with Patroni.
+Don't be late.
+
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — pgBackRest
+================================================================================
+
+SETUP
+  Install (Debian/Ubuntu):   sudo apt-get install pgbackrest
+  Install (RHEL/Rocky):      sudo yum install pgbackrest
+  Version check:             pgbackrest version
+
+STANZA MANAGEMENT
+  Create stanza:             pgbackrest --stanza=NAME stanza-create
+  Verify connectivity:       pgbackrest --stanza=NAME check
+  Show backup catalog:       pgbackrest --stanza=NAME info
+
+TAKING BACKUPS
+  Full backup:               pgbackrest --stanza=NAME --type=full backup
+  Differential backup:       pgbackrest --stanza=NAME --type=diff backup
+  Incremental backup:        pgbackrest --stanza=NAME --type=incr backup
+
+BACKUP MAINTENANCE
+  Expire old backups:        pgbackrest --stanza=NAME expire
+  Verify backup integrity:   pgbackrest --stanza=NAME verify
+
+RESTORE
+  Full restore (latest):     pgbackrest --stanza=NAME --delta restore
+  PITR by timestamp:         pgbackrest --stanza=NAME --delta \
+                               --type=time \
+                               "--target=YYYY-MM-DD HH:MM:SS.FFFFFF+TZ" \
+                               --target-action=promote \
+                               restore
+  PITR by LSN:               pgbackrest --stanza=NAME --delta \
+                               --type=lsn \
+                               --target=0/5000000 \
+                               --target-action=promote \
+                               restore
+
+POSTGRESQL.CONF SETTINGS (for pgBackRest WAL archiving)
+  archive_mode = on
+  archive_command = 'pgbackrest --stanza=NAME archive-push %p'
+  wal_level = replica
+
+pgbackrest.conf GLOBAL KEYS (common ones)
+  repo1-path               = /path/to/repo
+  repo1-retention-full     = N
+  repo1-retention-diff     = N
+  repo1-cipher-type        = aes-256-cbc
+  repo1-cipher-pass        = YOUR_PASSPHRASE
+  start-fast               = y
+  log-level-console        = info
+  log-level-file           = debug
+
+pgbackrest.conf STANZA KEYS
+  pg1-path                 = /var/lib/postgresql/VERSION/CLUSTER
+  pg1-host                 = REMOTE_HOST (for remote primary)
+  pg1-host-user            = postgres
+
+S3 REPOSITORY KEYS
+  repo1-type               = s3
+  repo1-s3-bucket          = BUCKET_NAME
+  repo1-s3-endpoint        = s3.amazonaws.com
+  repo1-s3-region          = REGION
+  repo1-s3-key             = ACCESS_KEY
+  repo1-s3-key-secret      = SECRET_KEY
+
+USEFUL COMBINATIONS
+  Backup from standby:       pgbackrest --stanza=NAME --pg1-host=STANDBY backup
+  Info for specific stanza:  pgbackrest --stanza=NAME info
+  Verbose output:            pgbackrest --stanza=NAME --log-level-console=detail backup
+
+GOLDEN RULES
+  1. Test your restore monthly — not just your backup.
+  2. Store your cipher passphrase SEPARATELY from the backup server.
+  3. Run pgbackrest check after ANY config change.
+  4. Back up from the standby in high-throughput production systems.
+  5. Monitor for backup FAILURES, not just backup runs.
+
+================================================================================
+  END OF LECTURE NOTES
+  Next session: High Availability with Patroni
+================================================================================

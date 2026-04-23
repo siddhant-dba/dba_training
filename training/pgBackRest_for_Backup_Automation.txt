@@ -1,0 +1,1052 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — SESSION LECTURE NOTES (INSTRUCTOR COPY)
+  Topic   : pgBackRest for Backup Automation — Version 2
+  Platform: PostgreSQL
+  Duration: 4-hour session with labs
+  Revision: Covers multi-host architecture, permissions, TLS, async archiving,
+            cloud repositories, and all topics missing from Version 1
+================================================================================
+
+
+Alright. Close your laptops for just a minute first.
+
+Last session we built a working pgBackRest setup from scratch. One server,
+one repository, local disk. And that was real and valuable — you understand
+the core model now. But I need to be honest with you about something.
+
+What we built last time? That's not what production looks like.
+
+In a real production environment, you have a dedicated backup server. You have
+cloud storage for offsite DR. You have three, four machines that all need to
+talk to each other, with specific users and permissions on each one. And the
+moment you add a second or third repository, the behavior of pgBackRest changes
+in ways that will absolutely bite you if nobody warned you.
+
+So today we're rebuilding this thing properly. We're going to cover the
+architecture that your employers are actually running. Everything that was
+left out of last session gets covered today.
+
+Let's go.
+
+
+--- THE REAL PRODUCTION ARCHITECTURE ---
+
+Here's the setup we're targeting. This is what I see in serious shops.
+
+  Machine 1 — Primary PostgreSQL server
+    Runs PostgreSQL
+    Runs pgBackRest in client mode
+    Archives WAL out to ALL configured repositories
+
+  Machine 2 — Dedicated Backup Repository Host
+    Runs pgBackRest in server mode (or accessible via SSH)
+    Owns the backup repository directory
+    Runs backup commands against the primary
+    Has NO PostgreSQL instance
+
+  Machine 3 (or Cloud) — Offsite / Object Store
+    Could be GCS, S3, Azure, or another physical host
+    Second or third copy of all backups and archives
+    Geographic separation for true DR
+
+You might also have a standby PostgreSQL node in the mix, and we will cover
+how backups interact with that too.
+
+Before we touch any configuration, I want to lock in three concepts that
+Version 1 of this lecture glossed over.
+
+Concept 1: WAL archiving goes to ALL repositories simultaneously.
+
+When you configure three repos, every WAL segment gets pushed to all three
+on every archive-push call. This is not optional. This is not configurable
+on a per-WAL basis. All repos get all WAL, always. The consequence: if even
+ONE repository is unreachable or broken, the archive command fails, and
+PostgreSQL's archiver blocks. You need to understand this before you add
+your first second repository.
+
+Concept 2: Backups do NOT automatically replicate across repositories.
+
+WAL does. Backups don't. You must schedule separate backup cron jobs for
+each repository. If you take a full backup targeting repo1, repo2 gets
+nothing. You have to run the backup command again targeting repo2. We'll
+set all of this up in the cron section.
+
+Concept 3: The machine that runs backup commands is the repository host,
+not the primary.
+
+In a single-server setup, everything runs on the primary and that's fine.
+In a multi-host setup, the stanza-create command, the backup command, and
+the expire command are typically run from the repository host. The primary
+is involved (pgBackRest talks to it during the backup), but the orchestration
+lives on the repo host. Get this wrong and you'll see cryptic errors.
+
+Alright. Now let's build it.
+
+
+--- USERS AND PERMISSIONS — THE PART NOBODY TEACHES ---
+
+This section did not exist in Version 1 of this lecture. That was a mistake
+on my part, and I've seen it cause real problems for students who tried to
+set up multi-host environments after the course.
+
+The single-server model is simple: postgres user owns everything. One machine,
+one user, done.
+
+The multi-host model requires you to think about who does what on each machine.
+
+On the PRIMARY server:
+  - The postgres user runs PostgreSQL.
+  - The postgres user runs archive-push (called by archive_command from postgres).
+  - The postgres user needs SSH access to the repo host's pgbackrest user,
+    OR needs to be a client in a TLS configuration.
+  - /etc/pgbackrest/pgbackrest.conf is owned by postgres:postgres, mode 640.
+
+On the REPOSITORY HOST:
+  - Create a dedicated pgbackrest system user. Do NOT use the postgres user
+    for this. The separation matters for security — you don't want your
+    PostgreSQL process user to have write access to the backup repository.
+
+    sudo groupadd pgbackrest
+    sudo useradd -d /var/lib/pgbackrest -M -g pgbackrest -s /bin/bash pgbackrest
+
+  - The pgbackrest user owns the repository directory:
+
+    sudo mkdir -p /backup/pgbackrest
+    sudo chown pgbackrest:pgbackrest /backup/pgbackrest
+    sudo chmod 750 /backup/pgbackrest
+
+  - The pgbackrest user owns the log directory:
+
+    sudo mkdir -p /var/log/pgbackrest
+    sudo chown pgbackrest:pgbackrest /var/log/pgbackrest
+
+  - /etc/pgbackrest/pgbackrest.conf on the repo host is owned by
+    pgbackrest:pgbackrest, mode 640.
+
+  - The pgbackrest user on the repo host needs SSH access to the postgres
+    user on the primary (in SSH mode). The postgres user on the primary
+    needs SSH access to the pgbackrest user on the repo host. Both directions.
+
+Let me say that again because it trips people up: SSH is bidirectional.
+
+From the repo host:
+  sudo -u pgbackrest ssh-keygen -t ed25519 -f /var/lib/pgbackrest/.ssh/id_ed25519 -N ""
+  sudo -u pgbackrest ssh-copy-id postgres@primary-server
+
+From the primary:
+  sudo -u postgres ssh-keygen -t ed25519 -f /var/lib/postgresql/.ssh/id_ed25519 -N ""
+  sudo -u postgres ssh-copy-id pgbackrest@repo-server
+
+Test both directions before you do anything else. If SSH doesn't work cleanly
+in both directions, nothing else will work either.
+
+Permission summary table (commit this to memory):
+
+  MACHINE        USER           OWNS                          MODE
+  Primary        postgres       /etc/pgbackrest/pgbackrest.conf  640
+  Primary        postgres       /var/log/pgbackrest/          750
+  Repo host      pgbackrest     /backup/pgbackrest/           750
+  Repo host      pgbackrest     /etc/pgbackrest/pgbackrest.conf  640
+  Repo host      pgbackrest     /var/log/pgbackrest/          750
+
+
+--- THE conf.d PATTERN — KEEP SECRETS SEPARATE ---
+
+Version 1 put everything in one file: /etc/pgbackrest/pgbackrest.conf.
+That file included things like cipher passphrases and cloud credentials.
+That is bad practice when you're putting your config in version control
+or sharing it with colleagues.
+
+pgBackRest supports a config-include-path option that loads all *.conf files
+from a directory — exactly like nginx's conf.d or sshd_config.d patterns.
+
+Here's how to use it:
+
+Your main pgbackrest.conf:
+
+    [global]
+    config-include-path=/etc/pgbackrest/conf.d
+    repo1-path=/var/lib/pgbackrest
+    repo1-retention-full=2
+    start-fast=y
+    log-level-console=info
+    log-level-file=debug
+    log-path=/var/log/pgbackrest
+
+    [demo]
+    pg1-path=/var/lib/postgresql/17/main
+
+Then create /etc/pgbackrest/conf.d/secrets.conf for sensitive values:
+
+    [global]
+    repo1-cipher-type=aes-256-cbc
+    repo1-cipher-pass=your-very-strong-passphrase-here
+
+    # GCS key lives here, not in main conf
+    repo3-gcs-key=/etc/pgbackrest/conf.d/gcs-key.json
+
+Lock that file down:
+
+    sudo chmod 600 /etc/pgbackrest/conf.d/secrets.conf
+    sudo chown postgres:postgres /etc/pgbackrest/conf.d/secrets.conf
+
+Now you can share your main pgbackrest.conf freely. Your secrets file stays
+tight. This is the production pattern.
+
+
+--- CONFIGURING MULTIPLE REPOSITORIES ---
+
+Let's build a real three-repository configuration. This mirrors a setup I've
+worked with that had local fast restore (repo1), a dedicated backup host for
+daily operations (repo2), and GCS for long-term offsite DR (repo3).
+
+On the PRIMARY server — /etc/pgbackrest/pgbackrest.conf:
+
+    [global]
+    # Local backup repository (fast restore, short retention)
+    repo1-path=/var/lib/pgbackrest
+    repo1-retention-full=2
+    repo1-retention-diff=4
+
+    # Dedicated backup host repository
+    repo2-host=172.18.0.3
+    repo2-host-user=pgbackrest
+    repo2-path=/backup/pgbackrest
+    repo2-retention-full=4
+
+    # Offsite: Google Cloud Storage
+    repo3-type=gcs
+    repo3-path=/pgbackrest-repo
+    repo3-gcs-bucket=your-bucket-name
+    repo3-gcs-key=/etc/pgbackrest/conf.d/gcs-key.json
+    repo3-storage-upload-chunk-size=64MiB
+    repo3-retention-full=4
+
+    # Global settings
+    process-max=2
+    spool-path=/var/spool/pgbackrest
+    start-fast=y
+    log-level-console=info
+    log-level-file=debug
+    log-path=/var/log/pgbackrest
+
+    [demo]
+    pg1-path=/var/lib/postgresql/17/main
+
+On the REPOSITORY HOST — /etc/pgbackrest/pgbackrest.conf:
+
+    [global]
+    repo2-path=/backup/pgbackrest
+    repo2-retention-full=4
+    log-level-console=info
+    log-level-file=debug
+    log-path=/var/log/pgbackrest
+
+    [demo]
+    pg1-path=/var/lib/postgresql/17/main
+    pg1-host=172.18.0.2
+    pg1-host-user=postgres
+
+Notice that the repo host config does NOT define repo1 or repo3 — it only
+knows about the repository it manages (repo2). The primary knows about all
+three repositories because it's the one archiving WAL to all of them.
+
+Now here's the thing about running stanza-create. You run it once, but it
+must be run on the host that can reach ALL repositories. Since only the
+primary knows about all three repos, you'd run:
+
+    sudo -u postgres pgbackrest --stanza=demo stanza-create
+
+And you'll see output like:
+
+    INFO: stanza-create for stanza 'demo' on repo1
+    INFO: stanza-create for stanza 'demo' on repo2
+    INFO: stanza-create for stanza 'demo' on repo3
+    INFO: stanza-create command end: completed successfully
+
+All three repos get initialized in one command. Similarly, check will verify
+all three:
+
+    sudo -u postgres pgbackrest --stanza=demo check
+
+You'll see it push a test WAL segment to each repository and confirm arrival.
+
+If you want to query or target a specific repository, use --repo:
+
+    pgbackrest --stanza=demo info --repo=2
+    pgbackrest --stanza=demo --repo=2 --type=full backup
+    pgbackrest --stanza=demo --repo=3 expire
+
+
+--- WAL ARCHIVING BEHAVIOR WITH MULTIPLE REPOS ---
+
+I said this at the top and I'm going to say it again with more detail because
+it's operationally critical.
+
+PostgreSQL runs your archive_command one WAL segment at a time. When you have
+three repos configured, pgBackRest's archive-push sends that segment to all
+three. If repo3 (GCS) is having a network issue, archive-push returns an error.
+PostgreSQL's archiver sees the error and tries the same WAL segment again.
+And again. And again. It won't move on to the next WAL segment until the
+current one archives successfully.
+
+Meanwhile, WAL segments pile up in pg_wal/archive_status/ marked as .ready.
+If your pg_wal directory fills the disk, PostgreSQL panics and stops. Your
+production database goes down because of a flaky cloud storage connection.
+
+This is not theoretical. I have seen this happen.
+
+The mitigation is asynchronous archiving. Add this to your [global] section:
+
+    archive-async=y
+    spool-path=/var/spool/pgbackrest
+
+Create the spool directory:
+
+    sudo mkdir -p /var/spool/pgbackrest
+    sudo chown postgres:postgres /var/spool/pgbackrest
+    sudo chmod 750 /var/spool/pgbackrest
+
+With archive-async=y, here's what changes: the archive-push call that
+PostgreSQL makes returns quickly, handing off the actual work to asynchronous
+pgBackRest processes. Those processes push WAL to each repository using
+process-max parallel workers. If one repository is slow or temporarily down,
+the other repositories still receive WAL promptly. PostgreSQL's archiver is
+no longer blocked by the slowest repository.
+
+BUT — and read this carefully — there is a safety valve called
+archive-push-queue-max. If unarchived WAL builds up past this limit,
+pgBackRest tells PostgreSQL the archive succeeded even though it dropped
+the WAL segment. Missing WAL means PITR is impossible past that point.
+
+The default archive-push-queue-max is large (4GiB in recent versions) and
+is really a last resort. The right response to a failing repository is to
+fix the repository, not to let WAL get dropped. Monitor your queue depth.
+Alert if archive_status/*.ready count grows beyond a few segments.
+
+
+--- TLS SERVER MODE: THE MODERN ALTERNATIVE TO SSH ---
+
+Version 1 of this lecture showed SSH key exchange as the way to connect
+pgBackRest across machines. That still works. But since pgBackRest 2.37
+(released January 2022), there is a better option: TLS server mode.
+
+TLS server mode replaces SSH with mutual TLS certificate authentication.
+The repository host runs a persistent pgbackrest server process. Database
+nodes connect to it as TLS clients. The advantages: better performance
+than SSH, no SSH daemon dependency, cleaner firewall rules (one port: 8432),
+and better auditability.
+
+Here's how to set it up.
+
+Step 1: Generate certificates. You need a CA cert, a cert for the repo host,
+and a cert for each database host. In production you'd use your organization's
+PKI. For lab purposes:
+
+    # On any machine with openssl
+    openssl req -new -x509 -days 3650 -nodes \
+      -out ca.crt -keyout ca.key -subj "/CN=pgbackrest-ca"
+
+    # Repo host cert
+    openssl req -new -nodes -out repo.csr -keyout repo.key -subj "/CN=repo-host"
+    openssl x509 -req -days 3650 -in repo.csr -CA ca.crt -CAkey ca.key \
+      -CAcreateserial -out repo.crt
+
+    # Primary cert
+    openssl req -new -nodes -out primary.csr -keyout primary.key -subj "/CN=primary-host"
+    openssl x509 -req -days 3650 -in primary.csr -CA ca.crt -CAkey ca.key \
+      -CAcreateserial -out primary.crt
+
+Copy certs to the right machines with appropriate ownership:
+  - Repo host: repo.crt, repo.key, ca.crt → owned by pgbackrest, mode 600 for key
+  - Primary: primary.crt, primary.key, ca.crt → owned by postgres, mode 600 for key
+
+Step 2: Configure the REPOSITORY HOST for TLS server mode.
+
+/etc/pgbackrest/pgbackrest.conf on repo host:
+
+    [global]
+    repo2-path=/backup/pgbackrest
+    repo2-retention-full=4
+    log-level-console=info
+    log-level-file=debug
+
+    # TLS server settings
+    tls-server-address=*
+    tls-server-cert-file=/home/pgbackrest/certs/repo.crt
+    tls-server-key-file=/home/pgbackrest/certs/repo.key
+    tls-server-ca-file=/home/pgbackrest/certs/ca.crt
+    tls-server-auth=primary-host=demo
+
+    [demo]
+    pg1-host=primary-host
+    pg1-host-user=postgres
+    pg1-host-type=tls
+    pg1-host-cert-file=/home/pgbackrest/certs/repo.crt
+    pg1-host-key-file=/home/pgbackrest/certs/repo.key
+    pg1-host-ca-file=/home/pgbackrest/certs/ca.crt
+    pg1-path=/var/lib/postgresql/17/main
+
+tls-server-auth is critical: it maps the CN of the client certificate to
+the stanza it's allowed to access. "primary-host=demo" means: a client
+presenting a cert with CN=primary-host is allowed to access the demo stanza.
+
+Step 3: Run the TLS server as a systemd service on the repo host.
+
+Create /etc/systemd/system/pgbackrest.service:
+
+    [Unit]
+    Description=pgBackRest Server
+    After=network.target
+
+    [Service]
+    Type=simple
+    User=pgbackrest
+    Restart=always
+    RestartSec=1
+    ExecStart=/usr/bin/pgbackrest server
+    ExecReload=/bin/kill -HUP $MAINPID
+
+    [Install]
+    WantedBy=multi-user.target
+
+Then:
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable pgbackrest
+    sudo systemctl start pgbackrest
+
+Verify it's up:
+
+    pgbackrest server-ping
+
+Note: server-ping is an aliveness check only. It does not authenticate.
+If you change any TLS configuration, restart the service.
+
+Step 4: Configure the PRIMARY for TLS client mode.
+
+/etc/pgbackrest/pgbackrest.conf on primary:
+
+    [global]
+    repo2-host=repo-host
+    repo2-host-user=pgbackrest
+    repo2-host-type=tls
+    repo2-host-cert-file=/var/lib/postgresql/certs/primary.crt
+    repo2-host-key-file=/var/lib/postgresql/certs/primary.key
+    repo2-host-ca-file=/var/lib/postgresql/certs/ca.crt
+    repo2-path=/backup/pgbackrest
+
+    # Also run a TLS server on the primary so the repo host can connect back
+    tls-server-address=*
+    tls-server-cert-file=/var/lib/postgresql/certs/primary.crt
+    tls-server-key-file=/var/lib/postgresql/certs/primary.key
+    tls-server-ca-file=/var/lib/postgresql/certs/ca.crt
+    tls-server-auth=repo-host=demo
+
+    [demo]
+    pg1-path=/var/lib/postgresql/17/main
+
+Yes, the primary also needs to run a TLS server. The repo host connects BACK
+to the primary during backup to read data files. Both sides need to serve and
+authenticate as clients. This is the part people miss when they first set up
+TLS mode.
+
+If SSH is fine for your environment, stick with SSH. TLS adds certificate
+management overhead. But if you're running many database nodes with a central
+backup server, TLS server mode scales much more cleanly.
+
+
+--- GOOGLE CLOUD STORAGE CONFIGURATION ---
+
+Let's cover GCS in the detail it deserves. The lecture mentioned S3 and
+waved at GCS. Here's what GCS actually requires.
+
+First, authentication. GCS supports two modes:
+
+  1. Service account JSON key — a JSON file containing private key material.
+     Used when running on any infrastructure (not just GCP).
+
+  2. Workload Identity / Application Default Credentials — no key file needed,
+     uses the GCP metadata service. Only works on GCE/GKE.
+
+For on-premises or multi-cloud setups, you'll use a service account key:
+
+    # In GCP Console or via gcloud:
+    gcloud iam service-accounts create pgbackrest-sa
+    gcloud projects add-iam-policy-binding YOUR_PROJECT \
+      --member="serviceAccount:pgbackrest-sa@YOUR_PROJECT.iam.gserviceaccount.com" \
+      --role="roles/storage.admin"
+    gcloud iam service-accounts keys create /etc/pgbackrest/conf.d/gcs-key.json \
+      --iam-account=pgbackrest-sa@YOUR_PROJECT.iam.gserviceaccount.com
+
+That key file goes on the primary server (since the primary runs archive-push
+to GCS). Permissions:
+
+    sudo chown postgres:postgres /etc/pgbackrest/conf.d/gcs-key.json
+    sudo chmod 600 /etc/pgbackrest/conf.d/gcs-key.json
+
+The key should be in your secrets conf, not your main conf:
+
+/etc/pgbackrest/conf.d/secrets.conf:
+
+    [global]
+    repo3-gcs-key=/etc/pgbackrest/conf.d/gcs-key.json
+
+Main config for GCS repo:
+
+    repo3-type=gcs
+    repo3-path=/pgbackrest-repo
+    repo3-gcs-bucket=your-bucket-name
+    repo3-storage-upload-chunk-size=64MiB
+    repo3-retention-full=4
+
+The storage-upload-chunk-size setting deserves attention. Object stores like
+GCS upload files in chunks when they're too large for a single request.
+Larger chunks mean fewer API calls and generally better throughput, but each
+pgBackRest process uses chunk_size × process-max of memory. With process-max=4
+and a 64MiB chunk, you're looking at 256MiB just for upload buffers. Tune
+this based on your available memory and network bandwidth.
+
+For GCS specifically, also check:
+  - Bucket region should be co-located with your primary if possible
+  - Enable versioning on the bucket if you want repo-target-time functionality
+    (point-in-time recovery at the storage level, separate from WAL-based PITR)
+  - Set appropriate lifecycle policies on the GCS bucket — but be careful
+    these don't conflict with pgBackRest's own retention management
+
+
+--- VERSION PINNING: THE SILENT KILLER ---
+
+Short section. Critical section.
+
+All pgBackRest hosts — primary, repo host, any standbys — must run the
+exact same pgBackRest version. Not approximately the same. Exactly the same.
+
+If you upgrade the repo host to 2.54.0 but the primary is still on 2.52.0,
+WAL archiving will fail immediately with:
+
+    [ProtocolError] expected value '2.54.0' for greeting key 'version'
+    but got '2.52.0'
+
+This error is clear, at least. But it will take down your WAL archiving
+immediately, WAL will pile up, and you'll have an incident.
+
+Upgrade procedure for a multi-host setup:
+  1. Stop PostgreSQL on the primary (or at minimum coordinate the upgrade window)
+  2. Upgrade pgBackRest on all hosts simultaneously (or in rapid succession)
+  3. Verify with pgbackrest version on each host
+  4. Run pgbackrest --stanza=demo check before declaring success
+
+If you use configuration management (Ansible, Puppet, Chef), pin the
+pgBackRest package version explicitly and update all nodes in one play.
+Never let nodes drift.
+
+
+--- RETENTION: COUNT MODE VS TIME MODE, AND THE N+1 RULE ---
+
+Version 1 taught repo1-retention-full=2 and described it as "keep two full
+backups." That's almost right but missing an important detail.
+
+The retention count is a minimum, not a maximum. Expiration only happens
+when the count of complete backups EXCEEDS the retention value. So with
+retention-full=2, you will always have a third full backup sitting around
+briefly after a new full backup completes — three full backups exist until
+the expire command runs and removes the oldest. This is the N+1 rule.
+
+Practically this means: size your backup storage for N+1 full backups,
+not N. If each full backup is 500GB and you want to keep 2, budget 1.5TB,
+not 1TB.
+
+Now the more useful mode for operations: retention by time.
+
+    repo1-retention-full-type=time
+    repo1-retention-full=7
+
+This means: keep all full backups that are less than 7 days old. Retention
+checks expiration based on age, not count. Much more intuitive for SLA
+conversations ("we keep 7 days of full backups") and for compliance
+documentation.
+
+When using time-based retention, you need at least one full backup older
+than retention-full days before ANY backup gets expired. So if you just set
+this up today and run full backups daily, nothing expires until day 8 when
+there's finally a backup old enough to be expired. This is intentional —
+it prevents expiring everything during initial setup.
+
+Per-repository retention matters in multi-repo setups. You might want:
+  - repo1 (local fast restore): retention-full=2 (count, two most recent)
+  - repo2 (backup host): retention-full=14 (time, two weeks)
+  - repo3 (GCS offsite): retention-full=90 (time, three months)
+
+Each repo manages its own retention independently. The expire command applies
+to all repos by default, but you can target a specific one with --repo.
+
+
+--- BLOCK INCREMENTAL BACKUP ---
+
+Standard incremental backup, as taught in Version 1, copies entire changed
+files. If a 10GB table has one row updated, the entire 10GB file is backed
+up incrementally. On write-heavy systems with large tables, your "incremental"
+backups aren't very incremental at all.
+
+Block incremental backup, introduced as a beta feature in recent pgBackRest
+versions, fixes this. It tracks changes at the block level (PostgreSQL's 8KB
+page size) rather than the file level. Only the changed pages within a file
+are stored in the incremental backup. For a 10GB table with scattered row
+updates, you might back up megabytes instead of gigabytes.
+
+To enable:
+
+    [global]
+    backup-block=y
+
+This requires a full backup to establish the baseline, then subsequent
+incrementals capture only changed blocks. Check your pgBackRest version
+supports this — it's actively being developed and stability improves
+each release.
+
+Related: the bundle option, useful for object stores like GCS and S3.
+
+    repo3-bundle=y
+
+PostgreSQL databases contain many small files — relation forks, FSM files,
+VM files. Object stores charge per API request, and uploading thousands of
+tiny files is slow and expensive. Bundling combines small files (below a
+configurable size limit) into larger objects before upload. Dramatically
+reduces API call count and often significantly improves backup throughput
+to cloud storage.
+
+For a GCS or S3 repository, I'd enable both:
+
+    repo3-bundle=y
+    repo3-bundle-size=100MiB
+    repo3-bundle-limit=2MiB
+
+Files smaller than bundle-limit get bundled together until the bundle
+reaches bundle-size. Files larger than bundle-limit are stored separately
+and are eligible for resume if a backup is interrupted.
+
+
+--- BACKUP FROM A STANDBY ---
+
+Version 1 mentioned this briefly. Let's actually configure it because it
+matters for production.
+
+If you have a streaming replication standby, you can take backups from the
+standby instead of the primary. The standby handles all the disk I/O for
+reading data files. The primary only contributes WAL archiving (which it
+was doing anyway). Your production read-write workload is completely
+unaffected by backup I/O.
+
+In the stanza configuration on the repository host, add the standby:
+
+    [demo]
+    pg1-host=primary-host
+    pg1-host-user=postgres
+    pg1-path=/var/lib/postgresql/17/main
+    pg1-host-type=tls
+    pg1-host-cert-file=...
+    pg1-host-key-file=...
+    pg1-host-ca-file=...
+
+    pg2-host=standby-host
+    pg2-host-user=postgres
+    pg2-path=/var/lib/postgresql/17/main
+    pg2-host-type=tls
+    pg2-host-cert-file=...
+    pg2-host-key-file=...
+    pg2-host-ca-file=...
+
+Then when running a backup, add --backup-standby:
+
+    sudo -u pgbackrest pgbackrest --stanza=demo --type=full \
+      --backup-standby backup
+
+pgBackRest automatically determines which node is the primary, contacts it
+for control information, and reads data files from the standby. If the
+standby falls behind during the backup, pgBackRest waits for replay to
+catch up before proceeding.
+
+One thing to be careful about: if you're running logical replication on top
+of your physical standby setup, the standby backup does NOT capture logical
+replication subscription state. If you need to recover a logical subscriber,
+back up that node independently.
+
+Also important — do NOT archive WAL from the standby. Only the primary
+should run archive_command. WAL from a standby looks almost identical but
+has different checksums, and mixing WAL from multiple sources in the same
+archive repository can corrupt it. The archive_command on your standby
+should either be disabled or set to a no-op.
+
+
+--- AUTOMATED SCHEDULING IN A MULTI-REPO ENVIRONMENT ---
+
+Since backups don't automatically replicate across repos, your cron setup
+needs to be explicit about which repos get which backups.
+
+On the PRIMARY (for repos the primary manages, like repo1):
+
+    sudo -u postgres crontab -e
+
+    # Full backup to local repo1 every Sunday at 1 AM
+    0 1 * * 0 pgbackrest --stanza=demo --repo=1 --type=full backup \
+      && echo "$(date): repo1 full backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): repo1 full backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+    # Differential to local repo1 Mon-Sat at 1 AM
+    0 1 * * 1-6 pgbackrest --stanza=demo --repo=1 --type=diff backup \
+      && echo "$(date): repo1 diff backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): repo1 diff backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+On the REPOSITORY HOST (for repo2 which it manages):
+
+    sudo -u pgbackrest crontab -e
+
+    # Full backup to repo2 every Sunday at 2 AM (offset from repo1)
+    0 2 * * 0 pgbackrest --stanza=demo --repo=2 --type=full backup \
+      && echo "$(date): repo2 full backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): repo2 full backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+    # Differential to repo2 Mon-Sat at 2 AM
+    0 2 * * 1-6 pgbackrest --stanza=demo --repo=2 --type=diff backup \
+      && echo "$(date): repo2 diff backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): repo2 diff backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+For repo3 (GCS offsite), you might run full backups less frequently since
+cloud storage retrieval is slower. Weekly full, no differential:
+
+    # Full backup to GCS repo3 every Sunday at 3 AM
+    0 3 * * 0 pgbackrest --stanza=demo --repo=3 --type=full backup \
+      && echo "$(date): repo3 full backup OK" >> /var/log/pgbackrest/backup_status.log \
+      || echo "$(date): repo3 full backup FAILED" >> /var/log/pgbackrest/backup_status.log
+
+Offset the repo schedules by at least an hour to avoid overlapping backup
+windows competing for the same process-max workers and network bandwidth.
+
+Your monitoring system should parse backup_status.log and alert on any
+FAILED line within the expected backup window. Also monitor that the log
+file itself is being written — a completely silent cron is sometimes worse
+than a noisy failure.
+
+
+--- RESTORE SELECTION FROM MULTIPLE REPOSITORIES ---
+
+When you run a restore without specifying a repo, pgBackRest automatically
+selects the best backup based on your criteria. It prefers repo1 over repo2
+over repo3 — on the assumption that repo1 is fastest (local disk).
+
+For PITR by timestamp, pgBackRest picks the repo whose backup is valid
+for the requested time:
+
+    sudo -u postgres pgbackrest --stanza=demo \
+      --delta \
+      --type=time \
+      "--target=2024-11-15 09:47:00.000000+00" \
+      --target-action=promote \
+      restore
+
+If you want to restore from a specific repository:
+
+    sudo -u postgres pgbackrest --stanza=demo \
+      --repo=2 \
+      --delta \
+      --type=time \
+      "--target=2024-11-15 09:47:00.000000+00" \
+      --target-action=promote \
+      restore
+
+During WAL replay after restore, pgBackRest searches ALL configured
+repositories for each WAL segment, in priority order. Even if you restored
+from repo2, it'll pull WAL from repo1 if repo1 has it and repo1 comes first.
+This is usually what you want but can cause confusion if one repository has
+incomplete WAL.
+
+
+--- [ INSTRUCTOR WARNING — READ THIS CAREFULLY ] ---
+
+Everything I said in Version 1 about restore drills, I'm saying again here,
+with more urgency.
+
+Testing a restore in a single-repo environment is relatively simple.
+Testing a restore in a three-repo multi-host environment is harder, takes
+longer, and has more failure modes. That's exactly why you need to do it more
+often, not less.
+
+The additional things that can go wrong in a multi-host setup:
+
+  - SSH or TLS connectivity from the restore host to the repo host fails
+    at 3 AM because someone changed firewall rules
+  - The GCS service account key expired and nobody got an alert
+  - pgBackRest versions drifted and WAL archiving had silently been failing
+    for two days
+  - The restore works but takes 4 hours from repo3 because nobody realized
+    GCS egress from that region is slow
+  - The standby backup was taken but the primary's WAL archive is incomplete
+    and PITR fails to reach the target time
+
+Every one of these is something you discover in a drill, not during an
+incident. Run drills. Document them. Time them. Know your RTO from each
+repository before you need it.
+
+---
+
+
+--- QUICK REFERENCE: MULTI-REPO COMMANDS ---
+
+Target a specific repository:
+    pgbackrest --stanza=NAME --repo=2 info
+    pgbackrest --stanza=NAME --repo=2 --type=full backup
+    pgbackrest --stanza=NAME --repo=3 expire
+    pgbackrest --stanza=NAME --repo=1 verify
+
+Restore from a specific repository:
+    pgbackrest --stanza=NAME --repo=2 --delta restore
+
+Check all repositories:
+    pgbackrest --stanza=NAME check
+
+Stanza-create (initializes ALL configured repos):
+    pgbackrest --stanza=NAME stanza-create
+
+TLS server management:
+    sudo systemctl start pgbackrest
+    sudo systemctl status pgbackrest
+    pgbackrest server-ping
+
+Monitor async archive queue:
+    ls /var/run/postgresql/ | grep .ready | wc -l
+    # Or: check pg_stat_archiver view in PostgreSQL
+    psql -c "SELECT * FROM pg_stat_archiver;"
+
+Backup from standby:
+    pgbackrest --stanza=NAME --backup-standby --type=full backup
+
+
+--- GOLDEN RULES VERSION 2 ---
+
+  1.  WAL archives to ALL repos. A failing repo blocks the archiver. Use
+      archive-async=y and monitor the queue.
+
+  2.  Backups do NOT replicate automatically. Schedule per-repo.
+
+  3.  All pgBackRest versions across all hosts must match exactly.
+      Upgrade together, verify together.
+
+  4.  Permissions follow the machine. postgres user on the primary,
+      pgbackrest user on the repo host. Never mix them up.
+
+  5.  SSH is bidirectional. Test both directions before anything else.
+
+  6.  Secrets go in conf.d with mode 600. Main config goes in version control.
+
+  7.  Use --repo to target specific repositories in operations.
+
+  8.  Size storage for N+1 full backups, not N.
+
+  9.  Time-based retention (retention-full-type=time) is more operationally
+      intuitive than count-based for SLA conversations.
+
+  10. Test your restore from EACH repository. A backup in repo3 you've never
+      restored from is not a backup, it's a hope stored in a cloud bucket.
+
+
+================================================================================
+  LAB EXERCISES — VERSION 2
+  (Estimated time: 90 minutes)
+================================================================================
+
+LAB 1 — MULTI-REPO CONFIGURATION (25 minutes)
+-----------------------------------------------
+1. Configure pgBackRest with two repositories on your lab setup:
+     repo1: local path /var/lib/pgbackrest
+     repo2: a second local path /var/lib/pgbackrest-secondary
+   (We're simulating a remote repo with a second local path for lab purposes.)
+2. Create the conf.d directory and move your cipher passphrase to a
+   separate secrets.conf file inside it.
+3. Run stanza-create and confirm both repos are initialized in the output.
+4. Run check and confirm WAL is verified against both repos.
+5. Run a full backup targeting repo1 only (--repo=1).
+6. Run a full backup targeting repo2 only (--repo=2).
+7. Run pgbackrest info and observe that both repos are shown with their
+   independent backup catalogs.
+
+DELIVERABLE: Show the instructor pgbackrest info output showing full
+backups in both repos with independent timestamps.
+
+
+LAB 2 — ASYNC ARCHIVING AND QUEUE MONITORING (20 minutes)
+-----------------------------------------------------------
+1. Add archive-async=y and spool-path=/var/spool/pgbackrest to your config.
+2. Create the spool directory with correct ownership.
+3. Reload PostgreSQL configuration.
+4. Generate some WAL activity:
+     sudo -u postgres psql -c "SELECT pg_switch_wal();"
+5. Check pg_stat_archiver in PostgreSQL:
+     sudo -u postgres psql -c "SELECT * FROM pg_stat_archiver;"
+6. Observe the last_archived_wal and last_failed_wal fields.
+7. Check the archive_status directory:
+     ls /var/lib/postgresql/17/main/pg_wal/archive_status/
+8. Document what files you see and what their extensions mean
+   (.ready, .done, no extension).
+
+DELIVERABLE: Explain to the person next to you what archive-async=y
+changed about how archiving works and why it matters.
+
+
+LAB 3 — PER-REPO RETENTION AND EXPIRATION (20 minutes)
+--------------------------------------------------------
+1. Set repo1 to retention-full=2 (count mode).
+2. Set repo2 to retention-full-type=time and retention-full=1 (1 day, for
+   lab speed — in production this would be days or weeks).
+3. Take three full backups to repo1:
+     pgbackrest --stanza=YOURNAME --repo=1 --type=full backup
+   (run it three times)
+4. Run pgbackrest info --repo=1. How many full backups do you see?
+   Why is there one more than your retention setting?
+5. Run expire for repo1:
+     pgbackrest --stanza=YOURNAME --repo=1 expire
+6. Check info again. What happened?
+7. Now look at repo2. Did anything change there? Why or why not?
+
+DELIVERABLE: Explain the N+1 rule to the instructor and why it matters
+for storage capacity planning.
+
+
+LAB 4 — RESTORE FROM A SPECIFIC REPOSITORY (25 minutes)
+---------------------------------------------------------
+This builds on Lab 3 from Version 1. You need a working two-repo setup.
+
+1. Connect to PostgreSQL and create a table:
+     CREATE TABLE restore_test (id SERIAL, note TEXT, ts TIMESTAMPTZ DEFAULT NOW());
+     INSERT INTO restore_test (note) VALUES ('this row must survive');
+2. Record the current timestamp: SELECT NOW();
+3. Wait 30 seconds.
+4. Insert a second row: INSERT INTO restore_test (note) VALUES ('this should disappear');
+5. DROP TABLE restore_test;
+6. Stop PostgreSQL.
+7. Perform PITR restore EXPLICITLY from repo2:
+     sudo -u postgres pgbackrest --stanza=YOURNAME \
+       --repo=2 \
+       --delta \
+       --type=time \
+       "--target=TIMESTAMP_YOU_RECORDED" \
+       --target-action=promote \
+       restore
+8. Start PostgreSQL.
+9. Verify the first row exists and the second does not.
+
+CHALLENGE: Now check pgbackrest info --repo=1. Was repo1 involved in this
+restore at all? Where did pgBackRest get the WAL segments needed for replay?
+
+DELIVERABLE: Walk the instructor through the restore command flags and
+explain why --repo=2 was specified and what would happen without it.
+
+
+LAB 5 — BONUS: GCS OR S3 CONFIGURATION REVIEW (if time permits)
+-----------------------------------------------------------------
+1. Review the GCS configuration section from this lecture.
+2. Write out (don't execute — no real credentials) the pgbackrest.conf
+   entries you would need for a GCS repository, including:
+     - Repo type, bucket name, path, key file location
+     - Where the key file would live and what permissions it would have
+     - Which host (primary or repo host) would have the key file and why
+     - What cron jobs you would create for this repo and where
+3. Identify two things in your GCS configuration that differ from the
+   S3 configuration shown in Version 1 of the lecture.
+
+DELIVERABLE: Present your configuration plan to the instructor for review.
+
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — pgBackRest VERSION 2
+================================================================================
+
+SETUP (multi-host)
+  Create pgbackrest user (repo host):
+    sudo groupadd pgbackrest
+    sudo useradd -d /var/lib/pgbackrest -M -g pgbackrest pgbackrest
+
+  SSH key exchange (run on EACH host, in BOTH directions):
+    sudo -u pgbackrest ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+    sudo -u pgbackrest ssh-copy-id postgres@primary-host
+    sudo -u postgres ssh-copy-id pgbackrest@repo-host
+
+  TLS server start:
+    sudo systemctl start pgbackrest
+    pgbackrest server-ping
+
+STANZA MANAGEMENT
+  Create stanza (all configured repos):  pgbackrest --stanza=NAME stanza-create
+  Verify all repos:                      pgbackrest --stanza=NAME check
+  Show all repos:                        pgbackrest --stanza=NAME info
+  Show specific repo:                    pgbackrest --stanza=NAME info --repo=2
+
+TAKING BACKUPS (per-repo)
+  Full to specific repo:   pgbackrest --stanza=NAME --repo=N --type=full backup
+  Diff to specific repo:   pgbackrest --stanza=NAME --repo=N --type=diff backup
+  Incr to specific repo:   pgbackrest --stanza=NAME --repo=N --type=incr backup
+  Backup from standby:     pgbackrest --stanza=NAME --backup-standby backup
+
+RESTORE
+  Auto-select best repo:   pgbackrest --stanza=NAME --delta restore
+  Specific repo:           pgbackrest --stanza=NAME --repo=2 --delta restore
+  PITR from specific repo: pgbackrest --stanza=NAME --repo=2 --delta \
+                             --type=time "--target=YYYY-MM-DD HH:MM:SS+TZ" \
+                             --target-action=promote restore
+
+MAINTENANCE
+  Expire specific repo:    pgbackrest --stanza=NAME --repo=2 expire
+  Verify specific repo:    pgbackrest --stanza=NAME --repo=2 verify
+
+MONITORING
+  Archive status:          ls $PGDATA/pg_wal/archive_status/ | grep ready | wc -l
+  Archiver stats:          psql -c "SELECT * FROM pg_stat_archiver;"
+  Backup status log:       tail -f /var/log/pgbackrest/backup_status.log
+
+pgbackrest.conf — MULTI-REPO GLOBAL KEYS
+  repo1-path, repo2-host, repo3-type   = per-repo storage settings
+  repo2-host-user                      = pgbackrest (on repo host)
+  repo2-host-type                      = tls (or ssh)
+  repo3-gcs-bucket, repo3-gcs-key      = GCS-specific settings
+  archive-async                        = y (strongly recommended for multi-repo)
+  spool-path                           = /var/spool/pgbackrest
+  archive-push-queue-max               = leave at default, MONITOR this
+  config-include-path                  = /etc/pgbackrest/conf.d
+  process-max                          = tune per environment (start with 2)
+  repo3-bundle                         = y (for object stores)
+  repo3-storage-upload-chunk-size      = 64MiB (tune per bandwidth/memory)
+
+RETENTION OPTIONS
+  repo1-retention-full-type            = count (default) or time
+  repo1-retention-full                 = N (count of backups OR number of days)
+  repo1-retention-diff                 = N (count of differential backups)
+
+TLS SERVER OPTIONS (repo host)
+  tls-server-address                   = * (or specific IP)
+  tls-server-cert-file                 = /path/to/server.crt
+  tls-server-key-file                  = /path/to/server.key
+  tls-server-ca-file                   = /path/to/ca.crt
+  tls-server-auth                      = CN=stanza-name (repeat per host)
+
+HOST CONNECTIVITY (from primary config)
+  repo2-host-type                      = tls (or ssh)
+  repo2-host-cert-file                 = /path/to/client.crt
+  repo2-host-key-file                  = /path/to/client.key
+  repo2-host-ca-file                   = /path/to/ca.crt
+
+GOLDEN RULES
+  1.  WAL goes to ALL repos. Archive failure on one repo blocks all WAL.
+      Use archive-async=y. Monitor the queue.
+  2.  Backups do not auto-replicate. Schedule per-repo in cron.
+  3.  pgBackRest versions must match exactly across ALL hosts.
+  4.  Use dedicated pgbackrest user on repo host, postgres on primary.
+  5.  SSH/TLS is bidirectional. Test both ways before anything else.
+  6.  Secrets in conf.d at mode 600. Main config in version control.
+  7.  Size storage for N+1 full backups per retention count.
+  8.  Test restore from EACH repository. A backup you haven't restored
+      from is a hope, not a backup.
+
+================================================================================
+  END OF LECTURE NOTES VERSION 2
+  Next session: High Availability with Patroni
+================================================================================

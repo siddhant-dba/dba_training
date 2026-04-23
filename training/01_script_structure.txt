@@ -1,0 +1,785 @@
+================================================================================
+  DEBIAN SYSTEMS DEEP-DIVE — SESSION 3
+  Script Structure, Hyper-V Integration & Docker Operations
+  set -euo pipefail | shebang anatomy | production war stories
+  LPIC-2 / Debian Certified Engineer Track — Bookworm/Bullseye + Hyper-V
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+OPENING — PULL UP A TERMINAL RIGHT NOW
+────────────────────────────────────────────────────────────────────────────────
+
+Alright. Pull up a terminal. Seriously, open one right now — you're going to
+follow along, and if you don't, you'll regret it when you're staring at a broken
+production script at 2 AM wondering why it silently swallowed an error and kept
+running like nothing happened.
+
+Today's topic sounds deceptively simple: script structure. The shebang line.
+set -euo pipefail. But I promise you, by the time we're done, you're going to
+look back at every Bash script you've written before today and wince. I know I
+did when a senior engineer showed me this stuff back in 2008. I had been writing
+scripts for three years. I thought I was good. I was not.
+
+We're doing this in the context of Debian on Hyper-V and Docker — exactly the
+environment most of you are managing or will be managing in enterprise shops.
+Let's go.
+
+
+────────────────────────────────────────────────────────────────────────────────
+THE SHEBANG LINE: IT'S NOT JUST DECORATION
+────────────────────────────────────────────────────────────────────────────────
+
+Every production Bash script on Debian starts with this exact line:
+
+    #!/usr/bin/env bash
+
+Not #!/bin/bash. Use env bash. Why? Because env searches your PATH for the bash
+executable. On a standard Debian Bookworm system, bash lives at /bin/bash, yes —
+but this habit protects you the moment you're working with non-standard
+environments, Docker build stages, or colleagues' macOS laptops with a different
+bash install. Consistency across environments is a superpower.
+
+Let me also clear up something that trips people up constantly. On Debian,
+/bin/sh is NOT bash — it's dash. Dash is POSIX-compliant and lean, but it does
+not support bash-isms like arrays, [[ ]], or process substitution. If you write
+#!/bin/sh and start using bash features, your script will fail in weird,
+non-obvious ways that are miserable to debug. Check it yourself right now:
+
+    ls -la /bin/sh
+    # Output: /bin/sh -> dash
+
+    bash --version
+    # Confirm you're on bash 5.x on Bookworm
+
+Rule of thumb: use #!/usr/bin/env bash when you need actual bash. Use #!/bin/sh
+only when you're intentionally writing pure POSIX sh for maximum portability and
+you know exactly what that means.
+
+
+────────────────────────────────────────────────────────────────────────────────
+set -euo pipefail: THE THREE-HEADED GUARD DOG
+────────────────────────────────────────────────────────────────────────────────
+
+This single line changes how your entire script behaves. It is the most
+important line in any production Bash script. Put it right after your shebang,
+every time, without exception:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+Let me break down each flag individually, because each one is a separate safety
+net and they're additive.
+
+
+── -e (errexit): Exit Immediately on Error ──────────────────────────────────
+
+Without -e, Bash runs every command in your script even after one fails. Disk
+full, permissions denied, missing file — doesn't matter, it keeps going. With
+-e, the script stops the moment any command returns a non-zero exit code.
+
+The gotcha that trips everyone up: -e only applies to simple commands. It does
+NOT automatically apply inside if statements, while loops, or commands connected
+with || or &&. That's by design — you're saying "if this test fails, that's
+intentional." Bash respects that.
+
+    # Without -e: this runs BOTH lines even if cp fails
+    cp /missing/file /destination
+    echo 'This still runs — dangerous!'
+
+    # With -e: script stops at the failed cp
+
+    # Safe pattern for intentional error handling:
+    cp /missing/file /destination || { echo 'Copy failed, aborting'; exit 1; }
+
+    if cp /missing/file /destination; then
+        echo 'Copy succeeded'
+    fi
+
+
+── -u (nounset): Unbound Variables Are Errors ───────────────────────────────
+
+This one saves you from typos that end careers. Without -u, if you reference a
+variable that was never set, Bash silently substitutes an empty string. You'll
+get behaviour like:
+
+    rm -rf "$MYDIR/"
+
+...turning into rm -rf "/" when you accidentally type MYDIR instead of MY_DIR.
+With -u, Bash exits immediately with an error the moment it sees an unbound
+variable.
+
+    # Without -u: DANGER
+    MY_DIR="/data/app"
+    rm -rf "$MYDIR/"   # Typo! MYDIR vs MY_DIR -> effectively rm -rf /
+
+    # With -u: script exits immediately:
+    # bash: MYDIR: unbound variable
+
+    # How to safely handle optional variables with -u set:
+    OPTIONAL_VAR="${OPTIONAL_VAR:-/tmp/default}"          # use default if unset
+    REQUIRED_VAR="${REQUIRED_VAR:?'REQUIRED_VAR must be set'}"  # fail with message
+
+
+── -o pipefail: Pipeline Failures Are Real Failures ─────────────────────────
+
+This is the sneakiest one, and most people don't know about it. By default in
+Bash, a pipeline's exit code is the exit code of the LAST command in the pipe.
+So if grep fails but you're piping into wc -l, the overall pipeline succeeds.
+With pipefail, the pipeline fails if ANY command in it fails.
+
+    # Without pipefail: returns 0 (success) even if grep fails
+    grep 'pattern' /nonexistent/file | wc -l
+
+    # With pipefail: returns non-zero because grep failed
+
+    # Real production example — detecting failed log scrape:
+    grep 'ERROR' /var/log/app/application.log | sort | uniq -c | sort -rn
+    # If the log doesn't exist, you WANT this pipeline to fail,
+    # not silently report zero errors and fool your monitoring.
+
+
+── The Complete Production Script Skeleton ──────────────────────────────────
+
+This is the template I use for every production script I write. Copy this, put
+it somewhere, use it as your starting point:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Trap: print line number when script exits on error
+    trap 'echo "Script failed at line $LINENO" >&2' ERR
+
+    # Constants — uppercase, readonly
+    readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    readonly LOG_FILE="/var/log/myapp/deploy.log"
+
+    # Functions before main logic
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    }
+
+    die() {
+        echo "FATAL: $*" >&2
+        exit 1
+    }
+
+    main() {
+        log 'Starting deployment'
+        [[ -d "$SCRIPT_DIR" ]] || die "Script directory not found"
+        # ... your logic here
+        log 'Deployment complete'
+    }
+
+    main "$@"
+
+Notice the trap. When set -e fires and kills the script, that trap tells you
+exactly which line number caused the exit. Without it, you're grep-ing through
+logs trying to figure out what died. With it, you know immediately.
+
+Notice also BASH_SOURCE[0]. That's how you get the real directory of the script,
+even when it's sourced or symlinked — much more reliable than $0 alone.
+
+
+────────────────────────────────────────────────────────────────────────────────
+WAR STORY #1: THE SCRIPT THAT SILENTLY DELETED A WEEK OF BACKUPS
+────────────────────────────────────────────────────────────────────────────────
+
+Let me tell you about a client I had in 2017 running Debian Stretch on Hyper-V.
+They had a backup rotation script. Perfectly reasonable looking script. But it
+had no set -euo pipefail at the top. None.
+
+The script was doing something like this:
+
+    BACKUP_DIR="/data/backups"
+    RETENTION_DAYS=7
+
+    # Find and delete old backups
+    find "$BACKUP_DIR" -name "*.tar.gz" -mtime +$RETENTION_DAYS -delete
+
+That looks fine, right? But one day someone changed the variable name from
+BACKUP_DIR to BACKUPDIR in a config file they sourced — and forgot to update the
+script. BACKUP_DIR became unset. The script ran as root on a cron job. And
+because they had no -u flag, no -e flag, it just... executed find with an empty
+first argument.
+
+On some versions and configurations, that find command started from the current
+working directory — which for a cron job was /. It took out a week of backups
+across multiple directories before the delete operations started failing on
+protected system files and the cron stderr finally caught someone's attention.
+
+How did we diagnose it? We ran:
+
+    journalctl -u cron --since "1 week ago" | grep -A5 backup-rotate
+    grep -r 'backup-rotate' /var/log/syslog.1 /var/log/syslog
+
+And the cron stderr output had warnings — but nobody was watching stderr. The
+fix was one line at the top of that script: set -euo pipefail. With -u set, the
+script would have blown up the very first time BACKUP_DIR was unbound, producing
+a clear error in the cron logs, and zero files would have been touched.
+
+Lesson: set -euo pipefail is not a nice-to-have. It is your last line of defence
+when code runs unattended.
+
+
+────────────────────────────────────────────────────────────────────────────────
+CONNECTING TO WHAT YOU ALREADY KNOW: SYSTEMD + SCRIPTS
+────────────────────────────────────────────────────────────────────────────────
+
+Now, you all know systemctl from our earlier sessions. A lot of your scripts are
+going to be called by systemd service units or systemd timers — the modern
+replacement for cron on Debian. The interaction between set -e and systemd is
+important to understand.
+
+When your script exits with a non-zero code, systemd registers that as a service
+failure. You'll see it in:
+
+    systemctl status your-service.service
+    journalctl -xe -u your-service.service
+
+That is exactly what you want. A failed script producing a clear non-zero exit
+causes systemd to mark the unit as failed, trigger any OnFailure= handlers, and
+alert your monitoring. Without set -e, your script might return 0 even after
+something went wrong, and systemd thinks everything is fine. Your monitoring is
+blind.
+
+    # Check if a script-driven service is healthy
+    systemctl is-active backup-rotate.service
+    systemctl is-failed backup-rotate.service
+
+    # See the last N runs of a timer-triggered service
+    journalctl -u backup-rotate.service --since "48 hours ago"
+
+
+────────────────────────────────────────────────────────────────────────────────
+WAR STORY #2: THE HYPER-V VM THAT LOST THE PLOT AFTER A HOST REBOOT
+────────────────────────────────────────────────────────────────────────────────
+
+Okay, let's shift gears to Hyper-V because I have a story here that still makes
+me twitch.
+
+2019, a financial services client. They were running Debian 9 Stretch VMs on
+Hyper-V Server 2016. Everything was great until the Hyper-V host went through a
+planned maintenance reboot over the weekend. Came back up, the Debian VMs
+started fine — but one of the VMs had completely lost network connectivity.
+Nothing. No pings, no SSH. The console worked, but the network interface was
+dead.
+
+First thing I did was get on the console and check:
+
+    ip link show
+    # ens3 showed UP but no carrier
+
+    dmesg | grep -i hv_netvsc
+    # Nothing. Absolutely nothing in dmesg about the network driver.
+
+    lsmod | grep hv_
+    # hv_balloon  was there
+    # hv_vmbus    was there
+    # hv_netvsc   was NOT there
+
+There was the problem. The hv_netvsc kernel module — which is the Hyper-V
+synthetic network driver — had not loaded. The VM was running on the legacy
+network adapter instead of the synthetic one, or rather, the synthetic one had
+no driver backing it up.
+
+We checked:
+
+    dpkg -l | grep linux-image
+    # They had a kernel update applied right before the maintenance window
+
+The kernel update had added a new kernel image, but the VM had booted into it
+without the initramfs being properly updated to include hv_netvsc. The fix:
+
+    update-initramfs -u -k all
+    reboot
+
+And we added to their standard post-update script:
+
+    apt-get upgrade -y
+    update-initramfs -u -k all
+    echo 'hv_netvsc' >> /etc/modules  # Ensure it loads on boot
+
+After that reboot, network came up perfectly. The moral: on Debian Hyper-V VMs,
+always ensure your integration services modules are explicitly referenced and
+your initramfs is current. Don't assume a kernel upgrade handles everything.
+
+Let's check your integration services right now. Type this:
+
+    lsmod | grep hv_
+    # You should see: hv_balloon, hv_netvsc, hv_storvsc, hv_vmbus, hv_utils
+
+    # Check the Hyper-V KVP daemon (key-value pair exchange — used for
+    # host-to-guest communication, health reporting):
+    systemctl status hv-kvp-daemon.service
+
+    # If it's not running:
+    apt-get install -y hyperv-daemons
+    systemctl enable --now hv-kvp-daemon.service
+
+    # Verify time sync with Hyper-V host:
+    systemctl status hv-timesync-daemon.service
+
+    # Check time offset:
+    chronyc tracking | grep 'System time'
+
+
+────────────────────────────────────────────────────────────────────────────────
+⚠️  INSTRUCTOR WARNING — DO NOT DO THIS IN PRODUCTION
+────────────────────────────────────────────────────────────────────────────────
+
+I want everyone to stop and pay attention. We're going to talk about Docker now,
+and before we do, I need to tell you about a command that looks perfectly
+reasonable and will absolutely ruin your day if you run it without thinking:
+
+    docker rm -f $(docker ps -aq)
+
+Do you see what that does? It force-removes EVERY container on the host, running
+or stopped. And here is the critical part people miss: if any of those containers
+have data stored inside the container filesystem — not in named volumes, not in
+bind mounts, but IN the container itself — that data is gone. Forever.
+
+I've seen this happen with database containers where someone stood up a quick
+Postgres instance for testing, loaded it with 3 days of transformed data, never
+declared a volume, and then a colleague ran that command to "clean up the dev
+environment." Three days of ETL work, gone.
+
+The safe pattern is:
+
+    # First, see what's there and check for volumes
+    docker ps -a
+    docker inspect <container_name> | grep -A10 Mounts
+
+    # Then remove only what you intend to remove
+    docker rm <specific_container_id>
+
+    # If you want to clean up genuinely unused resources safely:
+    docker system prune
+    # This removes stopped containers, dangling images, unused networks
+    # It will ASK for confirmation
+    # It does NOT remove named volumes unless you add --volumes
+
+Related warning: never do this on a Debian Docker host without checking first:
+
+    docker image prune -a
+
+That removes ALL images not currently used by a running container. If your
+deployment relies on having specific image versions cached locally for fast
+rollbacks, you've just made your next rollback slower and potentially broken it
+if the registry is unreachable.
+
+
+────────────────────────────────────────────────────────────────────────────────
+WAR STORY #3: THE DOCKER HOST WITH A FULL DISK AND ZERO OBVIOUS CAUSE
+────────────────────────────────────────────────────────────────────────────────
+
+While we're on Docker, let me tell you about the overlay2 incident of 2021.
+
+Client runs a Debian 10 host with Docker. They've got maybe a dozen containers,
+nothing crazy. One Monday morning I get an alert: disk at 97%. The /var
+partition is almost full. I SSH in and start investigating:
+
+    df -h
+    # /var almost full, yes
+
+    du -sh /var/lib/docker/*
+    # overlay2  182G
+    # containers  2.1G
+    # volumes  4.3G
+
+182 gigabytes in overlay2. That's the Docker storage driver directory. That's
+where container layers and writable container filesystems live. I ran:
+
+    docker system df
+    # Images: 14    Total: 8.2GB
+    # Containers: 12   Total: 171GB  <-- that's the smoking gun
+    # Local Volumes: 8   Total: 4.3GB
+
+171 gigabytes inside container filesystems. I looked at which containers were
+fat:
+
+    docker ps -s
+    # One container: SIZE 168G virtual 176G
+
+Found it. One container running a Java application that was logging to stdout AND
+to a log file inside the container filesystem — no log rotation, no volume mount
+for the log directory, just unbounded growth directly inside the container layer.
+Docker captures all that. The container had been running for four months.
+
+Diagnostic commands I used:
+
+    docker inspect <container_id> | python3 -m json.tool | grep -A5 LogPath
+    # Found the JSON log file at /var/lib/docker/containers/<id>/<id>-json.log
+    ls -lh /var/lib/docker/containers/<container_id>/*-json.log
+    # 168G log file. One file.
+
+The fix was:
+
+    # Immediately truncate the log (safe, Docker re-opens on next write)
+    truncate -s 0 /var/lib/docker/containers/<id>/<id>-json.log
+
+    # Then add log rotation to the container going forward
+    # In /etc/docker/daemon.json:
+    {
+        "log-driver": "json-file",
+        "log-opts": {
+            "max-size": "100m",
+            "max-file": "5"
+        }
+    }
+
+    systemctl restart docker
+
+After that, we also set up logrotate for Docker JSON logs as a belt-and-
+suspenders approach, and we moved the application's log directory to a bind
+mount so log rotation could be managed from the host.
+
+The lesson: Docker does not manage log sizes for you by default. You must
+configure log rotation, either in daemon.json globally, or per-container with
+--log-opt when you run docker run. On Debian, get this into daemon.json before
+you run your first production container.
+
+
+────────────────────────────────────────────────────────────────────────────────
+PUTTING IT TOGETHER: SCRIPTS THAT MANAGE DOCKER CONTAINERS SAFELY
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's connect everything. Here's a real deployment script that uses our
+set -euo pipefail skeleton to manage a Docker container restart on Debian. This
+is the kind of thing you'd put behind a systemd service or run from a CI/CD
+pipeline:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'echo "Deployment failed at line $LINENO" >&2' ERR
+
+    readonly IMAGE_NAME="myapp/backend"
+    readonly IMAGE_TAG="${1:?'Usage: deploy.sh <image-tag>'}"
+    readonly CONTAINER_NAME="backend-prod"
+    readonly HOST_PORT=8080
+
+    log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+    log "Pulling image ${IMAGE_NAME}:${IMAGE_TAG}"
+    docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
+
+    log "Stopping existing container if running"
+    docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+    log "Starting new container"
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        --restart unless-stopped \
+        -p "${HOST_PORT}:8080" \
+        --log-driver json-file \
+        --log-opt max-size=100m \
+        --log-opt max-file=5 \
+        "${IMAGE_NAME}:${IMAGE_TAG}"
+
+    log "Waiting for container to be healthy"
+    sleep 5
+    docker ps --filter "name=${CONTAINER_NAME}" --filter "status=running" | \
+        grep "$CONTAINER_NAME" || { echo "Container failed to start"; exit 1; }
+
+    log "Deployment of ${IMAGE_TAG} complete"
+
+Notice the || true on the stop and rm commands — that's intentional. Those
+commands will fail with a non-zero exit if the container doesn't exist yet (first
+deploy), and we don't want set -e to kill the script in that case. The || true
+makes the failure intentional. But the docker run itself has no such safety net
+— if that fails, we absolutely want the script to die.
+
+
+────────────────────────────────────────────────────────────────────────────────
+HANDS-ON LAB 1: INSTALL DOCKER ON DEBIAN 12 HYPER-V AND RUN NGINX
+────────────────────────────────────────────────────────────────────────────────
+
+Okay, terminal time. Do this on your Debian 12 Hyper-V VM. We're installing
+Docker the right way — from Docker's official repository, not from Debian's
+repos (Debian ships an older version).
+
+    # Step 1: Remove any old Docker packages
+    apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+
+    # Step 2: Install prerequisites
+    apt-get update
+    apt-get install -y ca-certificates curl gnupg lsb-release
+
+    # Step 3: Add Docker's GPG key
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg | \
+        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # Step 4: Add Docker repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/debian \
+      $(lsb_release -cs) stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    # Step 5: Install Docker Engine
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+    # Step 6: Configure log rotation before running anything
+    cat > /etc/docker/daemon.json << 'EOF'
+    {
+        "log-driver": "json-file",
+        "log-opts": {
+            "max-size": "100m",
+            "max-file": "5"
+        }
+    }
+    EOF
+
+    systemctl restart docker
+    systemctl enable docker
+
+    # Step 7: Run nginx and map to port 8080
+    docker run -d \
+        --name nginx-test \
+        --restart unless-stopped \
+        -p 8080:80 \
+        nginx:stable-bookworm
+
+    # Verify it's running
+    docker ps
+    curl -s http://localhost:8080 | head -5
+
+    # Check logs
+    docker logs nginx-test --tail 20
+
+Expected result: you should get the nginx welcome page HTML in your terminal.
+If you're on Hyper-V with an external virtual switch, you can also hit this
+from your Windows host browser at http://<VM-IP>:8080.
+
+
+────────────────────────────────────────────────────────────────────────────────
+HANDS-ON LAB 2: VERIFY AND CONFIGURE HYPER-V INTEGRATION SERVICES
+────────────────────────────────────────────────────────────────────────────────
+
+Still on your Debian 12 Hyper-V VM:
+
+    # Check which Hyper-V modules are loaded
+    lsmod | grep hv_
+    # You should see: hv_balloon hv_netvsc hv_storvsc hv_vmbus hv_utils
+
+    # If hv_netvsc is missing:
+    modprobe hv_netvsc
+    echo 'hv_netvsc' >> /etc/modules
+
+    # Install the Hyper-V guest daemons package
+    apt-get install -y hyperv-daemons
+
+    # Enable and start all Hyper-V daemons
+    systemctl enable --now hv-fcopy-daemon.service   # File copy service
+    systemctl enable --now hv-kvp-daemon.service      # Key-value pair exchange
+    systemctl enable --now hv-vss-daemon.service      # Volume shadow copy
+
+    # Check status of all three
+    systemctl status hv-kvp-daemon.service hv-vss-daemon.service hv-fcopy-daemon.service
+
+    # Verify time synchronisation with the Hyper-V host
+    systemctl status hv-timesync-daemon.service
+    # If using chrony (recommended on Debian Bookworm):
+    apt-get install -y chrony
+    chronyc tracking
+    # Look for "System time" offset — should be < 0.01 seconds from reference
+
+    # Check Hyper-V-related kernel messages
+    dmesg | grep -i "hyperv\|hv_\|vmbus" | tail -20
+
+    # Confirm you're actually running in a Hyper-V VM
+    systemd-detect-virt
+    # Should output: microsoft
+
+Write down the output of lsmod | grep hv_ and dmesg | grep hv_ — these will
+be useful reference points if you ever need to debug a network or storage issue
+on a Hyper-V Debian VM in the future.
+
+
+────────────────────────────────────────────────────────────────────────────────
+HANDS-ON LAB 3: WRITE A SAFE DEBIAN MAINTENANCE SCRIPT
+────────────────────────────────────────────────────────────────────────────────
+
+Let's write a production-grade maintenance script using everything we covered
+today. Create this file as /usr/local/sbin/debian-maintain.sh:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'echo "Maintenance script failed at line $LINENO — check journalctl" >&2' ERR
+
+    readonly LOG_FILE="/var/log/debian-maintain.log"
+    readonly TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
+
+    log() {
+        echo "[${TIMESTAMP}] $*" | tee -a "$LOG_FILE"
+    }
+
+    check_root() {
+        [[ "$EUID" -eq 0 ]] || { echo "Must run as root"; exit 1; }
+    }
+
+    check_hyperv_integration() {
+        log "Checking Hyper-V integration services..."
+        local required_modules=("hv_netvsc" "hv_storvsc" "hv_vmbus")
+        for mod in "${required_modules[@]}"; do
+            if lsmod | grep -q "^${mod}"; then
+                log "  OK: ${mod} loaded"
+            else
+                log "  WARNING: ${mod} not loaded — attempting modprobe"
+                modprobe "$mod" || log "  FAILED to load ${mod}"
+            fi
+        done
+    }
+
+    update_system() {
+        log "Running apt update..."
+        apt-get update -qq
+
+        log "Upgrading packages..."
+        DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+
+        log "Removing unused packages..."
+        apt-get autoremove -y -qq
+        apt-get autoclean -qq
+    }
+
+    check_docker() {
+        if command -v docker &>/dev/null; then
+            log "Docker disk usage:"
+            docker system df | tee -a "$LOG_FILE"
+        else
+            log "Docker not installed — skipping"
+        fi
+    }
+
+    update_initramfs() {
+        log "Updating initramfs for all kernels..."
+        update-initramfs -u -k all
+    }
+
+    main() {
+        check_root
+        log "=== Debian maintenance started ==="
+        check_hyperv_integration
+        update_system
+        update_initramfs
+        check_docker
+        log "=== Maintenance complete ==="
+    }
+
+    main "$@"
+
+Make it executable and test it:
+
+    chmod 750 /usr/local/sbin/debian-maintain.sh
+    /usr/local/sbin/debian-maintain.sh
+
+    # Review the log
+    cat /var/log/debian-maintain.log
+
+    # Optionally set it as a systemd timer (ask me for the unit file template)
+
+Notice how every dangerous step — modprobe, apt-get upgrade, update-initramfs —
+is inside a function. If any of them fail, the trap fires, you get a line number,
+and you know exactly what to investigate. This is what maintainable production
+scripting looks like.
+
+
+────────────────────────────────────────────────────────────────────────────────
+CLOSING PEP TALK
+────────────────────────────────────────────────────────────────────────────────
+
+Here's what I want you to take away from today: set -euo pipefail is not
+boilerplate, it's your professional standard. Every script you write without it
+is a script that's lying in wait to embarrass you at the worst possible moment.
+
+Mastering Debian on Hyper-V, understanding exactly which kernel modules your
+virtualization depends on, knowing how to diagnose a dead network adapter from
+the guest console — that's the stuff that separates the engineers who panic at
+2 AM from the ones who quietly fix it while everyone else is still trying to
+find the VPN credentials.
+
+Docker is a force multiplier, but only if you respect it. Configure your logging
+before your first container, understand what's living in overlay2, and never run
+destructive commands without checking what's there first.
+
+You're building a skillset right now that most sysadmins never fully develop.
+Keep going.
+
+
+================================================================================
+QUICK REFERENCE CARD — DEBIAN + HYPER-V + DOCKER
+================================================================================
+
+── DEBIAN APT ESSENTIALS ────────────────────────────────────────────────────
+
+  apt-get update                          Refresh package index
+  apt-get upgrade -y                      Upgrade all packages
+  apt-get install -y <pkg>                Install package
+  apt-get remove --purge <pkg>            Remove package + config files
+  apt-get autoremove -y                   Remove unused dependencies
+  apt-cache policy <pkg>                  Show available versions + source
+  dpkg -l | grep <name>                   Search installed packages
+  dpkg --get-selections | grep hold       Show held-back packages
+  apt-mark hold <pkg>                     Prevent package from upgrading
+  DEBIAN_FRONTEND=noninteractive          Suppress interactive prompts
+    apt-get upgrade -y
+  update-initramfs -u -k all              Rebuild initramfs for all kernels
+
+── HYPER-V DIAGNOSTIC COMMANDS FOR DEBIAN ────────────────────────────────
+
+  lsmod | grep hv_                        List loaded Hyper-V modules
+  modprobe hv_netvsc                      Load network driver manually
+  echo 'hv_netvsc' >> /etc/modules        Persist module on boot
+  systemd-detect-virt                     Confirm running under Hyper-V
+  dmesg | grep -i hyperv                  Hyper-V kernel messages
+  dmesg | grep -i hv_netvsc              Network driver messages
+  apt-get install -y hyperv-daemons       Install all Hyper-V guest daemons
+  systemctl status hv-kvp-daemon          Key-value pair daemon status
+  systemctl status hv-timesync-daemon     Time sync daemon status
+  systemctl status hv-vss-daemon          VSS (snapshot) daemon status
+  chronyc tracking                        Check time sync offset
+  update-initramfs -u -k all              Required after kernel updates!
+
+── DOCKER DAILY OPERATIONS ──────────────────────────────────────────────
+
+  docker ps -a                            All containers (running + stopped)
+  docker ps -s                            Show container disk usage sizes
+  docker images                           List images
+  docker logs <name> --tail 50 -f         Follow container logs
+  docker inspect <name>                   Full container metadata (JSON)
+  docker inspect <name> | grep -A10 Mounts   Show volume mounts
+  docker exec -it <name> bash             Shell into running container
+  docker stats                            Live resource usage (CPU/mem/net)
+  docker system df                        Disk usage by category
+  docker system prune                     Remove stopped/dangling (safe)
+  docker system prune --volumes           Also removes unused named volumes
+  docker image prune -a                   Remove ALL unused images (careful!)
+  docker stop <name> && docker rm <name>  Safely stop + remove one container
+
+  /etc/docker/daemon.json (log rotation):
+  {
+      "log-driver": "json-file",
+      "log-opts": { "max-size": "100m", "max-file": "5" }
+  }
+
+── BASH SCRIPT ESSENTIALS ───────────────────────────────────────────────
+
+  #!/usr/bin/env bash                     Correct shebang for Debian
+  set -euo pipefail                       Exit on error/unbound/pipe fail
+  trap 'echo "line $LINENO" >&2' ERR      Report failure line number
+  ${VAR:-default}                         Use default if VAR unset
+  ${VAR:?'error message'}                 Exit with message if VAR unset
+  readonly VARNAME="value"                Immutable variable
+  [[ -d "$DIR" ]] || exit 1              Check directory exists
+  command -v docker &>/dev/null           Check if command exists
+  2>/dev/null || true                     Ignore expected failures safely
+
+================================================================================
+END OF LECTURE — SESSION 3
+NEXT SESSION: Advanced systemd service files and timer units on Debian + Hyper-V
+================================================================================

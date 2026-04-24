@@ -1,0 +1,771 @@
+================================================================================
+  PURE LINUX FOR DBAs — 3-HOUR DEEP WORKSHOP
+  TOPIC: LOOPS (for, while, while read line)
+  Audience: Senior DBA / SRE | PostgreSQL & MS SQL Server on Linux
+================================================================================
+  Prerequisites covered: Script structure (shebang, set -euo pipefail),
+  Variables/quoting/arrays, Conditionals ([[ ]], test operators)
+================================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — WARM INTRO & REAL-LIFE HOOK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Let me tell you about a Saturday morning I wish I could forget.
+
+We had a PostgreSQL cluster — 14-node, multi-TB OLTP — and the on-call DBA
+got paged at 3 AM. Replication lag was climbing. Primary's WAL directory was
+bloated. Turns out, a junior had written a pg_basebackup script that ran fine
+in staging but had NO loop logic in production. It copied everything into a
+single flat directory, one backup per run, never cleaned up, never rotated.
+By the time we caught it, /var/lib/pgsql/backups had 400 GB of stale base
+backups sitting there like dead weight.
+
+That was a human problem. A script problem. A "we didn't teach loops" problem.
+
+On the SQL Server side, I've seen the exact same anti-pattern: a DBA writes a
+one-shot T-SQL backup job, wraps it in a cron entry, and forgets that the Linux
+filesystem doesn't care about your retention policy. Three months later,
+/var/opt/mssql/backup is full, the backup job silently starts failing, and
+you only find out when disaster actually strikes.
+
+Loops in bash are not just a programming construct. For a production DBA on
+Linux, they are infrastructure. They are your retention policy enforcer, your
+WAL cleaner, your tablespace checker, your alert mailer.
+
+Today we are going to rip through all three loop types — for, while, and while
+read line — with real DBA use cases. Every example I show you today has a
+direct twin in production somewhere. Let's go.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — CORE LINUX CONCEPT: THE THREE LOOP FORMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before we write production scripts, let's nail the syntax. Each form has a
+distinct purpose. Use the wrong one and you'll write fragile code.
+
+────────────────────────────────────────────────────────────────────────────────
+2.1  THE "for" LOOP — Iterating a known list or glob
+────────────────────────────────────────────────────────────────────────────────
+
+Syntax:
+
+  for VARIABLE in LIST; do
+      commands
+  done
+
+The list can be: a literal list, a glob, a command substitution, a brace
+expansion, or a C-style numeric range (for (( i=0; i<10; i++ ))).
+
+Example 1 — Literal list (checking tablespace mount points):
+
+  for mountpoint in /pgdata /pgwal /pgarchive /pgbackup; do
+      if [[ ! -d "$mountpoint" ]]; then
+          echo "MISSING MOUNT: $mountpoint" >&2
+      else
+          df -h "$mountpoint"
+      fi
+  done
+
+This is one of the first checks I run when a new server is handed to me.
+Fast, readable, and leverages what we covered with [[ -d ]].
+
+Example 2 — Glob (rotating old SQL Server backup files):
+
+  for bakfile in /var/opt/mssql/backup/*.bak; do
+      [[ -f "$bakfile" ]] || continue        # skip if glob matches nothing
+      age_days=$(( ( $(date +%s) - $(stat -c %Y "$bakfile") ) / 86400 ))
+      if (( age_days > 7 )); then
+          echo "Removing old backup: $bakfile (${age_days}d old)"
+          rm -f "$bakfile"
+      fi
+  done
+
+Note the [[ -f "$bakfile" ]] || continue guard. Always include it when using
+globs. If the directory is empty, bash expands the glob literally as the string
+"/var/opt/mssql/backup/*.bak" and your loop body runs on a file that does not
+exist. That guard saves you from a 3 AM mistake.
+
+Example 3 — C-style numeric for loop (retry logic for sqlcmd connections):
+
+  MAX_RETRIES=5
+  for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
+      if /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASS" \
+         -Q "SELECT 1" &>/dev/null; then
+          echo "SQL Server is up (attempt ${attempt})"
+          break
+      fi
+      echo "Attempt ${attempt}/${MAX_RETRIES}: SQL Server not ready. Waiting 10s..."
+      sleep 10
+  done
+
+This is a startup probe pattern I use inside systemd ExecStartPost hooks or
+post-boot scripts. Clean, bounded, no infinite loops hanging a server start.
+
+────────────────────────────────────────────────────────────────────────────────
+2.2  THE "while" LOOP — Looping while a condition is true
+────────────────────────────────────────────────────────────────────────────────
+
+Syntax:
+
+  while CONDITION; do
+      commands
+  done
+
+Use "while" when you don't know in advance how many iterations you need, or
+when you're watching a system state until it changes.
+
+Example 1 — Monitoring WAL accumulation in pg_wal until it drops below threshold:
+
+  WAL_DIR="/var/lib/pgsql/14/data/pg_wal"
+  THRESHOLD_MB=2048
+
+  while true; do
+      current_mb=$(du -sm "$WAL_DIR" | awk '{print $1}')
+      echo "[$(date '+%F %T')] WAL dir size: ${current_mb} MB"
+      if (( current_mb > THRESHOLD_MB )); then
+          echo "WARNING: WAL exceeding ${THRESHOLD_MB} MB — check archiver!" >&2
+          # Could trigger alerting here
+      fi
+      sleep 30
+  done
+
+I have a variant of this running as a lightweight systemd service on standby
+servers. Not pretty, but it has caught stuck archivers twice in the last year.
+
+Example 2 — Wait for PostgreSQL to finish crash recovery before starting replicas:
+
+  PGDATA="/var/lib/pgsql/14/data"
+  echo "Waiting for PostgreSQL crash recovery to complete..."
+
+  while [[ -f "${PGDATA}/recovery.signal" ]] || \
+        [[ -f "${PGDATA}/standby.signal" ]]; do
+      echo "[$(date '+%T')] Still recovering..."
+      sleep 5
+  done
+
+  echo "Recovery complete. Proceeding."
+
+This kind of logic belongs in your failover runbook scripts. Blindly starting
+dependent services before recovery finishes causes cascade failures.
+
+Example 3 — Bounded while loop with a counter (never use infinite while true
+            in unattended scripts without a timeout or counter):
+
+  attempt=0
+  max=20
+
+  while (( attempt < max )); do
+      (( attempt++ ))
+      if pg_isready -q; then
+          echo "Postgres ready after ${attempt} attempts."
+          break
+      fi
+      sleep 3
+  done
+
+  if (( attempt == max )); then
+      echo "ERROR: Postgres did not become ready in time." >&2
+      exit 1
+  fi
+
+Senior-level warning: "while true" with no exit condition is a landmine in
+production automation. Always bound your loops.
+
+────────────────────────────────────────────────────────────────────────────────
+2.3  THE "while read line" LOOP — Processing file or command output line by line
+────────────────────────────────────────────────────────────────────────────────
+
+Syntax:
+
+  while IFS= read -r line; do
+      commands using "$line"
+  done < /path/to/file
+
+Or from a command:
+
+  command | while IFS= read -r line; do
+      commands
+  done
+
+This is the most important loop form for DBA scripting. You will use this
+every time you need to act on query output, config files, lists of databases,
+lists of tablespaces, or log files.
+
+Let me explain the flags:
+
+  IFS=      — Clears the Internal Field Separator so leading/trailing
+              whitespace is preserved. Without this, lines with spaces
+              get mangled. Always set it.
+
+  -r        — Raw mode. Disables backslash interpretation. Without -r,
+              a line containing "\n" or "\t" gets eaten by the shell.
+              Always use -r.
+
+  "$line"   — Always double-quote the variable. You've seen this before.
+
+Example 1 — Reading a list of databases from a file and running VACUUM ANALYZE:
+
+  # /etc/dba/db_list.txt contains one database name per line
+  DB_LIST="/etc/dba/db_list.txt"
+  PG_USER="postgres"
+
+  while IFS= read -r dbname; do
+      [[ -z "$dbname" ]] && continue          # skip blank lines
+      [[ "$dbname" == \#* ]] && continue      # skip comment lines
+      echo "Running VACUUM ANALYZE on: $dbname"
+      psql -U "$PG_USER" -d "$dbname" -c "VACUUM ANALYZE;" 2>&1 | \
+          tee -a /var/log/dba_vacuum.log
+  done < "$DB_LIST"
+
+That comment-line skip ([[ "$dbname" == \#* ]]) is something I add to every
+file-reading loop. Config files drift over time. Someone adds a comment.
+Your script should handle it gracefully.
+
+Example 2 — Parsing psql output to find bloated tables:
+
+  psql -U postgres -d mydb -t -A -F'|' -c "
+      SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+      FROM pg_tables
+      ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+      LIMIT 20;
+  " | while IFS='|' read -r schema table size; do
+      echo "Schema: $schema | Table: $table | Size: $size"
+  done
+
+Note the IFS='|' — we set the field separator to the pipe character to split
+psql's -F'|' output into three variables cleanly. This is structured parsing
+without needing awk, sed, or any external tool.
+
+Example 3 — Iterating SQL Server databases via sqlcmd output:
+
+  /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASS" \
+      -h -1 -W -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE state_desc='ONLINE';" \
+  | while IFS= read -r dbname; do
+      [[ -z "$dbname" ]] && continue
+      echo "Checking DB: $dbname"
+      /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASS" \
+          -d "$dbname" -Q "DBCC CHECKDB WITH NO_INFOMSGS, PHYSICAL_ONLY;" \
+          2>&1 | tee -a /var/log/dba_dbcc.log
+  done
+
+The -h -1 flag suppresses column headers and -W trims trailing whitespace.
+Learn these sqlcmd flags — they make line parsing dramatically cleaner.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — REAL DBA TROUBLESHOOTING SCENARIO (WAR STORY)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+True story. Financial services client. PostgreSQL 13 on RHEL 8.
+
+Monday morning, 07:15. Monitoring fires: "replication lag exceeding 5 minutes."
+I SSH in. pg_wal directory is healthy. Archive status looks fine at first
+glance. Then I check the archive_command log:
+
+  tail -200 /var/log/postgresql/postgresql-Mon.log | grep "archive"
+
+I see failures. The archive_command is failing with "no space left on device."
+But df -h shows the archive volume at 78%. That makes no sense.
+
+Then I run:
+
+  df -i /pgarchive
+
+Inodes: 100% used. The archive directory had hundreds of thousands of tiny
+2KB WAL segment stub files from a misconfigured archive_cleanup_command. The
+loop in the cleanup script had a bug — it was using a for loop over a glob
+that silently expanded to nothing (empty directory match), and the cleanup
+never ran. Over three months, 800,000+ files accumulated. The filesystem
+ran out of inodes while disk space remained.
+
+The emergency fix was a while read loop, not a for-glob loop:
+
+  find /pgarchive -maxdepth 1 -name "*.gz" -mtime +30 -print0 | \
+  while IFS= read -r -d '' archfile; do
+      rm -f "$archfile"
+  done
+
+Note the -print0 and -d '' pair. When filenames can contain spaces, newlines,
+or special characters, use null-delimited output from find and read with -d ''.
+This is the production-safe way to process file lists. Never pipe find output
+into a naive for loop.
+
+The root cause fix was rewriting the cleanup script with proper while read -d ''
+logic and adding an inode check alongside the disk space check to the monitoring:
+
+  inode_pct=$(df -i /pgarchive | awk 'NR==2 {print $5}' | tr -d '%')
+  if (( inode_pct > 80 )); then
+      echo "ALERT: Inode usage on /pgarchive is ${inode_pct}%" | \
+          mail -s "[DBA ALERT] Inode warning" dba-team@company.internal
+  fi
+
+Lesson: Disk space monitoring without inode monitoring is incomplete.
+Lesson: For-glob loops silently fail on empty directories without guards.
+Lesson: while read -d '' is the correct pattern for find output in production.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — INSTRUCTOR WARNINGS (CRITICAL MISTAKES FOR DBAs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  WARNING #1 — NEVER pipe into a "while read" loop that modifies a variable
+    you intend to use after the loop exits.
+
+    In bash, a pipeline runs each component in a subshell. This means:
+
+      count=0
+      psql -U postgres -c "SELECT datname FROM pg_database;" -t | \
+      while IFS= read -r db; do
+          (( count++ ))           # This modifies count in the SUBSHELL
+      done
+      echo "Databases: $count"   # Prints 0 — count was never modified in parent
+
+    Fix: Use process substitution instead of a pipeline:
+
+      count=0
+      while IFS= read -r db; do
+          (( count++ ))
+      done < <(psql -U postgres -c "SELECT datname FROM pg_database;" -t)
+      echo "Databases: $count"   # Correct — same shell
+
+    This is one of the most common senior DBA bash bugs I see in code review.
+    Process substitution (< <(...)) keeps the while loop in the current shell.
+
+⚠️  WARNING #2 — NEVER use "for line in $(cat file)" to read a file line by line.
+
+    This is a classic anti-pattern:
+
+      for line in $(cat /etc/dba/db_list.txt); do   # DO NOT DO THIS
+          echo "$line"
+      done
+
+    Problems:
+    - Word-splits on spaces within a line (a database named "my db" becomes two)
+    - Fails entirely on filenames or values containing special glob characters
+    - Loads the entire file into memory as one string before looping
+
+    Always use: while IFS= read -r line; done < file
+
+⚠️  WARNING #3 — NEVER run a "while true" loop as root without resource limits.
+
+    If the loop body has a bug that causes it to spin without sleeping, you
+    will saturate a CPU core. On a database server, that can starve the I/O
+    scheduler and introduce latency spikes. At minimum, always include:
+    - A sleep inside the loop body
+    - Or use systemd timer units instead of polling loops for scheduled tasks
+    - Or wrap the script in "ulimit -t <cpu_seconds>" for one-shot scripts
+
+⚠️  WARNING #4 — ALWAYS handle the case where command substitution returns
+    nothing in a loop.
+
+    Example of the bug:
+
+      for db in $(psql -U postgres -t -c "SELECT datname FROM pg_database;"); do
+          echo "Processing: $db"
+      done
+
+    If psql fails (wrong password, server down), the for loop receives an empty
+    string and either skips, or worse, runs once on an empty token depending on
+    how bash handles it. The fix: capture the output, validate it, then loop:
+
+      db_list=$(psql -U postgres -t -c "SELECT datname FROM pg_database;" 2>/dev/null)
+      if [[ -z "$db_list" ]]; then
+          echo "ERROR: Could not retrieve database list." >&2
+          exit 1
+      fi
+      while IFS= read -r db; do
+          [[ -z "$db" ]] && continue
+          echo "Processing: $db"
+      done <<< "$db_list"
+
+⚠️  WARNING #5 — "set -e" (errexit) interacts badly with loops if you're not careful.
+
+    From Section 1, you know we use "set -euo pipefail" at the top of scripts.
+    Inside a loop, a failing command will abort the entire script if not handled:
+
+      set -euo pipefail
+      for db in db1 db2 db3; do
+          psql -U postgres -d "$db" -c "VACUUM;" # If db2 doesn't exist, script dies
+      done
+
+    Handle it explicitly:
+
+      for db in db1 db2 db3; do
+          if ! psql -U postgres -d "$db" -c "VACUUM;" 2>/dev/null; then
+              echo "WARNING: VACUUM failed on $db — skipping" >&2
+          fi
+      done
+
+    Your loops must be resilient. A partial failure on one database should
+    not abort vacuum on all the others.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — HANDS-ON LABS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+────────────────────────────────────────────────────────────────────────────────
+LAB 1 — PostgreSQL Multi-DB VACUUM with Logging (while read line)
+────────────────────────────────────────────────────────────────────────────────
+
+OBJECTIVE:
+Write a script that reads all non-template PostgreSQL databases, runs VACUUM
+ANALYZE on each, and logs results with timestamps to /var/log/dba_vacuum.log.
+Use proper IFS= read -r, skip blank/comment lines, and handle per-DB failures
+without aborting the whole run.
+
+SOLUTION SCRIPT: /usr/local/dba/scripts/pg_vacuum_all.sh
+
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  LOG="/var/log/dba_vacuum.log"
+  PG_USER="postgres"
+  TIMESTAMP() { date '+%F %T'; }
+
+  exec >> "$LOG" 2>&1    # Redirect all output to log file
+
+  echo "=== VACUUM run started: $(TIMESTAMP) ==="
+
+  # Fetch list of user databases (exclude templates)
+  db_list=$(psql -U "$PG_USER" -t -A -c "
+      SELECT datname FROM pg_database
+      WHERE datistemplate = false
+      ORDER BY datname;
+  " 2>/dev/null) || {
+      echo "ERROR: Cannot connect to PostgreSQL at $(TIMESTAMP)" >&2
+      exit 1
+  }
+
+  while IFS= read -r dbname; do
+      [[ -z "$dbname" ]] && continue
+      echo "[$(TIMESTAMP)] Starting VACUUM ANALYZE on: $dbname"
+
+      if ! psql -U "$PG_USER" -d "$dbname" \
+                -c "VACUUM (ANALYZE, VERBOSE);" 2>&1; then
+          echo "[$(TIMESTAMP)] WARNING: VACUUM failed on $dbname" >&2
+      else
+          echo "[$(TIMESTAMP)] Completed: $dbname"
+      fi
+  done <<< "$db_list"
+
+  echo "=== VACUUM run completed: $(TIMESTAMP) ==="
+
+CRON ENTRY (runs nightly at 2 AM):
+  0 2 * * * postgres /usr/local/dba/scripts/pg_vacuum_all.sh
+
+VALIDATION:
+  tail -50 /var/log/dba_vacuum.log
+  grep "WARNING" /var/log/dba_vacuum.log
+
+────────────────────────────────────────────────────────────────────────────────
+LAB 2 — SQL Server Backup Retention Cleanup (for loop with age check)
+────────────────────────────────────────────────────────────────────────────────
+
+OBJECTIVE:
+Write a script that scans /var/opt/mssql/backup/ for .bak and .trn files older
+than 7 days, removes them, logs the action, and reports total reclaimed space.
+Run it via cron every 4 hours.
+
+SOLUTION SCRIPT: /usr/local/dba/scripts/mssql_backup_cleanup.sh
+
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  BACKUP_DIR="/var/opt/mssql/backup"
+  LOG="/var/log/dba_cleanup.log"
+  RETENTION_DAYS=7
+  reclaimed_bytes=0
+
+  log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+  log "=== Backup cleanup started ==="
+
+  # Use find + while read -d '' for safe filename handling
+  while IFS= read -r -d '' bakfile; do
+      size_bytes=$(stat -c %s "$bakfile" 2>/dev/null || echo 0)
+      log "Removing: $bakfile ($(( size_bytes / 1024 / 1024 )) MB)"
+      rm -f "$bakfile"
+      (( reclaimed_bytes += size_bytes ))
+  done < <(find "$BACKUP_DIR" \
+               \( -name "*.bak" -o -name "*.trn" \) \
+               -mtime +"$RETENTION_DAYS" \
+               -print0)
+
+  log "Total reclaimed: $(( reclaimed_bytes / 1024 / 1024 )) MB"
+  log "=== Cleanup complete ==="
+
+  # Bonus: inode check after cleanup
+  inode_pct=$(df -i "$BACKUP_DIR" | awk 'NR==2 {print $5}' | tr -d '%')
+  if (( inode_pct > 80 )); then
+      log "ALERT: Inode usage still at ${inode_pct}% after cleanup!"
+  fi
+
+CRON ENTRY (runs every 4 hours):
+  0 */4 * * * root /usr/local/dba/scripts/mssql_backup_cleanup.sh
+
+VALIDATION:
+  grep "Removing" /var/log/dba_cleanup.log | wc -l
+  grep "Total reclaimed" /var/log/dba_cleanup.log | tail -5
+  df -i /var/opt/mssql/backup
+
+────────────────────────────────────────────────────────────────────────────────
+LAB 3 — Tablespace & Mount Point Health Checker (for + while combined)
+────────────────────────────────────────────────────────────────────────────────
+
+OBJECTIVE:
+Write a script that checks all PostgreSQL tablespace directories and the
+standard data/wal/archive paths. For each, report: mount status, disk usage,
+inode usage, and filesystem type. Alert if any metric exceeds threshold.
+This script should be safe to run from cron or manually.
+
+SOLUTION SCRIPT: /usr/local/dba/scripts/pg_fs_healthcheck.sh
+
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  LOG="/var/log/dba_fs_health.log"
+  DISK_WARN=85      # % disk usage warning threshold
+  INODE_WARN=80     # % inode usage warning threshold
+  PG_USER="postgres"
+  ALERT_MAIL="dba-team@company.internal"
+
+  log()  { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+  warn() { log "⚠ WARNING: $*"; }
+
+  log "=== Filesystem Health Check Started ==="
+
+  # Static critical paths
+  CRITICAL_PATHS=(
+      "/var/lib/pgsql/14/data"
+      "/var/lib/pgsql/14/data/pg_wal"
+      "/pgarchive"
+      "/pgbackup"
+  )
+
+  for path in "${CRITICAL_PATHS[@]}"; do
+      if [[ ! -d "$path" ]]; then
+          warn "Directory does not exist: $path"
+          continue
+      fi
+
+      disk_pct=$(df -h "$path" | awk 'NR==2 {print $5}' | tr -d '%')
+      inode_pct=$(df -i "$path" | awk 'NR==2 {print $5}' | tr -d '%')
+      fs_type=$(stat -f -c %T "$path")
+      mount_point=$(df "$path" | awk 'NR==2 {print $6}')
+
+      log "Path: $path | Mount: $mount_point | FS: $fs_type | Disk: ${disk_pct}% | Inodes: ${inode_pct}%"
+
+      (( disk_pct  > DISK_WARN  )) && warn "Disk usage on $path is ${disk_pct}%"
+      (( inode_pct > INODE_WARN )) && warn "Inode usage on $path is ${inode_pct}%"
+  done
+
+  # Dynamic: also check PostgreSQL tablespace directories
+  log "--- Checking PostgreSQL tablespace paths ---"
+
+  ts_paths=$(psql -U "$PG_USER" -t -A -c "
+      SELECT pg_tablespace_location(oid)
+      FROM pg_tablespace
+      WHERE pg_tablespace_location(oid) <> '';
+  " 2>/dev/null) || {
+      warn "Could not query PostgreSQL tablespaces (server may be down)"
+      ts_paths=""
+  }
+
+  if [[ -n "$ts_paths" ]]; then
+      while IFS= read -r ts_path; do
+          [[ -z "$ts_path" ]] && continue
+          if [[ ! -d "$ts_path" ]]; then
+              warn "Tablespace path missing: $ts_path"
+              continue
+          fi
+          disk_pct=$(df -h "$ts_path" | awk 'NR==2 {print $5}' | tr -d '%')
+          log "Tablespace: $ts_path | Disk: ${disk_pct}%"
+          (( disk_pct > DISK_WARN )) && warn "Tablespace disk usage at ${disk_pct}%: $ts_path"
+      done <<< "$ts_paths"
+  fi
+
+  # Mail any warnings found in this run
+  run_warnings=$(grep "WARNING" "$LOG" | grep "$(date '+%F')" || true)
+  if [[ -n "$run_warnings" ]]; then
+      echo "$run_warnings" | mail -s "[DBA ALERT] FS Health Issues $(date '+%F')" "$ALERT_MAIL"
+  fi
+
+  log "=== Health Check Complete ==="
+
+VALIDATION:
+  bash -x /usr/local/dba/scripts/pg_fs_healthcheck.sh
+  grep "WARNING" /var/log/dba_fs_health.log
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — PRODUCTION TAKEAWAY & CLOSING PEP TALK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Here's what I need you to leave this room knowing cold:
+
+  for          — Use when iterating a known, bounded list.
+                 Always guard globs with [[ -f ]] || continue.
+                 Use C-style for retry counters.
+
+  while        — Use when looping against a condition.
+                 Always bound it. Never "while true" in unattended scripts
+                 without a sleep and an exit condition.
+
+  while read   — Use for every file and command-output iteration.
+                 Always use IFS= read -r.
+                 Prefer process substitution < <(...) over pipes
+                 to avoid the subshell variable scope trap.
+
+And the cross-cutting rules that have saved my production systems more times
+than I can count:
+
+  1. Guard your globs. The nullglob failure is silent and devastating.
+  2. Check inodes, not just disk space. Filesystems die both ways.
+  3. Use find -print0 with read -r -d '' for file lists in production.
+  4. Handle per-iteration failures with if/else. Don't let one bad DB
+     kill your entire maintenance window.
+  5. Timestamp your logs. Every loop that touches production should write
+     to a log. Every log entry should have a timestamp.
+  6. Test set -e interactions. Know which commands in your loop body might
+     return non-zero and wrap them intentionally.
+
+You are not script writers. You are infrastructure engineers who happen to
+write scripts. The quality of your loops directly reflects the reliability
+of your automation, and your automation is what runs your databases at 3 AM
+when you're asleep. Write loops that you trust.
+
+See you in the next session.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — DBA QUICK-REFERENCE CARD: LOOPS & SUPPORTING TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LOOP SYNTAX CHEATSHEET
+──────────────────────────────────────────────────────────────────────────────
+
+  # for — list iteration
+  for item in "${arr[@]}"; do
+      echo "$item"
+  done
+
+  # for — C-style numeric
+  for (( i=1; i<=10; i++ )); do
+      echo "$i"
+  done
+
+  # while — condition loop
+  while [[ condition ]]; do
+      commands
+      sleep N
+  done
+
+  # while read — file
+  while IFS= read -r line; do
+      echo "$line"
+  done < /path/to/file
+
+  # while read — command output (correct: process substitution)
+  while IFS= read -r line; do
+      echo "$line"
+  done < <(some_command)
+
+  # while read — null-delimited (find output)
+  while IFS= read -r -d '' file; do
+      echo "$file"
+  done < <(find /dir -name "*.bak" -print0)
+
+  # while read — multi-field parsing (pipe-delimited psql output)
+  while IFS='|' read -r schema table size; do
+      echo "$schema / $table = $size"
+  done < <(psql -t -A -F'|' -c "SELECT ...")
+
+
+KERNEL PARAMETERS RELEVANT TO LOOP-DRIVEN SCRIPTS
+──────────────────────────────────────────────────────────────────────────────
+
+  # Check inode limits (relevant to archive/backup cleanup scripts)
+  df -i /pgarchive
+  tune2fs -l /dev/sdX | grep "Inode count"
+
+  # Check open file limits (relevant to scripts opening many files in a loop)
+  ulimit -n
+  cat /proc/sys/fs/file-max
+  sysctl fs.file-max
+
+  # Set system-wide open file limit (persist in /etc/sysctl.conf)
+  sysctl -w fs.file-max=2097152
+
+  # Per-service limits for PostgreSQL (systemd override)
+  # /etc/systemd/system/postgresql-14.service.d/limits.conf
+  [Service]
+  LimitNOFILE=65536
+
+
+MONITORING COMMANDS FOR DBA LOOP SCRIPTS
+──────────────────────────────────────────────────────────────────────────────
+
+  # Watch a running backup/loop script's I/O impact
+  iostat -x 2 5
+  iotop -o -P
+
+  # Find files deleted but held open (stale backup handles, WAL descriptors)
+  lsof | grep deleted | grep postgres
+
+  # Check running DBA scripts and their CPU
+  ps aux | grep dba
+  top -u postgres
+  perf top -p $(pgrep -f pg_basebackup)
+
+  # PostgreSQL connectivity check (use in while-wait loops)
+  pg_isready -U postgres -h localhost
+
+  # SQL Server connectivity check (use in for-retry loops)
+  /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASS" \
+      -Q "SELECT @@VERSION" -l 5
+
+  # WAL archiver status (check before/after cleanup loops)
+  psql -U postgres -c "SELECT * FROM pg_stat_archiver;"
+
+  # Tablespace sizes (input for for-loop health checks)
+  psql -U postgres -c "
+      SELECT spcname, pg_size_pretty(pg_tablespace_size(spcname))
+      FROM pg_tablespace;"
+
+
+KEY FILE PATHS
+──────────────────────────────────────────────────────────────────────────────
+
+  PostgreSQL (RHEL/CentOS):       /var/lib/pgsql/<version>/data/
+  PostgreSQL (Debian/Ubuntu):     /var/lib/postgresql/<version>/main/
+  PostgreSQL WAL:                 <PGDATA>/pg_wal/
+  PostgreSQL Logs (RHEL):         /var/lib/pgsql/<version>/data/log/
+  PostgreSQL Logs (Ubuntu):       /var/log/postgresql/
+
+  SQL Server Data:                /var/opt/mssql/data/
+  SQL Server Backup (default):    /var/opt/mssql/backup/
+  SQL Server Logs:                /var/opt/mssql/log/errorlog
+  SQL Server Config:              /var/opt/mssql/mssql.conf
+  sqlcmd binary:                  /opt/mssql-tools/bin/sqlcmd
+
+
+COMMON LOOP PATTERNS BY DBA USE CASE
+──────────────────────────────────────────────────────────────────────────────
+
+  Backup rotation       → for glob + stat age check + find -print0 + while read -d ''
+  Multi-DB maintenance  → while read < <(psql output) + per-iteration error handling
+  Startup probe         → for (( i=1; i<=N; i++ )) + pg_isready/sqlcmd + sleep + break
+  WAL/archive monitor   → while true + du/df check + sleep 30
+  Config file parsing   → while IFS= read -r line + comment/blank skip
+  Parallel processing   → for item in list; do command & done; wait  (use carefully)
+  Filesystem audit      → for path in array; do df/inode checks; done
+  Log scanning          → while IFS= read -r line < logfile + pattern match + action
+
+================================================================================
+  END OF LECTURE — Linux DBA Workshop: Loops (for, while, while read line)
+  Next Session: Functions, Error Handling, and Logging Frameworks
+================================================================================

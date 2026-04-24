@@ -1,0 +1,869 @@
+═══════════════════════════════════════════════════════════════════════
+  PURE LINUX FOR DBA — 3-HOUR DEEP WORKSHOP
+  Topic: Error Handling (trap, exit codes, $?)
+  Audience: Senior DBA / SRE | PostgreSQL & MS SQL Server on Linux
+═══════════════════════════════════════════════════════════════════════
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — WARM INTRO & REAL-LIFE HOOK (~2 min)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Let me tell you about 2:47 AM on a Tuesday.
+
+We had a pg_basebackup script that had been running in production for
+nine months. Nobody touched it. It was "fine." Then one night the
+backup volume filled up mid-stream. pg_basebackup silently failed. The
+script kept going — it logged "Backup complete." — and exited 0.
+
+Next morning, DBA comes in, checks the log, sees "Backup complete,"
+goes home happy. Three days later the primary PostgreSQL server dies.
+We go to restore. The backup tar is 6 kilobytes. Corrupted. Truncated.
+We lost 18 hours of a client's financial data.
+
+That script had no error handling. Not a single trap. Not one check on
+$?. Just a pile of commands duct-taped together and called a "backup
+solution."
+
+Today we fix that permanently. We're covering:
+
+  - Exit codes ($?) — what the kernel actually gives you
+  - set -e vs explicit $? checking — and why both matter
+  - trap — your cleanup safety net for production scripts
+  - Building a real DBA error-handling framework from scratch
+
+You already know set -euo pipefail, variables, functions, loops, and
+conditionals. Now we wire all of that together with a proper error
+layer so your scripts behave like production software, not homework.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — CORE LINUX CONCEPT: EXIT CODES, $?, AND trap
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─────────────────────────────────────────
+2.1  What the Kernel Actually Returns
+─────────────────────────────────────────
+
+Every process that exits hands the kernel an integer from 0 to 255.
+That integer is the exit status. Convention:
+
+  0         = success
+  1         = generic error (most tools use this)
+  2         = misuse of shell built-in (bash itself)
+  126       = command found but not executable
+  127       = command not found
+  128+N     = process killed by signal N
+              (e.g., 137 = killed by SIGKILL, 130 = SIGINT/Ctrl-C)
+
+The shell stores the last exit status in $?.
+
+  Terminal demo:
+  ──────────────
+  $ ls /var/lib/pgsql
+  $ echo $?
+  0
+
+  $ ls /nonexistent
+  ls: cannot access '/nonexistent': No such file or directory
+  $ echo $?
+  2
+
+  $ psql -U postgres -c "SELECT 1;" 2>/dev/null
+  $ echo $?
+  0
+
+  $ psql -U postgres -c "SELECT 1;" --host=10.0.0.99 2>/dev/null
+  $ echo $?
+  2
+
+⚠️  CRITICAL: $? is overwritten by every single command, including
+    echo. Read it immediately after the command you care about.
+
+  WRONG:
+    pg_dump mydb > /backup/mydb.dump
+    echo "Dump finished"
+    if [[ $? -ne 0 ]]; then   # $? is now echo's exit code — always 0!
+
+  RIGHT:
+    pg_dump mydb > /backup/mydb.dump
+    DUMP_RC=$?
+    echo "Dump finished"
+    if [[ $DUMP_RC -ne 0 ]]; then
+
+
+─────────────────────────────────────────
+2.2  set -e vs Manual $? — Know the Difference
+─────────────────────────────────────────
+
+You already use set -euo pipefail at the top of your scripts. Good.
+But set -e has blind spots you must know:
+
+  set -e DOES abort on:
+    - A bare command that fails: cp /src /dst
+    - A pipeline's last command: cat file | grep pattern
+
+  set -e DOES NOT abort on:
+    - Commands inside an if condition:    if ! pg_dump ...; then
+    - Commands with || or &&:             pg_dump ... || true
+    - Subshells assigned to variables:    OUTPUT=$(failing_command)
+      (in older bash; behavior varies — don't rely on it)
+    - Background jobs:                    pg_dump & — you need wait $!
+
+  Terminal demo:
+  ──────────────
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  # This WILL NOT abort the script — it's in an if-test context:
+  if pg_isready -h 10.0.0.5 -p 5432; then
+      echo "Primary is up"
+  else
+      echo "Primary is DOWN — alerting"
+  fi
+
+  # This WILL abort if pg_dump fails (bare command):
+  pg_dump -U postgres mydb > /backup/mydb.dump
+
+Rule of thumb for DBA scripts:
+  - Use set -euo pipefail as your baseline
+  - Capture $? explicitly wherever failure needs custom handling
+  - Never rely on set -e alone for backup/restore/failover logic
+
+
+─────────────────────────────────────────
+2.3  trap — Your Production Cleanup Net
+─────────────────────────────────────────
+
+trap lets you register a command or function that fires when:
+  - A specific signal arrives (SIGTERM, SIGINT, SIGHUP...)
+  - The script exits normally or abnormally (EXIT)
+  - An error occurs (ERR)
+
+Syntax:
+  trap 'command_or_function' SIGNAL [SIGNAL ...]
+
+Signals every DBA script should know:
+  EXIT    — fires on any exit, clean or not. Perfect for cleanup.
+  ERR     — fires when a command returns non-zero (with set -e active)
+  INT     — Ctrl-C (SIGINT)
+  TERM    — kill / systemd stop (SIGTERM)
+  HUP     — terminal hang up (SIGHUP)
+  PIPE    — broken pipe (e.g., your pg_dump piped into a dead process)
+
+  Terminal demo — basic trap:
+  ───────────────────────────
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  LOCKFILE="/var/run/dba_backup.lock"
+
+  cleanup() {
+      echo "[$(date '+%F %T')] Cleaning up lock file..."
+      rm -f "$LOCKFILE"
+  }
+
+  trap cleanup EXIT
+
+  # Create lock to prevent parallel runs
+  touch "$LOCKFILE"
+
+  echo "Starting backup..."
+  pg_basebackup -U replicator -D /backup/base -Ft -z -P
+  echo "Backup complete."
+  # cleanup() fires automatically here — lock removed cleanly
+
+
+─────────────────────────────────────────
+2.4  The ERR Trap — Know Your Limits
+─────────────────────────────────────────
+
+trap ... ERR fires when a command exits non-zero, similar to set -e.
+Use it to log exactly where your script blew up.
+
+  demo:
+  ─────
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  LOGFILE="/var/log/dba/backup_errors.log"
+
+  on_error() {
+      local exit_code=$?
+      local line_num=$1
+      echo "[$(date '+%F %T')] ERROR: Script failed at line ${line_num} \
+  with exit code ${exit_code}" | tee -a "$LOGFILE"
+      # Optionally: send alert, page on-call, post to syslog
+      logger -t dba_backup "CRITICAL: backup script failed at line ${line_num}"
+  }
+
+  trap 'on_error $LINENO' ERR
+
+  pg_dump -U postgres production_db > /backup/production_db.dump
+  # If pg_dump fails, on_error fires immediately with the line number
+
+
+  ⚠️  ERR trap caveat: it does NOT fire inside:
+      - if / while / until conditions
+      - Commands followed by || or &&
+      - Subshells (unless you re-declare the trap inside the subshell)
+
+
+─────────────────────────────────────────
+2.5  Stacking Traps: EXIT + ERR Together
+─────────────────────────────────────────
+
+The right pattern for production DBA scripts:
+
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  # ── Script-wide state ──────────────────────────────────────────
+  SCRIPT_NAME=$(basename "$0")
+  LOCKFILE="/var/run/${SCRIPT_NAME%.sh}.lock"
+  TMPDIR_WORK=$(mktemp -d /tmp/dba_work.XXXXXX)
+  LOGFILE="/var/log/dba/${SCRIPT_NAME%.sh}.log"
+  SCRIPT_FAILED=0
+
+  log() {
+      echo "[$(date '+%F %T')] $*" | tee -a "$LOGFILE"
+  }
+
+  # ── Cleanup: always runs ────────────────────────────────────────
+  cleanup() {
+      log "Cleanup starting (failed=${SCRIPT_FAILED})"
+      rm -f  "$LOCKFILE"
+      rm -rf "$TMPDIR_WORK"
+      if [[ $SCRIPT_FAILED -eq 1 ]]; then
+          log "Script exited with errors — review log: $LOGFILE"
+          logger -t "$SCRIPT_NAME" "CRITICAL: Script failed — check $LOGFILE"
+      else
+          log "Script completed successfully."
+      fi
+  }
+
+  # ── Error handler ───────────────────────────────────────────────
+  on_error() {
+      SCRIPT_FAILED=1
+      log "ERROR at line $1 (exit code: $2)"
+  }
+
+  trap 'on_error $LINENO $?' ERR
+  trap cleanup EXIT
+
+  # ── Prevent parallel execution ──────────────────────────────────
+  if [[ -f "$LOCKFILE" ]]; then
+      log "Another instance is running (lock: $LOCKFILE). Exiting."
+      exit 1
+  fi
+  touch "$LOCKFILE"
+
+  # ── Main logic ──────────────────────────────────────────────────
+  log "Backup started"
+  pg_basebackup -U replicator -D "$TMPDIR_WORK/base" -Ft -z -P
+  mv "$TMPDIR_WORK/base" /backup/pgbase_$(date '+%Y%m%d_%H%M%S')
+  log "Backup moved to /backup"
+
+This pattern handles:
+  - Lockfile creation and guaranteed cleanup
+  - Temp directory cleanup regardless of how script exits
+  - Exact line number and exit code of failure
+  - syslog alerting via logger
+  - Non-redundant: cleanup fires once via EXIT, error detail via ERR
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — REAL DBA TROUBLESHOOTING SCENARIO (WAR STORY)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── The Incident ───────────────────────────────────────────────────
+
+Production environment: PostgreSQL 14 primary, RHEL 8, 256 GB RAM,
+SAN storage on /data. Automated pg_basebackup script runs every night
+at 01:00 via cron.
+
+At 01:23, the /backup filesystem hit 100%. pg_basebackup died mid-run
+with exit code 1. The script — no error handling — kept right on
+running its post-backup "verification" step, which tried to list files
+from the half-written tar. That also failed. Both failures were
+silently discarded. The cron job emailed nothing because the script
+exited 0 at the very end (the echo "Done" line).
+
+Nobody knew until a developer asked: "Why is yesterday's backup only
+3 GB when the database is 800 GB?"
+
+─── Diagnosis ──────────────────────────────────────────────────────
+
+First things first — what does the filesystem look like?
+
+  $ df -hP /backup
+  Filesystem      Size  Used Avail Use% Mounted on
+  /dev/sdb1       500G  500G     0 100% /backup
+
+  $ du -sh /backup/*
+  497G  /backup/pgbase_20240311_010002    ← last night, full
+  3.1G  /backup/pgbase_20240312_010002    ← tonight, truncated
+
+Was the disk full before or during the run?
+
+  $ grep "No space left" /var/log/messages | tail -5
+  Mar 12 01:23:44 dbhost kernel: EXT4-fs error (device sdb1): ...
+  Mar 12 01:23:44 dbhost pg_basebackup[9841]: could not write to
+    file "base.tar": No space left on device
+
+The kernel logged it. pg_basebackup returned 1. The script ignored it.
+
+─── The Fix Applied That Night ─────────────────────────────────────
+
+  # Step 1: Free space immediately — remove oldest backup
+  $ rm -rf /backup/pgbase_20240310_010002
+
+  # Step 2: Re-run backup manually, watching exit code
+  $ pg_basebackup -U replicator -D /backup/pgbase_manual -Ft -z -P
+  $ echo "Exit: $?"
+  Exit: 0
+
+  # Step 3: Verify tar is sane
+  $ tar -tzf /backup/pgbase_manual/base.tar.gz | tail -5
+  # Should list files, not error out
+
+─── The Permanent Fix ──────────────────────────────────────────────
+
+Rewrite the backup script with the full error-handling framework from
+Section 2.5. Add a pre-flight disk check:
+
+  check_disk_space() {
+      local backup_mount="$1"
+      local required_gb="$2"
+      local available_gb
+
+      available_gb=$(df -BG --output=avail "$backup_mount" \
+                     | tail -1 | tr -d 'G ')
+
+      if [[ $available_gb -lt $required_gb ]]; then
+          log "ABORT: Only ${available_gb}GB free on ${backup_mount}. \
+  Need ${required_gb}GB."
+          exit 2
+      fi
+      log "Disk check OK: ${available_gb}GB free on ${backup_mount}"
+  }
+
+  # Call before pg_basebackup:
+  check_disk_space "/backup" 100   # require 100GB free minimum
+
+Also add automatic old-backup pruning before the new run starts:
+
+  prune_old_backups() {
+      local backup_dir="$1"
+      local keep_days="$2"
+      log "Pruning backups older than ${keep_days} days..."
+      find "$backup_dir" -maxdepth 1 -name 'pgbase_*' \
+           -type d -mtime "+${keep_days}" -exec rm -rf {} +
+      log "Pruning complete."
+  }
+
+  prune_old_backups "/backup" 7    # keep 7 days
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — INSTRUCTOR WARNING: CRITICAL MISTAKES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  WARNING #1 — Never suppress exit codes with || true blindly
+
+  WRONG in production:
+    pg_dump -U postgres mydb > /backup/mydb.dump || true
+    # If pg_dump fails, || true forces exit 0. Your script marches on.
+    # You now happily compress a 0-byte dump file.
+
+  RIGHT:
+    pg_dump -U postgres mydb > /backup/mydb.dump
+    # Let set -e or your ERR trap catch the failure.
+    # Use || only when you explicitly intend to handle failure yourself:
+    pg_isready -h "$PG_HOST" || { log "Host not ready"; exit 1; }
+
+
+⚠️  WARNING #2 — trap '' SIGTERM in the wrong place = zombie cleanup
+
+  Blocking SIGTERM inside a long-running pg_dump inside your trap
+  can leave the backup process running as an orphan after systemd
+  kills your script. Always let SIGTERM reach your child processes:
+
+  WRONG:
+    trap '' TERM    # ignore SIGTERM entirely — dangerous
+
+  RIGHT:
+    sigterm_handler() {
+        log "SIGTERM received — forwarding to child processes"
+        kill -TERM "$CHILD_PID" 2>/dev/null
+        wait "$CHILD_PID"
+        exit 143    # 128 + 15 (SIGTERM)
+    }
+    trap sigterm_handler TERM
+
+
+⚠️  WARNING #3 — Reading $? after a function that uses local variables
+
+  local in bash always returns 0, even if the assignment inside fails.
+
+  WRONG:
+    get_db_size() {
+        local size=$(psql -U postgres -Atc "SELECT pg_database_size('mydb')")
+        # If psql fails, local still returns 0 — $? is 0!
+    }
+    get_db_size
+    if [[ $? -ne 0 ]]; then ...  # will never trigger
+
+  RIGHT:
+    get_db_size() {
+        local size
+        size=$(psql -U postgres -Atc "SELECT pg_database_size('mydb')")
+        # Now if psql fails, $? carries the real exit code
+        return $?
+    }
+
+
+⚠️  WARNING #4 — Forgetting trap in subshells
+
+  trap is NOT inherited by subshells automatically in all contexts.
+  If you run a function inside $(...) or ( ), re-declare your trap:
+
+  run_in_subshell() {
+  (
+      trap 'echo "subshell error at $LINENO"' ERR
+      set -e
+      psql -U postgres -c "..."
+  )
+  }
+
+
+⚠️  WARNING #5 — Logging to a closed file descriptor after cleanup
+
+  If your cleanup() function closes the log file or redirects stdout,
+  any log() calls after that silently drop output. Test your trap
+  functions in isolation before deploying.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — HANDS-ON LABS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─────────────────────────────────────────
+LAB 1 — PostgreSQL Backup Script with Full Error Handling
+─────────────────────────────────────────
+
+Objective: Build a production-grade pg_basebackup script with:
+  - set -euo pipefail
+  - Lock file preventing parallel runs
+  - Pre-flight disk space check
+  - ERR trap with line number and exit code
+  - EXIT trap for guaranteed cleanup
+  - Structured logging with timestamps
+  - Old backup rotation
+  - Exit code propagation to cron (non-zero on failure)
+
+Starter file: /opt/dba/labs/lab1_pg_backup.sh
+
+──────────────────────────────────────── START OF SCRIPT ────
+#!/usr/bin/env bash
+# =============================================================
+# Lab 1: PostgreSQL base backup with full error handling
+# DBA Workshop — Error Handling Module
+# =============================================================
+set -euo pipefail
+
+# ── Configuration ─────────────────────────────────────────────
+PG_HOST="localhost"
+PG_PORT="5432"
+PG_USER="replicator"
+BACKUP_ROOT="/backup/pg"
+KEEP_DAYS=7
+MIN_FREE_GB=50
+LOGFILE="/var/log/dba/pg_backup.log"
+LOCKFILE="/var/run/pg_backup.lock"
+
+# ── Internal state ─────────────────────────────────────────────
+SCRIPT_NAME=$(basename "$0")
+TMPWORK=""
+SCRIPT_FAILED=0
+
+# ── Logging ─────────────────────────────────────────────────────
+log() {
+    echo "[$(date '+%F %T')] [$SCRIPT_NAME] $*" | tee -a "$LOGFILE"
+}
+
+# ── Disk space pre-flight ────────────────────────────────────────
+check_disk_space() {
+    local mount="$1" required="$2" avail
+    avail=$(df -BG --output=avail "$mount" | tail -1 | tr -d 'G ')
+    if [[ $avail -lt $required ]]; then
+        log "ABORT: ${avail}GB free on $mount — need ${required}GB"
+        exit 2
+    fi
+    log "Disk OK: ${avail}GB free on $mount"
+}
+
+# ── Old backup rotation ──────────────────────────────────────────
+prune_old_backups() {
+    log "Pruning backups older than ${KEEP_DAYS} days..."
+    find "$BACKUP_ROOT" -maxdepth 1 -name 'base_*' \
+         -type d -mtime "+${KEEP_DAYS}" -exec rm -rf {} +
+    log "Pruning done."
+}
+
+# ── Cleanup (EXIT trap) ──────────────────────────────────────────
+cleanup() {
+    local exit_code=$?
+    if [[ $SCRIPT_FAILED -eq 1 ]]; then
+        log "Script FAILED — partial backup may exist in $TMPWORK"
+        logger -t "$SCRIPT_NAME" "CRITICAL: pg_backup failed — see $LOGFILE"
+        [[ -n "$TMPWORK" ]] && rm -rf "$TMPWORK"
+    else
+        log "Script completed successfully."
+    fi
+    rm -f "$LOCKFILE"
+    exit $exit_code
+}
+
+# ── Error handler (ERR trap) ─────────────────────────────────────
+on_error() {
+    SCRIPT_FAILED=1
+    log "ERROR: Failed at line $1 with exit code $2"
+}
+
+# ── Register traps ───────────────────────────────────────────────
+trap 'on_error $LINENO $?' ERR
+trap cleanup EXIT
+
+# ── Prevent parallel runs ────────────────────────────────────────
+if [[ -f "$LOCKFILE" ]]; then
+    log "Lock file exists: $LOCKFILE — another run in progress. Aborting."
+    SCRIPT_FAILED=0   # not a script error, just overlap
+    exit 1
+fi
+touch "$LOCKFILE"
+
+# ── Main ─────────────────────────────────────────────────────────
+log "======= pg_backup starting ======="
+
+mkdir -p "$BACKUP_ROOT" "$(dirname "$LOGFILE")"
+check_disk_space "$BACKUP_ROOT" "$MIN_FREE_GB"
+prune_old_backups
+
+TMPWORK=$(mktemp -d "${BACKUP_ROOT}/base_inprogress.XXXXXX")
+log "Working directory: $TMPWORK"
+
+pg_basebackup \
+    --host="$PG_HOST" \
+    --port="$PG_PORT" \
+    --username="$PG_USER" \
+    --pgdata="$TMPWORK" \
+    --format=tar \
+    --gzip \
+    --progress \
+    --wal-method=stream
+
+log "pg_basebackup completed successfully."
+
+FINAL_DIR="${BACKUP_ROOT}/base_$(date '+%Y%m%d_%H%M%S')"
+mv "$TMPWORK" "$FINAL_DIR"
+TMPWORK=""   # don't let cleanup delete the completed backup
+log "Backup stored at: $FINAL_DIR"
+log "======= pg_backup finished ======="
+──────────────────────────────────────── END OF SCRIPT ──────
+
+Lab tasks:
+  1. Deploy the script: chmod 750 /opt/dba/labs/lab1_pg_backup.sh
+  2. Run it manually, verify the log output in /var/log/dba/pg_backup.log
+  3. Simulate a failure: change PG_HOST to a wrong IP, re-run.
+     Confirm: ERR trap fires, cleanup removes lock, exit code is 1.
+  4. Verify the cron exit code: add to crontab, capture with:
+       MAILTO=dba@company.com
+       0 1 * * * /opt/dba/labs/lab1_pg_backup.sh
+
+
+─────────────────────────────────────────
+LAB 2 — SQL Server on Linux: Transaction Log Backup with Error Handling
+─────────────────────────────────────────
+
+Objective: Write a script using sqlcmd that:
+  - Takes T-log backups for multiple databases
+  - Checks exit code from sqlcmd after each backup
+  - Traps errors and continues to next database (per-DB error handling)
+  - Logs successes and failures separately
+  - Prunes log backups older than 24 hours
+  - Returns non-zero if ANY database backup failed
+
+──────────────────────────────────────── START OF SCRIPT ────
+#!/usr/bin/env bash
+# =============================================================
+# Lab 2: SQL Server transaction log backup with error handling
+# =============================================================
+set -uo pipefail     # NOTE: no -e here — we handle errors per-DB
+
+# ── Config ────────────────────────────────────────────────────
+MSSQL_HOST="localhost"
+MSSQL_USER="sa"
+MSSQL_PASS_FILE="/etc/dba/.mssql_sa_pass"   # read from secured file
+BACKUP_DIR="/var/opt/mssql/backups/tlog"
+LOG_DIR="/var/log/dba"
+LOGFILE="${LOG_DIR}/mssql_tlog_backup.log"
+DATABASES=("SalesDB" "HRDB" "FinanceDB" "ReportingDB")
+PRUNE_HOURS=24
+
+# ── Setup ─────────────────────────────────────────────────────
+mkdir -p "$BACKUP_DIR" "$LOG_DIR"
+OVERALL_STATUS=0
+MSSQL_PASS=$(cat "$MSSQL_PASS_FILE")
+
+log() {
+    echo "[$(date '+%F %T')] $*" | tee -a "$LOGFILE"
+}
+
+cleanup() {
+    log "Script exiting — overall status: $OVERALL_STATUS"
+    if [[ $OVERALL_STATUS -ne 0 ]]; then
+        logger -t mssql_tlog_backup \
+            "WARNING: One or more T-log backups failed — check $LOGFILE"
+    fi
+}
+trap cleanup EXIT
+
+# ── Prune old backups ─────────────────────────────────────────
+log "Pruning T-log backups older than ${PRUNE_HOURS} hours..."
+find "$BACKUP_DIR" -name '*.bak' -mmin "+$((PRUNE_HOURS * 60))" -delete
+log "Pruning complete."
+
+# ── Per-database backup loop ──────────────────────────────────
+for DB in "${DATABASES[@]}"; do
+    TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+    BACKUP_FILE="${BACKUP_DIR}/${DB}_tlog_${TIMESTAMP}.bak"
+    TSQL="BACKUP LOG [${DB}] TO DISK = N'${BACKUP_FILE}' \
+WITH COMPRESSION, STATS = 10;"
+
+    log "Starting T-log backup: $DB -> $BACKUP_FILE"
+
+    sqlcmd \
+        -S "$MSSQL_HOST" \
+        -U "$MSSQL_USER" \
+        -P "$MSSQL_PASS" \
+        -Q "$TSQL" \
+        -b \
+        >> "$LOGFILE" 2>&1
+
+    RC=$?   # capture immediately
+    if [[ $RC -ne 0 ]]; then
+        log "FAILED: T-log backup for $DB (exit code: $RC)"
+        OVERALL_STATUS=1
+    else
+        log "SUCCESS: T-log backup for $DB"
+        # Verify file exists and is non-zero
+        if [[ ! -s "$BACKUP_FILE" ]]; then
+            log "FAILED: Backup file for $DB is empty or missing!"
+            OVERALL_STATUS=1
+        fi
+    fi
+done
+
+exit $OVERALL_STATUS
+──────────────────────────────────────── END OF SCRIPT ──────
+
+Lab tasks:
+  1. Store SA password securely: echo 'YourPass' > /etc/dba/.mssql_sa_pass
+     chmod 600 /etc/dba/.mssql_sa_pass; chown root:dba /etc/dba/.mssql_sa_pass
+  2. Run the script, verify per-database log entries
+  3. Break one database name intentionally — confirm OVERALL_STATUS=1
+     and that the remaining databases still back up
+  4. Add to cron every 4 hours:
+     0 */4 * * * /opt/dba/labs/lab2_mssql_tlog.sh
+
+
+─────────────────────────────────────────
+LAB 3 — Diagnosing a Runaway Backup Script with strace and /proc
+─────────────────────────────────────────
+
+Objective: A backup script is hanging. The lock file exists but nothing
+is writing to disk. Identify the cause using Linux tools.
+
+─── Step 1: Find the process ────────────────────────────────
+
+  $ pgrep -af pg_backup
+  14823 /usr/bin/bash /opt/dba/pg_backup.sh
+
+  $ ps aux | grep 14823
+  dba  14823  0.0  0.0  bash /opt/dba/pg_backup.sh   S (sleeping)
+
+─── Step 2: What is it waiting on? ─────────────────────────
+
+  # Check open file descriptors:
+  $ ls -la /proc/14823/fd/
+  lrwx------ 1 dba dba 64 Mar 12 02:01 0 -> /dev/pts/0
+  l-wx------ 1 dba dba 64 Mar 12 02:01 1 -> /var/log/dba/pg_backup.log
+  lr-x------ 1 dba dba 64 Mar 12 02:01 3 -> pipe:[889234]
+
+  # It's blocked on a pipe — look at the child:
+  $ pstree -p 14823
+  pg_backup.sh(14823)---pg_basebackup(14901)---gzip(14902)
+
+  # Check gzip's state:
+  $ cat /proc/14902/status | grep State
+  State:  D (disk sleep)   ← uninterruptible I/O wait
+
+─── Step 3: What syscall is gzip stuck on? ──────────────────
+
+  $ strace -p 14902 -e trace=write,read,close 2>&1 | head -20
+  write(1, "\037\213\010\000\000\000\000\000\000\003...", 65536) = ?
+  # Blocked on write — backup device is unresponsive
+
+  # Alternatively: check with iotop
+  $ iotop -p 14902
+  # Shows 0 bytes/s actual I/O — confirms device hang, not load
+
+─── Step 4: Check for storage errors ────────────────────────
+
+  $ dmesg | tail -20 | grep -iE 'error|reset|timeout|I/O'
+  [298341.223485] sd 2:0:0:0: [sdb] tag#0 FAILED Result: hostbyte=...
+  [298341.223501] sd 2:0:0:0: [sdb] I/O error, dev sdb, sector 976773168
+
+  # SAN path failure or dying disk. This is why the script hung
+  # and why error handling + a timeout wrapper matters.
+
+─── Step 5: Add a timeout wrapper to backup scripts ─────────
+
+  # Use timeout(1) from GNU coreutils:
+  timeout --kill-after=10m 6h \
+      pg_basebackup -U replicator -D /backup/base -Ft -z -P
+  RC=$?
+  if [[ $RC -eq 124 ]]; then
+      log "ABORT: pg_basebackup timed out after 6 hours"
+      exit 124
+  elif [[ $RC -ne 0 ]]; then
+      log "ABORT: pg_basebackup failed (exit code: $RC)"
+      exit $RC
+  fi
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — PRODUCTION TAKEAWAY & CLOSING PEP TALK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Here's what separates a DBA who builds tools from one who just runs
+commands.
+
+Every single command you run in a production script is a bet. You're
+betting the filesystem has space. You're betting the network doesn't
+drop. You're betting the storage doesn't freeze. You're betting no
+other instance of your script is already running.
+
+Error handling is how you stop betting and start engineering.
+
+trap gives you a guarantee: "No matter what happens — signal, disk
+full, bad password, killed process — this cleanup code will run."
+That's not a nice-to-have. That's the contract your script makes with
+production.
+
+$? is Linux telling you what actually happened. Ignoring it is the
+same as looking away from a warning light on your server and hoping
+for the best.
+
+Your checklist before any DBA script goes to production:
+
+  [ ] set -euo pipefail at the top
+  [ ] trap ... ERR captures line number and exit code
+  [ ] trap ... EXIT handles cleanup regardless of exit path
+  [ ] Every external command's $? is either caught by set -e or
+      explicitly captured
+  [ ] No bare || true unless you've written explicit fallback logic
+  [ ] local variable declarations are split from assignments
+  [ ] Lock file prevents parallel execution
+  [ ] Disk space checked BEFORE writing
+  [ ] Timeout wrapper on any long-running child process
+  [ ] Script exits non-zero on any failure (cron/monitoring can see it)
+  [ ] Structured log output with timestamps
+
+Become the DBA that your team calls at 3 AM not because you're the
+only one awake, but because you built the scripts that already handled
+the problem before anyone woke up.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — DBA QUICK-REFERENCE CARD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── Exit Code Cheatsheet ────────────────────────────────────────────
+  0     Success
+  1     Generic error
+  2     Misuse / command syntax (ls, bash built-ins)
+  126   Not executable
+  127   Command not found
+  128+N Killed by signal N  (137=SIGKILL, 143=SIGTERM, 130=SIGINT)
+  124   timeout(1) expiry
+
+─── $? Rules ────────────────────────────────────────────────────────
+  - Capture IMMEDIATELY after the command: RC=$?
+  - local var=... always returns 0 — split declaration and assignment
+  - ERR trap does not fire inside if/while conditions or after ||/&&
+
+─── trap Signal Reference ───────────────────────────────────────────
+  EXIT    Any exit — use for guaranteed cleanup
+  ERR     Non-zero exit from command (with set -e active)
+  INT     Ctrl-C (SIGINT, signal 2)
+  TERM    systemd stop / kill (SIGTERM, signal 15)
+  HUP     Terminal hangup (SIGHUP, signal 1)
+  PIPE    Broken pipe (SIGPIPE, signal 13)
+
+─── Patterns ────────────────────────────────────────────────────────
+  # Correct local variable pattern:
+  local var
+  var=$(some_command)
+  [[ $? -eq 0 ]] || return 1
+
+  # Correct per-item error handling in a loop:
+  for item in "${list[@]}"; do
+      process "$item" || { log "FAILED: $item"; OVERALL=1; continue; }
+  done
+  exit $OVERALL
+
+  # Correct timeout wrapper:
+  timeout 6h pg_basebackup ...
+  [[ $? -eq 124 ]] && { log "Timed out"; exit 124; }
+
+─── Process Diagnosis ───────────────────────────────────────────────
+  pgrep -af pg_basebackup          Find backup PIDs
+  ls -la /proc/<PID>/fd/           Open file descriptors
+  cat /proc/<PID>/status           Process state (D = I/O wait)
+  strace -p <PID> -e trace=write   Stuck syscall
+  iotop -p <PID>                   Per-process I/O
+  dmesg | grep -iE 'error|I/O'     Kernel storage errors
+  lsof +D /backup                  What's open on backup mount
+
+─── Key Monitoring Commands ─────────────────────────────────────────
+  vmstat 2 5                        Memory/swap/IO overview
+  iostat -x 2 5                     Per-device I/O utilization
+  ss -tlnp | grep 5432              PostgreSQL listening sockets
+  lsof -i :1433                     SQL Server port 1433 users
+  journalctl -u postgresql -f       PostgreSQL systemd log stream
+  journalctl -u mssql-server -f     SQL Server systemd log stream
+
+─── DB Paths ────────────────────────────────────────────────────────
+  PostgreSQL data (RHEL/CentOS):    /var/lib/pgsql/<ver>/data/
+  PostgreSQL data (Debian/Ubuntu):  /var/lib/postgresql/<ver>/main/
+  PostgreSQL WAL:                   <data_dir>/pg_wal/
+  PostgreSQL logs (RHEL):           /var/lib/pgsql/<ver>/data/log/
+  SQL Server data+logs:             /var/opt/mssql/data/
+  SQL Server errorlog:              /var/opt/mssql/log/errorlog
+  SQL Server config:                /var/opt/mssql/mssql.conf
+
+─── Sysctl Parameters for DB Hosts (reference from prior sessions) ──
+  vm.swappiness=10                  Keep data in RAM, not swap
+  vm.dirty_ratio=15                 Max dirty pages before forced flush
+  vm.dirty_background_ratio=5       Background flush threshold
+  vm.overcommit_memory=2            No overcommit (PostgreSQL)
+  kernel.shmmax=<bytes>             Max single shared memory segment
+  kernel.shmall=<pages>             Total shared memory pages
+  net.ipv4.tcp_tw_reuse=1          Reuse TIME_WAIT sockets (MSSQL)
+  net.core.somaxconn=1024           Max socket connection backlog
+
+═══════════════════════════════════════════════════════════════════════
+  END OF LECTURE — Error Handling (trap, exit codes, $?)
+  Pure Linux for DBA | PostgreSQL & MS SQL Server
+═══════════════════════════════════════════════════════════════════════

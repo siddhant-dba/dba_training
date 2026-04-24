@@ -1,0 +1,825 @@
+================================================================================
+ PURE LINUX FOR DBA — 3-HOUR DEEP WORKSHOP
+ TOPIC: Functions with Return Codes and Local Variables
+ Audience: Senior DBA / SRE | PostgreSQL + MS SQL Server on Linux
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 1 — WARM INTRO & REAL-LIFE HOOK (~2 minutes)
+────────────────────────────────────────────────────────────────────────────────
+
+Let me tell you about a Tuesday night I will never forget.
+
+We had a PostgreSQL primary — 2.4 TB, 1,200 active connections at peak — and
+the on-call DBA had a backup script that had been running for three years
+without incident. That night it silently failed. No error in the logs. Cron
+showed exit code 0. The backup destination was full, the script's pg_basebackup
+call returned non-zero, but nobody caught it because the function wrapping it
+never propagated the return code. It just swallowed it.
+
+Three weeks later we needed that backup. It wasn't there.
+
+That is the production story behind today's topic: bash functions, return codes,
+and local variables. This is not academic. Every backup script, every health
+check, every WAL archiving wrapper you write will either handle return codes
+correctly or it will eventually lie to you at the worst possible moment.
+
+We've already covered:
+  - Script structure with set -euo pipefail and proper shebangs
+  - Variables, quoting, arrays
+  - Conditionals with [[ ]] and test operators
+  - Loops: for, while, while read line
+
+Today we go one level up. We build reusable function libraries that a senior
+DBA can actually trust in production.
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 2 — CORE CONCEPT: FUNCTIONS IN BASH
+────────────────────────────────────────────────────────────────────────────────
+
+2.1 — WHAT IS A BASH FUNCTION, REALLY?
+───────────────────────────────────────
+
+A bash function is a named block of commands. It runs in the SAME shell process
+as the caller — same environment, same PID, same file descriptors. This is
+critically different from a subshell or a child process. That distinction
+matters when you're managing file locks, postgres connections, or SQL Server
+named pipe handles.
+
+Syntax — two valid forms:
+
+    # Form 1 (POSIX portable):
+    function_name() {
+        commands
+    }
+
+    # Form 2 (bash-specific, equally fine):
+    function function_name() {
+        commands
+    }
+
+I use Form 1 in all production scripts. It's POSIX, it works on sh, bash, ksh.
+No surprises when someone runs your script on a hardened system where bash
+isn't the default shell.
+
+
+2.2 — THE RETURN CODE: YOUR FUNCTION'S HANDSHAKE
+──────────────────────────────────────────────────
+
+Every command in Linux — every single one — exits with a number between 0 and
+255. Zero means success. Non-zero means something went wrong. This is the
+contract of Unix process communication.
+
+    echo "test"
+    echo $?        # $? = 0
+
+    ls /nonexistent
+    echo $?        # $? = 2
+
+Inside a bash function, the return value is controlled with the `return`
+builtin:
+
+    return 0       # success
+    return 1       # generic failure
+    return 2       # custom error code — document what this means!
+
+If you do NOT call `return` explicitly, the function's exit code equals the
+exit code of the LAST command that ran inside it.
+
+This is where junior DBAs get burned. Watch:
+
+    check_postgres_running() {
+        systemctl is-active postgresql > /dev/null 2>&1
+        echo "Check complete"      # <-- THIS is now the last command
+    }
+
+    check_postgres_running
+    echo "Exit: $?"    # prints 0 regardless of postgres state!
+
+The echo command succeeded, so the function returned 0, even if postgres was
+dead. Never let diagnostic output be the last line of a function that's
+supposed to return a meaningful status. Either redirect output or explicitly
+return after your check.
+
+Correct version:
+
+    check_postgres_running() {
+        systemctl is-active postgresql > /dev/null 2>&1
+        return $?
+    }
+
+Or even more explicit:
+
+    check_postgres_running() {
+        if systemctl is-active postgresql > /dev/null 2>&1; then
+            return 0
+        else
+            return 1
+        fi
+    }
+
+
+2.3 — LOCAL VARIABLES: SCOPE IS NOT OPTIONAL
+─────────────────────────────────────────────
+
+In bash, variables are GLOBAL by default. If your function sets a variable
+without the `local` keyword, it pollutes the calling environment. In a 500-line
+DBA script with 15 functions, that will cause subtle, maddening bugs.
+
+    bad_example() {
+        backup_dir="/tmp/pg_backup"      # GLOBAL — visible everywhere after call
+        result="ok"
+    }
+
+    good_example() {
+        local backup_dir="/tmp/pg_backup"    # LOCAL — dies when function returns
+        local result="ok"
+        local exit_code=0
+    }
+
+Rule: **Every variable declared inside a function gets `local`. No exceptions.**
+
+`local` only works inside functions. It's a bash builtin. If you try to use it
+at the top level of a script, bash will error. That's actually a useful trap —
+it tells you the variable is in the wrong scope.
+
+You can also declare and assign separately:
+
+    my_function() {
+        local pg_host
+        local pg_port
+        pg_host=$(hostname -f)
+        pg_port=5432
+    }
+
+Why separate? Because if the command substitution fails, you want to catch it.
+With `local pg_host=$(command)`, a failing command substitution might not
+trigger `set -e` because `local` itself succeeds (returns 0). This is a known
+bash gotcha:
+
+    set -e
+    local var=$(false)   # 'local' returns 0, 'false' ignored — set -e doesn't fire!
+
+    # Safe pattern:
+    local var
+    var=$(false)         # NOW set -e fires correctly
+
+
+2.4 — RETURNING DATA FROM FUNCTIONS
+─────────────────────────────────────
+
+Here's a question: if `return` only sends a number (0–255), how do you get
+a string out of a function?
+
+Three production-grade patterns:
+
+PATTERN 1: Echo + command substitution
+    get_pg_version() {
+        local ver
+        ver=$(psql -U postgres -t -c "SHOW server_version;" 2>/dev/null | tr -d ' ')
+        echo "$ver"
+    }
+
+    PG_VERSION=$(get_pg_version)
+    echo "Running PostgreSQL $PG_VERSION"
+
+This spawns a subshell. Fine for occasional use. Do NOT use in a tight loop
+with 10,000 iterations — subshell overhead adds up on busy servers.
+
+PATTERN 2: Nameref (bash 4.3+)
+    get_pg_datadir() {
+        local -n _result=$1    # nameref — _result is an alias for caller's variable
+        _result=$(psql -U postgres -t -c "SHOW data_directory;" | tr -d ' \n')
+    }
+
+    get_pg_datadir PG_DATADIR
+    echo "Data dir: $PG_DATADIR"
+
+No subshell. Fast. But requires bash 4.3+. Check with: bash --version
+
+PATTERN 3: Global output variable (old school, still works)
+    PG_RESULT=""
+
+    get_pg_status() {
+        PG_RESULT=$(pg_ctlcluster 14 main status 2>&1)
+        return $?
+    }
+
+    get_pg_status
+    echo "Status: $PG_RESULT"
+
+I still use Pattern 3 in scripts that need RHEL 6/7 compatibility where bash
+is older. It's not pretty, but it works.
+
+
+2.5 — BUILDING A REAL FUNCTION LIBRARY FOR DBA SCRIPTS
+────────────────────────────────────────────────────────
+
+Let's look at how you'd structure a real DBA script. This is the skeleton I use
+for anything that touches production databases:
+
+────────────────────────────────────────────────────────
+#!/usr/bin/env bash
+# ==============================================================
+# Script : pg_backup_runner.sh
+# Author : DBA Team
+# Purpose: Nightly base backup with validation and alerting
+# ==============================================================
+set -euo pipefail
+IFS=$'\n\t'
+
+# ── Global config (read-only after this block) ──────────────
+readonly SCRIPT_NAME=$(basename "$0")
+readonly LOG_FILE="/var/log/dba/${SCRIPT_NAME%.sh}.log"
+readonly BACKUP_BASE="/mnt/pgbackups"
+readonly PG_CLUSTER="14/main"
+readonly RETENTION_DAYS=7
+readonly ALERT_EMAIL="dba-oncall@company.com"
+
+# ── Logging ──────────────────────────────────────────────────
+log() {
+    local level="$1"
+    shift
+    echo "[$(date '+%F %T')] [$level] $*" | tee -a "$LOG_FILE"
+}
+
+log_info()  { log "INFO"  "$@"; }
+log_warn()  { log "WARN"  "$@"; }
+log_error() { log "ERROR" "$@" >&2; }
+
+# ── Check prerequisites ───────────────────────────────────────
+check_dependencies() {
+    local dep
+    local missing=0
+
+    for dep in pg_basebackup psql mailx; do
+        if ! command -v "$dep" > /dev/null 2>&1; then
+            log_error "Missing required command: $dep"
+            missing=1
+        fi
+    done
+
+    return $missing
+}
+
+# ── Validate postgres is reachable ───────────────────────────
+postgres_is_alive() {
+    local host="${1:-localhost}"
+    local port="${2:-5432}"
+    local retries=3
+    local attempt
+
+    for attempt in $(seq 1 $retries); do
+        if pg_isready -h "$host" -p "$port" -q; then
+            log_info "PostgreSQL is ready at $host:$port"
+            return 0
+        fi
+        log_warn "Attempt $attempt/$retries: PostgreSQL not ready at $host:$port"
+        sleep 5
+    done
+
+    log_error "PostgreSQL unreachable at $host:$port after $retries attempts"
+    return 1
+}
+
+# ── Run base backup ──────────────────────────────────────────
+run_base_backup() {
+    local dest_dir
+    local start_ts
+    local exit_code
+
+    dest_dir="${BACKUP_BASE}/$(date '+%Y%m%d_%H%M%S')"
+    start_ts=$(date '+%s')
+
+    log_info "Starting pg_basebackup to $dest_dir"
+
+    if ! mkdir -p "$dest_dir"; then
+        log_error "Cannot create backup directory: $dest_dir"
+        return 1
+    fi
+
+    pg_basebackup \
+        --pgdata="$dest_dir" \
+        --format=tar \
+        --gzip \
+        --checkpoint=fast \
+        --label="nightly_$(date '+%Y%m%d')" \
+        --verbose \
+        2>>"$LOG_FILE"
+
+    exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "pg_basebackup failed with exit code $exit_code"
+        return $exit_code
+    fi
+
+    local elapsed=$(( $(date '+%s') - start_ts ))
+    log_info "Backup complete in ${elapsed}s → $dest_dir"
+    return 0
+}
+
+# ── Cleanup old backups ───────────────────────────────────────
+purge_old_backups() {
+    local retained=0
+    local removed=0
+    local dir
+
+    log_info "Purging backups older than ${RETENTION_DAYS} days from $BACKUP_BASE"
+
+    while IFS= read -r dir; do
+        log_info "Removing: $dir"
+        rm -rf "$dir"
+        (( removed++ )) || true
+    done < <(find "$BACKUP_BASE" -maxdepth 1 -type d \
+                  -mtime "+${RETENTION_DAYS}" -not -path "$BACKUP_BASE")
+
+    retained=$(find "$BACKUP_BASE" -maxdepth 1 -type d -not -path "$BACKUP_BASE" | wc -l)
+    log_info "Purge complete: removed=$removed, retained=$retained"
+    return 0
+}
+
+# ── Send alert on failure ─────────────────────────────────────
+send_alert() {
+    local subject="$1"
+    local body="$2"
+
+    echo "$body" | mailx -s "$subject" "$ALERT_EMAIL" 2>/dev/null || \
+        log_warn "mailx failed — could not send alert"
+}
+
+# ── Main ──────────────────────────────────────────────────────
+main() {
+    log_info "========================================"
+    log_info "Backup job started by $(id -un) on $(hostname -s)"
+    log_info "========================================"
+
+    if ! check_dependencies; then
+        send_alert "[CRITICAL] Backup prerequisites missing on $(hostname -s)" \
+                   "check_dependencies failed. See $LOG_FILE"
+        exit 1
+    fi
+
+    if ! postgres_is_alive "localhost" "5432"; then
+        send_alert "[CRITICAL] PostgreSQL unreachable — backup aborted" \
+                   "pg_isready failed. See $LOG_FILE"
+        exit 1
+    fi
+
+    if ! run_base_backup; then
+        send_alert "[CRITICAL] pg_basebackup failed on $(hostname -s)" \
+                   "See $LOG_FILE for details."
+        exit 1
+    fi
+
+    purge_old_backups || log_warn "Purge step had issues — manual review needed"
+
+    log_info "Backup job completed successfully"
+    exit 0
+}
+
+main "$@"
+────────────────────────────────────────────────────────
+
+Walk through what this demonstrates:
+  - Every function has local variables
+  - Every function returns a meaningful exit code
+  - main() orchestrates and propagates failures
+  - Logging function centralizes output — one place to change format
+  - check_dependencies loops over a list — reusable, extensible
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 3 — WAR STORY: THE FUNCTION THAT SWALLOWED THE ERROR
+────────────────────────────────────────────────────────────────────────────────
+
+This is the real incident that opened today's session, in detail.
+
+The environment: Ubuntu 20.04, PostgreSQL 13, cron-driven backup script, had
+been running three years. The DBA who wrote it left the company. Nobody touched
+it. Classic.
+
+The original archiving wrapper looked like this:
+
+    archive_wal() {
+        local wal_file="$1"
+        local archive_dir="/mnt/wal_archive"
+
+        cp "$wal_file" "$archive_dir/"
+        echo "Archived: $wal_file"    # <-- last command
+    }
+
+    # In archive_cleanup hook:
+    if archive_wal "$WAL_PATH"; then
+        log "Archive OK"
+    else
+        log "Archive FAILED"   # never reached
+    fi
+
+The /mnt/wal_archive NFS mount silently went stale. cp started returning exit
+code 1. But `echo "Archived..."` ran anyway and returned 0. The function
+returned 0. The if-block logged "Archive OK". Cron reported success.
+
+For six hours, WAL files were not being archived. The team discovered it only
+when someone manually checked the archive directory count and noticed it hadn't
+grown.
+
+Fix is simple:
+
+    archive_wal() {
+        local wal_file="$1"
+        local archive_dir="/mnt/wal_archive"
+
+        if ! cp "$wal_file" "$archive_dir/"; then
+            return 1
+        fi
+
+        # Verify the file actually landed
+        if [[ ! -f "${archive_dir}/$(basename "$wal_file")" ]]; then
+            return 1
+        fi
+
+        return 0
+    }
+
+And add a mount check before even calling it:
+
+    check_mount() {
+        local mount_point="$1"
+        if ! mountpoint -q "$mount_point"; then
+            log_error "$mount_point is not mounted"
+            return 1
+        fi
+        return 0
+    }
+
+    check_mount "/mnt/wal_archive" || exit 1
+
+You check the mount. You check the copy. You return real codes. That's the
+difference between a script and a production tool.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 4 — INSTRUCTOR WARNING: CRITICAL MISTAKES TO AVOID
+────────────────────────────────────────────────────────────────────────────────
+
+⚠️  WARNING #1 — USING $? AFTER MULTIPLE COMMANDS
+
+    run_backup
+    status=$?
+    echo "Logged"
+    if [[ $status -eq 0 ]]; then   # WRONG — $? is now 0 from echo
+    ...
+
+    # Correct: capture immediately
+    run_backup
+    status=$?
+    if [[ $status -eq 0 ]]; then
+    ...
+
+$? is only valid as the VERY NEXT statement after the command you care about.
+The moment anything else runs, $? is overwritten.
+
+
+⚠️  WARNING #2 — set -e INTERACTS STRANGELY WITH FUNCTIONS
+
+With `set -e`, a function that returns non-zero will kill the entire script —
+unless you're calling it in a conditional:
+
+    set -e
+    check_something     # if this returns 1, script dies immediately
+
+    if check_something; then    # this is safe — set -e ignores failure in conditions
+        echo "ok"
+    fi
+
+    check_something || handle_error    # also safe
+
+Always call health-check functions inside an `if` or with `||`. Never naked.
+
+
+⚠️  WARNING #3 — RECURSIVE FUNCTIONS WITHOUT DEPTH LIMITS
+
+For filesystem traversal (archiving old backups, scanning WAL directories):
+
+    scan_dir() {
+        local dir="$1"
+        local depth="${2:-0}"
+        local max_depth=5
+
+        if [[ $depth -ge $max_depth ]]; then
+            log_warn "Max depth $max_depth reached at $dir — stopping"
+            return 0
+        fi
+        # ... recurse
+    }
+
+No depth limit = potential infinite loop on symlink cycles. One rogue symlink
+in your PostgreSQL data directory and your script runs until the stack overflows.
+
+
+⚠️  WARNING #4 — RETURN CODES ABOVE 125 ARE RESERVED
+
+Bash reserves return codes 126 (command not executable), 127 (command not
+found), 128+N (killed by signal N), 130 (Ctrl+C), etc.
+
+Your custom error codes should stay in range 1–100. Document them:
+
+    # Return codes:
+    #   0  = success
+    #   1  = generic error
+    #   2  = database unreachable
+    #   3  = disk space insufficient
+    #   4  = backup destination not mounted
+    #  10  = partial success (backup complete, cleanup failed)
+
+
+⚠️  WARNING #5 — DO NOT USE `exit` INSIDE LIBRARY FUNCTIONS
+
+If your function is meant to be sourced as a library:
+
+    # In lib_db.sh:
+    check_space() {
+        if [[ $free_gb -lt 10 ]]; then
+            exit 1    # KILLS THE CALLING SCRIPT — never do this in a library!
+        fi
+    }
+
+Use `return 1` in library functions. Only call `exit` in main() or at the very
+top level of a standalone script. This is the single most common mistake I see
+in DBA scripts written by people who learned bash on the job.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 5 — HANDS-ON LABS
+────────────────────────────────────────────────────────────────────────────────
+
+LAB 1 — WRITE A VALIDATED POSTGRES CONNECTION CHECK FUNCTION
+─────────────────────────────────────────────────────────────
+
+Objective: Write a function that checks PostgreSQL connectivity, returns proper
+exit codes, and safely stores the server version in a caller-visible variable.
+
+Task:
+
+  1. Write `postgres_connect_check()` that:
+       - Accepts host, port, dbname as arguments with defaults
+       - Runs: psql -h $host -p $port -d $dbname -c "SELECT version();" -t
+       - Returns 0 on success, 1 on connection failure, 2 on query failure
+       - Stores the version string in a variable PG_CONNECTED_VERSION
+
+  2. Call it from main() and log the result
+
+  3. Test with a wrong port to verify non-zero return propagates
+
+Starter:
+
+    postgres_connect_check() {
+        local host="${1:-localhost}"
+        local port="${2:-5432}"
+        local dbname="${3:-postgres}"
+        local _ver
+
+        # your code here
+
+        PG_CONNECTED_VERSION="$_ver"
+        return 0
+    }
+
+Verification:
+    postgres_connect_check localhost 9999 postgres
+    echo "Return code: $?"     # should be non-zero
+    echo "Version: ${PG_CONNECTED_VERSION:-UNSET}"
+
+
+LAB 2 — SQL SERVER TRANSACTION LOG BACKUP CLEANUP FUNCTION + CRON
+──────────────────────────────────────────────────────────────────
+
+Objective: Write a cleanup function for MS SQL Server transaction log backups
+(.bak files) older than N hours. Wire it to cron.
+
+Task:
+
+  1. Write `cleanup_mssql_log_backups()` that:
+       - Takes backup_dir and max_age_hours as arguments
+       - Uses find to locate .bak files older than N hours
+       - Logs each deletion to /var/log/dba/mssql_cleanup.log
+       - Counts and returns number of files deleted (store in a variable)
+       - Returns 0 if clean, 1 if backup_dir doesn't exist
+
+  2. Add a cron entry running every 4 hours as the mssql user:
+
+       0 */4 * * * /usr/local/dba/mssql_cleanup.sh >> /var/log/dba/mssql_cleanup.log 2>&1
+
+  3. Validate the cron is active:
+       crontab -l -u mssql
+
+Expected cleanup_mssql_log_backups skeleton:
+
+    cleanup_mssql_log_backups() {
+        local backup_dir="$1"
+        local max_age_hours="${2:-24}"
+        local log_file="/var/log/dba/mssql_cleanup.log"
+        local deleted=0
+        local f
+
+        if [[ ! -d "$backup_dir" ]]; then
+            echo "[ERROR] Directory not found: $backup_dir" >> "$log_file"
+            return 1
+        fi
+
+        while IFS= read -r f; do
+            echo "[$(date '+%F %T')] Removing: $f" >> "$log_file"
+            rm -f "$f"
+            (( deleted++ )) || true
+        done < <(find "$backup_dir" -name "*.bak" -mmin "+$(( max_age_hours * 60 ))")
+
+        echo "[$(date '+%F %T')] Cleanup done. Removed: $deleted files" >> "$log_file"
+        FILES_REMOVED=$deleted
+        return 0
+    }
+
+
+LAB 3 — UNIFIED HEALTH CHECK LIBRARY
+──────────────────────────────────────
+
+Objective: Build a sourced library file (/usr/local/dba/lib/health.sh) with
+three functions:
+
+  check_disk_space()
+    - Args: mount_point, threshold_gb
+    - Returns 0 if free space > threshold, 1 if below
+    - Logs a warning if within 20% of threshold
+
+  check_process_running()
+    - Args: process_name
+    - Uses pgrep -x to check
+    - Returns 0/1
+
+  check_port_listening()
+    - Args: port
+    - Uses ss -tlnp | grep ":$port "
+    - Returns 0/1
+
+Then write a master health runner:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source /usr/local/dba/lib/health.sh
+
+    FAILED=0
+
+    check_disk_space "/var/lib/postgresql" 50  || (( FAILED++ )) || true
+    check_disk_space "/var/opt/mssql"      20  || (( FAILED++ )) || true
+    check_process_running "postgres"           || (( FAILED++ )) || true
+    check_process_running "sqlservr"           || (( FAILED++ )) || true
+    check_port_listening 5432                  || (( FAILED++ )) || true
+    check_port_listening 1433                  || (( FAILED++ )) || true
+
+    if [[ $FAILED -gt 0 ]]; then
+        echo "HEALTH CHECK: $FAILED issue(s) detected"
+        exit 1
+    fi
+
+    echo "HEALTH CHECK: All systems nominal"
+    exit 0
+
+Run this from cron every 5 minutes. Pipe output to logger for syslog:
+
+    */5 * * * * /usr/local/dba/health_runner.sh 2>&1 | logger -t dba_health
+
+View results:
+    journalctl -t dba_health -n 50
+    grep dba_health /var/log/syslog
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 6 — PRODUCTION TAKEAWAY & CLOSING PEP TALK
+────────────────────────────────────────────────────────────────────────────────
+
+Here's what I need you to carry out of this room today.
+
+A bash function is not just a block of code with a name. It's a contract.
+The return code IS the result. If you get the return code discipline wrong,
+you have a script that lies — and a lying script is more dangerous than no
+script at all, because it gives you false confidence.
+
+Three things that separate production-grade DBA scripts from amateur hour:
+
+  1. Every function declares local variables. No global side effects.
+  2. Every function returns a meaningful exit code. Not echo. Return.
+  3. The caller checks every return code. If not checked — handle it
+     explicitly with || or wrap in an if. Never assume success.
+
+The backup script from tonight's opening story had NONE of those three things.
+It worked for three years and then failed silently. That's the danger zone.
+
+When you go back to your servers, open your oldest running cron scripts.
+Look for:
+  - Functions without `local`
+  - Commands without exit code checks
+  - echo as the last line of a function
+  - exit inside sourced library functions
+  - $? captured two lines after the command that mattered
+
+You will find these bugs. Fix them before they find you.
+
+Linux doesn't care about your feelings. The kernel does exactly what you tell
+it to do. Bash does exactly what you wrote. The discipline is on you.
+
+Build your libraries. Test them with set -e. Inject failures deliberately.
+Know what your scripts do when the disk is full, the network is down, the
+database is unresponsive. If you don't know — your script doesn't know either.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 7 — COMPACT DBA QUICK-REFERENCE CARD
+────────────────────────────────────────────────────────────────────────────────
+
+FUNCTION SYNTAX
+───────────────
+    function_name() {           # POSIX portable declaration
+        local var="value"       # Always use local inside functions
+        local result
+        result=$(some_command)  # Capture separately for set -e safety
+        return 0                # Explicit return code
+    }
+
+RETURN CODE PATTERNS
+────────────────────
+    cmd; rc=$?; [[ $rc -eq 0 ]] || handle_error    # capture immediately
+    if cmd; then ok; else fail; fi                  # safe with set -e
+    cmd || { log_error "failed"; return 1; }        # inline guard
+
+EXITING VS RETURNING
+────────────────────
+    return N    # use inside functions (library code)
+    exit N      # use in main() or top-level only
+
+GETTING DATA OUT OF FUNCTIONS
+──────────────────────────────
+    # Via echo + subshell:
+    result=$(my_func)
+
+    # Via nameref (bash 4.3+):
+    my_func() { local -n _out=$1; _out="value"; }
+    my_func MY_VAR
+
+    # Via documented global:
+    MY_FUNC_RESULT=""; my_func; echo "$MY_FUNC_RESULT"
+
+USEFUL COMMANDS FOR DBA SCRIPTS
+────────────────────────────────
+    pg_isready -h localhost -p 5432 -q       # quick postgres check
+    ss -tlnp | grep ':5432'                  # postgres port listening?
+    ss -tlnp | grep ':1433'                  # mssql port listening?
+    pgrep -x postgres                        # postgres process alive?
+    pgrep -x sqlservr                        # mssql process alive?
+    df -BG /var/lib/postgresql               # disk space check
+    mountpoint -q /mnt/backup                # is it mounted?
+    find /backup -name "*.bak" -mmin +1440   # files older than 24h
+    journalctl -t dba_health -n 50           # read syslog tag
+
+SCRIPT HEADER TEMPLATE
+───────────────────────
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IFS=$'\n\t'
+    readonly SCRIPT_NAME=$(basename "$0")
+    readonly LOG_FILE="/var/log/dba/${SCRIPT_NAME%.sh}.log"
+
+KEY PATHS
+─────────
+    PostgreSQL data:     /var/lib/pgsql/  (RHEL) or /var/lib/postgresql/ (Debian)
+    PostgreSQL logs:     /var/log/postgresql/
+    SQL Server data:     /var/opt/mssql/data/
+    SQL Server logs:     /var/opt/mssql/log/
+    WAL archive:         /mnt/wal_archive/  (site-specific, always verify mount)
+    DBA scripts:         /usr/local/dba/
+    DBA logs:            /var/log/dba/
+
+CUSTOM EXIT CODE CONVENTION
+────────────────────────────
+    0   success
+    1   generic failure
+    2   database unreachable
+    3   disk space insufficient
+    4   backup destination not mounted / path missing
+    5   dependency not installed
+    10  partial success (primary task OK, cleanup failed)
+    Do NOT use 126, 127, 128–255 (reserved by bash/kernel)
+
+MONITORING ONE-LINERS
+──────────────────────
+    vmstat 2 5                              # memory/swap/io every 2s, 5 times
+    iostat -x 2 5                          # extended disk stats
+    mpstat -P ALL 2 3                      # per-core CPU
+    iotop -o -b -n 3                       # top I/O processes (3 snapshots)
+    lsof -i :5432                          # who has postgres port open
+    lsof -i :1433                          # who has mssql port open
+    lsof | grep deleted | grep mssql       # deleted-but-held mssql files
+
+================================================================================
+END OF LECTURE — FUNCTIONS WITH RETURN CODES AND LOCAL VARIABLES
+Pure Linux for DBA | Senior DBA / SRE Workshop
+================================================================================

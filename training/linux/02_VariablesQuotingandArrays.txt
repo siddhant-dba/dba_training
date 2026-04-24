@@ -1,0 +1,1061 @@
+================================================================================
+  DEBIAN LINUX DEEP-DIVE LECTURE SERIES
+  Session: Variables, Quoting, and Arrays in Bash
+  Focus: Debian 12 (Bookworm) on Hyper-V & Docker
+  Audience: Advanced / LPIC-2 / Debian Certified Engineer Track
+  Duration: 3 Hours (Lecture + Hands-On Labs)
+================================================================================
+
+Alright, let's get settled. Grab your terminal, I'm not going to wait on anyone.
+
+If you were here last session, we tore through script structure — the shebang line,
+the holy trinity of set -euo pipefail, and why skipping those three lines has ended
+more than one sysadmin's Friday evening. Today we're going deeper. We're going into
+the guts of Bash variable handling, quoting rules, and arrays — and we're doing it
+in the context of real Debian infrastructure: Hyper-V virtualized guests and Docker
+production deployments.
+
+By the time this session is done, you'll understand exactly why that one script
+you inherited from the previous admin randomly breaks when a filename has a space
+in it, and you'll know how to write the kind of Bash that doesn't call you at 2AM.
+
+Let's go.
+
+
+================================================================================
+PART ONE: VARIABLES — WHAT YOU THINK YOU KNOW IS PROBABLY WRONG
+================================================================================
+
+Here's where most people have a false sense of confidence. You've been writing
+${VAR} for years. You think you understand variables. But let me test that.
+
+Open a terminal on your Debian 12 VM and type this:
+
+    MYVAR="hello world"
+    echo $MYVAR
+    echo "$MYVAR"
+
+Both look the same, right? Now try this:
+
+    for word in $MYVAR; do echo "Word: $word"; done
+    for word in "$MYVAR"; do echo "Word: $word"; done
+
+See the difference now? Without quotes, Bash performs word splitting. That string
+"hello world" becomes TWO separate tokens. With quotes, it's preserved as one unit.
+This is called the IFS — Internal Field Separator — and it's the silent killer
+of a huge percentage of production scripts.
+
+On Debian, the default IFS is whitespace: space, tab, newline. So any time you
+leave a variable unquoted, Bash is potentially splitting it right there. And if
+you're iterating over, say, Docker container names or Debian package names that
+have spaces or unusual characters... you already see where this is going.
+
+Rule number one, and I'll say this slowly: ALWAYS QUOTE YOUR VARIABLES UNLESS
+YOU HAVE AN EXPLICIT REASON NOT TO.
+
+That explicit reason almost never comes up.
+
+
+--- Variable Types and Declarations ---
+
+Bash doesn't enforce types natively, but you can declare intent. On Debian, you're
+almost always running Bash 5.x (verify with: bash --version), so you have access
+to all modern features.
+
+    declare -i COUNT=0         # Integer — arithmetic ops only
+    declare -r HOSTNAME_FIXED="db01.internal"   # Read-only constant
+    declare -x EXPORT_ME="visible to child processes"  # Same as export
+    declare -l LOWERED="HELLO"  # Forced lowercase — HELLO becomes hello
+    declare -u UPPERED="hello"  # Forced uppercase — hello becomes HELLO
+
+In production Debian scripting, I use declare -r heavily for anything that's a
+path constant — your log directories, config file locations, that sort of thing.
+If something accidentally overwrites a path variable mid-script and you're writing
+to /tmp instead of /var/log, you have a bad night.
+
+Example from real life:
+
+    declare -r LOG_DIR="/var/log/myapp"
+    declare -r DOCKER_SOCKET="/var/run/docker.sock"
+    declare -i RETRY_COUNT=0
+
+That DOCKER_SOCKET constant has saved me twice. Once because a junior admin changed
+the script to use a test socket path and forgot to revert. The declare -r meant
+Bash threw an error instead of silently connecting to the wrong socket.
+
+
+--- Parameter Expansion — The Real Power ---
+
+This is where things get interesting, and this is directly on the LPIC-2 exam.
+Parameter expansion lets you do a lot of work without forking external processes.
+
+The basic forms you must know cold:
+
+    ${VAR}              # Basic expansion — use always, not just when needed
+    ${VAR:-default}     # Use default if VAR is unset or empty
+    ${VAR:=default}     # Set AND use default if VAR is unset or empty
+    ${VAR:?error msg}   # Error and exit if VAR is unset or empty
+    ${VAR:+alternate}   # Use alternate only if VAR IS set and non-empty
+    ${#VAR}             # Length of variable value
+    ${VAR#pattern}      # Remove shortest match from LEFT
+    ${VAR##pattern}     # Remove longest match from LEFT
+    ${VAR%pattern}      # Remove shortest match from RIGHT
+    ${VAR%%pattern}     # Remove longest match from RIGHT
+    ${VAR/old/new}      # Replace first occurrence
+    ${VAR//old/new}     # Replace all occurrences
+
+Let me show you how these look in a Debian/Docker context:
+
+    IMAGE_TAG="registry.internal/myapp:v2.3.1-debian"
+
+    # Strip the registry prefix
+    echo "${IMAGE_TAG#*/}"           # myapp:v2.3.1-debian
+
+    # Get just the tag
+    echo "${IMAGE_TAG##*:}"          # v2.3.1-debian
+
+    # Get everything before the colon
+    echo "${IMAGE_TAG%:*}"           # registry.internal/myapp
+
+    # Replace 'debian' with 'bookworm' in tag
+    echo "${IMAGE_TAG/debian/bookworm}"  # registry.internal/myapp:v2.3.1-bookworm
+
+You are doing all of that without calling sed, cut, or awk. That matters when
+you're inside a tight loop iterating over a hundred container names. Every fork
+costs time. In scripting, forks add up.
+
+Now let's look at ${VAR:?} — this one is your best friend with set -euo pipefail:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    CONTAINER_NAME="${1:?Usage: $0 <container-name>}"
+    LOG_LEVEL="${LOG_LEVEL:-info}"
+
+    echo "Starting container: ${CONTAINER_NAME} with log level: ${LOG_LEVEL}"
+
+If someone runs that script without an argument, Bash prints your error message and
+exits immediately. Clean, professional, no mysterious "unbound variable" errors
+that make no sense to the person running the script at 3AM.
+
+
+================================================================================
+PART TWO: QUOTING — THE RULES THAT NEVER CHANGE
+================================================================================
+
+I want to spend real time here because quoting is where even experienced admins
+make errors. Not every day, but at the worst possible moments.
+
+There are four quoting contexts in Bash:
+
+1. No quotes          — Word splitting and globbing happen. Danger zone.
+2. Double quotes ""   — Preserves spaces, but $ and ` still expand. Usually correct.
+3. Single quotes ''   — Absolutely literal. Nothing expands. Use for regex, patterns.
+4. $'...' syntax      — Interpreted escape sequences (\n, \t, etc.)
+
+Let's demonstrate with something real — Docker commands you'll actually type.
+
+    # This breaks if $CONTAINER has spaces or special chars
+    docker stop $CONTAINER
+
+    # This is safe
+    docker stop "${CONTAINER}"
+
+    # This is a classic mistake — trying to pass multiple args via one variable
+    DOCKER_FLAGS="-d --restart=always"
+    docker run $DOCKER_FLAGS nginx     # This WORKS but for the wrong reason
+    docker run "$DOCKER_FLAGS" nginx   # This BREAKS — treated as one argument
+
+That last pair is the "arrays are not optional" lesson. When you have multiple
+flags or arguments in a variable, you need an array. We'll get there in Part Three.
+
+Single quotes — when do you actually need them?
+
+    # You're writing a grep pattern that has dollar signs
+    grep '$[0-9]' /var/log/myapp/app.log
+
+    # You're passing a literal string to awk
+    awk '{print $1}' /var/log/auth.log
+
+    # You need a JSON value with double quotes for docker inspect
+    docker inspect --format '{{.State.Running}}' mycontainer
+
+That last one — docker inspect with Go template format strings — almost always
+needs single quotes. If you use double quotes, the shell might try to interpret
+those curly braces or dollar signs before Docker ever sees them.
+
+Here's a quoting war story for you.
+
+
+--------------------------------------------------------------------------------
+WAR STORY #1: THE HYPER-V HOST THAT LOST ITS DEBIAN GUESTS
+(Production, 2019, Financial Sector Client)
+--------------------------------------------------------------------------------
+
+We had a Debian Stretch guest — yes, this was before Bookworm, we were mid-upgrade
+cycle — running on a Windows Server 2019 Hyper-V host. Everything was fine for
+six months. Then one morning, the Debian VM lost network entirely after a routine
+kernel update. Host could ping the VM, VM couldn't reach anything.
+
+The issue was hv_netvsc — the Hyper-V synthetic network driver — wasn't loading
+after the new kernel image was installed. The initramfs didn't include it.
+
+Here's what we ran to diagnose:
+
+    # On the Debian guest console (direct Hyper-V console, since SSH was dead)
+    lsmod | grep hv_
+    dmesg | grep -i "hv_\|hyper-v\|netvsc" | tail -30
+    ip link show
+    systemctl status networking
+
+dmesg showed the hv_netvsc module failing to initialize because it wasn't being
+found in the initramfs at boot time. The kernel update had regenerated initramfs
+with a config that excluded some Hyper-V modules.
+
+The fix:
+
+    # Check what's in your current initramfs
+    lsinitramfs /boot/initrd.img-$(uname -r) | grep hv_
+
+    # Add the modules to initramfs config
+    echo -e "hv_vmbus\nhv_storvsc\nhv_netvsc\nhv_utils" >> /etc/initramfs-tools/modules
+
+    # Regenerate
+    update-initramfs -u -k all
+
+    # Reboot
+    systemctl reboot
+
+But here's where quoting enters the story. We had a monitoring script on the host
+that SSHed into the VMs and checked their Hyper-V integration services. The script
+was checking module status like this:
+
+    MODULE_LIST="hv_vmbus hv_storvsc hv_netvsc"
+    ssh ${VM_HOST} "lsmod | grep $MODULE_LIST"
+
+That grep command was expanding MODULE_LIST on the LOCAL machine before SSH
+transmitted it, AND word-splitting was turning it into grep with three separate
+arguments, which grep interpreted as: pattern="hv_vmbus", file="hv_storvsc",
+file="hv_netvsc". None of which existed as files. The monitoring silently showed
+nothing wrong because grep was failing for the wrong reason.
+
+Correct version:
+
+    MODULE_LIST="hv_vmbus|hv_storvsc|hv_netvsc"
+    ssh "${VM_HOST}" "lsmod | grep -E '${MODULE_LIST}'"
+
+The lesson: check your quoting on anything that crosses a boundary — SSH, eval,
+docker exec, sudo. Bugs hide in those transitions.
+
+--------------------------------------------------------------------------------
+
+Now let me show you the full Hyper-V integration services check you should be
+running on every Debian guest. Make this a daily cron or a monitoring check:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    # Hyper-V integration services verification for Debian guests
+    declare -ra HV_MODULES=(hv_vmbus hv_storvsc hv_netvsc hv_utils hv_balloon)
+
+    echo "=== Hyper-V Integration Services Status ==="
+    echo "Kernel: $(uname -r)"
+    echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+
+    for module in "${HV_MODULES[@]}"; do
+        if lsmod | grep -q "^${module}"; then
+            echo "[OK]      ${module} is loaded"
+        else
+            echo "[MISSING] ${module} NOT loaded — check initramfs"
+        fi
+    done
+
+    echo ""
+    echo "=== Time Sync Check ==="
+    # KVP daemon handles time sync
+    systemctl is-active --quiet hv-kvp-daemon && \
+        echo "[OK]      hv-kvp-daemon running" || \
+        echo "[WARNING] hv-kvp-daemon not running — time sync may drift"
+
+    # Check time offset
+    if command -v chronyc &>/dev/null; then
+        chronyc tracking | grep "System time"
+    fi
+
+Save that as /usr/local/bin/check-hyperv-integration and run it after every
+kernel update on your Debian Hyper-V guests. Not optional. Put it in your
+post-update runbook right now.
+
+The hv-kvp-daemon — Key-Value Pair daemon — is what Hyper-V uses for data
+exchange between host and guest, including time synchronization. On Debian,
+install it with:
+
+    apt-get install hyperv-daemons
+
+That package gives you hv-kvp-daemon, hv-vss-daemon (for VSS backup snapshots),
+and hv-fcopy-daemon (file copy support). Verify after install:
+
+    dpkg -l | grep hyperv
+    systemctl status hv-kvp-daemon hv-vss-daemon hv-fcopy-daemon
+
+
+================================================================================
+PART THREE: ARRAYS — STOP USING STRINGS WHEN YOU NEED ARRAYS
+================================================================================
+
+Arrays are where Bash scripting crosses from "functional hack" into
+"production-grade tooling." They're also what separates people who write Bash
+professionally from people who write Bash and hope for the best.
+
+Bash has two types: indexed arrays and associative arrays (hash maps).
+
+--- Indexed Arrays ---
+
+    # Declaration
+    declare -a CONTAINERS=()
+
+    # Initialization
+    CONTAINERS=("nginx-prod" "postgres-prod" "redis-prod" "app-prod")
+
+    # Append
+    CONTAINERS+=("monitoring-prod")
+
+    # Access
+    echo "${CONTAINERS[0]}"         # nginx-prod
+    echo "${CONTAINERS[-1]}"        # monitoring-prod (last element)
+    echo "${CONTAINERS[@]}"         # ALL elements, properly word-split
+    echo "${#CONTAINERS[@]}"        # Count: 5
+    echo "${!CONTAINERS[@]}"        # Indices: 0 1 2 3 4
+
+    # Slice: elements 1 through 3
+    echo "${CONTAINERS[@]:1:3}"     # postgres-prod redis-prod app-prod
+
+THE MOST IMPORTANT SYNTAX: "${arr[@]}" versus "${arr[*]}"
+
+    # "${arr[@]}" — each element is a separate word, ALWAYS USE THIS
+    for container in "${CONTAINERS[@]}"; do
+        docker stop "${container}"
+    done
+
+    # "${arr[*]}" — all elements joined by IFS first character, USE RARELY
+    echo "${CONTAINERS[*]}"   # Produces single string for display only
+
+If a container name ever had a space in it — which yes, terrible practice but
+it happens — "${arr[@]}" handles it correctly. "${arr[*]}" would corrupt it.
+Unquoted $arr or ${arr[*]} would explode it. Always "${arr[@]}". Always.
+
+
+--- Associative Arrays ---
+
+Available in Bash 4.0+. Debian Bookworm ships with Bash 5.2. You have them.
+
+    declare -A CONTAINER_PORTS=()
+    CONTAINER_PORTS["nginx"]="80 443"
+    CONTAINER_PORTS["postgres"]="5432"
+    CONTAINER_PORTS["redis"]="6379"
+    CONTAINER_PORTS["app"]="8080"
+
+    # Access
+    echo "${CONTAINER_PORTS["nginx"]}"    # 80 443
+
+    # Iterate keys
+    for service in "${!CONTAINER_PORTS[@]}"; do
+        echo "Service: ${service}, Port(s): ${CONTAINER_PORTS[$service]}"
+    done
+
+    # Check if key exists
+    if [[ -v CONTAINER_PORTS["nginx"] ]]; then
+        echo "nginx entry exists"
+    fi
+
+Here's a real-world use case — building a Docker network inspection tool:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    declare -A SERVICE_HEALTH=()
+
+    # Collect running containers and their status
+    while IFS= read -r line; do
+        name="${line%%|*}"
+        status="${line##*|}"
+        SERVICE_HEALTH["${name}"]="${status}"
+    done < <(docker ps --format '{{.Names}}|{{.Status}}')
+
+    echo "=== Container Health Report: $(date) ==="
+    for service in $(printf '%s\n' "${!SERVICE_HEALTH[@]}" | sort); do
+        status="${SERVICE_HEALTH[$service]}"
+        if [[ "${status}" == Up* ]]; then
+            echo "[HEALTHY] ${service}: ${status}"
+        else
+            echo "[ALERT]   ${service}: ${status}"
+        fi
+    done
+
+Notice the process substitution: < <(docker ps ...). That's how you feed command
+output into a while loop without spawning a subshell for the loop itself. If you
+used a pipe — docker ps | while read — modifications to SERVICE_HEALTH inside
+the loop would be lost when the subshell exited. Critical difference.
+
+
+--- Building Docker Commands Safely with Arrays ---
+
+This is the practical payoff. Stop doing this:
+
+    # WRONG — don't do this
+    DOCKER_CMD="docker run -d --name myapp -p 8080:80 --memory 512m --cpus 1.0 nginx"
+    $DOCKER_CMD
+
+Do this instead:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    declare -r CONTAINER_NAME="myapp-prod"
+    declare -r IMAGE="nginx:1.25-bookworm"
+    declare -i MEMORY_MB=512
+
+    docker_args=(
+        run
+        --detach
+        --name "${CONTAINER_NAME}"
+        --publish "8080:80"
+        --memory "${MEMORY_MB}m"
+        --memory-swap "${MEMORY_MB}m"   # Disable swap for container
+        --cpus "1.0"
+        --restart "unless-stopped"
+        --log-driver "json-file"
+        --log-opt "max-size=50m"
+        --log-opt "max-file=3"
+        --read-only
+        --tmpfs "/tmp:noexec,nosuid,size=64m"
+        "${IMAGE}"
+    )
+
+    echo "Launching: docker ${docker_args[*]}"
+    docker "${docker_args[@]}"
+
+Every option is a separate array element. No quoting nightmares. You can
+conditionally add elements before the final docker call:
+
+    if [[ "${ENVIRONMENT}" == "production" ]]; then
+        docker_args+=(--network "prod-overlay")
+    else
+        docker_args+=(--network "bridge")
+    fi
+
+    docker "${docker_args[@]}"
+
+Clean. Readable. Safe. That's what production Bash looks like.
+
+
+================================================================================
+PART FOUR: DOCKER ON DEBIAN — THE REAL ENVIRONMENT
+================================================================================
+
+Let me talk about the Docker side of today's topic, because everything we've
+covered about variables and arrays matters doubly when you're scripting against
+Docker on Debian production systems.
+
+First, make sure your Debian 12 system has Docker installed correctly. Don't
+use the version in the Debian repos — it's often outdated. Use Docker's own
+APT repository:
+
+    # Remove any old Docker packages
+    apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+
+    # Install prerequisites
+    apt-get update
+    apt-get install -y ca-certificates curl gnupg
+
+    # Add Docker's official GPG key
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg | \
+        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # Add the repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/debian \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    # Verify
+    docker version
+    systemctl status docker
+
+
+--- The overlay2 Storage Driver ---
+
+On Debian, Docker uses overlay2 as its storage driver and this is the right
+choice. It layers efficiently on top of ext4 or xfs. Here's how to verify:
+
+    docker info | grep -A5 "Storage Driver"
+    docker system df
+
+That last command — docker system df — is one you need to run weekly on any
+Debian Docker host. It shows you:
+
+    TYPE            TOTAL   ACTIVE   SIZE        RECLAIMABLE
+    Images          23      8        14.7GB      9.2GB (62%)
+    Containers      31      12       892MB       444MB (49%)
+    Local Volumes   8       4        2.1GB       800MB (38%)
+    Build Cache     0       0        0B          0B
+
+That output is telling you 9.2GB of image space is reclaimable. On a disk-
+constrained Debian VM under Hyper-V, that's the difference between "fine" and
+"disk full, everything is broken."
+
+Where is all this data on disk?
+
+    ls -lah /var/lib/docker/
+    du -sh /var/lib/docker/overlay2/
+    du -sh /var/lib/docker/containers/
+
+overlay2 is where your layer data lives. containers is where your running
+container filesystems and — here's the critical part — your container LOGS live.
+
+
+--- Docker Logging: The Slow Disaster ---
+
+I need to talk about logs before we go to the horror story, because the horror
+story involves logs.
+
+By default on Debian, Docker uses the json-file log driver. Every line of
+stdout/stderr from every container gets appended to a JSON file here:
+
+    /var/lib/docker/containers/<container-id>/<container-id>-json.log
+
+With no log rotation configured, that file grows without bound. Forever. Until
+your disk is full. And then everything dies.
+
+On a fresh Debian Docker install, set this in /etc/docker/daemon.json BEFORE
+you run your first container:
+
+    {
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+      },
+      "storage-driver": "overlay2"
+    }
+
+Then restart Docker:
+
+    systemctl restart docker
+    docker info | grep -A3 "Logging Driver"
+
+That config gives you at most 150MB of logs per container — three files, 50MB
+each. After that, Docker rotates. You can override per-container, which we
+showed in the array example above with --log-opt.
+
+If you want to see current log file sizes before you've configured rotation:
+
+    find /var/lib/docker/containers/ -name "*-json.log" -exec du -sh {} \; | sort -rh | head -20
+
+
+--------------------------------------------------------------------------------
+WAR STORY #2: THE RUNAWAY CONTAINER THAT ATE PRODUCTION
+(Debian Docker Host, 2022, E-Commerce Client)
+--------------------------------------------------------------------------------
+
+Friday afternoon, 4:45PM. I get a call. An e-commerce Debian Docker host is at
+100% CPU and orders are processing at 1/10th normal speed. Peak weekend traffic
+was starting in 45 minutes.
+
+First thing I did, because I always do this first:
+
+    docker stats --no-stream
+
+That gives you a one-shot snapshot of all container resource usage. I saw this:
+
+    CONTAINER ID   NAME           CPU %     MEM USAGE / LIMIT   MEM %
+    a3f9d2c18b22   order-api      2.1%      312MiB / 2GiB       15%
+    7e4c1b09fa3d   log-shipper    98.7%     1.8GiB / 2GiB       91%
+    9d2b4a7c5e11   nginx-proxy    1.2%      45MiB / 512MiB      8%
+
+log-shipper. A Filebeat container that was supposed to ship logs to Elasticsearch.
+Nobody set a memory limit on it. Nobody set a CPU limit on it. And Elasticsearch
+had been unreachable for 18 hours — the client had migrated their Elastic cluster
+to a new IP and hadn't updated the Filebeat config.
+
+Filebeat was retrying connections, buffering log data in memory, and spinning its
+internal queue logic at 100% CPU trying to flush a backlog that could never drain.
+
+Here's what I ran:
+
+    # First, check its logs to confirm the theory
+    docker logs --tail 100 log-shipper 2>&1 | grep -i "error\|fail\|retry"
+
+    # See how big its log file was
+    CONTAINER_ID="7e4c1b09fa3d"
+    du -sh /var/lib/docker/containers/${CONTAINER_ID}/${CONTAINER_ID}-json.log
+
+The log file was 47GB. 47 gigabytes. The json-file log driver had been running
+unbounded for 8 months. The disk was at 94% capacity. The Filebeat logs themselves
+were eating disk at 200MB per hour because it was logging every retry attempt.
+
+Immediate mitigation:
+
+    # Stop the runaway container
+    docker stop log-shipper
+
+    # CPU came back instantly — check
+    docker stats --no-stream
+
+    # Truncate the massive log file (safe after stop)
+    CONTAINER_ID=$(docker inspect --format '{{.Id}}' log-shipper)
+    truncate -s 0 /var/lib/docker/containers/${CONTAINER_ID}/${CONTAINER_ID}-json.log
+
+    # Check disk
+    df -h /var/lib/docker
+
+    # Now fix the Elasticsearch endpoint in the Filebeat config
+    docker inspect log-shipper   # Find the volume mount for filebeat.yml
+    # Edit the config, fix the host IP
+    # Restart with resource limits this time
+
+    docker run -d \
+        --name log-shipper \
+        --memory 512m \
+        --memory-swap 512m \
+        --cpus 0.5 \
+        --restart unless-stopped \
+        --log-driver json-file \
+        --log-opt max-size=10m \
+        --log-opt max-file=2 \
+        -v /etc/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro \
+        -v /var/log:/var/log:ro \
+        docker.elastic.co/beats/filebeat:8.9.0
+
+Orders were back to normal speed in 12 minutes from the time of my first SSH
+connection. But we burned 18 hours of degraded performance because nobody put
+resource limits on that container.
+
+The lesson is not subtle: every container that runs in production gets --memory,
+--memory-swap, and --cpus. Every single one. No exceptions. You are not doing
+anyone a favor by letting a container use "as much as it needs" because when it
+needs everything, everything else gets nothing.
+
+--------------------------------------------------------------------------------
+
+
+--- Docker Networking: bridge, host, macvlan ---
+
+Let me give you the practical rundown. Default bridge networking is what you get
+when you don't specify --network. Docker creates a virtual bridge (docker0) and
+each container gets an IP on a 172.17.0.0/16 network by default.
+
+Inspect your bridge setup:
+
+    docker network ls
+    docker network inspect bridge
+    ip addr show docker0
+    brctl show docker0
+
+For production, you almost never use the default bridge. You create named networks:
+
+    # Create an isolated network for your app stack
+    docker network create \
+        --driver bridge \
+        --subnet 192.168.100.0/24 \
+        --gateway 192.168.100.1 \
+        --opt com.docker.network.bridge.name=br-prod \
+        prod-network
+
+    docker network inspect prod-network
+
+Host networking — use it when you need maximum performance and don't care about
+network isolation. The container shares the host's network namespace entirely:
+
+    docker run -d --network host nginx
+
+The container literally IS on your Debian host's network. Port 80 IS port 80
+on the Hyper-V guest. No NAT overhead. Use this for high-throughput services
+where you've already handled isolation at the hypervisor level.
+
+macvlan — this is for when you need containers to appear as real devices on your
+physical (or Hyper-V virtual) network, each with their own MAC address and IP:
+
+    # First: on Hyper-V, you MUST enable MAC spoofing on the VM's virtual NIC
+    # Do this in Hyper-V Manager or PowerShell on the host BEFORE this works
+    # Set-VMNetworkAdapter -VMName "Debian-Prod" -MacAddressSpoofing On
+
+    docker network create \
+        --driver macvlan \
+        --subnet 10.0.1.0/24 \
+        --gateway 10.0.1.1 \
+        --ip-range 10.0.1.128/25 \
+        -o parent=eth0 \
+        macvlan-prod
+
+With macvlan on Hyper-V, if you forget to enable MAC spoofing, containers will
+get IPs but traffic will be silently dropped by the hypervisor. The container
+thinks it's sending packets. They vanish. This took me a full hour to debug the
+first time. Don't let it take you an hour.
+
+
+================================================================================
+*** INSTRUCTOR WARNING — READ THIS CAREFULLY ***
+================================================================================
+
+Never run this command without checking for volumes first:
+
+    docker rm -f $(docker ps -aq)
+
+I see people do this as "cleanup" without thinking. That command force-removes
+EVERY container, including any containers whose data you actually need. Named
+volumes are safe — they survive container removal. But BIND MOUNTS that are
+your only copy of data? Gone. Anonymous volumes that were auto-created? Gone
+unless you're lucky.
+
+The right cleanup workflow is:
+
+    # Step 1: See what you have
+    docker ps -a
+    docker volume ls
+    docker system df
+
+    # Step 2: Stop gracefully before removing
+    docker stop $(docker ps -q)
+
+    # Step 3: Remove only stopped containers, check first
+    docker ps -a --filter "status=exited" --format "table {{.Names}}\t{{.Status}}"
+
+    # Step 4: If that list looks right, remove them
+    docker container prune
+
+    # Step 5: If you want to do a full cleanup of unused images too
+    docker system prune --volumes
+
+    # And if you REALLY mean "nuke everything" — say so explicitly
+    docker system prune -a --volumes
+
+The difference between docker system prune and docker system prune -a is that -a
+also removes images that have no running containers, not just dangling images.
+On a Debian CI/CD host that has been running for months, "prune -a" might reclaim
+40GB. But don't do it on a host that needs to start those containers again fast,
+because you'll be re-pulling everything.
+
+Also: do NOT disable AppArmor on Debian to "fix" Docker permission issues.
+AppArmor is your container security boundary on Debian — it restricts what
+system calls containers can make. If a container is hitting AppArmor denials:
+
+    dmesg | grep apparmor | tail -20
+    journalctl -xe | grep apparmor
+
+Diagnose and create a custom profile. Don't set apparmor=unconfined on everything
+because that's giving every container root-equivalent kernel access. Real prod
+sysadmins tune AppArmor. They don't disable it.
+
+================================================================================
+
+
+================================================================================
+HANDS-ON LABS
+================================================================================
+
+You've got the theory. Now let's verify you can actually execute. These labs
+take roughly 45 minutes total. Work through them on your Debian 12 Hyper-V VM.
+
+
+------------------------------------------------------------------------
+LAB 1: Hyper-V Integration Services Verification & Time Sync
+------------------------------------------------------------------------
+
+Objective: Verify Hyper-V drivers and daemons are working correctly on
+your Debian 12 Bookworm guest.
+
+Step 1: Check kernel version and Hyper-V modules
+
+    uname -r
+    lsmod | grep hv_
+    dmesg | grep -i "hyper-v\|hv_" | head -20
+
+Expected: You should see hv_vmbus, hv_storvsc, hv_netvsc at minimum.
+
+Step 2: Verify and install Hyper-V daemons
+
+    dpkg -l | grep -i hyperv
+    apt-get install -y hyperv-daemons
+    systemctl enable --now hv-kvp-daemon hv-vss-daemon hv-fcopy-daemon
+    systemctl status hv-kvp-daemon
+
+Step 3: Check time sync
+
+    timedatectl status
+    apt-get install -y chrony
+    systemctl enable --now chrony
+    chronyc sources -v
+    chronyc tracking
+
+Step 4: Run the integration check script we wrote in the lecture.
+Save it, chmod +x it, run it, verify green output for all modules.
+
+Deliverable: Screenshot or output showing all hv_ modules loaded and
+hv-kvp-daemon active.
+
+
+------------------------------------------------------------------------
+LAB 2: Docker Install + Variable-Safe nginx Container + Log Verification
+------------------------------------------------------------------------
+
+Objective: Install Docker on Debian 12, configure logging limits,
+run an nginx container using the array-based docker_args pattern,
+and verify logs are rotating correctly.
+
+Step 1: Install Docker (use the commands from the lecture).
+Verify with: docker version && docker info
+
+Step 2: Configure /etc/docker/daemon.json with log limits as shown.
+Restart Docker. Verify log driver with: docker info | grep "Logging Driver"
+
+Step 3: Create and run the nginx container using this script.
+Save as /usr/local/bin/launch-nginx-lab.sh and make it executable.
+
+    #!/bin/bash
+    set -euo pipefail
+
+    declare -r CONTAINER_NAME="nginx-lab"
+    declare -r IMAGE="nginx:stable-bookworm"
+    declare -i HOST_PORT=8080
+
+    # Remove any existing container with this name
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        echo "Removing existing container: ${CONTAINER_NAME}"
+        docker rm -f "${CONTAINER_NAME}"
+    fi
+
+    docker_args=(
+        run
+        --detach
+        --name "${CONTAINER_NAME}"
+        --publish "${HOST_PORT}:80"
+        --memory "128m"
+        --memory-swap "128m"
+        --cpus "0.25"
+        --restart "unless-stopped"
+        --log-driver "json-file"
+        --log-opt "max-size=10m"
+        --log-opt "max-file=2"
+        "${IMAGE}"
+    )
+
+    docker "${docker_args[@]}"
+
+    echo "Container launched. Testing..."
+    sleep 2
+    curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" http://localhost:${HOST_PORT}/
+
+Step 4: Verify container health
+
+    docker ps
+    docker stats --no-stream nginx-lab
+    docker logs nginx-lab
+    docker inspect nginx-lab | python3 -m json.tool | grep -A5 "LogConfig"
+
+Step 5: Generate some log traffic and check log file size
+
+    for i in {1..50}; do curl -s http://localhost:8080/ > /dev/null; done
+    CONTAINER_ID=$(docker inspect --format '{{.Id}}' nginx-lab)
+    du -sh /var/lib/docker/containers/${CONTAINER_ID}/${CONTAINER_ID}-json.log
+    ls -lh /var/lib/docker/containers/${CONTAINER_ID}/
+
+Deliverable: Show docker stats output and the log file path/size.
+
+
+------------------------------------------------------------------------
+LAB 3: Array-Powered Docker Inspection Script
+------------------------------------------------------------------------
+
+Objective: Write a Bash script using arrays and associative arrays to
+inspect multiple containers and produce a formatted status report.
+
+Create /usr/local/bin/container-report.sh:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    declare -A container_status=()
+    declare -A container_memory=()
+    declare -A container_cpu=()
+
+    # Collect stats (no-stream for one-shot)
+    while IFS= read -r line; do
+        name=$(echo "${line}" | awk '{print $1}')
+        cpu=$(echo "${line}" | awk '{print $3}')
+        mem=$(echo "${line}" | awk '{print $4}')
+        [[ -z "${name}" || "${name}" == "NAME" ]] && continue
+        container_cpu["${name}"]="${cpu}"
+        container_memory["${name}"]="${mem}"
+    done < <(docker stats --no-stream --format "table {{.Name}}\t{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null)
+
+    # Collect running status
+    while IFS='|' read -r name status; do
+        [[ -z "${name}" ]] && continue
+        container_status["${name}"]="${status}"
+    done < <(docker ps -a --format '{{.Names}}|{{.Status}}')
+
+    echo "============================================"
+    echo "  CONTAINER STATUS REPORT"
+    echo "  Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "  Host: $(hostname)"
+    echo "============================================"
+    printf "%-25s %-20s %-10s %-15s\n" "CONTAINER" "STATUS" "CPU%" "MEMORY"
+    echo "------------------------------------------------------------"
+
+    for name in $(printf '%s\n' "${!container_status[@]}" | sort); do
+        status="${container_status[$name]:-unknown}"
+        cpu="${container_cpu[$name]:--}"
+        mem="${container_memory[$name]:--}"
+        printf "%-25s %-20s %-10s %-15s\n" "${name}" "${status:0:20}" "${cpu}" "${mem}"
+    done
+
+    echo ""
+    echo "Disk Usage:"
+    docker system df
+
+Run it, review the output. Add another container and run it again to see the
+output update. This is a foundation for a real monitoring script.
+
+Deliverable: Script runs without errors, shows all containers with status.
+
+
+================================================================================
+CLOSING PEP TALK
+================================================================================
+
+Look — what you've learned today isn't sexy. Variables and quoting aren't going
+to make anyone gasp at a conference. But I promise you this: in five years of
+running Debian infrastructure, the people who will still be employed and not
+burned out are the ones who write Bash like they actually mean it.
+
+Mastering Debian variable expansion, writing Docker commands as arrays, and
+understanding how Hyper-V integration really works at the kernel level — that
+combination makes you the person the rest of your team calls when something breaks
+at 2AM. Not because you're the most available, but because you're the one who
+actually fixed it last time.
+
+Every hour you spend understanding the right way to do things in Bash saves you
+ten hours of debugging scripts that almost work. "Almost works" is a category of
+failure that costs more than "broken" — because you know something is wrong but
+you can't easily find where.
+
+Carry these tools into your LPIC-2 exam and into every production system you
+manage. You're not just learning commands. You're building the instincts that keep
+services running when everything else is on fire.
+
+Now go run those labs.
+
+
+================================================================================
+QUICK REFERENCE CARD — DEBIAN + HYPER-V + DOCKER
+================================================================================
+
+--- DEBIAN APT ESSENTIALS ---
+
+    apt-get update && apt-get upgrade -y          # Full system update
+    apt-get dist-upgrade -y                       # Also handles kernel upgrades
+    dpkg -l | grep <package>                      # Check if installed
+    dpkg -L <package>                             # List files from package
+    apt-cache policy <package>                    # Show versions available
+    apt-get install --no-install-recommends <pkg> # Minimal install
+    apt-get autoremove --purge                    # Clean orphaned packages
+    journalctl -xe                                # System log with context
+    journalctl -u docker.service -f               # Follow Docker service log
+
+--- BASH VARIABLE QUICK REFERENCE ---
+
+    ${VAR:-default}      # Default if unset/empty
+    ${VAR:=default}      # Set default if unset/empty
+    ${VAR:?error}        # Error and exit if unset/empty
+    ${#VAR}              # String length
+    ${VAR#pattern}       # Strip from left (shortest)
+    ${VAR##pattern}      # Strip from left (longest)
+    ${VAR%pattern}       # Strip from right (shortest)
+    ${VAR%%pattern}      # Strip from right (longest)
+    ${VAR/old/new}       # Replace first match
+    ${VAR//old/new}      # Replace all matches
+    declare -r VAR       # Read-only
+    declare -i VAR       # Integer
+    declare -a ARR       # Indexed array
+    declare -A MAP       # Associative array
+    "${ARR[@]}"          # All elements, word-safe (ALWAYS use this)
+    "${!ARR[@]}"         # All indices/keys
+    "${#ARR[@]}"         # Array length
+
+--- HYPER-V DIAGNOSTICS ON DEBIAN GUEST ---
+
+    lsmod | grep hv_                              # Check Hyper-V modules
+    dmesg | grep -i "hyper-v\|hv_\|netvsc"       # Hyper-V kernel messages
+    systemctl status hv-kvp-daemon                # KVP / time sync daemon
+    systemctl status hv-vss-daemon                # VSS backup daemon
+    lsinitramfs /boot/initrd.img-$(uname -r) | grep hv_   # initramfs check
+    update-initramfs -u -k all                    # Regenerate initramfs
+    timedatectl status                            # Time sync status
+    chronyc tracking                              # NTP offset
+    apt-get install -y hyperv-daemons             # Install all Hyper-V daemons
+
+--- DOCKER DAILY OPERATIONS ---
+
+    docker stats --no-stream                      # One-shot resource snapshot
+    docker system df                              # Disk usage summary
+    docker system prune                           # Remove unused (safe)
+    docker system prune -a --volumes              # Remove ALL unused (careful)
+    docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    docker logs --tail 100 -f <name>              # Follow container logs
+    docker inspect <name> | python3 -m json.tool  # Full container config
+    docker inspect --format '{{.State.Running}}' <name>   # Quick status
+    docker inspect --format '{{.Id}}' <name>      # Get full container ID
+    docker exec -it <name> bash                   # Shell into container
+    docker network inspect bridge                 # Bridge network details
+    docker volume ls && docker volume inspect <v> # Volume details
+
+    # Log file location (replace with actual container ID)
+    /var/lib/docker/containers/<ID>/<ID>-json.log
+
+    # Find large log files
+    find /var/lib/docker/containers/ -name "*-json.log" \
+        -exec du -sh {} \; | sort -rh | head -10
+
+--- PRODUCTION CONTAINER LAUNCH TEMPLATE ---
+
+    docker run \
+        --detach \
+        --name "<service-name>" \
+        --memory "512m" \
+        --memory-swap "512m" \
+        --cpus "1.0" \
+        --restart "unless-stopped" \
+        --log-driver "json-file" \
+        --log-opt "max-size=50m" \
+        --log-opt "max-file=3" \
+        --network "<named-network>" \
+        "<image>:<tag>"
+
+--- /etc/docker/daemon.json PRODUCTION BASELINE ---
+
+    {
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+      },
+      "storage-driver": "overlay2",
+      "live-restore": true,
+      "userland-proxy": false
+    }
+
+================================================================================
+END OF SESSION
+================================================================================
+Next Session Preview: Functions, subshells, process substitution,
+and signal handling — with a focus on Docker entrypoint scripting
+and graceful container shutdown (SIGTERM, PID 1 problem).
+================================================================================

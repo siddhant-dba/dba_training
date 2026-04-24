@@ -1,0 +1,1105 @@
+================================================================================
+  PURE LINUX FOR DBA — 3-HOUR DEEP WORKSHOP
+  Topic: Conditionals ([[ ]], test operators: -z / -n / -f / -d / -eq)
+  Audience: Senior DBA / SRE — PostgreSQL & MS SQL Server on Linux
+  Prerequisite sessions: Script structure (shebang, set -euo pipefail),
+                         Variables, quoting, arrays
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 1 — WARM INTRO & REAL-LIFE HOOK  (~10 minutes)
+────────────────────────────────────────────────────────────────────────────────
+
+Alright, settle in. Before I even open a terminal, I want to tell you about a
+night I'd rather forget.
+
+It was 2:17 AM. PagerDuty fires. Our PostgreSQL primary — 4 TB of OLTP data —
+is throwing "could not write to file" errors and backends are piling up. The
+on-call junior DBA runs our backup script to verify the last clean backup
+before we start any recovery. The script finishes in two seconds with exit
+code 0. "Backup looks good," he says.
+
+I look at the script. Here's roughly what it had:
+
+    BACKUP_DIR="/mnt/pgbackup"
+    echo "Backup dir: $BACKUP_DIR"
+    ls $BACKUP_DIR
+    echo "Backup complete check done."
+
+No conditionals. No checks. It just listed the directory and exited zero.
+The directory existed — but it was EMPTY because the previous backup job had
+failed silently and nobody noticed. We had zero valid backups.
+
+We recovered, eventually, from a replica. But we lost 22 minutes of
+transactions and had a very uncomfortable conversation with the CTO the next
+morning.
+
+The fix was dead simple: CHECK. YOUR. CONDITIONS.
+
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        echo "ERROR: Backup directory does not exist." >&2
+        exit 1
+    fi
+
+    if [[ -z "$(ls -A $BACKUP_DIR)" ]]; then
+        echo "ERROR: Backup directory is empty." >&2
+        exit 1
+    fi
+
+Two conditionals. That's it. That's what would have saved us.
+
+Today we are going DEEP on conditionals in Bash. Not toy examples — real DBA
+conditionals that check backup paths, validate config files, guard sysctl
+changes, test database connectivity, and make your scripts production-grade.
+
+We've already covered script structure with set -euo pipefail, variables,
+quoting, and arrays. Today those building blocks get a brain.
+
+Let's go.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 2 — CORE LINUX CONCEPT: CONDITIONALS IN BASH
+────────────────────────────────────────────────────────────────────────────────
+
+2.1  The Two Worlds of Testing in Bash
+───────────────────────────────────────
+
+You have two main tools for testing conditions in Bash:
+
+  1. test  or  [ ]    — POSIX standard, works in sh, dash, bash
+  2. [[ ]]            — Bash built-in, more powerful, safer with strings
+
+As a DBA writing scripts for specific known environments (RHEL, Ubuntu, Debian
+running bash), you should be using [[ ]] almost exclusively. Here's why:
+
+  # With [ ], this can break if $VAR is empty or has spaces:
+  if [ $VAR = "postgres" ]; then ...
+
+  # With [[ ]], this is safe:
+  if [[ $VAR == "postgres" ]]; then ...
+
+[[ ]] does NOT word-split or pathname-expand the variables. This matters when
+you're dealing with paths like "/var/lib/postgresql/14/main" — spaces in paths
+won't blow up your condition.
+
+Rule of thumb: Use [[ ]] in every Bash script. Reserve [ ] only when you
+must write POSIX sh.
+
+
+2.2  Anatomy of an if/elif/else Block
+───────────────────────────────────────
+
+    if [[ CONDITION ]]; then
+        # runs if CONDITION is true (exit 0)
+    elif [[ OTHER_CONDITION ]]; then
+        # runs if CONDITION was false and OTHER_CONDITION is true
+    else
+        # runs if nothing above was true
+    fi
+
+The exit code of the command inside [[ ]] determines truth:
+  - Exit 0  = true
+  - Non-zero = false
+
+This means you can test ANY command, not just [[ ]]:
+
+    if pg_isready -h localhost -p 5432 -q; then
+        echo "PostgreSQL is accepting connections."
+    else
+        echo "PostgreSQL is DOWN." >&2
+        exit 1
+    fi
+
+    if systemctl is-active --quiet postgresql; then
+        echo "Service is running."
+    fi
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 3 — THE TEST OPERATORS YOU WILL LIVE IN
+────────────────────────────────────────────────────────────────────────────────
+
+3.1  File & Directory Test Operators
+──────────────────────────────────────
+
+These are the ones a DBA reaches for every single day.
+
+  Operator   Meaning
+  ──────────────────────────────────────────────────────────
+  -f FILE    True if FILE exists AND is a regular file
+  -d DIR     True if DIR exists AND is a directory
+  -e PATH    True if PATH exists (file, dir, symlink, device)
+  -r FILE    True if FILE exists and is readable
+  -w FILE    True if FILE exists and is writable
+  -x FILE    True if FILE exists and is executable
+  -s FILE    True if FILE exists and has size > 0 (non-empty)
+  -L FILE    True if FILE exists and is a symbolic link
+  ──────────────────────────────────────────────────────────
+
+Let's verify these against actual DBA paths:
+
+    # Check if PostgreSQL config exists
+    PG_CONF="/etc/postgresql/14/main/postgresql.conf"
+    if [[ -f "$PG_CONF" ]]; then
+        echo "Found config: $PG_CONF"
+    else
+        echo "ERROR: PostgreSQL config not found at $PG_CONF" >&2
+        exit 1
+    fi
+
+    # Check if data directory exists
+    PG_DATA="/var/lib/postgresql/14/main"
+    if [[ -d "$PG_DATA" ]]; then
+        echo "Data directory exists."
+    fi
+
+    # Check if WAL archive directory exists and is writable
+    WAL_ARCHIVE="/mnt/wal_archive"
+    if [[ ! -d "$WAL_ARCHIVE" ]]; then
+        echo "ERROR: WAL archive directory missing." >&2
+        exit 1
+    fi
+    if [[ ! -w "$WAL_ARCHIVE" ]]; then
+        echo "ERROR: WAL archive directory not writable by $(whoami)." >&2
+        exit 1
+    fi
+
+    # Check SQL Server conf file
+    MSSQL_CONF="/var/opt/mssql/mssql.conf"
+    if [[ -f "$MSSQL_CONF" && -r "$MSSQL_CONF" ]]; then
+        echo "mssql.conf is readable."
+    fi
+
+Notice the && inside [[ ]] on that last one. You can combine conditions
+inside [[ ]] with && (AND) and || (OR).
+
+
+3.2  String Test Operators: -z and -n
+───────────────────────────────────────
+
+These are the most misunderstood operators by DBAs writing their first scripts.
+
+  Operator   Meaning
+  ──────────────────────────────────────────────────────────
+  -z STRING  True if STRING is ZERO length (empty)
+  -n STRING  True if STRING is NON-zero length (not empty)
+  ──────────────────────────────────────────────────────────
+
+Think of it this way:
+  -z = "is this Zero?"
+  -n = "is this Non-empty?"
+
+Real DBA usage:
+
+    # Guard against unset or empty environment variables
+    DB_HOST="${DB_HOST:-}"
+    if [[ -z "$DB_HOST" ]]; then
+        echo "ERROR: DB_HOST is not set." >&2
+        exit 1
+    fi
+
+    # Check if backup actually produced output
+    BACKUP_FILE="/mnt/backup/db_$(date +%F).pgdump"
+    pg_dump -Fc -d mydb -f "$BACKUP_FILE"
+
+    if [[ ! -s "$BACKUP_FILE" ]]; then
+        echo "ERROR: Backup file is empty or missing." >&2
+        exit 1
+    fi
+
+    # Check if a variable was passed in as argument
+    PG_VERSION="${1:-}"
+    if [[ -z "$PG_VERSION" ]]; then
+        echo "Usage: $0 <pg_version>"
+        exit 1
+    fi
+
+    # Check if pg_isready returned any output (useful for health checks)
+    PG_STATUS=$(pg_isready -h localhost 2>&1)
+    if [[ -n "$PG_STATUS" ]]; then
+        echo "pg_isready says: $PG_STATUS"
+    fi
+
+One common TRAP: People forget to quote variables inside [[ ]] when using
+-z and -n. While [[ ]] is safer than [ ], you should still quote:
+
+    # Both work inside [[ ]], but always quote for clarity and consistency
+    if [[ -z "$VAR" ]]; then   # CORRECT — always do this
+    if [[ -z $VAR ]]; then     # Works inside [[ ]] but bad habit
+
+
+3.3  Integer Comparison Operators
+───────────────────────────────────
+
+For comparing numbers, Bash gives you these arithmetic operators:
+
+  Operator   Meaning
+  ──────────────────────────────────────────────────────────
+  -eq        Equal to
+  -ne        Not equal to
+  -lt        Less than
+  -le        Less than or equal to
+  -gt        Greater than
+  -ge        Greater than or equal to
+  ──────────────────────────────────────────────────────────
+
+DO NOT use == for integers in [[ ]] if the integer might be stored as a
+string — use -eq. For pure arithmetic comparisons, (( )) is even cleaner.
+
+    # Check how many days old a backup file is
+    BACKUP_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y /mnt/backup/latest.pgdump) ) / 86400 ))
+
+    if [[ $BACKUP_AGE_DAYS -gt 1 ]]; then
+        echo "WARNING: Backup is $BACKUP_AGE_DAYS day(s) old!" >&2
+    fi
+
+    # Check active PostgreSQL connections
+    PG_CONN_COUNT=$(psql -U postgres -tAc \
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active';")
+
+    MAX_CONN=100
+    if [[ $PG_CONN_COUNT -ge $MAX_CONN ]]; then
+        echo "ALERT: Active connections ($PG_CONN_COUNT) at or above threshold ($MAX_CONN)." >&2
+    fi
+
+    # Check disk usage percentage
+    DISK_USAGE=$(df /var/lib/postgresql | awk 'NR==2 {print $5}' | tr -d '%')
+    if [[ $DISK_USAGE -ge 85 ]]; then
+        echo "CRITICAL: Disk at ${DISK_USAGE}% on PostgreSQL data volume." >&2
+        exit 1
+    fi
+
+    # Check free memory in MB for a pre-flight check
+    FREE_MEM_MB=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
+    MIN_MEM_MB=2048
+    if [[ $FREE_MEM_MB -lt $MIN_MEM_MB ]]; then
+        echo "ERROR: Not enough free memory. Have ${FREE_MEM_MB}MB, need ${MIN_MEM_MB}MB." >&2
+        exit 1
+    fi
+
+
+3.4  The Negation Operator: !
+───────────────────────────────
+
+Put ! inside [[ ]] to negate:
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then   # file does NOT exist
+    if [[ ! -d "$BACKUP_DIR" ]]; then    # directory does NOT exist
+    if [[ ! -z "$VAR" ]]; then           # same as -n, var is NOT empty
+    if [[ ! -w "$LOG_FILE" ]]; then      # NOT writable
+
+The "not" pattern is extremely common in DBA scripts for guard clauses —
+you check the failure condition first and exit early.
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ARCHIVE_DIR="${1:-}"
+
+    [[ -z "$ARCHIVE_DIR" ]]   && { echo "ERROR: No archive dir specified." >&2; exit 1; }
+    [[ ! -d "$ARCHIVE_DIR" ]] && { echo "ERROR: Directory not found: $ARCHIVE_DIR" >&2; exit 1; }
+    [[ ! -w "$ARCHIVE_DIR" ]] && { echo "ERROR: Directory not writable." >&2; exit 1; }
+
+    echo "Archive directory OK: $ARCHIVE_DIR"
+
+That pattern with && { ...; exit 1; } is a compact one-liner guard clause.
+You'll see it all over production DBA scripts. It's equivalent to:
+
+    if [[ ! -d "$ARCHIVE_DIR" ]]; then
+        echo "ERROR: Directory not found." >&2
+        exit 1
+    fi
+
+Both are valid. Use the full if/fi form when the block has multiple lines.
+Use the && { } one-liner for simple single-exit guards at the top of scripts.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 4 — REAL DBA TROUBLESHOOTING SCENARIO (WAR STORY)
+────────────────────────────────────────────────────────────────────────────────
+
+Here's another one from the trenches, and this one involves SQL Server on Linux.
+
+We had a RHEL 7 box running SQL Server 2019. Every Friday at 2 AM, a cron job
+ran transaction log backups for all user databases. The job had been running
+for eight months without issue.
+
+Then one Friday: the job ran, exited 0, but when the DBA checked the backup
+target directory on Monday, 11 of 14 databases had no new backups. The other
+three did.
+
+The backup script was doing this:
+
+    DB_LIST=$(sqlcmd -S localhost -U sa -P "$SA_PASS" -Q \
+        "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE database_id > 4" \
+        -h -1 -W)
+
+    for DB in $DB_LIST; do
+        BACKUP_FILE="/mnt/sqlbackup/${DB}_$(date +%F).bak"
+        sqlcmd -S localhost -U sa -P "$SA_PASS" -Q \
+            "BACKUP LOG [$DB] TO DISK='$BACKUP_FILE'"
+        echo "Backed up: $DB"
+    done
+
+Can you spot the problem? No conditional check after sqlcmd. The script
+echoed "Backed up: DB_NAME" whether sqlcmd succeeded or not. The 11 databases
+that failed had a permissions issue on the target path — sqlcmd threw an error
+to stderr, but the script kept going and exited 0.
+
+The fix:
+
+    for DB in $DB_LIST; do
+        BACKUP_FILE="/mnt/sqlbackup/${DB}_$(date +%F).bak"
+
+        if sqlcmd -S localhost -U sa -P "$SA_PASS" -Q \
+            "BACKUP LOG [$DB] TO DISK='$BACKUP_FILE'" >> /var/log/sql_backup.log 2>&1; then
+
+            if [[ ! -s "$BACKUP_FILE" ]]; then
+                echo "ERROR: Backup file empty for $DB" >&2
+                FAIL_COUNT=$(( FAIL_COUNT + 1 ))
+            else
+                echo "OK: $DB backed up to $BACKUP_FILE"
+            fi
+        else
+            echo "ERROR: sqlcmd failed for database $DB" >&2
+            FAIL_COUNT=$(( FAIL_COUNT + 1 ))
+        fi
+    done
+
+    if [[ $FAIL_COUNT -gt 0 ]]; then
+        echo "SUMMARY: $FAIL_COUNT database(s) failed backup." >&2
+        exit 1
+    fi
+
+Now the script:
+  1. Checks if sqlcmd itself succeeded (command exit code)
+  2. Checks if the backup file actually has content (-s)
+  3. Counts failures and exits non-zero so cron/monitoring catches it
+
+Three conditionals. Eight months of silent failure, ended.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 5 — BUILDING A COMPLETE DBA HEALTH-CHECK SCRIPT
+────────────────────────────────────────────────────────────────────────────────
+
+Let's build something you can actually use. A pre-flight health check script
+that a DBA or SRE runs before a planned maintenance window.
+
+    #!/usr/bin/env bash
+    # pg_preflight_check.sh — PostgreSQL pre-maintenance health check
+    # Usage: ./pg_preflight_check.sh
+    # Requires: psql in PATH, PostgreSQL running, correct pg_hba.conf
+
+    set -euo pipefail
+
+    # ── Configuration ─────────────────────────────────────────────────
+    PG_HOST="${PG_HOST:-localhost}"
+    PG_PORT="${PG_PORT:-5432}"
+    PG_USER="${PG_USER:-postgres}"
+    PG_DATA="${PG_DATA:-/var/lib/postgresql/14/main}"
+    PG_CONF="${PG_DATA}/postgresql.conf"
+    WAL_DIR="${PG_DATA}/pg_wal"
+    LOG_FILE="/var/log/pg_preflight_$(date +%F_%H%M%S).log"
+    FAIL=0
+
+    # ── Helper Functions ───────────────────────────────────────────────
+    log()  { echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"; }
+    fail() { log "FAIL: $*" >&2; FAIL=$(( FAIL + 1 )); }
+    ok()   { log "OK:   $*"; }
+
+    log "=== PostgreSQL Pre-Maintenance Check ==="
+    log "Host: $PG_HOST  Port: $PG_PORT  User: $PG_USER"
+
+    # ── 1. Check data directory ────────────────────────────────────────
+    if [[ ! -d "$PG_DATA" ]]; then
+        fail "Data directory not found: $PG_DATA"
+    else
+        ok "Data directory exists: $PG_DATA"
+    fi
+
+    # ── 2. Check config file ───────────────────────────────────────────
+    if [[ ! -f "$PG_CONF" ]]; then
+        fail "postgresql.conf not found: $PG_CONF"
+    elif [[ ! -r "$PG_CONF" ]]; then
+        fail "postgresql.conf not readable: $PG_CONF"
+    else
+        ok "postgresql.conf is readable."
+    fi
+
+    # ── 3. Check WAL directory ─────────────────────────────────────────
+    if [[ ! -d "$WAL_DIR" ]]; then
+        fail "WAL directory missing: $WAL_DIR"
+    else
+        ok "WAL directory exists: $WAL_DIR"
+    fi
+
+    # ── 4. Check disk usage ────────────────────────────────────────────
+    DISK_PCT=$(df "$PG_DATA" | awk 'NR==2 {print $5}' | tr -d '%')
+    if [[ -z "$DISK_PCT" ]]; then
+        fail "Could not determine disk usage for $PG_DATA"
+    elif [[ $DISK_PCT -ge 85 ]]; then
+        fail "Disk usage critical: ${DISK_PCT}% on $PG_DATA"
+    elif [[ $DISK_PCT -ge 70 ]]; then
+        log "WARN: Disk usage elevated: ${DISK_PCT}% on $PG_DATA"
+    else
+        ok "Disk usage: ${DISK_PCT}%"
+    fi
+
+    # ── 5. Check PostgreSQL is accepting connections ───────────────────
+    if ! pg_isready -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -q; then
+        fail "PostgreSQL is NOT accepting connections on $PG_HOST:$PG_PORT"
+    else
+        ok "PostgreSQL is accepting connections."
+    fi
+
+    # ── 6. Check replication lag (if replica) ─────────────────────────
+    IS_STANDBY=$(psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
+        -tAc "SELECT pg_is_in_recovery();" 2>/dev/null || echo "error")
+
+    if [[ "$IS_STANDBY" == "t" ]]; then
+        LAG_BYTES=$(psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
+            -tAc "SELECT COALESCE(pg_wal_lsn_diff(
+                      pg_last_wal_receive_lsn(),
+                      pg_last_wal_replay_lsn()), 0);" 2>/dev/null || echo "-1")
+
+        if [[ -z "$LAG_BYTES" || "$LAG_BYTES" == "-1" ]]; then
+            fail "Could not determine replication lag."
+        elif [[ $LAG_BYTES -gt 104857600 ]]; then   # 100 MB
+            fail "Replication lag too high: ${LAG_BYTES} bytes"
+        else
+            ok "Replication lag: ${LAG_BYTES} bytes"
+        fi
+    else
+        ok "This is the primary (not a standby)."
+    fi
+
+    # ── 7. Check free memory ───────────────────────────────────────────
+    FREE_MB=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
+    if [[ -z "$FREE_MB" ]]; then
+        fail "Could not read /proc/meminfo"
+    elif [[ $FREE_MB -lt 512 ]]; then
+        fail "Available memory critically low: ${FREE_MB}MB"
+    elif [[ $FREE_MB -lt 1024 ]]; then
+        log "WARN: Available memory low: ${FREE_MB}MB"
+    else
+        ok "Available memory: ${FREE_MB}MB"
+    fi
+
+    # ── 8. Check active long-running queries ──────────────────────────
+    LONG_QUERY_COUNT=$(psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
+        -tAc "SELECT count(*) FROM pg_stat_activity
+              WHERE state = 'active'
+              AND query_start < NOW() - INTERVAL '5 minutes'
+              AND query NOT ILIKE '%pg_stat_activity%';" 2>/dev/null || echo "-1")
+
+    if [[ "$LONG_QUERY_COUNT" == "-1" ]]; then
+        fail "Could not query pg_stat_activity."
+    elif [[ $LONG_QUERY_COUNT -gt 0 ]]; then
+        log "WARN: $LONG_QUERY_COUNT query/queries running longer than 5 minutes."
+    else
+        ok "No long-running queries detected."
+    fi
+
+    # ── Final Result ───────────────────────────────────────────────────
+    log "=========================================="
+    if [[ $FAIL -gt 0 ]]; then
+        log "PRE-FLIGHT FAILED: $FAIL check(s) failed. Review log: $LOG_FILE"
+        exit 1
+    else
+        log "PRE-FLIGHT PASSED: All checks OK. Safe to proceed with maintenance."
+        exit 0
+    fi
+
+Walk through what we used there:
+
+  - [[ ! -d ]]       → directory missing guard
+  - [[ ! -f ]]       → file missing guard
+  - [[ ! -r ]]       → file not readable guard
+  - [[ -z ]]         → empty string guard (failed commands, empty output)
+  - [[ $VAR -ge N ]] → integer comparison (disk %, memory)
+  - [[ $VAR -gt 0 ]] → integer comparison (query counts)
+  - if ! command     → testing command failure directly
+  - elif             → chained conditions (warn vs fail thresholds)
+
+This is what production scripts look like. Every path, every number, every
+command output is checked. The script does not assume anything.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 6 — CASE STATEMENTS: WHEN IF/ELIF GETS UGLY
+────────────────────────────────────────────────────────────────────────────────
+
+When you have more than 3-4 elif branches testing the same variable, switch to
+a case statement. It's cleaner and faster to parse visually.
+
+    DB_ENGINE="${1:-}"
+
+    case "$DB_ENGINE" in
+        postgres|postgresql)
+            CONF_DIR="/etc/postgresql"
+            DATA_DIR="/var/lib/postgresql"
+            SERVICE="postgresql"
+            ;;
+        mssql|sqlserver)
+            CONF_DIR="/var/opt/mssql"
+            DATA_DIR="/var/opt/mssql/data"
+            SERVICE="mssql-server"
+            ;;
+        "")
+            echo "ERROR: DB_ENGINE not specified." >&2
+            exit 1
+            ;;
+        *)
+            echo "ERROR: Unknown database engine: $DB_ENGINE" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "Managing: $DB_ENGINE"
+    echo "Config:   $CONF_DIR"
+    echo "Data:     $DATA_DIR"
+    echo "Service:  $SERVICE"
+
+    if ! systemctl is-active --quiet "$SERVICE"; then
+        echo "ERROR: $SERVICE is not running." >&2
+        exit 1
+    fi
+
+The | inside case patterns is OR. postgres|postgresql matches either.
+The *) at the end is your catchall default — always include it.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 7 — INSTRUCTOR WARNING: CRITICAL MISTAKES
+────────────────────────────────────────────────────────────────────────────────
+
+⚠️  WARNING #1 — Never use = or == for integer comparison in [[ ]]
+
+    COUNT=10
+    if [[ $COUNT == "10" ]]; then   # Works, but wrong intent — this is string compare
+    if [[ $COUNT -eq 10 ]]; then    # CORRECT — use -eq for integers
+
+In most cases == works because the string "10" equals the string "10", but
+the moment you have leading zeros or whitespace in a captured value, it breaks.
+
+    COUNT="010"
+    [[ $COUNT == 10 ]]    # FALSE — string "010" != "10"
+    [[ $COUNT -eq 10 ]]   # TRUE  — arithmetic: 010 = 10
+
+Use -eq, -ne, -lt, -gt, -le, -ge for integers. Every time. No exceptions.
+
+
+⚠️  WARNING #2 — set -e and command substitution don't mix the way you think
+
+    set -euo pipefail
+
+    # This script will EXIT if psql returns non-zero:
+    RESULT=$(psql -tAc "SELECT ..." 2>&1)
+
+    # But this might silently not exit if the command is on the right side of =
+    # or used in certain [ ] contexts. Always test explicitly:
+    if ! RESULT=$(psql -tAc "SELECT ..." 2>&1); then
+        echo "psql failed" >&2
+        exit 1
+    fi
+
+With set -e, a failing command in a command substitution assigned to a variable
+DOES cause the script to exit. But when that assignment is on the right side
+of an arithmetic expression or inside certain compound commands, behavior can
+vary by Bash version. Be explicit. Test the command, then use the variable.
+
+
+⚠️  WARNING #3 — [ ] vs [[ ]] with empty strings
+
+    VAR=""
+    if [ $VAR = "" ]; then    # BREAKS — after expansion: [ = "" ] — missing argument!
+    if [ "$VAR" = "" ]; then  # Works with [ ] — must quote
+    if [[ $VAR == "" ]]; then # Works with [[ ]] — no word splitting
+
+In production, someone will eventually pass an empty or space-filled value
+through environment variables. Your script must not crash on that. With [[ ]],
+you're protected even without quoting — but always quote anyway. The discipline
+of quoting is a good habit even inside [[ ]].
+
+
+⚠️  WARNING #4 — Don't test -f on symlinks when you need the real file
+
+    PGCONF="/etc/postgresql/postgresql.conf"
+    if [[ -f "$PGCONF" ]]; then ...
+
+If $PGCONF is a symlink pointing to a non-existent target, -f returns FALSE.
+This is usually what you want — you want the actual file to be accessible.
+But if you specifically need to check "is this a symlink?", use -L:
+
+    if [[ -L "$PGCONF" ]]; then
+        REAL_CONF=$(readlink -f "$PGCONF")
+        echo "Config is a symlink pointing to: $REAL_CONF"
+    fi
+
+On some systems, postgresql.conf is symlinked into /etc/. Always know what
+you're actually testing.
+
+
+⚠️  WARNING #5 — Never trust -n alone for numeric outputs from commands
+
+    CONN_COUNT=$(psql -tAc "SELECT count(*) FROM pg_stat_activity;")
+
+    # If psql fails, CONN_COUNT might be empty, or contain an error message
+    if [[ -n "$CONN_COUNT" ]]; then
+        if [[ $CONN_COUNT -gt 100 ]]; then ...   # Will fail if CONN_COUNT is "ERROR:..."
+    fi
+
+Always validate numeric output before arithmetic comparison:
+
+    if [[ -z "$CONN_COUNT" || ! "$CONN_COUNT" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: Could not get connection count." >&2
+        exit 1
+    fi
+    if [[ $CONN_COUNT -gt 100 ]]; then
+        echo "Too many connections: $CONN_COUNT"
+    fi
+
+The =~ operator inside [[ ]] does regex matching. ^[0-9]+$ means: starts with
+a digit, one or more digits, ends. If the value has anything non-numeric, you
+catch it before the arithmetic comparison blows up.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 8 — HANDS-ON LABS
+────────────────────────────────────────────────────────────────────────────────
+
+LAB 1 — WAL Archive Validation Script
+────────────────────────────────────────
+
+Objective: Write a script that validates the WAL archive directory before
+PostgreSQL archive_command calls it. The script must:
+
+  1. Accept the WAL file path as $1
+  2. Validate $1 is not empty (-z check)
+  3. Validate the WAL file actually exists (-f check)
+  4. Validate the target archive dir exists and is writable (-d, -w)
+  5. Check the WAL file is non-empty (-s)
+  6. Copy the file and verify copy succeeded
+
+Starter skeleton:
+
+    #!/usr/bin/env bash
+    # wal_archive.sh — called by PostgreSQL archive_command
+    # archive_command = '/opt/dba/wal_archive.sh %p'
+    # %p = full path to WAL file being archived
+
+    set -euo pipefail
+
+    WAL_FILE="${1:-}"
+    ARCHIVE_DIR="/mnt/wal_archive"
+    LOG="/var/log/pg_wal_archive.log"
+
+    log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
+
+    # TODO: Check WAL_FILE is not empty
+    # TODO: Check WAL_FILE exists and is a regular file
+    # TODO: Check WAL_FILE has content (non-zero size)
+    # TODO: Check ARCHIVE_DIR exists
+    # TODO: Check ARCHIVE_DIR is writable
+    # TODO: Copy WAL_FILE to ARCHIVE_DIR
+    # TODO: Verify the copy exists and matches source size
+
+    log "Archived: $(basename $WAL_FILE)"
+    exit 0
+
+Complete solution:
+
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    WAL_FILE="${1:-}"
+    ARCHIVE_DIR="/mnt/wal_archive"
+    LOG="/var/log/pg_wal_archive.log"
+
+    log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
+
+    if [[ -z "$WAL_FILE" ]]; then
+        log "ERROR: No WAL file path provided."
+        exit 1
+    fi
+
+    if [[ ! -f "$WAL_FILE" ]]; then
+        log "ERROR: WAL file not found: $WAL_FILE"
+        exit 1
+    fi
+
+    if [[ ! -s "$WAL_FILE" ]]; then
+        log "ERROR: WAL file is empty: $WAL_FILE"
+        exit 1
+    fi
+
+    if [[ ! -d "$ARCHIVE_DIR" ]]; then
+        log "ERROR: Archive directory missing: $ARCHIVE_DIR"
+        exit 1
+    fi
+
+    if [[ ! -w "$ARCHIVE_DIR" ]]; then
+        log "ERROR: Archive directory not writable: $ARCHIVE_DIR"
+        exit 1
+    fi
+
+    DEST="${ARCHIVE_DIR}/$(basename $WAL_FILE)"
+
+    if ! cp "$WAL_FILE" "$DEST"; then
+        log "ERROR: cp failed for $WAL_FILE"
+        exit 1
+    fi
+
+    SRC_SIZE=$(stat -c %s "$WAL_FILE")
+    DST_SIZE=$(stat -c %s "$DEST")
+
+    if [[ $SRC_SIZE -ne $DST_SIZE ]]; then
+        log "ERROR: Size mismatch after copy. src=$SRC_SIZE dst=$DST_SIZE"
+        exit 1
+    fi
+
+    log "OK: Archived $(basename $WAL_FILE) (${SRC_SIZE} bytes)"
+    exit 0
+
+
+LAB 2 — SQL Server Backup Rotation with Conditional Guards
+────────────────────────────────────────────────────────────
+
+Objective: Write a cron-driven script to delete SQL Server transaction log
+backups older than 3 days. The script must:
+
+  1. Verify backup directory exists
+  2. Verify we are running as mssql or root (id check)
+  3. Count files before deletion and log it
+  4. Only delete if count > 0 (don't run find on empty dirs blindly)
+  5. Log results to /var/log/dba_cleanup.log
+
+Cron entry (runs 4x daily at :00):
+    0 */4 * * * /opt/dba/cleanup_sqlbackups.sh >> /var/log/dba_cleanup.log 2>&1
+
+Script:
+
+    #!/usr/bin/env bash
+    # cleanup_sqlbackups.sh — Rotate old SQL Server transaction log backups
+
+    set -euo pipefail
+
+    BACKUP_DIR="/mnt/sqlbackup"
+    RETENTION_DAYS=3
+    LOG="/var/log/dba_cleanup.log"
+    CURRENT_USER=$(id -un)
+
+    log() { echo "[$(date '+%F %T')] [cleanup_sqlbackups] $*" | tee -a "$LOG"; }
+
+    # Guard: Must run as mssql or root
+    if [[ "$CURRENT_USER" != "mssql" && "$CURRENT_USER" != "root" ]]; then
+        log "ERROR: Must run as mssql or root. Running as: $CURRENT_USER"
+        exit 1
+    fi
+
+    # Guard: Backup directory must exist
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        log "ERROR: Backup directory not found: $BACKUP_DIR"
+        exit 1
+    fi
+
+    # Count files eligible for deletion
+    OLD_FILE_COUNT=$(find "$BACKUP_DIR" -name "*.bak" \
+        -mtime +"$RETENTION_DAYS" | wc -l)
+
+    if [[ -z "$OLD_FILE_COUNT" ]]; then
+        log "ERROR: Could not count old backup files."
+        exit 1
+    fi
+
+    if [[ $OLD_FILE_COUNT -eq 0 ]]; then
+        log "INFO: No backup files older than ${RETENTION_DAYS} days. Nothing to clean."
+        exit 0
+    fi
+
+    log "INFO: Found $OLD_FILE_COUNT file(s) older than ${RETENTION_DAYS} days. Deleting..."
+
+    # Delete and capture any errors
+    DELETED=0
+    FAILED=0
+
+    while IFS= read -r -d '' BKFILE; do
+        if rm -f "$BKFILE"; then
+            log "DELETED: $BKFILE"
+            DELETED=$(( DELETED + 1 ))
+        else
+            log "FAILED TO DELETE: $BKFILE"
+            FAILED=$(( FAILED + 1 ))
+        fi
+    done < <(find "$BACKUP_DIR" -name "*.bak" -mtime +"$RETENTION_DAYS" -print0)
+
+    log "SUMMARY: Deleted=$DELETED  Failed=$FAILED"
+
+    if [[ $FAILED -gt 0 ]]; then
+        exit 1
+    fi
+    exit 0
+
+
+LAB 3 — sysctl Conditional Tuning Script for PostgreSQL
+─────────────────────────────────────────────────────────
+
+Objective: Write a script that:
+  1. Checks current vm.swappiness value
+  2. Only changes it if it's above 10
+  3. Checks kernel.shmmax is at least 1 GB, sets it if not
+  4. Validates changes persist in /etc/sysctl.d/99-postgres.conf
+  5. Logs before/after values
+
+    #!/usr/bin/env bash
+    # tune_sysctl_postgres.sh — Apply kernel tuning for PostgreSQL workloads
+    # Must run as root.
+
+    set -euo pipefail
+
+    SYSCTL_CONF="/etc/sysctl.d/99-postgres.conf"
+    LOG="/var/log/pg_sysctl_tune.log"
+
+    log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+    # Root check
+    if [[ $(id -u) -ne 0 ]]; then
+        log "ERROR: Must run as root."
+        exit 1
+    fi
+
+    # ── vm.swappiness ──────────────────────────────────────────────────
+    CURRENT_SWAP=$(sysctl -n vm.swappiness)
+    log "Current vm.swappiness: $CURRENT_SWAP"
+
+    if [[ $CURRENT_SWAP -gt 10 ]]; then
+        log "Adjusting vm.swappiness from $CURRENT_SWAP to 10..."
+        sysctl -w vm.swappiness=10
+        log "Applied: vm.swappiness=10"
+    else
+        log "vm.swappiness is already $CURRENT_SWAP — no change needed."
+    fi
+
+    # ── kernel.shmmax ─────────────────────────────────────────────────
+    ONE_GB=$(( 1024 * 1024 * 1024 ))
+    CURRENT_SHMMAX=$(sysctl -n kernel.shmmax)
+    log "Current kernel.shmmax: $CURRENT_SHMMAX bytes"
+
+    if [[ $CURRENT_SHMMAX -lt $ONE_GB ]]; then
+        log "kernel.shmmax is below 1 GB. Setting to 1 GB..."
+        sysctl -w kernel.shmmax=$ONE_GB
+        log "Applied: kernel.shmmax=$ONE_GB"
+    else
+        log "kernel.shmmax is $CURRENT_SHMMAX — OK."
+    fi
+
+    # ── vm.overcommit_memory ──────────────────────────────────────────
+    CURRENT_OC=$(sysctl -n vm.overcommit_memory)
+    log "Current vm.overcommit_memory: $CURRENT_OC"
+
+    if [[ $CURRENT_OC -ne 2 ]]; then
+        log "Setting vm.overcommit_memory=2 for PostgreSQL..."
+        sysctl -w vm.overcommit_memory=2
+    else
+        log "vm.overcommit_memory already set to 2 — no change."
+    fi
+
+    # ── Persist to sysctl.d ───────────────────────────────────────────
+    if [[ ! -f "$SYSCTL_CONF" ]]; then
+        log "Creating $SYSCTL_CONF..."
+        cat > "$SYSCTL_CONF" <<EOF
+# PostgreSQL kernel tuning — managed by tune_sysctl_postgres.sh
+vm.swappiness = 10
+kernel.shmmax = ${ONE_GB}
+vm.overcommit_memory = 2
+EOF
+        log "Created: $SYSCTL_CONF"
+    else
+        log "Persistent config already exists: $SYSCTL_CONF"
+    fi
+
+    # ── Verify persistence ────────────────────────────────────────────
+    if [[ ! -r "$SYSCTL_CONF" ]]; then
+        log "ERROR: Cannot read $SYSCTL_CONF after creation."
+        exit 1
+    fi
+
+    log "Reloading sysctl from $SYSCTL_CONF..."
+    sysctl -p "$SYSCTL_CONF"
+
+    log "=== Final sysctl values ==="
+    log "vm.swappiness       = $(sysctl -n vm.swappiness)"
+    log "kernel.shmmax       = $(sysctl -n kernel.shmmax)"
+    log "vm.overcommit_memory= $(sysctl -n vm.overcommit_memory)"
+    log "=== Tuning complete ==="
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 9 — ADVANCED PATTERNS: COMBINING CONDITIONS
+────────────────────────────────────────────────────────────────────────────────
+
+9.1  AND and OR inside [[ ]]
+──────────────────────────────
+
+    # Both must be true (&&)
+    if [[ -f "$CONFIG" && -r "$CONFIG" ]]; then
+        echo "Config exists and is readable."
+    fi
+
+    # Either can be true (||)
+    if [[ "$ROLE" == "primary" || "$ROLE" == "standalone" ]]; then
+        echo "This node accepts writes."
+    fi
+
+    # Nested combinations
+    if [[ -d "$BACKUP_DIR" && -w "$BACKUP_DIR" && $FREE_DISK_GB -ge 50 ]]; then
+        echo "Backup preconditions met."
+    fi
+
+
+9.2  Regex matching with =~
+─────────────────────────────
+
+    # Validate that input looks like a PostgreSQL version (e.g., "14", "15", "16")
+    PG_VERSION="${1:-}"
+    if [[ ! "$PG_VERSION" =~ ^[0-9]{1,2}$ ]]; then
+        echo "ERROR: Invalid PostgreSQL version: '$PG_VERSION'" >&2
+        exit 1
+    fi
+
+    # Check if a filename matches backup naming convention: dbname_YYYY-MM-DD.pgdump
+    FILE="mydb_2025-03-15.pgdump"
+    if [[ "$FILE" =~ ^[a-z_]+_[0-9]{4}-[0-9]{2}-[0-9]{2}\.pgdump$ ]]; then
+        echo "Valid backup filename: $FILE"
+    fi
+
+    # Validate IP address format (basic)
+    DB_HOST="192.168.1.100"
+    if [[ ! "$DB_HOST" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "WARN: DB_HOST does not look like an IPv4 address."
+    fi
+
+
+9.3  Short-circuit evaluation for compact guards
+──────────────────────────────────────────────────
+
+Use && and || as lightweight if/else for single-command actions:
+
+    # Exit if directory doesn't exist (compact form)
+    [[ -d "$BACKUP_DIR" ]] || { echo "ERROR: $BACKUP_DIR missing" >&2; exit 1; }
+
+    # Create directory if it doesn't exist
+    [[ -d "$LOG_DIR" ]] || mkdir -p "$LOG_DIR"
+
+    # Only rotate logs if the log file exists and is bigger than 100MB
+    LOG_SIZE=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
+    [[ $LOG_SIZE -gt 104857600 ]] && logrotate -f /etc/logrotate.d/dba
+
+These one-liners are common in init scripts and DBA utilities. They're fine
+for simple guards. For anything with multiple steps, use the full if/fi block.
+
+
+────────────────────────────────────────────────────────────────────────────────
+SECTION 10 — CLOSING PEP TALK
+────────────────────────────────────────────────────────────────────────────────
+
+Here is what separates a DBA who writes scripts from a DBA who writes
+PRODUCTION scripts:
+
+The second type never assumes. They check.
+
+Every directory: Does it exist? Is it writable?
+Every file: Does it exist? Is it non-empty? Is it readable?
+Every number: Is it actually a number? Is it within bounds?
+Every command: Did it succeed? Did it produce output? Was the output valid?
+
+The operators we covered today — -z, -n, -f, -d, -eq and the rest — are not
+advanced features. They're basic hygiene. They're the difference between a
+script that fails cleanly with a meaningful error message at 2 PM and a script
+that fails silently and you find out about it at 2 AM.
+
+PostgreSQL's archive_command, your backup jobs, your sysctl tuning scripts,
+your maintenance procedures — ALL of them need conditionals.
+
+Test in staging. Validate the logic. Read the exit codes. Check the files.
+And the next time someone says "the backup job ran successfully," you'll be the
+one who asks: "How do you know? Did you check the file size? Did the script
+exit non-zero?"
+
+That's the DBA mindset. Now go write scripts that would survive production.
+
+
+────────────────────────────────────────────────────────────────────────────────
+QUICK-REFERENCE CARD — Conditionals for DBAs
+────────────────────────────────────────────────────────────────────────────────
+
+FILE / DIRECTORY TESTS
+  -f FILE       File exists and is a regular file
+  -d DIR        Directory exists
+  -e PATH       Path exists (any type)
+  -r FILE       File exists and is readable
+  -w FILE       File exists and is writable
+  -x FILE       File exists and is executable
+  -s FILE       File exists and is non-empty (size > 0)
+  -L FILE       Path is a symbolic link
+  ! CONDITION   Negation
+
+STRING TESTS
+  -z "$VAR"     String is empty (zero length)
+  -n "$VAR"     String is non-empty
+  "$A" == "$B"  String equality (inside [[ ]])
+  "$A" != "$B"  String inequality
+  "$STR" =~ RE  String matches regex RE (inside [[ ]])
+
+INTEGER TESTS (use inside [[ ]] or (( )))
+  $A -eq $B     Equal
+  $A -ne $B     Not equal
+  $A -lt $B     Less than
+  $A -le $B     Less than or equal
+  $A -gt $B     Greater than
+  $A -ge $B     Greater than or equal
+
+COMPOUND CONDITIONS
+  [[ A && B ]]  Both A and B
+  [[ A || B ]]  Either A or B
+
+COMMAND TEST
+  if COMMAND; then ...       True if command exits 0
+  if ! COMMAND; then ...     True if command exits non-zero
+
+COMMON DBA GUARD PATTERNS
+  [[ -z "$VAR" ]] && { echo "ERROR: VAR not set" >&2; exit 1; }
+  [[ ! -d "$DIR" ]] && { echo "ERROR: DIR missing" >&2; exit 1; }
+  [[ ! -s "$FILE" ]] && { echo "ERROR: FILE empty" >&2; exit 1; }
+  [[ $NUM -gt $MAX ]] && { echo "ERROR: threshold exceeded" >&2; exit 1; }
+
+KEY DBA PATHS
+  PostgreSQL data    /var/lib/postgresql/<ver>/main  (Debian/Ubuntu)
+                     /var/lib/pgsql/<ver>/data       (RHEL/CentOS)
+  PostgreSQL config  $PGDATA/postgresql.conf
+  PostgreSQL logs    /var/log/postgresql/
+  SQL Server data    /var/opt/mssql/data/
+  SQL Server config  /var/opt/mssql/mssql.conf
+  SQL Server logs    /var/opt/mssql/log/
+
+KEY MONITORING COMMANDS (verify conditionals against real data)
+  df -h /var/lib/postgresql         Disk usage (data dir)
+  df -h /var/opt/mssql              Disk usage (SQL Server)
+  awk '/MemAvailable/{print}' /proc/meminfo    Free memory
+  sysctl vm.swappiness              Check swappiness
+  sysctl kernel.shmmax              Check shared mem max
+  pg_isready -h localhost -p 5432   Quick PG connectivity test
+  ss -tlnp | grep 5432              Postgres port listening?
+  ss -tlnp | grep 1433              SQL Server port listening?
+  iostat -x 2 5                     I/O stats (5 iterations)
+  vmstat 2 5                        Memory/CPU/IO overview
+  stat -c %s FILE                   File size in bytes
+  find DIR -name "*.bak" -mtime +3  Files older than 3 days
+
+================================================================================
+END OF LECTURE — Linux Conditionals for DBAs
+Session: Pure Linux System Administration for PostgreSQL / MS SQL Server
+================================================================================

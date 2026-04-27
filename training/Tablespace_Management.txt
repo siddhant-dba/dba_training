@@ -1,0 +1,897 @@
+================================================================================
+  2-YEAR DBA TECHNICAL DIPLOMA
+  Session 01 — Tablespace Management in PostgreSQL & Filegroups in SQL Server
+  Duration: 3 Hours (Lecture + Labs)
+  Instructor: Senior DBA / Technical Instructor
+================================================================================
+
+
+Alright, let's get settled. Grab your coffee, open your terminals, and let's
+get into it. Welcome to what I genuinely think is one of the most important
+topics you're going to cover in this entire diploma — not because it sounds
+impressive, and not because it shows up on every certification exam (though it
+does), but because THIS is where junior DBAs get themselves into real trouble
+in production. And I mean real trouble. We're talking "the CEO is calling"
+kind of trouble.
+
+Today we are talking about where your data actually lives on disk. Tablespaces
+in PostgreSQL. Filegroups in SQL Server. Two platforms, same fundamental
+problem: you've got data, you've got storage, and you need to be smart about
+how you connect those two things. By the time we're done today you're going to
+understand not just HOW to set these up, but WHY the decisions you make here
+will affect your database's performance, manageability, and recoverability for
+years.
+
+Okay. Let's start at the very beginning.
+
+
+------------------------------------------------------------------------
+PART ONE: THE PROBLEM WE'RE SOLVING
+------------------------------------------------------------------------
+
+Close your laptop for one second and just think about this with me.
+
+Imagine you're the DBA at a mid-sized retail company. You've got one database.
+Inside that database you've got your transaction tables — orders, payments,
+line items — things that get hammered thousands of times a day. You've also
+got your archive tables — five years of old order history that accounting
+needs to query once a month. And you've got indexes on everything.
+
+Now, by default, if you do nothing, all of that data — the hot transactional
+data, the cold archive data, the indexes — it ALL goes to the same place on
+disk. Same spindles, same I/O path, fighting each other for the same read and
+write bandwidth.
+
+I spent three years at a logistics company early in my career, and that is
+exactly what the previous DBA had done. Everything on one volume. And every
+month-end when finance ran their archive reports, the transaction system
+slowed to a crawl because both workloads were competing for the same I/O.
+The business blamed the database. The previous DBA was long gone. Guess who
+got the phone calls? Yeah. I learned tablespaces and filegroups the hard way
+that year.
+
+So here's what tablespaces and filegroups give you: CONTROL. Control over
+where your data goes physically on disk. That control lets you separate hot
+data from cold data, put your indexes on faster storage, back up parts of
+your database independently, and honestly — it just makes your system easier
+to reason about when things go wrong at 2am.
+
+Alright, let's jump into PostgreSQL first, then we'll do SQL Server, and I'll
+show you how the concepts map across.
+
+
+------------------------------------------------------------------------
+PART TWO: TABLESPACES IN POSTGRESQL
+------------------------------------------------------------------------
+
+So in PostgreSQL, a tablespace is essentially a mapping — a named pointer —
+from inside your database cluster to a directory location on your operating
+system. That's it. When you create a tablespace called "fast_storage", you're
+saying: "PostgreSQL, when I tell you to put something in fast_storage, go
+put it in THIS directory on THIS disk."
+
+Let me show you exactly how this works. Go ahead and open psql connected to
+your PostgreSQL instance. I'm going to walk through this step by step.
+
+First, let's see what tablespaces already exist:
+
+    \db
+
+Or if you want the SQL version:
+
+    SELECT spcname, pg_tablespace_location(oid)
+    FROM pg_tablespace;
+
+You're going to see at least two entries there. "pg_default" — that's where
+tables and indexes go if you don't specify anything else. And "pg_global" —
+that's for cluster-wide objects like the pg_database catalog itself. Those
+two are created automatically and you never, ever touch them directly.
+
+Now, before we create our own tablespace, there's a critical step that trips
+up everyone the first time. The directory has to ALREADY EXIST on the
+filesystem, AND it has to be owned by the postgres OS user. PostgreSQL will
+NOT create the directory for you. This is not optional. If you point a
+tablespace at a directory that doesn't exist, or that postgres can't write
+to, you will get an error. Let me show you how to set this up properly.
+
+On your Linux system (outside of psql, in your terminal):
+
+    sudo mkdir -p /mnt/fast_disk/pg_tablespace
+    sudo chown postgres:postgres /mnt/fast_disk/pg_tablespace
+    sudo chmod 700 /mnt/fast_disk/pg_tablespace
+
+That 700 permission is important. Only the owner should have access — in a
+production system you don't want other OS users poking around in your
+database directories.
+
+Now back in psql, let's create the tablespace:
+
+    CREATE TABLESPACE fast_storage
+    LOCATION '/mnt/fast_disk/pg_tablespace';
+
+That's it. That command creates the tablespace. Let's verify it exists:
+
+    SELECT spcname,
+           pg_tablespace_location(oid) AS location,
+           pg_size_pretty(pg_tablespace_size(oid)) AS size
+    FROM pg_tablespace;
+
+Now you'll see fast_storage in that list. Right now it's empty — size will
+show something tiny, just the overhead. Good.
+
+Now here's where it gets useful. Let's create a table and deliberately put
+it in that tablespace:
+
+    CREATE TABLE orders_archive (
+        order_id    BIGINT,
+        order_date  DATE,
+        customer_id INT,
+        total       NUMERIC(12,2)
+    ) TABLESPACE fast_storage;
+
+See that TABLESPACE clause at the end? That's all it takes. This table's
+heap pages — the actual data blocks — are now stored in that directory on
+your fast disk. If tomorrow you swap this out for an SSD mount, that's where
+the benefit lands.
+
+Let's verify where the table is stored:
+
+    SELECT tablename,
+           tablespace
+    FROM pg_tables
+    WHERE tablename = 'orders_archive';
+
+You'll see fast_storage listed there. Beautiful.
+
+Now — and this is something a lot of people miss — indexes have their own
+tablespace assignment, separate from the table. Just because you put a table
+in fast_storage doesn't mean its indexes automatically follow. You have to
+be explicit. Let's create an index and put it somewhere:
+
+    CREATE INDEX idx_orders_archive_date
+    ON orders_archive (order_date)
+    TABLESPACE fast_storage;
+
+In a real architecture, some folks actually put indexes on DIFFERENT storage
+than their tables — sometimes you want your indexes on your absolute fastest
+NVMe drives because random reads on indexes are often your bottleneck. You
+can do that in PostgreSQL. Each object gets its own assignment.
+
+Now let me show you something really useful — you can set a DEFAULT tablespace
+at the database level, so that any new object that doesn't specify a
+tablespace goes to your chosen location automatically:
+
+    ALTER DATABASE my_database
+    SET default_tablespace = 'fast_storage';
+
+After you run that, any CREATE TABLE in that database without an explicit
+TABLESPACE clause will go to fast_storage. Be thoughtful with this — it's
+powerful but it means you might accidentally route things you didn't intend.
+
+You can also set default_tablespace at the session level:
+
+    SET default_tablespace = 'fast_storage';
+
+That only affects the current session. Useful when you're running a migration
+script and you want everything created in that script to land in the right
+place.
+
+Now — what if you need to MOVE an existing table to a different tablespace?
+Say you added new, faster storage and want to migrate your busiest table onto
+it. PostgreSQL gives you a clean way:
+
+    ALTER TABLE orders
+    SET TABLESPACE fast_storage;
+
+Fair warning here — this command takes an ACCESS EXCLUSIVE lock on the table.
+That means during the move, NOTHING can read or write to that table. For a
+big table on a busy system, you need to plan this for a maintenance window.
+There's a tool called pg_repack that can do this without that lock, and
+we'll touch on that in a later session, but for now understand the default
+behavior.
+
+Similarly for indexes:
+
+    ALTER INDEX idx_orders_archive_date
+    SET TABLESPACE fast_storage;
+
+Same locking behavior. Plan accordingly.
+
+Let me also show you a useful query for auditing your tablespace usage — this
+is the kind of thing you want in your DBA toolkit:
+
+    SELECT
+        t.spcname AS tablespace_name,
+        pg_size_pretty(pg_tablespace_size(t.oid)) AS total_size,
+        count(c.oid) AS object_count
+    FROM pg_tablespace t
+    LEFT JOIN pg_class c ON c.reltablespace = t.oid
+    GROUP BY t.spcname, t.oid
+    ORDER BY pg_tablespace_size(t.oid) DESC;
+
+This gives you a quick inventory — how big is each tablespace, how many
+objects are sitting in it. Run this regularly. I've worked with systems where
+no one audited tablespaces for two years and one volume filled up completely
+because someone kept creating temp tables and never cleaned them up. When
+a PostgreSQL tablespace volume fills up, your database will start throwing
+errors and potentially crash transactions. Not fun.
+
+Alright. Now let me cover one more thing on the PostgreSQL side before we
+move to SQL Server — dropping a tablespace.
+
+    DROP TABLESPACE fast_storage;
+
+Simple enough. BUT — PostgreSQL will refuse to drop a tablespace that still
+has objects in it. You'll get an error. You have to move or drop all the
+objects first. This is actually a safety net — the database won't let you
+accidentally delete storage that's in use. Still, in a panic situation people
+sometimes try to force things, so just know: there's no force-drop here. You
+clean it up properly or it doesn't go.
+
+
+------------------------------------------------------------------------
+INSTRUCTOR WARNING — READ THIS TWICE
+------------------------------------------------------------------------
+
+Okay, I need everyone to stop what they're doing and really listen to this
+part. This is the thing that has bitten experienced DBAs. Not just juniors.
+
+In PostgreSQL, tablespace directories are referenced by their ABSOLUTE PATH.
+That path is stored in the pg_tablespace catalog. It is also stored as a
+symbolic link inside your PostgreSQL data directory, under pg_tblspc/. The
+link is named after the tablespace's OID and it points to your directory.
+
+Here's where people destroy themselves: if you ever migrate your PostgreSQL
+instance to a new server, or you restore a database cluster to a different
+machine, and the physical paths don't match — meaning the directory
+/mnt/fast_disk/pg_tablespace doesn't exist on the new server in the same
+place — PostgreSQL will either fail to start, or it will start but the
+tablespace data will be inaccessible.
+
+I've seen this happen during a disaster recovery test. The team faithfully
+backed up the data, restored it to the DR server, and found out for the first
+time that the tablespace paths were completely different on the DR machine.
+The backup was useless in that moment because no one had documented the
+storage layout. It took hours to fix. During a real disaster, that's hours
+you don't have.
+
+The lesson: DOCUMENT YOUR TABLESPACE PATHS. Keep them in your runbook. Make
+sure your DR environment mirrors your production storage layout, or have a
+clear procedure for remapping tablespaces on restore. If you're using
+pg_basebackup for backups, test the restore on a machine that matches
+production. Don't assume. Test it. Verify it. Then test it again six months
+later because things change.
+
+I cannot stress this enough. The path dependency is PostgreSQL's one real
+gotcha with tablespaces, and it only bites you when you're already having
+the worst day of your career.
+
+Okay. I'll step off the soapbox. Let's move to SQL Server.
+
+
+------------------------------------------------------------------------
+PART THREE: FILEGROUPS IN SQL SERVER
+------------------------------------------------------------------------
+
+Alright, SQL Server people, this is where things get really interesting —
+because Microsoft's approach to this problem is architecturally a bit
+different and in some ways more flexible than PostgreSQL's.
+
+In SQL Server, you don't point directly at an OS directory. Instead, the
+structure goes: DATABASE → FILEGROUPS → FILES. Let me explain each layer.
+
+A FILE in SQL Server is a physical file on disk — an MDF or NDF file. The
+MDF is your primary data file, and NDF files are secondary data files. Each
+file belongs to exactly one filegroup. A FILEGROUP is a named collection of
+one or more physical files. And a DATABASE contains one or more filegroups.
+
+The PRIMARY filegroup is always there — it's created automatically with
+every database and it holds the system catalog tables (the metadata about
+your objects). You can add user data to PRIMARY, but experienced DBAs almost
+never do. Why? Because you want to keep your system metadata separate from
+your user data for backup, restore, and performance reasons. More on that
+in a minute.
+
+Let me show you how to see what filegroups exist on a database you already
+have. Connect to your SQL Server instance in SSMS or sqlcmd:
+
+    USE master;
+    GO
+
+    SELECT name, database_id FROM sys.databases;
+    GO
+
+Pick a database — let's say we're working with "SalesDB". Now let's look at
+its filegroups:
+
+    USE SalesDB;
+    GO
+
+    SELECT
+        fg.name AS filegroup_name,
+        fg.type_desc,
+        fg.is_default,
+        mf.physical_name,
+        mf.size * 8 / 1024 AS size_MB,
+        mf.max_size,
+        mf.growth
+    FROM sys.filegroups fg
+    JOIN sys.database_files mf
+        ON fg.data_space_id = mf.data_space_id
+    ORDER BY fg.name;
+    GO
+
+Read through those columns. Name of the filegroup, where the physical file
+lives, current size in MB, max size, and the growth setting. That growth
+setting — write it down because we're going to talk about it in a second.
+
+Now let's actually build something. Let's create a database from scratch
+with a proper multi-filegroup architecture. This is the pattern I recommend
+for any serious production database:
+
+    CREATE DATABASE SalesDB
+    ON PRIMARY
+    (
+        NAME = 'SalesDB_Primary',
+        FILENAME = 'C:\SQLData\SalesDB_Primary.mdf',
+        SIZE = 256MB,
+        MAXSIZE = 1GB,
+        FILEGROWTH = 128MB
+    ),
+    FILEGROUP FG_Transactions
+    (
+        NAME = 'SalesDB_Trans',
+        FILENAME = 'D:\SQLData\SalesDB_Trans.ndf',
+        SIZE = 512MB,
+        MAXSIZE = UNLIMITED,
+        FILEGROWTH = 256MB
+    ),
+    FILEGROUP FG_Archive
+    (
+        NAME = 'SalesDB_Archive',
+        FILENAME = 'E:\SQLData\SalesDB_Archive.ndf',
+        SIZE = 1024MB,
+        MAXSIZE = UNLIMITED,
+        FILEGROWTH = 512MB
+    ),
+    FILEGROUP FG_Indexes
+    (
+        NAME = 'SalesDB_Indexes',
+        FILENAME = 'F:\SQLData\SalesDB_Indexes.ndf',
+        SIZE = 256MB,
+        MAXSIZE = UNLIMITED,
+        FILEGROWTH = 128MB
+    )
+    LOG ON
+    (
+        NAME = 'SalesDB_Log',
+        FILENAME = 'L:\SQLLogs\SalesDB_Log.ldf',
+        SIZE = 256MB,
+        MAXSIZE = 4GB,
+        FILEGROWTH = 128MB
+    );
+    GO
+
+Let me walk through that line by line because every choice there is
+intentional.
+
+PRIMARY gets its own drive — C: in this example. It's small because we're
+only putting system catalog stuff there. If you're working in a lab
+environment where you only have one drive, the paths will all be the same
+drive letter, but in production you'd want these on physically separate
+volumes.
+
+FG_Transactions is on D: — in production this would be your fastest SSD or
+NVMe. Your transactional tables — orders, payments, inventory movements —
+they all go here. High I/O, high priority.
+
+FG_Archive is on E: — maybe a larger, cheaper SSD. Historical data. Still
+needs to be readable but it's not getting hammered constantly.
+
+FG_Indexes is on F: — this is a pattern some architects love and some argue
+about. But the logic is sound: your indexes get their own I/O path. Reads
+against indexes don't compete with reads against the heap.
+
+And the LOG — always, always on its own volume. L: here. Transaction log
+writes are sequential, and if your log is competing with data file I/O you're
+leaving performance on the table. Never co-locate your log with your data
+files. I mean it.
+
+Now let's set our default filegroup. By default, SQL Server marks PRIMARY
+as the default, which means any CREATE TABLE that doesn't specify a filegroup
+goes to PRIMARY. We don't want that — we want new tables going to
+FG_Transactions:
+
+    USE SalesDB;
+    GO
+
+    ALTER DATABASE SalesDB
+    MODIFY FILEGROUP FG_Transactions DEFAULT;
+    GO
+
+Now if a developer creates a table without thinking about filegroups, it'll
+land in FG_Transactions instead of cluttering up PRIMARY.
+
+Let's create tables that go to specific filegroups:
+
+    USE SalesDB;
+    GO
+
+    CREATE TABLE dbo.Orders
+    (
+        OrderID     INT IDENTITY(1,1) NOT NULL,
+        OrderDate   DATETIME2 NOT NULL,
+        CustomerID  INT NOT NULL,
+        TotalAmount MONEY NOT NULL,
+        CONSTRAINT PK_Orders PRIMARY KEY CLUSTERED (OrderID)
+    ) ON FG_Transactions;
+    GO
+
+    CREATE TABLE dbo.Orders_Archive
+    (
+        OrderID     INT NOT NULL,
+        OrderDate   DATETIME2 NOT NULL,
+        CustomerID  INT NOT NULL,
+        TotalAmount MONEY NOT NULL
+    ) ON FG_Archive;
+    GO
+
+See that ON clause at the end of the CREATE TABLE? That's how you target
+a filegroup. Clean and explicit.
+
+Now, indexes. Just like in PostgreSQL, your index can go to a different
+filegroup than your table. Let me show you:
+
+    CREATE INDEX IX_Orders_CustomerID
+    ON dbo.Orders (CustomerID)
+    ON FG_Indexes;
+    GO
+
+That non-clustered index now lives in FG_Indexes, completely separate from
+the Orders table heap in FG_Transactions. When SQL Server is scanning that
+index, it's hitting a different physical location than the table data. On
+a system with separate spindles or separate NVMe drives, that's real,
+measurable I/O parallelism.
+
+Now here's something SQL Server does really elegantly that PostgreSQL doesn't
+have a direct equivalent of: PARTITION SCHEMES and filegroup spanning. If
+you're working with partitioned tables — and if you're managing large
+databases you should be — you can map different partitions to different
+filegroups. So your 2024 order data is in FG_Transactions (fast storage),
+your 2022 data is in FG_Archive (cheap storage), and your 2020 data might
+even be in a READONLY filegroup on near-line storage. We'll do a full session
+on partitioning later, but just know that filegroups are the foundation that
+makes that possible.
+
+Speaking of READONLY — let me show you that:
+
+    ALTER DATABASE SalesDB
+    MODIFY FILEGROUP FG_Archive READ_ONLY;
+    GO
+
+Once a filegroup is marked READ_ONLY, SQL Server will not allow data
+modifications to any object in that filegroup. But here's the performance
+bonus: the storage team can take snapshots of that volume more easily,
+backups can be taken once and never repeated (data doesn't change), and
+SQL Server can even skip certain locking operations because it knows the
+data is immutable. For archive data, this is a great pattern.
+
+To flip it back:
+
+    ALTER DATABASE SalesDB
+    MODIFY FILEGROUP FG_Archive READ_WRITE;
+    GO
+
+Now let me show you a couple of my favorite monitoring queries for SQL Server
+filegroups. These belong in your toolkit:
+
+-- Filegroup space usage:
+    SELECT
+        fg.name AS FileGroup,
+        SUM(df.size) * 8 / 1024 AS AllocatedMB,
+        SUM(df.size - CONVERT(BIGINT, FILEPROPERTY(df.name, 'SpaceUsed'))) * 8 / 1024
+            AS FreeMB,
+        SUM(CONVERT(BIGINT, FILEPROPERTY(df.name, 'SpaceUsed'))) * 8 / 1024
+            AS UsedMB
+    FROM sys.filegroups fg
+    JOIN sys.database_files df ON fg.data_space_id = df.data_space_id
+    GROUP BY fg.name;
+    GO
+
+-- Find which tables are in which filegroups:
+    SELECT
+        SCHEMA_NAME(t.schema_id) AS SchemaName,
+        t.name AS TableName,
+        fg.name AS FileGroup,
+        SUM(a.total_pages) * 8 / 1024 AS TotalMB
+    FROM sys.tables t
+    JOIN sys.indexes i ON t.object_id = i.object_id AND i.type <= 1
+    JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+    JOIN sys.allocation_units a ON p.partition_id = a.container_id
+    JOIN sys.filegroups fg ON a.data_space_id = fg.data_space_id
+    GROUP BY t.schema_id, t.name, fg.name
+    ORDER BY TotalMB DESC;
+    GO
+
+Run those. Learn them. Save them. Seriously, paste these into your DBA
+scripts folder right now. The second query especially — I can't count how
+many times I've inherited a system and used exactly that query to understand
+what a previous DBA built.
+
+Let me also show you how to move a table to a different filegroup in SQL
+Server. Unlike PostgreSQL where you can alter the table directly, in SQL
+Server you do it by rebuilding the clustered index — which is what defines
+where the table data physically lives:
+
+    CREATE UNIQUE CLUSTERED INDEX PK_Orders
+    ON dbo.Orders (OrderID)
+    WITH (DROP_EXISTING = ON)
+    ON FG_Archive;
+    GO
+
+What that does is rebuild the clustered index — and since the clustered index
+IS the table data in SQL Server's B-tree structure, rebuilding it in a
+different filegroup physically moves the table data. The DROP_EXISTING tells
+SQL Server you know there's already an index with that name and you're
+intentionally replacing it.
+
+Fair warning — this operation reads and rewrites ALL the table data. On a
+large table, this will take time and use significant log space. Plan for it.
+
+
+------------------------------------------------------------------------
+PART FOUR: HOW POSTGRESQL AND SQL SERVER COMPARE
+------------------------------------------------------------------------
+
+Okay, let's take a step back and map these concepts side by side, because
+you're going to be asked about both on your certification exams and more
+importantly you're going to work in mixed environments in the real world.
+I've had clients running both platforms simultaneously and you need to
+be fluent in both.
+
+PostgreSQL Tablespace   ←→   SQL Server Filegroup
+----------------------------------------------------
+A tablespace maps        |   A filegroup contains
+to one OS directory.     |   one or more physical files.
+                         |
+One directory per        |   Multiple files per filegroup
+tablespace.              |   (allows striping/parallelism).
+                         |
+Path-dependent           |   File paths are per-file,
+(stored as symlinks).    |   managed via catalog.
+                         |
+No built-in striping     |   Multiple files = automatic
+within a tablespace.     |   proportional fill across files.
+                         |
+TABLESPACE clause        |   ON [filegroup] clause on
+on object creation.      |   CREATE TABLE / CREATE INDEX.
+                         |
+ALTER TABLE ...          |   Rebuild clustered index to
+SET TABLESPACE           |   move table to new filegroup.
+(takes AEL lock).        |
+
+That "proportional fill" thing in SQL Server is worth a quick mention. If
+you have multiple data files in a filegroup, SQL Server automatically
+distributes writes across all those files proportionally based on free space.
+This is how you get I/O parallelism WITHIN a filegroup — by adding multiple
+files to it. In PostgreSQL, one tablespace = one directory = one path. You
+don't get that automatic striping behavior.
+
+Some architects add multiple NDF files to a single SQL Server filegroup and
+put each NDF on a different physical disk, effectively creating a manual RAID
+across the files. It's a real technique, especially on storage where you can't
+use OS-level striping.
+
+
+------------------------------------------------------------------------
+PART FIVE: BACKUP IMPLICATIONS
+------------------------------------------------------------------------
+
+I want to spend a few minutes on this because it connects directly to your
+day job. We'll do a deep dive on backup strategies in a future session, but
+filegroups and tablespaces have specific backup implications you need to know.
+
+In SQL Server, you can perform FILEGROUP BACKUPS — backing up individual
+filegroups instead of the whole database. This is huge for very large
+databases (VLDBs). If your database is 10 terabytes but your archive
+filegroup (which is READ_ONLY) is 8 of those terabytes, you only have to
+back up the archive filegroup ONCE after you mark it read-only. Your weekly
+full backup can skip it. You're only backing up the 2TB that's changing.
+This can dramatically reduce your backup windows.
+
+    BACKUP DATABASE SalesDB
+    FILEGROUP = 'FG_Transactions'
+    TO DISK = 'D:\Backups\SalesDB_Trans_20260427.bak';
+    GO
+
+That backs up just the FG_Transactions filegroup. For restore, SQL Server
+can reconstruct the database from a combination of filegroup backups plus
+log backups, as long as you've kept the log chain intact. It's called
+piecemeal restore, and it's a lifesaver for VLDBs.
+
+In PostgreSQL, tablespaces don't have a direct native backup unit equivalent.
+When you run pg_basebackup, it captures everything including all tablespace
+directories. If you're using a tool like pgBackRest, it handles tablespace
+paths intelligently, but you still back up the entire cluster. The key point
+is: your backup tool MUST know about all your tablespace paths, or it will
+produce an incomplete backup. This goes back to my warning from earlier.
+Document those paths. Include them in your backup verification checklist.
+
+Alright. I think you've got enough theory. Let's actually DO something.
+
+
+------------------------------------------------------------------------
+LAB EXERCISES — DO THESE YOURSELF
+------------------------------------------------------------------------
+
+These labs are yours to work through. No copy-pasting from earlier — type
+it yourself. Understanding comes from your fingers making mistakes and
+fixing them, not from watching someone else type.
+
+You have about 60 minutes for these. I'll be walking around.
+
+---
+
+LAB A — PostgreSQL Tablespace Administration
+Estimated time: 25 minutes
+
+Setup: You have a running PostgreSQL 15+ instance on your lab VM.
+
+Task 1:
+Create two OS directories for tablespaces:
+  /var/lib/pgdata/ts_hot
+  /var/lib/pgdata/ts_cold
+Set correct ownership and permissions for both.
+
+Task 2:
+Connect to psql and create two tablespaces:
+  hot_data pointing to ts_hot
+  cold_data pointing to ts_cold
+
+Task 3:
+Create a database called "LabDB" and set its default tablespace to hot_data.
+
+Task 4:
+Inside LabDB, create the following tables:
+  - "customer_transactions" in hot_data with columns:
+      txn_id BIGSERIAL, txn_date TIMESTAMPTZ, amount NUMERIC(12,2)
+  - "customer_archive" in cold_data with columns:
+      txn_id BIGINT, txn_date TIMESTAMPTZ, amount NUMERIC(12,2)
+
+Task 5:
+Create an index on customer_transactions.txn_date and explicitly assign it
+to hot_data.
+
+Task 6:
+Write a query against pg_tablespace, pg_tables, and pg_indexes to confirm
+that each object is in the correct tablespace. Show tablespace name, object
+name, and object type in your result set.
+
+Task 7 (Challenge):
+Move the customer_archive table to hot_data. Then query the catalog to
+confirm the move. Note how long the command takes — and think about what
+that means for a 500GB table.
+
+Bonus: Try to DROP the hot_data tablespace while objects still exist in it.
+Read the error. Understand it. Then clean up properly and successfully drop
+the tablespace.
+
+---
+
+LAB B — SQL Server Filegroup Administration
+Estimated time: 30 minutes
+
+Setup: You have SQL Server 2019 or 2022 running on your lab VM.
+       Use a single drive for all files since this is a lab — just put
+       everything under C:\SQLLabData\ but use different subdirectories
+       to simulate separate volumes.
+
+Task 1:
+Create directories:
+  C:\SQLLabData\Primary\
+  C:\SQLLabData\Hot\
+  C:\SQLLabData\Archive\
+  C:\SQLLabData\Indexes\
+  C:\SQLLabData\Logs\
+
+Task 2:
+Create a database called "LabSalesDB" with the following filegroups and files:
+  - PRIMARY: C:\SQLLabData\Primary\LabSalesDB_Primary.mdf, 64MB, grow 32MB
+  - FG_Hot: C:\SQLLabData\Hot\LabSalesDB_Hot.ndf, 128MB, grow 64MB
+  - FG_Archive: C:\SQLLabData\Archive\LabSalesDB_Archive.ndf, 256MB, grow 128MB
+  - FG_Indexes: C:\SQLLabData\Indexes\LabSalesDB_Indexes.ndf, 64MB, grow 32MB
+  - LOG: C:\SQLLabData\Logs\LabSalesDB_Log.ldf, 64MB, grow 32MB
+
+Task 3:
+Set FG_Hot as the default filegroup for LabSalesDB.
+
+Task 4:
+Create the following tables in the correct filegroups:
+  - dbo.SalesOrders (in FG_Hot):
+      OrderID INT IDENTITY PRIMARY KEY, OrderDate DATE, Amount MONEY
+  - dbo.SalesOrders_Archive (in FG_Archive):
+      OrderID INT, OrderDate DATE, Amount MONEY
+
+Task 5:
+Create a non-clustered index on SalesOrders.OrderDate and explicitly
+place it in FG_Indexes.
+
+Task 6:
+Run the filegroup space query from the lecture. Capture the output.
+Now insert 10,000 rows into SalesOrders using a loop or set-based
+insert. Run the space query again. Note the difference.
+
+Task 7:
+Mark FG_Archive as READ_ONLY. Then attempt an INSERT into
+SalesOrders_Archive. Read the error. Mark it back to READ_WRITE.
+Explain in your own words when you would use READ_ONLY in production.
+
+Task 8 (Challenge):
+Write a single T-SQL query that shows every table in LabSalesDB,
+which filegroup it's in, and how many MB it occupies. Sort by size
+descending. (Hint: look at the monitoring query from the lecture.)
+
+---
+
+Lab note: If you get stuck, don't stare at the screen. Read the error
+message carefully — SQL Server and PostgreSQL both give you good error
+messages if you take the time to read them. If you've spent more than
+10 minutes on the same error, flag me down.
+
+
+------------------------------------------------------------------------
+CLOSING — BEFORE YOU LEAVE
+------------------------------------------------------------------------
+
+Alright, let's wrap up.
+
+Look — I've been doing this for twenty years, and I've worked with systems
+that had tablespace and filegroup architectures that were pure genius, and
+systems that were absolute chaos because someone just accepted every default
+and never thought about where the data was going.
+
+The DBAs who stand out aren't the ones who know the most syntax. They're
+the ones who ask "WHY is the data here? SHOULD the data be here? What
+happens when this disk fills up, or when I need to restore this, or when
+I need to scale this in 3 years?" That's the thinking we're building today.
+
+What you learned today:
+- PostgreSQL tablespaces are OS directory mappings, path-dependent, one
+  directory each, symlinked from the data directory.
+- SQL Server filegroups are logical containers for one or more physical
+  files, with automatic proportional fill across files.
+- Both systems let you control where tables and indexes land — use that
+  control intentionally.
+- READ_ONLY filegroups in SQL Server are a powerful tool for archive
+  data management and backup optimization.
+- DOCUMENT YOUR STORAGE LAYOUT. I will say this every session.
+
+Before next week, I want you to look at a real database you have access to —
+work, personal project, doesn't matter — and audit its current storage
+layout. Where is the data? Where are the indexes? Where's the log? Is it
+all on one volume? If so, think about what you'd do to improve it.
+
+We'll build on this when we get to partitioning, and then again when we hit
+backup strategies. These concepts compound on each other, so the cleaner
+your mental model is NOW, the easier those sessions will be.
+
+Good work today. Go do the labs. Come back with questions.
+
+
+================================================================================
+QUICK REFERENCE COMMAND CARD
+DBA Diploma — Session 01: Tablespaces & Filegroups
+================================================================================
+
+POSTGRESQL — TABLESPACES
+-------------------------
+-- View all tablespaces
+SELECT spcname, pg_tablespace_location(oid) FROM pg_tablespace;
+
+-- Create tablespace (directory must exist, owned by postgres)
+CREATE TABLESPACE ts_name LOCATION '/path/to/dir';
+
+-- Create table in tablespace
+CREATE TABLE my_table (...) TABLESPACE ts_name;
+
+-- Create index in tablespace
+CREATE INDEX idx_name ON my_table (col) TABLESPACE ts_name;
+
+-- Set default tablespace for database
+ALTER DATABASE mydb SET default_tablespace = 'ts_name';
+
+-- Set default tablespace for session
+SET default_tablespace = 'ts_name';
+
+-- Move table to different tablespace (takes AEL lock!)
+ALTER TABLE my_table SET TABLESPACE ts_name;
+
+-- Move index to different tablespace
+ALTER INDEX idx_name SET TABLESPACE ts_name;
+
+-- Drop tablespace (must be empty first)
+DROP TABLESPACE ts_name;
+
+-- Tablespace size audit
+SELECT spcname,
+       pg_size_pretty(pg_tablespace_size(oid)) AS size,
+       pg_tablespace_location(oid)
+FROM pg_tablespace;
+
+-- Objects per tablespace
+SELECT t.spcname, count(c.oid)
+FROM pg_tablespace t
+LEFT JOIN pg_class c ON c.reltablespace = t.oid
+GROUP BY t.spcname;
+
+-- Which tablespace is my table in?
+SELECT tablename, tablespace FROM pg_tables WHERE tablename = 'my_table';
+
+
+SQL SERVER — FILEGROUPS
+-----------------------
+-- View filegroups and files
+SELECT fg.name, fg.is_default, mf.physical_name, mf.size * 8/1024 AS size_MB
+FROM sys.filegroups fg
+JOIN sys.database_files mf ON fg.data_space_id = mf.data_space_id;
+
+-- Create database with multiple filegroups
+CREATE DATABASE mydb
+ON PRIMARY (NAME='...', FILENAME='...', SIZE=..., FILEGROWTH=...),
+FILEGROUP FG_Hot (NAME='...', FILENAME='...', SIZE=..., FILEGROWTH=...),
+FILEGROUP FG_Archive (NAME='...', FILENAME='...', SIZE=..., FILEGROWTH=...)
+LOG ON (NAME='...', FILENAME='...', SIZE=..., FILEGROWTH=...);
+
+-- Add new filegroup to existing database
+ALTER DATABASE mydb ADD FILEGROUP FG_NewGroup;
+
+-- Add file to filegroup
+ALTER DATABASE mydb
+ADD FILE (NAME='...', FILENAME='...', SIZE=..., FILEGROWTH=...)
+TO FILEGROUP FG_NewGroup;
+
+-- Set default filegroup
+ALTER DATABASE mydb MODIFY FILEGROUP FG_Hot DEFAULT;
+
+-- Create table in specific filegroup
+CREATE TABLE dbo.Orders (...) ON FG_Hot;
+
+-- Create index in specific filegroup
+CREATE INDEX idx_name ON dbo.Orders (col) ON FG_Indexes;
+
+-- Move table to different filegroup (rebuilds clustered index)
+CREATE UNIQUE CLUSTERED INDEX PK_Name ON dbo.Orders (ID)
+WITH (DROP_EXISTING = ON) ON FG_NewGroup;
+
+-- Mark filegroup read-only
+ALTER DATABASE mydb MODIFY FILEGROUP FG_Archive READ_ONLY;
+
+-- Mark filegroup read-write
+ALTER DATABASE mydb MODIFY FILEGROUP FG_Archive READ_WRITE;
+
+-- Filegroup space usage
+SELECT fg.name,
+       SUM(df.size)*8/1024 AS AllocatedMB,
+       SUM(CONVERT(BIGINT,FILEPROPERTY(df.name,'SpaceUsed')))*8/1024 AS UsedMB
+FROM sys.filegroups fg
+JOIN sys.database_files df ON fg.data_space_id = df.data_space_id
+GROUP BY fg.name;
+
+-- Tables by filegroup
+SELECT SCHEMA_NAME(t.schema_id), t.name, fg.name,
+       SUM(a.total_pages)*8/1024 AS TotalMB
+FROM sys.tables t
+JOIN sys.indexes i ON t.object_id=i.object_id AND i.type<=1
+JOIN sys.partitions p ON i.object_id=p.object_id AND i.index_id=p.index_id
+JOIN sys.allocation_units a ON p.partition_id=a.container_id
+JOIN sys.filegroups fg ON a.data_space_id=fg.data_space_id
+GROUP BY t.schema_id, t.name, fg.name
+ORDER BY TotalMB DESC;
+
+-- Filegroup backup (SQL Server)
+BACKUP DATABASE mydb FILEGROUP='FG_Transactions'
+TO DISK='C:\Backups\mydb_FG_Trans.bak';
+
+================================================================================
+END OF SESSION 01 COMMAND CARD
+================================================================================

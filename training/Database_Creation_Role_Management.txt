@@ -835,7 +835,152 @@ Lab 5 — Audit Queries
     output and explain in your own words what each result tells you about the
     current state of access control in the database.
 
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+Lab 1 — Database and Schema Setup
+    a) Connect to your PostgreSQL 17 instance as a superuser and create a database 
+       named role_mgmt using UTF8 encoding and template0.
+    b) Connect to the role_mgmt database and create the following schemas:
+       - auth (for all RBAC objects: users, roles, permissions, mappings)
+       - audit (for audit trail objects)
 
+Lab 2 — Core RBAC Tables
+    a) In the auth schema, create the users table with these columns:
+       - id (UUID, primary key, default gen_random_uuid())
+       - username (text, not null, unique)
+       - password_hash (text, not null)
+       - is_active (boolean, not null, default true)
+       - created_at (timestamptz, not null, default now())
+    b) Create the roles table:
+       - id (UUID, primary key)
+       - role_name (text, not null, unique)
+       - description (text)
+    c) Create the permissions table:
+       - id (UUID, primary key)
+       - permission_code (text, not null, unique)
+       - description (text)
+    d) Create the user_roles mapping table:
+       - user_id (UUID, references users)
+       - role_id (UUID, references roles)
+       - granted_by (UUID, references users)
+       - granted_at (timestamptz, not null, default now())
+       - primary key (user_id, role_id)
+    e) Create the role_permissions mapping table:
+       - role_id (UUID, references roles)
+       - permission_id (UUID, references permissions)
+       - granted_by (UUID, references users)
+       - granted_at (timestamptz, not null, default now())
+       - primary key (role_id, permission_id)
+    f) Add all necessary foreign key constraints to the mapping tables, choosing 
+       ON DELETE CASCADE or RESTRICT as appropriate for referential integrity. 
+       Document your choice in a comment on each foreign key.
+
+Lab 3 — Audit Trail
+    a) In the audit schema, create the audit_log table:
+       - id (bigserial, primary key)
+       - table_name (text, not null)
+       - operation (text, not null)           -- INSERT, UPDATE, DELETE
+       - old_data (jsonb)
+       - new_data (jsonb)
+       - changed_by (uuid)                   -- references users who made the change
+       - changed_at (timestamptz, not null, default now())
+    b) Write a trigger function fn_audit_trigger() that:
+       - Returns trigger
+       - Inserts a row into audit.audit_log recording the table name, operation, 
+         old row (as JSONB), new row (as JSONB), and the session user (mapped to 
+         an application user id obtained from a runtime parameter, e.g., 
+         current_setting('my.user_id')::uuid)
+    c) Attach this trigger to the following tables to fire AFTER INSERT, UPDATE, 
+       DELETE:
+       - auth.user_roles
+       - auth.role_permissions
+       - (optional) auth.users  – decide based on your audit requirements
+
+Lab 4 — Helper Functions and Permissions Check
+    a) Create a function auth.has_permission(p_user_id uuid, p_permission_code text) 
+       that returns boolean.
+       The function should return true if the user, through any of their assigned 
+       roles, has the given permission code (joining user_roles → role_permissions 
+       → permissions).
+    b) Create a function auth.current_user_id() that returns the UUID of the 
+       currently connected application user by reading a runtime parameter 
+       (e.g., current_setting('my.user_id')::uuid). If the parameter is not set, 
+       it should raise an exception.
+    c) Test the function by manually setting the parameter and verifying 
+       permission checks later.
+
+Lab 5 — Row-Level Security
+    a) Enable row-level security on the auth.users table.
+    b) Create a policy on auth.users:
+       - For SELECT: allow a user to see only their own row (id = auth.current_user_id()).
+         Also allow a user who has the permission 'user.view_all' (checked via 
+         auth.has_permission) to see all rows.
+    c) Enable row-level security on the auth.user_roles table.
+    d) Create policies on auth.user_roles:
+       - For SELECT: a user can see their own roles (user_id = auth.current_user_id()).
+         A user with permission 'role.view_all' can see all rows.
+       - For INSERT/UPDATE/DELETE: only users with permission 'role.assign' may 
+         modify rows. (Hint: use a policy with USING and WITH CHECK expressions.)
+    e) (Optional) Apply similar RLS policies to auth.roles and auth.permissions 
+       tables if needed – for example, only users with 'role.manage' can modify roles.
+    f) Document each policy, explaining which database role or user is affected.
+
+Lab 6 — Initial Seed Data
+    a) Create repeatable seed scripts that insert standard RBAC roles:
+       - Admin    (role_name = 'admin')
+       - Manager  (role_name = 'manager')
+       - Viewer   (role_name = 'viewer')
+    b) Insert a set of permissions that cover the system’s operations, for example:
+       - 'user.create', 'user.read', 'user.update', 'user.delete'
+       - 'role.assign', 'role.revoke'
+       - 'audit.view'
+       - 'user.view_all', 'role.view_all'
+    c) Assign permissions to roles:
+       - Admin: all permissions
+       - Manager: user.read, role.assign, role.revoke, user.view_all (limited)
+       - Viewer: user.read (own data only via RLS, not the global view)
+    d) Insert a few test users into auth.users (e.g., id = '00000000-0000-0000-0000-000000000001' for admin user, etc.) 
+       and assign them the appropriate role(s) via auth.user_roles.
+       Record their UUIDs for later testing.
+
+Lab 7 — Verification & Testing
+    a) Create a test script that:
+       - Sets the runtime parameter my.user_id to the viewer’s UUID.
+       - Calls auth.has_permission for various permissions; verify that viewer 
+         has 'user.read' but not 'user.delete'.
+       - Queries auth.users and auth.user_roles to confirm that only the viewer’s 
+         own rows are returned (RLS in effect).
+    b) Repeat for the manager and admin users, checking that RLS filtering 
+       and permissions works as expected (manager can see all users if policy 
+       permits, admin can see all).
+    c) Perform an INSERT into auth.user_roles as the viewer (by setting 
+       my.user_id accordingly) and confirm the operation is rejected due to 
+       RLS policy (since viewer lacks 'role.assign').
+    d) After performing some role assignments and revocations, query 
+       audit.audit_log to verify that all changes have been recorded with 
+       old and new values and the correct changed_by UUID.
+    e) Test that any attempt to circumvent RLS by not setting my.user_id 
+       results in an appropriate error (due to auth.current_user_id()).
+
+Lab 8 — Documentation and Handover
+    a) Add COMMENT ON statements to every table and column you created in both 
+       schemas, describing their purpose. Generate a data dictionary by running 
+       \dt+ and \d+ for the relevant objects and save the output to a file.
+    b) Write a security architecture document (plain text or markdown) that 
+       explains:
+         - The difference between PostgreSQL login roles (the database user 
+           performing the connection) and the application RBAC roles stored in 
+           auth.roles.
+         - How the my.user_id session parameter is used to link a database 
+           session to an application user.
+         - The row-level security policies and their purpose.
+         - The audit trail mechanism.
+    c) Provide a migration runbook: what order to apply the migration scripts, 
+       how to seed the database, and how to verify the setup.
+    d) Deliver all SQL scripts (migrations, seeds, functions, triggers, policies) 
+       in a structured directory, along with the test script and documentation.
+----------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 ================================================================================
 CLOSING — WHAT I WANT YOU TO TAKE AWAY TODAY
 ================================================================================

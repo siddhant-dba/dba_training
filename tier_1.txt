@@ -1,0 +1,1579 @@
+================================================================================
+  POSTGRESQL DBA — TIER 1 MASTER TOPIC LIST
+  BAU | FAILURE HANDLING | OBSERVABILITY & MONITORING
+  Senior DBA Reference — 15-20 Years Production Experience
+================================================================================
+
+
+================================================================================
+SECTION 1: BAU (DAILY OPERATIONS)
+================================================================================
+
+BAU
+- Daily Operations
+  - Service Availability Checks
+    - Check PostgreSQL service status (systemctl status postgresql)
+    - pg_isready check (local and remote)
+    - Verify PostgreSQL listening on correct IP/port (ss -tlnp / netstat)
+    - Check postmaster.pid existence and contents
+    - Verify correct PostgreSQL version is running
+    - Check for unexpected PostgreSQL restarts (journalctl / log scan)
+    - Confirm correct cluster is running (pg_lsclusters on Debian/Ubuntu)
+    - Patroni cluster status check (patronictl list)
+    - VIP / floating IP reachability check
+    - Application connectivity test (test connection from app server)
+
+  - Connection Management
+    - Query pg_stat_activity for total connections
+    - Check connections per database and per user
+    - Monitor idle in transaction connections (state = 'idle in transaction')
+    - Monitor idle connections exceeding timeout threshold
+    - Identify connections holding locks with no active query
+    - Compare used connections vs max_connections (utilization %)
+    - Check reserved superuser connections (superuser_reserved_connections)
+    - pgbouncer pool status (SHOW POOLS; SHOW STATS; SHOW CLIENTS;)
+    - pgbouncer per-database wait queue depth
+    - Terminate stale idle-in-transaction connections exceeding threshold
+    - Monitor connection churn rate (connections per second)
+    - Verify connection pooling settings are enforced (pool_mode, max_client_conn)
+
+  - Replication Health
+    - Query pg_stat_replication on primary (state, sent_lsn, write_lsn, flush_lsn, replay_lsn)
+    - Calculate replication lag in bytes (pg_current_wal_lsn - replay_lsn)
+    - Calculate replication lag in seconds (write_lag, flush_lag, replay_lag)
+    - Check sync_state for each standby (async / sync / quorum)
+    - Verify number of connected standbys matches expected topology
+    - Check pg_stat_wal_receiver on standby (status, last_msg_receipt_time)
+    - Verify standby is in recovery (pg_is_in_recovery())
+    - Monitor replication slots (pg_replication_slots: active, restart_lsn, wal_status)
+    - Detect inactive replication slots holding WAL
+    - Verify logical replication subscription status (pg_stat_subscription)
+    - Check logical replication worker errors (pg_stat_subscription_stats)
+    - Verify cascading replication topology is intact
+    - Check Patroni replication role (leader, replica, standby leader)
+
+  - WAL Archiving
+    - Check pg_stat_archiver (archived_count, failed_count, last_archived_wal, last_failed_wal, last_failed_time)
+    - Detect consecutive archiving failures
+    - Verify archive_command succeeds manually if failures detected
+    - Monitor pg_wal directory size and number of WAL segments
+    - Verify archive destination has sufficient free space
+    - Confirm last archived WAL timestamp is recent (no archive stall)
+    - Check for WAL accumulation due to replication slot lag
+    - Verify restore_command works on standby / recovery environment
+    - Check WAL archiving on all cluster nodes (primary and standbys if applicable)
+
+  - Backup Verification
+    - Check last backup start/end timestamp from backup tool log
+    - Verify backup job exit code (0 = success)
+    - Confirm backup file(s) exist at expected destination
+    - Check backup file sizes (unusually small = possible failure)
+    - Run pg_verifybackup on most recent physical backup
+    - Verify WAL segments required for PITR are present in archive
+    - Check pgBackRest / Barman / WAL-G latest backup status
+    - Validate backup catalog integrity
+    - Confirm offsite / cloud backup transfer completed
+    - Alert if backup age exceeds RPO threshold
+
+  - Disk Space Monitoring
+    - Check filesystem usage on PGDATA partition (df -h)
+    - Check filesystem usage on WAL/pg_wal partition if separate
+    - Check filesystem usage on archive destination
+    - Check filesystem usage on log directory
+    - Check filesystem usage on tablespace directories
+    - Monitor pg_database_size() for each database
+    - Monitor pg_total_relation_size() for large tables
+    - Monitor temp file directory (pgsql_tmp) for leftover temporary files
+    - Monitor pg_wal directory segment count vs wal_keep_size
+    - Monitor pg_log directory for unrotated large log files
+    - Identify top tables/indexes by disk usage growth trend
+
+  - System Resource Checks
+    - CPU utilization: overall, iowait, steal (top, vmstat, sar)
+    - Memory usage: used, cached, buffers, swap, available
+    - Swap usage alert (any swap usage is a warning signal)
+    - Disk I/O: read/write IOPS, throughput, await latency (iostat)
+    - Disk queue length (await > threshold)
+    - Network throughput and errors (sar -n DEV, netstat -s)
+    - Process count: postgres backends, autovacuum workers, wal sender/receiver, bgwriter, checkpointer, walwriter
+    - Check for zombie postgres processes
+    - Verify no OOM kill events (dmesg | grep -i oom)
+    - Confirm NTP sync / clock skew (timedatectl, chronyc tracking)
+    - Verify OS ulimits for postgres user (open files, max processes)
+
+  - Error Log Scan
+    - Grep PostgreSQL logs for PANIC occurrences
+    - Grep PostgreSQL logs for FATAL occurrences
+    - Grep PostgreSQL logs for ERROR occurrences
+    - Filter and count authentication failures
+    - Identify "too many clients already" errors
+    - Identify "out of memory" errors
+    - Identify "could not write to file" errors
+    - Identify "checkpoints are occurring too frequently" warnings
+    - Identify lock wait timeout or deadlock entries
+    - Identify "terminating connection due to conflict with recovery" (standby)
+    - Identify slow query entries exceeding log_min_duration_statement
+    - Confirm no replication errors or disconnect messages
+    - Confirm no archive_command failure messages
+    - Scan for unexpected postmaster restart messages
+    - Review any "invalid page" or checksum failure errors
+
+  - Lock & Long-Running Query Analysis
+    - Query pg_stat_activity for queries running longer than threshold (e.g., >5 min)
+    - Query pg_stat_activity for idle in transaction > threshold (e.g., >2 min)
+    - Query pg_locks joined with pg_stat_activity for blocked queries
+    - Identify blocking PID and blocked PIDs chain
+    - Identify queries waiting on Lock wait_event_type
+    - Detect AccessExclusiveLock contention on critical tables
+    - Monitor deadlock frequency from log or pg_stat_database.deadlocks
+    - Identify long-running autovacuum workers (pg_stat_progress_vacuum)
+    - Cancel or terminate queries blocking critical operations (with approval)
+
+  - Autovacuum Health
+    - Check number of autovacuum workers running (pg_stat_activity)
+    - Identify tables where n_dead_tup exceeds autovacuum_vacuum_threshold
+    - Identify tables approaching transaction ID wraparound (age(relfrozenxid))
+    - Check tables approaching multixact wraparound (age(relminmxid))
+    - Identify tables not vacuumed recently (last_autovacuum, last_vacuum)
+    - Monitor long-running autovacuum on large tables (pg_stat_progress_vacuum)
+    - Verify autovacuum is enabled (autovacuum = on in postgresql.conf)
+    - Check autovacuum_max_workers is sufficient for workload
+    - Confirm autovacuum_vacuum_cost_limit is not too restrictive
+    - Identify tables where autovacuum is being cancelled by long transactions
+
+  - Checkpoint & Background Writer Health
+    - Monitor checkpoints_req vs checkpoints_timed ratio (pg_stat_bgwriter)
+    - Alert if checkpoints_req is dominant (max_wal_size too low)
+    - Check checkpoint_completion_target effectiveness
+    - Monitor buffers_backend (direct buffer writes = memory pressure warning)
+    - Check buffers_clean vs maxwritten_clean for bgwriter effectiveness
+    - Review checkpoint write duration from logs (log_checkpoints = on)
+    - Monitor buffers_alloc growth rate
+
+  - Statistics & Query Plan Health
+    - Verify pg_stat_statements extension is enabled and collecting data
+    - Check for tables with last_analyze older than threshold
+    - Check for tables with last_autoanalyze failing or delayed
+    - Identify tables with significantly changed row counts needing manual ANALYZE
+
+- Weekly Maintenance
+
+  - Vacuum & Analyze Operations
+    - Run manual VACUUM ANALYZE on tables with high dead tuple ratio
+    - Run VACUUM FREEZE on tables approaching wraparound threshold
+    - Run ANALYZE on tables with stale statistics (>10% row change)
+    - Review autovacuum history for tables frequently needing manual intervention
+    - Identify tables where autovacuum is throttled and manually vacuum
+    - Check for tables autovacuum cannot acquire lock on
+    - Review vacuum_cost settings and tune if I/O impact is excessive
+    - Run VACUUM on system catalog tables if bloated (pg_attribute, pg_depend)
+
+  - Index Maintenance
+    - Identify bloated indexes using pgstattuple or bloat estimation queries
+    - REINDEX CONCURRENTLY on bloated indexes
+    - Identify unused indexes (pg_stat_user_indexes: idx_scan = 0)
+    - Identify duplicate indexes
+    - Identify partial indexes no longer matching workload
+    - Identify missing indexes for common slow queries
+    - Review index creation progress for long-running CREATE INDEX CONCURRENTLY
+    - Check for invalid indexes (indisvalid = false) after failed concurrent reindex
+
+  - Bloat Analysis
+    - Estimate table bloat (dead rows + free space) via pgstattuple or custom queries
+    - Estimate index bloat ratio per index
+    - Identify tables with >20% bloat as candidates for CLUSTER or pg_repack
+    - Schedule pg_repack for critical bloated tables during maintenance window
+    - Monitor TOAST table bloat for tables with large variable-length columns
+    - Identify pg_catalog table bloat (pg_statistic is a common victim)
+
+  - Slow Query Review
+    - Review pg_stat_statements top N queries by total_time
+    - Review pg_stat_statements top N queries by mean_time
+    - Review queries with high rows_returned vs rows_fetched ratio
+    - Identify queries with high temp_blks_written (work_mem candidates)
+    - EXPLAIN ANALYZE candidate slow queries
+    - Identify queries with sequential scans on large tables
+    - Review new queries introduced since last week
+    - Track query performance trends week-over-week
+
+  - Log Rotation & Cleanup
+    - Verify automatic log rotation is working (log_rotation_age, log_rotation_size)
+    - Compress logs older than 1 day (gzip / logrotate)
+    - Delete logs older than retention policy (e.g., 30 days)
+    - Ship compressed logs to centralized log storage
+    - Verify log directory is not approaching disk capacity
+    - Confirm pgbouncer logs are also rotated
+
+  - Backup Testing (Staggered Weekly)
+    - Restore most recent backup to test/DR environment
+    - Verify PostgreSQL starts successfully on restored instance
+    - Run basic data validation queries post-restore
+    - Test PITR to a specific recovery target time
+    - Verify restore_command can retrieve WAL from archive
+    - Document restore time for RPO/RTO tracking
+
+  - Replication Topology Review
+    - Verify all expected standbys are connected and in sync
+    - Check replication slot health (none should be inactive)
+    - Verify logical replication subscriptions are active and lag is low
+    - Test switchover to standby in non-production equivalent
+
+  - Security Review (Weekly Spot Check)
+    - Review recently created/modified roles (pg_roles, pg_authid)
+    - Check for new entries in pg_hba.conf
+    - Review recently granted privileges (information_schema or pg_* catalog)
+    - Check for new superusers created without approval
+    - Verify SSL certificates expiry timeline
+
+- Monthly Maintenance
+
+  - Capacity Planning
+    - Review disk growth rate per database over past 30 days
+    - Project time-to-full for PGDATA and archive storage
+    - Review CPU and memory usage trends (monthly average vs peak)
+    - Review connection count trends and pool headroom
+    - Identify fastest-growing tables and plan archival or partitioning
+    - Review WAL generation rate trend (impact on archive storage)
+    - Plan hardware or cloud resource scaling if thresholds are approaching
+
+  - Security & Access Audit
+    - Full audit of all database roles and privileges
+    - Identify unused roles (no logins in past 30 days)
+    - Verify principle of least privilege is applied
+    - Review GRANT/REVOKE changes in past month
+    - Check for public schema privilege exposure (PostgreSQL 14 and earlier)
+    - Review pg_hba.conf for overly permissive entries (0.0.0.0/0)
+    - Audit superuser accounts and application accounts
+    - Check SSL certificate validity and expiry dates
+    - Review password policies and last password change dates
+    - Verify row-level security (RLS) policies are intact if used
+
+  - Patch & Version Management
+    - Check current PostgreSQL minor version vs latest available
+    - Review release notes for critical bug fixes and security patches
+    - Plan and schedule minor version upgrade
+    - Test minor version upgrade on staging environment
+    - Plan major version upgrade path (pg_upgrade testing)
+    - Check extension versions (SELECT * FROM pg_available_extensions)
+    - Update contrib extensions and third-party extensions if needed
+    - Coordinate OS-level patching with database restarts
+
+  - Configuration Review
+    - Review postgresql.conf parameters against current workload
+    - Validate shared_buffers (typically 25% of RAM)
+    - Validate effective_cache_size (typically 50-75% of RAM)
+    - Validate work_mem (consider connections * parallel workers * work_mem)
+    - Validate maintenance_work_mem for vacuum/index operations
+    - Validate max_wal_size and checkpoint_completion_target
+    - Validate autovacuum parameters against table sizes and dead tuple rates
+    - Review wal_level, max_wal_senders, max_replication_slots
+    - Review logging parameters for completeness vs disk cost
+    - Check for deprecated parameters (check logs for warnings)
+    - Review shared_preload_libraries for needed and unused extensions
+    - Validate connection limits (max_connections, reserved connections)
+    - Check for parameters overridden in postgresql.auto.conf
+
+  - Failover & DR Drills
+    - Execute planned failover to standby (full promotion test)
+    - Verify application failover mechanism (DNS, VIP, HAProxy)
+    - Verify standby can accept writes after promotion
+    - Rebuild old primary as new standby after failover test
+    - Document failover time (RTO measurement)
+    - Test Patroni manual switchover (patronictl switchover)
+    - Verify etcd/Consul/ZooKeeper quorum is healthy
+    - Test read routing to replica still works post-switchover
+    - Verify connection pooler (pgbouncer) re-routes after failover
+
+  - Backup Strategy Validation
+    - Full end-to-end backup and restore test
+    - PITR restore to a specific point in time and validate data
+    - Verify backup encryption and decryption process
+    - Verify backup retention policy is enforced (old backups deleted)
+    - Review backup storage costs and optimize if needed
+    - Validate pg_verifybackup reports no issues on recent backups
+    - Test WAL-G / pgBackRest restore on isolated environment
+    - Measure backup duration and restore duration (RTO/RPO metrics)
+
+  - Schema & Object Review
+    - Check for orphaned tables (no owner, no application access)
+    - Review large tables for partitioning opportunities
+    - Check sequences for approaching max value
+    - Identify tables with missing primary keys
+    - Review foreign key constraints for missing supporting indexes
+    - Identify tables with no recent DML (archival candidates)
+    - Check for duplicate or redundant indexes
+    - Review constraints (NOT NULL, CHECK) for completeness
+
+- Quarterly / Annual Operations
+
+  - Disaster Recovery Audit
+    - Full DR test from offsite or cloud backup storage
+    - Simulate complete primary site failure
+    - Measure actual RPO and RTO vs targets
+    - Document and resolve gaps found during DR test
+    - Review DR runbooks for accuracy and completeness
+    - Test backup decryption and decompression in isolated environment
+
+  - Performance Benchmarking
+    - Run pgbench baseline on primary database
+    - Compare results with historical benchmarks
+    - Run representative workload replay (pg_replay or custom)
+    - Benchmark VACUUM throughput on large tables
+    - Review query plan changes after PostgreSQL version upgrades
+
+  - Architecture Review
+    - Review replication topology (add/remove standbys)
+    - Review connection pooling strategy (pgbouncer topology)
+    - Review read/write splitting configuration
+    - Review partitioning strategy for large tables
+    - Review indexing strategy holistically
+    - Evaluate columnar storage extensions (citus, hydra) if applicable
+    - Review high availability tool (Patroni, repmgr, Pacemaker) version
+    - Evaluate migration to newer PostgreSQL major version
+
+  - Documentation Update
+    - Update runbooks for all critical failure scenarios
+    - Update network and architecture diagrams
+    - Update user and role inventory
+    - Update backup and recovery procedures
+    - Update monitoring threshold documentation
+
+
+================================================================================
+SECTION 2: FAILURE HANDLING
+================================================================================
+
+FAILURE HANDLING
+
+- Startup Failures
+
+  - Corrupted or Missing pg_control File
+    - Error: "could not open file 'global/pg_control': No such file or directory"
+    - Error: "invalid primary checkpoint record"
+    - Error: "invalid secondary checkpoint record"
+    - Error: "could not locate a valid checkpoint record"
+    - Recovery: restore pg_control from backup or replica
+    - Last resort: pg_resetwal (causes data loss, document fully)
+    - Steps to use pg_resetwal safely
+    - Verifying data integrity after pg_resetwal
+
+  - WAL Corruption or Missing WAL Segments
+    - Error: "could not open file 'pg_wal/XXXXXXXXX': No such file or directory"
+    - Error: "invalid resource manager ID in primary checkpoint record"
+    - Startup waiting for WAL segment that does not exist
+    - Recovery: restore missing WAL from archive using restore_command
+    - WAL segment was deleted manually or by script error
+    - pg_wal directory was accidentally deleted (rm -rf)
+    - WAL segment is present but corrupted (bit flip, storage error)
+    - Using pg_waldump to inspect WAL content
+    - pg_resetwal as last resort with data loss acknowledgment
+
+  - Incompatible Data Directory / Version Mismatch
+    - Error: "database files are incompatible with server"
+    - Error: "The data directory was initialized by PostgreSQL version X, which is not compatible with this version Y"
+    - Cause: wrong PostgreSQL binary version launched against PGDATA
+    - Cause: attempted in-place upgrade without pg_upgrade
+    - Recovery: launch correct PostgreSQL version binary
+    - Recovery: use pg_upgrade for major version migration
+    - Validating pg_upgrade compatibility before running
+
+  - File Permission Errors at Startup
+    - Error: "could not read file 'global/pg_control': Permission denied"
+    - Error: "could not create lock file '/var/run/postgresql/.s.PGSQL.5432.lock': Permission denied"
+    - Cause: data directory ownership changed (not owned by postgres user)
+    - Cause: PostgreSQL binary run as wrong user
+    - Fix: chown -R postgres:postgres PGDATA
+    - Fix: verify systemd service User= directive
+    - Checking PGDATA permissions (should be 0700)
+    - Verifying pg_wal and pg_log subdirectory permissions
+
+  - Disk Full at Startup
+    - Error: "could not write to file 'pg_wal/...': No space left on device"
+    - Error: "could not create file 'postmaster.pid': No space left on device"
+    - Cannot write PID file, postmaster fails silently
+    - WAL cannot be created, startup blocked
+    - Steps: identify large files consuming space, clear logs, move/delete WAL copies
+    - Freeing space on WAL volume vs data volume
+    - Preventive: separate pg_wal to dedicated partition
+
+  - Shared Memory / IPC Failures
+    - Error: "could not create shared memory segment: Invalid argument"
+    - Error: "DETAIL: Failed system call was shmget(key=X, size=Y, 0600)"
+    - Cause: kernel.shmmax or kernel.shmall too low for shared_buffers
+    - Error: "semget failed: No space left on device"
+    - Cause: kernel.sem SEMMNS or SEMMNI too low
+    - Stale shared memory segment left by previous crash (ipcrm)
+    - Fix: tune /etc/sysctl.conf for SHMMAX/SHMALL/SEM parameters
+    - Using huge pages (huge_pages = on) and related kernel config
+    - Verifying huge page availability before starting PostgreSQL
+
+  - Port Conflict
+    - Error: "could not bind IPv4 address 0.0.0.0: Address already in use"
+    - Another PostgreSQL instance running on same port
+    - Stale postmaster.pid from previous crash
+    - Fix: identify conflicting process (ss -tlnp, lsof -i :5432)
+    - Fix: remove stale postmaster.pid if process no longer exists
+    - Configuring different port for additional instances
+
+  - Missing or Invalid Configuration Files
+    - Error: "could not open configuration file 'postgresql.conf': No such file or directory"
+    - Syntax error in postgresql.conf causing startup failure
+    - Error: invalid value for parameter in postgresql.conf
+    - standby.signal missing when standby is expected to run in recovery
+    - recovery.conf present but ignored (PostgreSQL 12+) causing confusion
+    - primary_conninfo configured but standby.signal absent
+    - Using pg_ctl check or pg_configfile_settings to validate before restart
+
+  - Locale or Encoding Mismatch
+    - Error: "invalid locale name" at startup after OS upgrade
+    - Database initdb with locale not available on current OS
+    - LC_COLLATE mismatch after OS glibc upgrade
+    - Encoding mismatch causing initialization failure
+    - Fix: install missing locale package on OS
+    - Consequence: index corruption risk from locale change, require REINDEX
+
+  - Checkpoint Record Issues
+    - Error: "invalid next transaction ID"
+    - Error: "invalid next OID"
+    - Error: "invalid next multixact ID"
+    - Typically indicates pg_control is inconsistent with data files
+    - After forced/hard shutdown, needing crash recovery
+    - Crash recovery loop if WAL required for crash recovery is missing
+
+  - Recovery Configuration Issues
+    - restore_command returns error (archive not accessible, script not executable)
+    - recovery_target_time in future causing standby to wait indefinitely
+    - recovery_target_action = 'pause' leaving cluster in read-only recovery mode
+    - recovery_target_timeline = 'latest' vs specific timeline mismatch
+    - promote_trigger_file path incorrect
+    - postgresql.conf changes not reloaded before restart (syntax error)
+
+  - Tablespace Startup Issues
+    - Symbolic link in pg_tblspc points to non-existent directory
+    - Tablespace directory not mounted at startup (NFS not mounted, LUN not attached)
+    - Wrong permissions on tablespace directory
+    - Tablespace device not available (SAN path not connected)
+
+  - OS-Level Startup Issues
+    - systemd service not configured with correct PGDATA
+    - systemd EnvironmentFile missing PGDATA variable
+    - Service dependency on network or NFS mount not declared (Before=/After=)
+    - Conflicting startup scripts (init.d vs systemd)
+    - SELinux / AppArmor blocking PostgreSQL file access
+
+- Connection Failures
+
+  - Authentication Failures
+    - Error: "FATAL: no pg_hba.conf entry for host 'X', user 'Y', database 'Z', SSL off"
+    - Error: "FATAL: password authentication failed for user 'X'"
+    - Error: "FATAL: Ident authentication failed for user 'X'"
+    - Error: "FATAL: peer authentication failed for user 'X'"
+    - Error: "FATAL: GSSAPI authentication failed for user 'X'"
+    - Error: "FATAL: LDAP authentication failed for user 'X'"
+    - Error: "FATAL: PAM authentication error: Authentication failure"
+    - SCRAM-SHA-256 vs MD5 client driver mismatch
+    - pg_hba.conf entry exists but in wrong order (more specific must come first)
+    - pg_hba.conf entry uses wrong CIDR notation
+    - Password correct but expired (passwordexpirydate)
+    - Password contains special characters not escaped in connection string
+    - LDAP server unreachable causing authentication timeout
+    - Kerberos keytab expired or missing
+    - Host-based authentication missing entry for replication user
+
+  - Connection Limit Exceeded
+    - Error: "FATAL: too many connections"
+    - Error: "FATAL: remaining connection slots are reserved for non-replication superuser connections"
+    - max_connections value too low for workload
+    - superuser_reserved_connections consumed by application (not just superusers)
+    - Connection leak: application not returning connections to pool
+    - Connection pool not configured correctly (pool size too small)
+    - pgbouncer max_client_conn exceeded
+    - pgbouncer pool_size per database/user too small
+    - Long-lived idle connections consuming slots
+    - Monitoring: never let active connections exceed 80% of max_connections
+
+  - SSL / TLS Failures
+    - Error: "SSL connection has been closed unexpectedly"
+    - Error: "SSL error: certificate verify failed"
+    - Server SSL certificate expired
+    - Client certificate expired or revoked
+    - Intermediate CA certificate not included in server chain
+    - TLS version mismatch (client requires TLS 1.3, server allows only 1.2)
+    - ssl_ca_file not configured for client certificate verification
+    - Cipher suite mismatch between client and server
+    - ssl_cert_file or ssl_key_file permissions too permissive (must be 0600)
+    - PostgreSQL compiled without SSL support
+    - Certificate CN/SAN mismatch vs hostname used in connection string
+    - Renewing SSL certificates without reloading PostgreSQL (pg_reload_conf())
+
+  - Network / Firewall Issues
+    - Connection refused: PostgreSQL not listening on expected address
+    - listen_addresses = 'localhost' only, external connections blocked
+    - Firewall blocking port 5432 (iptables, nftables, security group)
+    - Network ACL blocking traffic between app and DB subnet
+    - DNS resolution failure for hostname in connection string
+    - TCP connection established but hangs (pg_hba or SSL handshake issue)
+    - Network MTU mismatch causing packet fragmentation
+    - VPN or bastion host connectivity issue
+    - Connection timeout due to network latency > connect_timeout
+
+  - Database / Role Not Found
+    - Error: "FATAL: database 'X' does not exist"
+    - Error: "FATAL: role 'X' does not exist"
+    - Application connecting to wrong database name
+    - Database dropped accidentally
+    - Role dropped but connection string not updated
+    - Case sensitivity in database/role names
+
+  - Service Not Running
+    - Error: "could not connect to server: Connection refused — Is the server running on host 'X' and accepting TCP/IP connections on port 5432?"
+    - PostgreSQL service crashed
+    - PostgreSQL service not started after server reboot (systemctl enable not set)
+    - Wrong PGPORT in application configuration
+    - PostgreSQL listening on Unix socket only, application connecting via TCP
+
+  - pgbouncer-Specific Failures
+    - pgbouncer not started or crashed
+    - pgbouncer config pointing to wrong PostgreSQL host/port
+    - pgbouncer auth_file outdated (password changed in PostgreSQL but not in userlist.txt)
+    - pgbouncer using md5 but PostgreSQL requires scram-sha-256
+    - Transaction pooling mode: application using prepared statements (not compatible)
+    - Session variable or SET commands not surviving across pool reuse
+    - pgbouncer max_db_connections per database exhausted
+    - pgbouncer admin console locked out
+
+  - Authentication Method Configuration Issues
+    - trust authentication enabled in production (security risk / allowing anyone)
+    - reject rule in pg_hba.conf incorrectly placed
+    - peer authentication failing because OS username != PostgreSQL username
+    - MD5 used but pg_shadow has SCRAM verifier (password needs reset)
+    - pg_hba.conf reload not performed after changes (pg_reload_conf())
+
+- Performance Failures
+
+  - Slow Query / Query Regression
+    - Missing index causing sequential scan on large table
+    - Index exists but not selected by planner (bad statistics)
+    - Statistics not updated (ANALYZE not run, autovacuum behind)
+    - Significant row count change without statistics update
+    - Wrong join order chosen by planner
+    - Nested loop chosen over hash join on large datasets
+    - enable_seqscan, enable_hashjoin, enable_nestloop hints needed
+    - Parallel query disabled or max_parallel_workers_per_gather = 0
+    - Function call in WHERE clause preventing index use
+    - Implicit type cast preventing index use (varchar vs text, int vs bigint)
+    - LIKE with leading wildcard disabling B-tree index
+    - Planner using index that is bloated and slower than seqscan
+    - Partition pruning not working due to data type mismatch
+    - pg_stat_statements reset wiping history of bad query
+    - Query regression after PostgreSQL minor version upgrade (planner changes)
+    - work_mem too low causing multiple disk sort passes
+    - High temp_blks_written indicating disk spill
+
+  - Table and Index Bloat
+    - Accumulation of dead tuples not removed by autovacuum
+    - Autovacuum disabled or too throttled to keep up
+    - Long-running transactions preventing VACUUM from removing dead tuples
+    - Autovacuum cannot acquire lock on table
+    - Table bloat exceeding 30-50% causing slow sequential scans
+    - Index bloat causing index pages to be inefficient
+    - B-tree index bloat from high DELETE/UPDATE workload
+    - Bloat growing faster than pg_repack can keep up
+    - TOAST table bloat from large text/bytea columns
+    - pg_catalog bloat: pg_statistic, pg_attribute, pg_depend
+
+  - Autovacuum Issues
+    - autovacuum = off in postgresql.conf
+    - autovacuum_max_workers too low (default 3 for busy system)
+    - autovacuum throttled by autovacuum_vacuum_cost_limit (too low)
+    - autovacuum_vacuum_scale_factor too high for large tables (use autovacuum_vacuum_threshold per-table)
+    - autovacuum constantly cancelled by conflicting long transactions
+    - Wraparound vacuum (emergency) impacting production performance
+    - Anti-wraparound vacuum causing I/O storm
+    - autovacuum_freeze_max_age too high, vacuum deferred too long
+    - Tables with aggressive INSERTs generating dead tuples faster than autovacuum
+    - autovacuum worker starved by manual VACUUM FULL or CLUSTER
+
+  - Lock Contention
+    - AccessExclusiveLock from DDL (ALTER TABLE, CREATE INDEX non-concurrently) blocking all reads/writes
+    - ALTER TABLE waiting behind long SELECT (lock queue)
+    - Lock queue building up (many queries waiting behind single blocker)
+    - Idle in transaction holding RowExclusiveLock
+    - Advisory lock contention (pg_advisory_lock)
+    - ShareLock from VACUUM conflicting with application queries on standby
+    - ExclusiveLock from REFRESH MATERIALIZED VIEW blocking reads
+    - Autovacuum acquiring ShareUpdateExclusiveLock conflicting with DDL
+    - lock_timeout not set, causing indefinite blocking
+    - deadlock_timeout too high (default 1s fine, but should be monitored)
+
+  - Deadlocks
+    - Circular dependency on row-level locks between two transactions
+    - Application logic not consistent in row update order
+    - Multiple UPDATE statements from different transactions locking rows in reverse order
+    - Deadlock from foreign key checks acquiring RowShareLock
+    - Deadlock logs showing query text (enable log_lock_waits)
+    - Deadlock frequency spike: code change review needed
+    - Workaround: enforce consistent row locking order in application
+
+  - Checkpoint Performance Issues
+    - Frequent checkpoints due to max_wal_size too low
+    - checkpoints_req >> checkpoints_timed (tuning required)
+    - I/O spike during checkpoint causing query latency spike
+    - checkpoint_completion_target too low (spreading writes not enough)
+    - Disk cannot sustain checkpoint write throughput
+    - bgwriter not cleaning buffers fast enough (bgwriter_lru_maxpages)
+    - Full page writes overhead (first write after checkpoint = full page)
+    - wal_compression can help reduce FPW overhead
+
+  - Memory Pressure
+    - shared_buffers too small (high blks_read, low cache hit ratio)
+    - work_mem too low causing heavy temp file creation for sorts/hashes
+    - maintenance_work_mem too small causing slow VACUUM and CREATE INDEX
+    - Operating system OOM killer terminating PostgreSQL backends
+    - Postgres shared memory + OS buffers competing for RAM
+    - huge_pages not configured (OS memory allocation overhead)
+    - Memory leak in PL/Python, PL/Java, or other procedural language extensions
+
+  - Temporary File Explosion
+    - work_mem too low for complex sort/hash operations
+    - temp_file_limit not configured (single query can fill disk)
+    - Multiple parallel workers each using work_mem * sort buffers
+    - Hash join or hash aggregate spilling due to large hash tables
+    - pgsql_tmp directory filling up data partition
+    - Temporary tables consuming excessive space
+    - COPY operations with large intermediate sorts
+
+  - Connection Overload / Context Switching
+    - Too many active connections causing OS CPU context switching overhead
+    - Max connections set too high without connection pooling
+    - Thread-per-connection model hitting OS process limit
+    - Application not using connection pooling at all
+    - Connection storm: application startup spike overwhelming PostgreSQL
+
+  - Replication-Induced Performance Issues
+    - Synchronous replication causing COMMIT latency (standby slow or down)
+    - synchronous_commit = on with synchronous_standby_names slowing all writes
+    - Replication lag causing application to read stale data from replica
+    - Large streaming replication blocking vacuum (hot_standby_feedback)
+    - Logical replication worker consuming CPU/I/O on subscriber
+    - WAL generation rate exceeding network bandwidth to standby
+
+  - Statistics / Planner Issues
+    - default_statistics_target too low for skewed data distributions
+    - Per-column statistics target not increased for high-cardinality columns
+    - Extended statistics (CREATE STATISTICS) not created for correlated columns
+    - Planner underestimating rows (stale or absent statistics)
+    - enable_partitionwise_join = off on partitioned tables
+    - cursor_tuple_fraction wrong for non-cursor workloads
+    - from_collapse_limit or join_collapse_limit too low for complex queries
+
+  - CPU Spike Scenarios
+    - Unoptimized regex in WHERE clause causing CPU burn
+    - PL/pgSQL function with loops over large datasets
+    - pgcrypto encryption operations on high-frequency queries
+    - JSON parsing of large documents in SQL
+    - Recursive CTEs without proper termination conditions
+    - Excessive use of DISTINCT or ORDER BY on large unsorted datasets
+    - Parallel query workers consuming all CPU
+    - autovacuum anti-wraparound running during peak hours
+
+- Disk / Storage Failures
+
+  - Data Directory (PGDATA) Disk Full
+    - PostgreSQL cannot write new data pages: "could not write to file"
+    - Transaction commits fail: "no space left on device"
+    - WAL cannot be written, causing crash
+    - Temporary files from queries filling data partition
+    - Log files growing unbounded filling data partition
+    - Immediate response: identify largest space consumers (du -sh /* | sort -rh)
+    - Emergency: move log directory to separate mount
+    - Emergency: delete old temporary files in pgsql_tmp
+    - Emergency: pg_log cleanup (compress and offload)
+    - Root cause: missing disk space monitoring alert
+
+  - WAL Directory (pg_wal) Disk Full
+    - WAL segments accumulate due to replication slot lag
+    - WAL segments accumulate due to archiving failure
+    - WAL segments accumulate due to max_wal_keep_size too high
+    - archive_command failing silently causing WAL pile-up
+    - Inactive replication slot holding WAL since restart_lsn
+    - Logical replication slot not advancing (consumer dead)
+    - Emergency: drop inactive replication slot (data loss for that consumer)
+    - Emergency: increase partition size or symlink pg_wal to larger volume
+    - max_slot_wal_keep_size: set to prevent unbounded WAL accumulation
+
+  - Archive Destination Disk Full or Unreachable
+    - archive_command failing because destination disk full
+    - archive_command failing because NFS/S3/SFTP unreachable
+    - Failed archiving causing pg_wal to grow on primary
+    - archive_status files accumulating in pg_wal/archive_status
+    - Fixing: clear archive destination, fix connectivity, restart archiving
+    - Verifying: pg_stat_archiver last_archived_wal advancing again
+
+  - Filesystem Corruption
+    - Disk hardware error causing filesystem to remount read-only
+    - Error: "Read-only file system" on writes
+    - ext4/XFS journal corruption requiring fsck
+    - Bad blocks on disk detected by OS (dmesg errors)
+    - PostgreSQL page checksum failures due to underlying storage corruption
+    - Steps: stop PostgreSQL cleanly, run fsck on unmounted filesystem
+    - LVM snapshot inconsistency if snapshot taken without consistent backup
+
+  - I/O Performance Degradation
+    - Disk I/O latency spike causing query timeouts
+    - RAID array rebuild consuming I/O bandwidth
+    - Noisy neighbor on shared storage (cloud environments)
+    - NFS server performance degradation or packet loss
+    - SAN path failure causing multipath reconnection latency
+    - iowait > 20% indicating I/O bottleneck
+    - Using iostat, iotop to identify PostgreSQL I/O patterns
+    - Moving write-heavy tablespaces to faster storage (NVMe)
+
+  - Tablespace Issues
+    - Tablespace mount point not mounted at PostgreSQL startup
+    - Symbolic link in pg_tblspc broken after disk change
+    - Tablespace directory full while default data directory has space
+    - LUN detached while PostgreSQL is running
+    - NFS-mounted tablespace disconnecting during operation
+    - Object in tablespace cannot be accessed due to missing mount
+    - Moving tablespace to different location (ALTER TABLESPACE ... RENAME / symlink)
+
+  - RAID and Disk Hardware Failures
+    - Single disk failure in RAID-5/6 (degraded mode, no redundancy)
+    - Double disk failure in RAID-5 causing data loss
+    - RAID controller failure
+    - Disk replacement procedure while PostgreSQL is running
+    - Monitoring RAID health (megacli, storcli, mdadm)
+    - Write-back cache failure on RAID controller (data integrity risk)
+    - BBU (Battery Backup Unit) failure changing cache policy to write-through
+
+  - Transaction Log (pg_xact / CLOG) Issues
+    - pg_xact directory files missing or corrupted
+    - Error: "could not access status of transaction X"
+    - pg_xact filling a partition (unusual but possible with long transactions)
+    - pg_multixact directory issues (similar to pg_xact)
+
+  - Temporary File Storage Issues
+    - pgsql_tmp directory filling data partition
+    - temp_tablespaces not pointing to a volume with sufficient space
+    - Large sort operations from multiple sessions simultaneously filling temp space
+    - Orphaned temporary files from crashed backends (safe to delete when PG down)
+
+- Replication / HA Failures
+
+  - Streaming Replication Disconnect
+    - Network interruption between primary and standby
+    - wal_sender_timeout expiring (default 60s) without network activity
+    - wal_receiver_timeout expiring on standby side
+    - pg_hba.conf entry for replication user removed or changed
+    - Replication user password changed without updating .pgpass or primary_conninfo
+    - SSL certificate mismatch for replication connection
+    - Primary restarted and max_wal_senders capacity exceeded
+    - Standby falling too far behind during disconnect (cannot reconnect without WAL)
+    - Reconnect: check primary_conninfo, pg_hba.conf, network, SSL certs
+
+  - Replication Lag Spike
+    - Primary write load exceeds standby replay throughput
+    - Standby I/O slower than primary (different hardware)
+    - Standby running recovery conflicts (queries cancelling replay)
+    - Large transaction on primary causing lag burst
+    - Checkpoint on standby causing replay pause
+    - network bandwidth saturation between primary and standby
+    - max_standby_streaming_delay exceeded and queries cancelled
+    - Monitoring: replay_lag in pg_stat_replication, archive_status
+
+  - Replication Slot Problems
+    - Inactive replication slot holding WAL indefinitely
+    - Slot consumer (logical subscriber or standby) gone without dropping slot
+    - pg_wal filling due to retained WAL for slot
+    - max_slot_wal_keep_size: slot invalidated when WAL limit exceeded (PG 13+)
+    - Slot wal_status = 'lost': standby must be rebuilt from backup
+    - Accidental drop of active replication slot causing standby to disconnect
+    - Recreating slot: standby must do full pg_basebackup to re-sync
+
+  - Synchronous Replication Hang
+    - All synchronous standbys offline: primary COMMIT blocks indefinitely
+    - synchronous_standby_names configured but no standby matches
+    - Standby crashes during synchronous replication: primary write hangs
+    - Setting synchronous_commit = local as emergency to unblock primary
+    - ANY vs ALL quorum in synchronous_standby_names
+    - Standby network partition causing primary to hang without proper timeout
+    - wal_sender_timeout prevents infinite hang but must be configured
+
+  - Failover Failures (Patroni / Automated)
+    - Patroni health check failing due to network blip (false positive failover)
+    - etcd / Consul / ZooKeeper quorum lost: Patroni cannot elect leader
+    - Patroni DCS connection lost: cluster goes to read-only mode
+    - Patroni pause mode enabled: no automatic failover
+    - Standby not promoted due to pg_promote() failure
+    - VIP not moving after failover (keepalived or Corosync not functioning)
+    - Application connection still routed to old primary (DNS TTL)
+    - HAProxy health check not detecting new primary correctly
+    - Patroni bootstrap misconfiguration causing failed initialization
+    - manual failover: patronictl failover --master <node> --candidate <node>
+
+  - Split-Brain
+    - Both nodes believe they are primary (simultaneous writes)
+    - Network partition causing two leaders to be elected
+    - Consequence: diverged data on both nodes
+    - Detection: sequence divergence, timeline mismatch
+    - Resolution: determine which node has authoritative data
+    - Rebuilding lagging node as standby: pg_rewind or full pg_basebackup
+    - STONITH (Shoot The Other Node In The Head): fencing mechanism to prevent split-brain
+
+  - Standby Rebuild After Lag or Slot Loss
+    - Standby diverged too far, cannot reconnect via streaming
+    - Replication slot WAL status = 'lost'
+    - Full pg_basebackup required from primary to rebuild standby
+    - pg_rewind as faster alternative if timeline not too far diverged
+    - pg_rewind requires wal_log_hints = on or checksums enabled
+    - pg_basebackup during high write load (backup may take long)
+    - Ensuring enough WAL is available on primary during rebuild
+    - Rebuilding logical replication subscriber from scratch
+
+  - Logical Replication Issues
+    - Subscription worker error: table does not exist on subscriber
+    - Error: "logical replication worker for subscription 'X' has exited"
+    - DDL changes not replicated (logical replication replicates DML only)
+    - New table not added to publication: ALTER PUBLICATION ADD TABLE
+    - Unique constraint violation on subscriber blocking replication
+    - Subscriber data diverged (out-of-band DML on subscriber)
+    - Logical slot not advancing: subscriber down or slow
+    - WAL accumulation on primary due to idle logical slot
+    - Row filter or column list causing replication confusion
+    - Replicating partitioned tables: publication FOR ALL TABLES or specific
+    - Sequence values not replicated (must sync separately)
+
+  - Recovery Conflicts (Hot Standby)
+    - Error on standby: "canceling statement due to conflict with recovery"
+    - Cause: VACUUM on primary removing rows still visible to standby query
+    - Cause: DDL on primary conflicting with standby query
+    - Fix: hot_standby_feedback = on (prevents primary from removing needed rows)
+    - Risk of hot_standby_feedback: primary table bloat
+    - Increase max_standby_streaming_delay and max_standby_archive_delay
+    - Application should retry cancelled queries on standby
+    - Long-running analytics on standby increasing conflict frequency
+
+  - Cascading Replication Failures
+    - Intermediate standby (cascading source) goes down
+    - Leaf standbys disconnected from cascading standby
+    - Reconfigure leaf standbys to point directly to primary or other standby
+    - Cascading standby lag multiplied through chain
+    - recovery_min_apply_delay on cascading standby affecting chain
+
+  - Post-Failover Issues
+    - Old primary comes back online and tries to rejoin as primary (split-brain risk)
+    - New primary has different timeline: old standbys must be reconfigured
+    - pg_rewind needed to rewind old primary to new primary's timeline
+    - Sequences on new primary may have gaps after failover
+    - pgbouncer/HAProxy not routing to new primary
+    - Application sessions connected to old primary not reconnecting
+    - Logical replication slots invalidated after failover (must recreate on new primary)
+    - Synchronous standby configuration not updated to reflect new topology
+
+- Backup & Recovery Failures
+
+  - pg_basebackup Failures
+    - Error: "could not connect to the server" (check primary_conninfo, network, pg_hba)
+    - Error: "connection to server was lost" (network timeout during long backup)
+    - Error: "could not write to compressed file" (disk full on backup destination)
+    - Error: "permission denied" on backup destination directory
+    - wal_level not set to replica or logical: streaming WAL not available
+    - max_wal_senders exhausted: no sender slot available for backup
+    - pg_basebackup running against standby fails due to missing WAL on standby
+    - Backup takes too long: primary checkpoint required, checkpoint_timeout exceeded
+    - Partial backup: connection dropped midway, incomplete backup directory
+
+  - WAL Archive Missing for PITR
+    - archive_command failed silently for a range of WAL files
+    - WAL files were manually deleted from archive
+    - archive_cleanup_command removed WAL too aggressively
+    - pg_archivecleanup removed WAL needed for PITR target
+    - Restore fails: "requested WAL segment has already been removed"
+    - Backup taken without WAL streaming and WAL later removed from primary
+    - PITR impossible: gap in WAL archive detected
+
+  - Restore Failures
+    - Wrong recovery_target_time: database stops before target (too early)
+    - Wrong recovery_target_time: WAL not available past that point
+    - Recovery target not reached: database stops in recovery without promoting
+    - recovery_target_action = 'pause' leaves database in standby mode
+    - Database system identifier mismatch: restored backup from different cluster
+    - Timeline conflict: restoring to a timeline that does not exist in archive
+    - Restoring with wrong PostgreSQL version binary
+    - Extension binaries not installed on restore server (shared library error)
+    - OS library version mismatch (glibc) causing PostgreSQL binary failure
+    - Locale / lc_collate mismatch causing indexes to need REINDEX after restore
+    - Restoring over running PostgreSQL instance (file corruption)
+
+  - Logical Backup (pg_dump) Failures
+    - Error: "permission denied for table X" (user lacks SELECT on all objects)
+    - Error: "could not serialize access due to concurrent update" (use --serializable-deferrable for consistent dump)
+    - Error: "query was cancelled" (statement_timeout too low during dump)
+    - Large object dump failure (user lacks permission on lo)
+    - pg_dump using deprecated --oid flag on newer versions
+    - pg_dump memory issue for extremely large databases
+    - pg_dump aborted: connection to server was lost (network issue)
+    - pg_dumpall fails: role without LOGIN being dumped with syntax error
+    - Output file destination full
+
+  - pg_restore Failures
+    - Error: "could not execute query: relation already exists" (use -c for --clean)
+    - Error: "extension 'X' is not available" (install extension first)
+    - Error: "could not open extension control file" (extension not installed on OS)
+    - Collation 'X' does not exist on target system
+    - pg_restore fails on partial restore (-t table): foreign key constraints
+    - Sequence not restored correctly (nextval out of sync with data)
+    - Schema-only restore missing data: --schema-only used accidentally
+    - Restore target database not empty and --clean not specified
+    - Restore fails due to object ownership differences
+
+  - Backup Corruption
+    - Checksum verification fails (pg_verifybackup reports errors)
+    - Tar archive corrupted mid-transfer (partial download)
+    - WAL segment checksums invalid
+    - Backup file modified or partially overwritten
+    - Compression corruption (gzip -t fails)
+    - Encrypt/decrypt key lost or mismatched
+    - Backup taken while database in inconsistent state (wrong method)
+    - LVM snapshot backup without pg_start_backup leads to corrupted backup
+
+  - pgBackRest / Barman / WAL-G Specific Failures
+    - Stanza not created or mismatched with cluster
+    - Repository permissions incorrect
+    - WAL segment upload failing (S3 connectivity, credentials expired)
+    - Archive push queue backing up (upload slower than WAL generation)
+    - Restore WAL path mismatch between backup config and recovery config
+    - Incremental backup base backup expired before full backup taken
+    - Retention policy removing backups before they can be used for PITR
+    - Parallel restore not working due to insufficient restore_jobs config
+    - pgBackRest info showing backup as invalid
+    - Cloud object storage bucket permissions or lifecycle policy deleting WAL
+
+  - Backup Verification Failures
+    - Backup never tested: discovered only during actual restore need
+    - pg_verifybackup reports data file checksums mismatch
+    - Database starts after restore but queries return wrong data
+    - Missing WAL for PITR only discovered during DR drill
+    - Restore test to different server fails due to OS differences
+    - Backup catalog out of sync with actual backup files
+
+- Data Corruption / Critical Failures
+
+  - Page-Level Corruption
+    - Error: "invalid page in block X of relation base/Y/Z"
+    - Error: "page verification failed, calculated checksum X but expected Y"
+    - Cause: disk hardware error writing partial page
+    - Cause: storage bug returning stale data
+    - Cause: RAM bit flip writing corrupted data (ECC RAM importance)
+    - Cause: filesystem bug (ext4 with barriers off)
+    - Cause: VM snapshot inconsistency
+    - Recovery: restore from backup, potentially with PITR
+    - Using zero_damaged_pages = on as temporary workaround (data loss)
+    - Enabling checksums (pg_checksums) to detect future corruption early
+    - Enabling checksums requires offline cluster + significant time for large DBs
+
+  - Index Corruption
+    - Unique index contains duplicate values
+    - Index entry pointing to deleted or non-existent heap tuple
+    - Error: "could not read block X in file 'base/Y/Z'"
+    - Corruption after locale/collation change without REINDEX
+    - Corruption after restore with different glibc version
+    - REINDEX CONCURRENTLY to rebuild without locking
+    - amcheck extension to validate index consistency without reindex
+    - pg_dump / pg_restore cycle to rebuild all indexes
+
+  - System Catalog Corruption
+    - Corrupted pg_class entries causing relation lookup failure
+    - Corrupted pg_attribute causing column access failure
+    - Corrupted pg_proc causing function calls to fail
+    - Corrupted pg_type causing type resolution failure
+    - Error accessing pg_statistic causing planner failures
+    - Recovery: very difficult; may require restoring from backup
+    - Workaround: direct catalog table update via single-user mode (last resort)
+
+  - TOAST Table Corruption
+    - Missing toast chunk for large value (chunk_id not found)
+    - Error: "missing chunk number X for toast value Y"
+    - Corrupted compressed TOAST data causing decompression failure
+    - Recovery: pg_dump with --exclude-table-data for affected table, restore known data
+    - Identifying which tables have TOAST using pg_class.reltoastrelid
+
+  - WAL Corruption
+    - WAL segment bit flip causing recovery failure
+    - Error: "invalid magic number X in log file Y, segment Z"
+    - Error: "invalid record length at X/Y: wanted Z, got 0"
+    - Recovery: WAL corruption prevents PITR past that point
+    - Fallback: restore to last known good checkpoint before corruption
+    - pg_waldump to inspect WAL content up to corruption point
+
+  - Transaction Status (CLOG/pg_xact) Corruption
+    - Error: "could not access status of transaction X"
+    - pg_xact file missing or corrupted
+    - Recovery: pg_resetwal (data loss), restore from backup
+    - Consequence: transaction visibility broken across database
+
+  - Data Checksum Failures
+    - checksums not enabled: corruption goes undetected
+    - Enabling checksums on live cluster (pg_checksums --enable, offline)
+    - False checksum failures from storage layer bitrot
+    - Handling: zero_damaged_pages to skip corrupted blocks (last resort)
+    - Monitoring: count of checksum failures in pg_stat_database.checksum_failures
+
+  - Filesystem Snapshot Inconsistency
+    - LVM/SAN snapshot taken without freezing database
+    - Recovery from such snapshot may require crash recovery
+    - Crash recovery may fail if WAL was also snapshotted inconsistently
+    - Best practice: always use pg_start_backup() / pg_stop_backup() for file-level backups (PG < 15)
+    - PG 15+: pg_backup_start() / pg_backup_stop() API change
+
+  - Corruption from pg_resetwal Misuse
+    - pg_resetwal used on running instance or without full shutdown
+    - pg_resetwal used to bypass corruption without understanding consequences
+    - Consequence: transaction IDs, LSN positions reset causing data inconsistency
+    - All existing data becomes inaccessible or inconsistent
+    - pg_resetwal should only be used as absolute last resort with DBA approval
+
+  - Partial Write Corruption (fsync Disabled)
+    - fsync = off in postgresql.conf: no guarantee of write order
+    - OS crash with fsync = off: partial writes leave database corrupt
+    - Corruption may not be visible immediately (delayed discovery)
+    - NEVER disable fsync in production
+
+  - Replication-Propagated Corruption
+    - Corruption on primary is streamed to all standbys
+    - pg_checksums on primary would detect corruption before replication
+    - Logical corruption (wrong data due to bug) also replicated
+    - Need backup before corruption occurred for recovery
+
+- Configuration / Human Errors
+
+  - Accidental Object Drops
+    - DROP TABLE on wrong table (wrong schema, wrong database)
+    - DROP DATABASE while still used by applications
+    - DROP SCHEMA CASCADE deleting all objects in schema
+    - TRUNCATE TABLE without WHERE clause (equivalent to delete all)
+    - TRUNCATE CASCADE accidentally truncating dependent tables
+    - DELETE without WHERE clause (full table delete)
+    - DROP INDEX on critical production index causing full scans
+    - DROP COLUMN removing data without ALTER TABLE verification
+    - DROP EXTENSION CASCADE removing all dependent objects
+
+  - Permission Mistakes
+    - REVOKE ALL ON SCHEMA public FROM public causing wide application failure
+    - REVOKE ALL FROM application_user locking out application
+    - GRANT SUPERUSER to application account (security violation)
+    - GRANT ALL on all tables to wrong role
+    - Accidentally creating role without NOLOGIN (security gap)
+    - Removing pg_hba.conf entry for application IP causing connection failure
+    - Changing authentication method (md5 -> scram) without updating application
+
+  - postgresql.conf Misconfiguration
+    - shared_buffers set too high (> 40% RAM): OOM killer triggered
+    - work_mem set too high with max_connections: memory exhaustion
+    - max_connections set very high without pgbouncer: OS process limit hit
+    - wal_level = minimal: replication and logical decoding broken
+    - wal_level = minimal: pg_basebackup cannot stream WAL
+    - fsync = off: data corruption risk on crash
+    - synchronous_commit = off: recent transaction data loss on crash
+    - autovacuum = off: bloat and wraparound risk
+    - max_wal_size too small: constant checkpointing, I/O overhead
+    - log_statement = all: log flood filling disk
+    - log_min_duration_statement = 0: every query logged, disk fills
+    - statement_timeout set too low: critical maintenance queries failing
+    - lock_timeout not set: DDL operations waiting indefinitely
+    - checkpoint_timeout too short with small max_wal_size: checkpoint storm
+    - hot_standby = off on standby: no read queries allowed
+    - Typo in postgresql.conf causing startup failure
+
+  - pg_hba.conf Mistakes
+    - Removing all connection entries: no connections possible
+    - Wrong CIDR mask locking out IP range
+    - trust on all IPv4 connections in production (security)
+    - reject placed incorrectly blocking legitimate users
+    - Changing auth method without client driver support
+    - Not reloading after changes (pg_ctl reload / SELECT pg_reload_conf())
+
+  - Recovery Configuration Mistakes
+    - Running pg_resetwal on a production primary
+    - Restoring backup directly over running production database
+    - Incorrect restore_command path (wrong archive tool, wrong bucket)
+    - recovery_target_time set in future: standby waits indefinitely
+    - recovery_target_action not set to 'promote': server stays in recovery
+    - recovery_target_inclusive = false: losing desired transaction
+    - Starting standby without standby.signal: starts as primary (split-brain risk)
+
+  - Maintenance Window Mistakes
+    - VACUUM FULL on large table during peak hours: exclusive lock, hours of downtime
+    - CLUSTER on large table during peak hours: similar to VACUUM FULL
+    - CREATE INDEX without CONCURRENTLY: full table lock
+    - ALTER TABLE on high-traffic table without lock_timeout
+    - Running pg_dump with --lock-wait-timeout not set in busy system
+    - Promoting standby accidentally (wrong patronictl command)
+    - Stopping wrong PostgreSQL instance on multi-instance server
+    - pg_ctl stop -m immediate causing crash recovery on next start
+
+  - Backup Script Errors
+    - Backup script overwrites previous backup (missing timestamp in filename)
+    - Backup script without exit code check: silent failures
+    - archive_command without proper error handling: ignoring failures
+    - Cron job running during wrong hours conflicting with maintenance
+    - Backup script deleting WAL before PITR window requirement
+    - Backup user lacking replication privilege (pg_basebackup fails)
+    - S3 credentials expired: backup silently failing for weeks
+
+  - Migration and Upgrade Mistakes
+    - pg_upgrade without checking extension compatibility first
+    - pg_upgrade without testing on non-production first
+    - Upgrading while logical replication slots active (not supported by pg_upgrade)
+    - Restoring pg_dump from newer PostgreSQL version into older version
+    - Collation change between versions requiring REINDEX ALL
+    - Missing extension binaries after upgrade (contrib modules)
+    - Application connecting before pg_upgrade --link completes
+    - Locale change on OS before database REINDEX after pg_upgrade
+
+  - Scripting and Automation Errors
+    - Cron job running VACUUM FULL on all tables every night: production impact
+    - Automation deleting pg_wal contents thinking it is a log directory
+    - Monitoring script hammering pg_stat_statements with resets
+    - Incorrect use of pg_terminate_backend in automation (killing active users)
+    - Deployment script running DROP TABLE IF EXISTS in wrong environment
+    - Runbook executed against wrong server (missing environment check)
+    - Chef/Ansible playbook modifying postgresql.conf without validation step
+
+
+================================================================================
+SECTION 3: OBSERVABILITY & MONITORING
+================================================================================
+
+OBSERVABILITY & MONITORING
+
+- Metrics Collection
+
+  - System-Level Metrics
+    - CPU
+      - Per-core CPU utilization (user, system, iowait, steal, nice)
+      - Overall CPU load average (1min, 5min, 15min)
+      - Context switches per second
+      - CPU ready (hypervisor steal) detection in VM environments
+      - CPU throttling on cgroups / containerized PostgreSQL
+    - Memory
+      - Total RAM, used, available, cached, buffers
+      - Swap usage (any non-zero swap is a warning)
+      - OOM killer event detection (dmesg, /var/log/syslog)
+      - PostgreSQL shared memory segment size
+      - Per-process RSS for each postgres backend
+      - Huge page allocation status
+    - Disk I/O
+      - Read and write IOPS per device
+      - Read and write throughput (MB/s) per device
+      - I/O await (average service time)
+      - I/O utilization (% busy)
+      - Queue depth per device
+      - Per-tablespace disk usage
+      - pg_wal directory size
+      - pgsql_tmp directory size
+    - Disk Space
+      - Filesystem usage % and available bytes per mount
+      - Inode usage % per filesystem
+      - Growth rate per partition (projected time-to-full)
+    - Network
+      - Throughput (bytes in/out) per interface
+      - Packet errors and drops per interface
+      - TCP retransmission rate
+      - TCP connection states (ESTABLISHED, TIME_WAIT, CLOSE_WAIT)
+      - Network latency between application tier and database tier
+      - Replication network bandwidth utilization
+    - Process Monitoring
+      - Total postgres process count
+      - Active (executing) backends count
+      - Idle backends count
+      - Idle in transaction backends count
+      - WAL sender process count and status
+      - WAL receiver process count and status
+      - Autovacuum worker count
+      - Background writer process presence
+      - Checkpointer process presence
+      - WAL writer process presence
+      - Logical replication worker process count
+
+  - PostgreSQL Internal Metrics
+    - Connection Metrics (pg_stat_activity, pg_stat_database)
+      - Total connections (numbackends per database)
+      - Active connections (state = 'active')
+      - Idle connections (state = 'idle')
+      - Idle in transaction connections (state = 'idle in transaction')
+      - Idle in transaction (aborted) connections
+      - Waiting for lock connections (wait_event_type = 'Lock')
+      - Connection utilization % (total / max_connections)
+      - Superuser connection utilization
+      - Connection age (oldest connection duration)
+      - pgbouncer: cl_active, cl_waiting, sv_active, sv_idle, sv_login
+
+    - Transaction Metrics (pg_stat_database)
+      - xact_commit (commits per second per database)
+      - xact_rollback (rollbacks per second per database)
+      - blk_read_time (time reading blocks from disk)
+      - blk_write_time (time writing blocks to disk)
+      - deadlocks (cumulative, rate of increase)
+      - conflicts (standby only: cumulative conflict count)
+      - temp_files, temp_bytes (per database)
+
+    - Query Performance Metrics (pg_stat_statements)
+      - Total calls per query
+      - Total execution time per query
+      - Mean execution time per query
+      - Standard deviation of execution time (high stddev = inconsistency)
+      - Rows returned per call
+      - Shared blocks hit vs read (cache hit ratio per query)
+      - Local blocks hit vs read (temp table cache ratio)
+      - Temp blocks written (work_mem spill indicator)
+      - WAL bytes generated per query
+      - Top N queries by total_time
+      - Top N queries by mean_time
+      - Top N queries by calls
+      - Top N queries by temp_blks_written
+      - Queries with high rows_returned / rows_fetched ratio
+      - Query plan changes detected via pg_stat_statements
+
+    - Lock Monitoring (pg_locks, pg_stat_activity)
+      - Total granted locks count
+      - Total waiting (not granted) locks count
+      - Locks waiting by mode (ShareLock, ExclusiveLock, AccessExclusiveLock)
+      - Top tables by lock contention
+      - Blocking chain depth (blocker -> blocked -> blocked by blocked)
+      - Oldest blocked query duration
+      - Deadlock frequency (pg_stat_database.deadlocks delta)
+      - Lock mode distribution
+      - Advisory lock usage
+
+    - Replication Metrics (pg_stat_replication, pg_stat_wal_receiver)
+      - Per standby: write_lag, flush_lag, replay_lag (bytes and time)
+      - Per standby: state (streaming, catchup, backup)
+      - Per standby: sync_state (async, sync, quorum, potential)
+      - Per standby: sent_lsn vs replay_lsn (bytes behind)
+      - Standby count (expected vs actual)
+      - WAL receiver: status, last_msg_receipt_time, last_msg_send_time
+      - WAL receiver: latest_end_lsn, latest_end_time
+      - Replication slot: active flag, restart_lsn age, wal_status
+      - Logical replication: pg_stat_subscription (received_lsn, latest_end_lsn, last_msg_receipt_time)
+      - Logical replication worker errors count
+
+    - WAL Metrics
+      - WAL generation rate (bytes per second): pg_wal_lsn_diff
+      - pg_wal directory size and segment count
+      - pg_stat_archiver: archived_count rate, failed_count, last_failed_time, last_archived_time
+      - Archive lag: current_wal - last_archived_wal (bytes behind)
+      - WAL segment size vs wal_keep_size compliance
+      - WAL level: confirm wal_level = replica or logical
+
+    - Checkpoint & Background Writer Metrics (pg_stat_bgwriter)
+      - checkpoints_timed (scheduled checkpoints)
+      - checkpoints_req (requested checkpoints — should be low)
+      - checkpoint_write_time (total time writing during checkpoints)
+      - checkpoint_sync_time (total time syncing during checkpoints)
+      - buffers_checkpoint (buffers written by checkpointer)
+      - buffers_clean (buffers written by background writer)
+      - maxwritten_clean (bgwriter stopped runs — memory pressure indicator)
+      - buffers_backend (buffers written directly by backends — bad sign)
+      - buffers_alloc (total buffers allocated)
+      - Checkpoint frequency (checkpoints per minute)
+
+    - Buffer Cache Metrics (pg_stat_database, pg_buffercache)
+      - Cache hit ratio per database: blks_hit / (blks_hit + blks_read)
+      - Overall cluster cache hit ratio
+      - pg_buffercache: buffer usage count distribution
+      - pg_buffercache: top relations by buffer count
+      - pg_buffercache: dirty buffer count
+      - pg_buffercache: buffer eviction rate (inferential)
+
+    - Autovacuum Metrics (pg_stat_user_tables, pg_stat_progress_vacuum)
+      - n_dead_tup per table
+      - n_live_tup per table
+      - Dead tuple ratio per table (n_dead_tup / n_live_tup)
+      - last_vacuum, last_autovacuum per table
+      - autovacuum_count per table
+      - Tables near wraparound: age(relfrozenxid) vs autovacuum_freeze_max_age
+      - Tables near multixact wraparound: age(relminmxid)
+      - Active autovacuum workers: pg_stat_progress_vacuum (phase, heap_blks_vacuumed, index_vacuum_count)
+      - Autovacuum elapsed time on large tables
+      - Tables where autovacuum has never run
+
+    - Table and Index Metrics
+      - pg_total_relation_size() per table (data + toast + indexes)
+      - pg_relation_size() per table (heap only)
+      - Table bloat estimate (dead bytes / total bytes ratio)
+      - Index bloat estimate (wasted bytes / index size ratio)
+      - pg_stat_user_tables: seq_scan, seq_tup_read (high = missing index)
+      - pg_stat_user_tables: idx_scan, idx_tup_fetch (index effectiveness)
+      - pg_stat_user_indexes: idx_scan, idx_tup_read (per index effectiveness)
+      - Unused indexes: idx_scan = 0 since last stats reset
+      - Table row count growth rate
+      - pg_stat_user_tables: n_tup_ins, n_tup_upd, n_tup_del (DML rates)
+      - pg_stat_user_tables: last_analyze, last_autoanalyze
+
+    - Temporary File Metrics
+      - temp_files count per database (pg_stat_database)
+      - temp_bytes total per database
+      - Per-session temp file usage via pg_stat_activity
+      - pgsql_tmp directory file count and total size
+
+- Logging & Log Management
+
+  - PostgreSQL Log Configuration
+    - log_destination (stderr, csvlog, jsonlog, syslog)
+    - logging_collector = on (required for csvlog)
+    - log_directory (ensure on separate partition from PGDATA)
+    - log_filename pattern (include date: postgresql-%Y-%m-%d.log)
+    - log_rotation_age (e.g., 1d)
+    - log_rotation_size (e.g., 100MB)
+    - log_truncate_on_rotation = on (for fixed-name files)
+    - log_min_messages (WARNING or above for production)
+    - log_min_error_statement (ERROR: log SQL for error-causing statements)
+    - log_min_duration_statement (e.g., 1000ms for slow queries)
+    - log_statement (none / ddl / mod / all — use ddl or none in production)
+    - log_connections = on (track connection events)
+    - log_disconnections = on (track disconnection events)
+    - log_duration = off (use log_min_duration_statement instead)
+    - log_line_prefix (include: %t %p %u %d %h %a %x %q)
+    - log_checkpoints = on (detect frequent checkpoint warnings)
+    - log_lock_waits = on (detect lock contention)
+    - log_temp_files = 0 (log all temporary file creation)
+    - log_autovacuum_min_duration = 0 (log all autovacuum runs)
+    - log_replication_commands = on (track replication events)
+    - log_error_verbosity (DEFAULT or VERBOSE for more detail)
+    - log_parameter_max_length (limit logged bind parameters)
+    - log_timezone (UTC recommended for cross-timezone environments)
+    - track_io_timing = on (required for blk_read_time/blk_write_time)
+    - track_functions (pl for PL functions, all for SQL too)
+
+  - Log Content & Classification
+    - PANIC: server must abort (unrecoverable error)
+    - FATAL: session termination errors (authentication, access)
+    - ERROR: client-facing errors (query failed, constraint violation)
+    - WARNING: advisory messages (checkpoint too frequent, FSM issues)
+    - LOG: operational messages (checkpoint, autovacuum, connections)
+    - Identifying authentication failure patterns (brute force detection)
+    - Identifying connection flood patterns
+    - Identifying deadlock events in log
+    - Parsing lock wait timeout messages
+    - Parsing slow query log entries (duration: X ms statement: ...)
+    - Parsing autovacuum log entries (pages removed, cost delay)
+    - Parsing checkpoint log entries (wrote X buffers, sync time Y ms)
+    - Detecting "replication terminated by primary server" events
+    - Detecting "recovery is in progress" vs promotion events
+    - Identifying "could not receive data from client" (client-side disconnect)
+
+  - Log Rotation & Archiving
+    - OS-level logrotate for stderr log files
+    - PostgreSQL built-in rotation (log_rotation_age, log_rotation_size)
+    - Compressing rotated logs (gzip, bzip2, zstd)
+    - Archiving compressed logs to object storage (S3, GCS)
+    - Log retention policy enforcement (delete logs older than N days)
+    - pgbouncer log rotation (separate logrotate config)
+    - Patroni log rotation
+    - Preventing log directory from filling data partition
+
+  - Log Analysis Tools
+    - pgBadger: HTML report generation from PostgreSQL logs
+      - Slow query analysis (top N queries by duration)
+      - Connection analysis (peak connections, connection errors)
+      - Lock analysis from log
+      - Error frequency report
+      - Autovacuum statistics from log
+    - Filebeat + Logstash + Elasticsearch (ELK): streaming log ingestion
+    - Graylog for centralized log management
+    - Fluentd/Fluent Bit for lightweight log shipping
+    - Custom grep/awk/sed scripts for specific pattern extraction
+    - csvlog parsing with Python/Perl for structured analysis
+    - pganalyze log-based insights
+    - Automated log anomaly detection (rate of change alerts)
+
+  - Centralized Logging Architecture
+    - Shipping logs via syslog (log_destination = syslog)
+    - Filebeat agent shipping log files to Elasticsearch
+    - Log parsing pipeline for structured analysis
+    - Retention and index policies in Elasticsearch
+    - Kibana dashboards for log visualization
+    - Alert rules based on log patterns (error rate, auth failures)
+
+- Alerting & Notification
+
+  - Service Availability Alerts
+    - PostgreSQL service down (pg_isready fails)
+    - Patroni leader election failed or no leader
+    - pgbouncer process down
+    - Replication: all standbys disconnected
+    - Backup job failed
+
+  - Capacity Alerts
+    - Disk usage > 80% (warning), > 90% (critical)
+    - pg_wal directory > configured threshold
+    - Archive storage > 80% utilization
+    - Connection utilization > 80% of max_connections
+    - pgbouncer queue depth > 0 for > 60 seconds
+
+  - Performance Alerts
+    - Replication lag > 30MB (warning), > 100MB (critical)
+    - Replication lag > 30s (warning), > 5min (critical)
+    - Active replication slot but inactive (consumer disconnected)
+    - Long-running query > 10 minutes
+    - Idle in transaction > 5 minutes
+    - Lock wait time > 60 seconds
+    - Deadlock rate spike (> X per minute)
+    - Checkpoint frequency: checkpoints_req > checkpoints_timed
+    - Cache hit ratio < 95% (warning), < 90% (critical)
+    - Temporary files being written (rate threshold)
+    - CPU iowait > 20% sustained
+    - Swap usage > 0
+
+  - Vacuum & Integrity Alerts
+    - Transaction wraparound age > 1.5 billion (age(relfrozenxid))
+    - Autovacuum not running on high-dead-tuple tables
+    - Table not vacuumed in > N days
+    - Checksum failure count > 0 (data corruption indicator)
+
+  - Security Alerts
+    - Authentication failure rate > threshold (brute force detection)
+    - New superuser created
+    - pg_hba.conf changed
+    - SSL certificate expiry < 30 days
+
+  - Alert Severity Levels
+    - P1 Critical: service down, disk full, primary with no standbys, data corruption
+    - P2 High: replication lag > threshold, connection near max, backup failure
+    - P3 Warning: slow queries, autovacuum behind, disk > 80%, checkpoint ratio
+    - P4 Info: backup success, failover test complete, routine maintenance
+
+  - Notification Channels
+    - Email (SMTP) with HTML summary
+    - PagerDuty with escalation policies
+    - OpsGenie with on-call rotations
+    - Slack / Microsoft Teams webhook integration
+    - SMS via gateway (for P1 only)
+    - Custom webhook for ITSM (ServiceNow, Jira)
+
+  - Alert Lifecycle Management
+    - On-call rotation schedule definition
+    - Escalation matrix (L1 -> L2 DBA -> Manager)
+    - Acknowledgment and resolution tracking
+    - Runbook URL attached to each alert
+    - Alert deduplication (same alert not re-sent within window)
+    - Alert correlation (disk full + archive fail = single incident)
+    - Alert fatigue reduction: threshold tuning reviews quarterly
+    - Alerting pipeline testing (monthly alert fire drill)
+    - Maintenance mode flag (suppress alerts during planned maintenance)
+
+- Monitoring Tooling
+
+  - PostgreSQL Built-in Views and Extensions
+    - pg_stat_activity: current sessions, state, wait event, query, duration
+    - pg_stat_statements: aggregated query statistics (enable in shared_preload_libraries)
+    - pg_stat_replication: per-standby replication state and lag
+    - pg_stat_wal_receiver: WAL receiver state on standby
+    - pg_stat_subscription: logical replication subscription state
+    - pg_stat_subscription_stats: per-worker error counts (PG 15+)
+    - pg_stat_bgwriter: checkpointer and bgwriter metrics
+    - pg_stat_database: per-database transactions, cache, temp files, deadlocks
+    - pg_stat_user_tables: per-table DML, vacuum, analyze stats
+    - pg_stat_user_indexes: per-index scan and access stats
+    - pg_statio_user_tables: per-table I/O stats (heap, index, TOAST reads/hits)
+    - pg_statio_user_indexes: per-index I/O stats
+    - pg_stat_archiver: WAL archive status and failure tracking
+    - pg_stat_progress_vacuum: live autovacuum progress
+    - pg_stat_progress_create_index: live CREATE INDEX progress
+    - pg_stat_progress_cluster: live CLUSTER progress
+    - pg_stat_progress_analyze: live ANALYZE progress
+    - pg_stat_progress_basebackup: live pg_basebackup progress
+    - pg_locks: current lock state and waiting locks
+    - pg_replication_slots: slot state, restart_lsn, wal_status
+    - pg_buffercache: shared buffer state (requires extension)
+    - pgstattuple: tuple-level bloat analysis per table/index (requires extension)
+    - pg_prewarm: pre-populate buffer cache (requires extension)
+    - amcheck: B-tree and heap structural validation (requires extension)
+    - pg_visibility: page visibility map inspection (requires extension)
+    - pg_freespacemap: free space map inspection (requires extension)
+
+  - Open Source Monitoring Stack
+    - Prometheus + postgres_exporter
+      - Default metrics from pg_stat_* views
+      - Custom queries via queries.yaml
+      - Scrape interval tuning
+      - Retention policy configuration
+    - Grafana dashboards
+      - PostgreSQL Overview dashboard (connections, cache hit, TPS)
+      - PostgreSQL Details dashboard (per-table, per-index, vacuum)
+      - Replication dashboard (lag bytes/time per standby)
+      - Query performance dashboard (pg_stat_statements)
+      - System resources dashboard (node_exporter)
+    - node_exporter for OS metrics (CPU, memory, disk I/O, network)
+    - Alertmanager for alert routing, deduplication, inhibition
+    - Pushgateway for batch job metrics (backup success/failure)
+    - blackbox_exporter for pg_isready endpoint probing
+
+  - Specialized PostgreSQL Monitoring Tools
+    - pgwatch2: Go-based monitoring, built-in Grafana dashboards, multiple preset metric sets
+    - check_postgres (Bucardo): Nagios/Icinga compatible check scripts
+      - check_postgres.pl --action=connection
+      - check_postgres.pl --action=bloat
+      - check_postgres.pl --action=replication_slots
+      - check_postgres.pl --action=txn_wraparound
+    - Percona Monitoring and Management (PMM): full-stack monitoring with Query Analytics
+    - pgBadger: log analysis HTML report generation
+    - pg_activity: terminal-based real-time monitoring (like htop for PostgreSQL)
+    - pgCenter: terminal-based statistics viewer and reporting
+    - pganalyze: SaaS monitoring with EXPLAIN plan tracking, index advisor
+    - Datadog PostgreSQL integration (APM + DBM — Database Monitoring)
+    - New Relic PostgreSQL integration
+    - Zabbix with PostgreSQL template (via zbx_pgsql or community template)
+    - Nagios / Icinga2 with check_postgres plugin
+
+  - HA / Failover Monitoring
+    - Patroni REST API health endpoint (GET /health, /leader, /replica)
+    - patronictl list: cluster members, state, lag
+    - etcd cluster health (etcdctl endpoint health)
+    - Consul cluster health (consul members)
+    - ZooKeeper health (zkServer.sh status)
+    - VIP / floating IP reachability check (arping, ping)
+    - HAProxy stats page (backend active/backup states)
+    - Keepalived state monitoring (/var/log/keepalived.log)
+    - Patroni event log for leader elections and failovers
+    - Alert on leader change event
+
+  - Cloud-Native Monitoring
+    - AWS RDS / Aurora: CloudWatch metrics (DatabaseConnections, FreeStorageSpace, ReadIOPS, ReplicaLag)
+    - AWS Performance Insights: per-query waits, top SQL by load
+    - Google Cloud SQL: Cloud Monitoring metrics and query insights
+    - Azure Database for PostgreSQL: Azure Monitor metrics
+    - GCP AlloyDB monitoring and observability features
+    - Supabase built-in monitoring and metrics
+
+  - Custom Monitoring Scripts
+    - Cron-based psql queries shipping to metrics backend (Prometheus Pushgateway)
+    - Replication lag alerting script (check and alert via PagerDuty API)
+    - Backup age checker script (alert if last backup older than RPO)
+    - Wraparound age checker script (alert if any table > threshold)
+    - Sequence exhaustion checker (alert if sequence > 90% of maxvalue)
+    - Index bloat report script (weekly email report)
+    - Long transaction checker with auto-notify
+    - Connection count trend logger (historical tracking)
+
+  - Monitoring Best Practices
+    - Monitor from outside the database server (external probe)
+    - Always test alerting pipeline end-to-end regularly
+    - Use separate monitoring user with minimal privileges (pg_monitor role, PG 10+)
+    - Store historical metrics with at least 13 months retention
+    - Create dashboards for different audiences: DBA, Developer, Management
+    - Tag/label metrics with environment, cluster name, database name
+    - Implement synthetic transactions (canary queries) to measure end-to-end latency
+    - Monitor both primary and all standbys independently
+    - Monitor monitoring agents themselves (meta-monitoring)
+    - Document baseline values for all key metrics (for anomaly detection)
+    - Review and update alert thresholds after major workload changes
+    - Keep monitoring configuration in version control (Git)
+    - Validate monitoring coverage after major PostgreSQL version upgrades
+
+================================================================================
+END OF TIER 1 MASTER TOPIC LIST
+PostgreSQL DBA Reference — BAU | Failure Handling | Observability & Monitoring
+================================================================================

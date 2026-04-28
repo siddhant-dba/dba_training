@@ -1,0 +1,1227 @@
+================================================================================
+  POSTGRESQL DBA — TIER 2 MASTER TOPIC LIST
+  PERFORMANCE | RELIABILITY | AUTOMATION
+  Senior DBA Reference — 15-20 Years Production Experience
+================================================================================
+
+
+================================================================================
+SECTION 4: PERFORMANCE
+  Query Optimization, Indexing, Tuning
+================================================================================
+
+PERFORMANCE
+
+- Query Optimization
+
+  - Understanding the Query Planner
+    - How the PostgreSQL query planner works (overview)
+    - Plan nodes: SeqScan, IndexScan, IndexOnlyScan, BitmapHeapScan, BitmapIndexScan
+    - Plan nodes: NestedLoop, HashJoin, MergeJoin
+    - Plan nodes: Sort, Hash, Aggregate, GroupAggregate, HashAggregate
+    - Plan nodes: Materialize, Memoize, Gather, Gather Merge (parallel)
+    - Cost model: seq_page_cost, random_page_cost, cpu_tuple_cost, cpu_index_tuple_cost, cpu_operator_cost
+    - Row estimation: how statistics are used for cardinality estimation
+    - Selectivity estimation: how PostgreSQL estimates fraction of rows
+    - Join order selection: exhaustive search vs genetic algorithm (geqo_threshold)
+    - Plan caching: generic vs custom plans (prepared statements)
+    - Adaptive query execution (not in PostgreSQL natively — understand absence)
+
+  - EXPLAIN and EXPLAIN ANALYZE
+    - EXPLAIN: reading estimated costs and row counts
+    - EXPLAIN ANALYZE: actual rows vs estimated rows comparison
+    - EXPLAIN (ANALYZE, BUFFERS): heap/index block hits and reads
+    - EXPLAIN (ANALYZE, BUFFERS, WAL): WAL records generated
+    - EXPLAIN (ANALYZE, BUFFERS, TIMING OFF): faster, less overhead
+    - EXPLAIN (ANALYZE, FORMAT JSON): machine-readable output
+    - EXPLAIN (ANALYZE, FORMAT TEXT): human-readable output
+    - auto_explain extension: automatic EXPLAIN ANALYZE for slow queries
+      - auto_explain.log_min_duration
+      - auto_explain.log_analyze
+      - auto_explain.log_buffers
+      - auto_explain.log_nested_statements
+    - Reading actual time: per-loop timing interpretation
+    - Identifying plan nodes with high actual vs estimated row mismatch
+    - Identifying nodes consuming most time (rightmost/innermost first)
+    - Identifying nodes with high buffer reads (cache miss)
+    - Identifying sort nodes spilling to disk (Sort Method: external merge Disk)
+    - Identifying hash batches > 1 (HashJoin memory spill)
+    - Using explain.depesz.com or explain.tensor.ru for visual plan analysis
+    - pgBadger integration with auto_explain output
+    - pev2 (Postgres Explain Visualizer 2) for interactive plan inspection
+
+  - Statistics and Cardinality
+    - pg_statistic: what statistics are stored per column
+    - pg_stats: human-readable view of pg_statistic
+    - n_distinct: distinct value count (positive = actual, negative = fraction)
+    - most_common_vals / most_common_freqs: common value frequency
+    - histogram_bounds: value distribution histogram
+    - correlation: physical vs logical ordering of column values
+    - null_frac: fraction of NULL values per column
+    - default_statistics_target (default 100): increasing for better estimates
+    - Per-column statistics target: ALTER TABLE t ALTER COLUMN c SET STATISTICS 500
+    - When to increase statistics target (high cardinality, skewed distribution)
+    - Extended statistics: CREATE STATISTICS for correlated columns
+      - n-distinct statistics across multiple columns
+      - Dependencies statistics (column A determines column B)
+      - MCV (Most Common Values) statistics for multi-column combinations
+    - ANALYZE: manual vs autovacuum-driven
+    - ANALYZE on specific tables and columns
+    - Detecting stale statistics: pg_stat_user_tables.last_analyze vs row count change
+    - Statistics after bulk load: manual ANALYZE required
+    - Statistics after partition attach: parent table statistics
+
+  - Join Optimization
+    - NestedLoop: when chosen, when efficient (small outer, indexed inner)
+    - HashJoin: when chosen, when efficient (large tables, no sort order needed)
+    - MergeJoin: when chosen, when efficient (pre-sorted inputs)
+    - Forcing join type via enable_nestloop, enable_hashjoin, enable_mergejoin
+    - Join order: planner exhaustive search (join_collapse_limit)
+    - geqo: genetic algorithm for > geqo_threshold tables
+    - Explicit JOIN hints using CTE fences (optimization fences in older PG)
+    - Lateral joins and their planning implications
+    - Semi-join and anti-join (EXISTS, NOT EXISTS, IN, NOT IN)
+    - Outer join planning and null-aware join optimizations
+    - Partition-wise joins (enable_partitionwise_join)
+    - Partition-wise aggregates (enable_partitionwise_aggregate)
+
+  - Subquery and CTE Optimization
+    - Subquery vs JOIN: performance comparison
+    - Correlated subqueries: performance risk and rewrite strategies
+    - CTE (WITH clause) as optimization fence (PostgreSQL < 12)
+    - CTE materialization in PostgreSQL 12+ (WITH ... AS NOT MATERIALIZED)
+    - Recursive CTEs: performance risks, termination conditions, cycle detection
+    - Lateral subqueries: use cases and optimization
+    - Scalar subqueries in SELECT list: repeated execution risk
+    - EXISTS vs IN vs JOIN for semi-join rewrites
+    - DISTINCT and GROUP BY subquery rewrites
+
+  - Window Functions and Aggregation Optimization
+    - Window function planning: when Sort is required
+    - PARTITION BY and ORDER BY in window functions
+    - Frame clauses (ROWS vs RANGE vs GROUPS)
+    - Reducing window function passes with CTE pre-aggregation
+    - GROUP BY optimization: HashAggregate vs GroupAggregate
+    - Partial aggregation with parallel query
+    - FILTER clause in aggregates
+    - Incremental sort for window functions (PG 13+)
+    - memoize node for correlated parameters (PG 14+)
+
+  - Parallel Query
+    - Parallel query architecture: gather node, parallel workers
+    - max_parallel_workers_per_gather: per query worker limit
+    - max_parallel_workers: total system worker limit
+    - max_worker_processes: total background worker limit
+    - min_parallel_table_scan_size: threshold for parallel seqscan
+    - min_parallel_index_scan_size: threshold for parallel index scan
+    - parallel_tuple_cost, parallel_setup_cost: cost model tuning
+    - enable_parallel_hash: parallel hash join
+    - enable_parallel_append: parallel append for partitioned tables
+    - force_parallel_mode (removed PG 16, debug_parallel_query PG 16+)
+    - Parallel queries on partitioned tables
+    - Cases where parallelism does NOT help (OLTP queries, locking)
+    - Parallel leader participation (parallel_leader_participation)
+    - Monitoring parallel workers in pg_stat_activity
+
+  - Common Query Anti-Patterns
+    - SELECT *: fetching unnecessary columns, defeating index-only scans
+    - Implicit type cast in WHERE clause disabling index use
+    - Function wrapping indexed column: WHERE date(created_at) = '...' instead of range
+    - LIKE with leading wildcard: WHERE name LIKE '%foo' (no B-tree)
+    - NOT IN with NULLs: logical trap causing no rows returned
+    - Unnecessary DISTINCT masking incorrect JOIN multiplicity
+    - OR on different columns preventing index use (use UNION ALL instead)
+    - Mutable functions in WHERE clause called per row (use immutable)
+    - Large IN lists: rewrite as JOIN to VALUES or temp table
+    - OFFSET with large values: full scan to skip rows (use keyset pagination)
+    - UPDATE with correlated subquery: rewrite as UPDATE FROM
+    - ORDER BY with non-deterministic expression causing unstable plans
+    - Unbounded recursive CTE (missing termination or cycle check)
+    - Multiple COUNT(DISTINCT col): separate passes, use HLL if approximate OK
+
+  - Query Rewrite Techniques
+    - Keyset / cursor pagination vs OFFSET pagination
+    - UNION ALL vs UNION (avoid deduplication overhead)
+    - EXISTS instead of COUNT > 0 for existence checks
+    - Row value constructors for multi-column comparisons
+    - Partial aggregation via subquery before join
+    - Pre-filtering with CTE before expensive join
+    - Materialized CTEs for intermediate result reuse
+    - Lateral JOIN to replace correlated subquery
+    - COPY instead of INSERT for bulk loads
+    - INSERT ... ON CONFLICT for upsert patterns
+    - MERGE statement (PostgreSQL 15+) for complex upsert/delete logic
+    - Batching deletes instead of single large DELETE
+    - Partitioned DELETEs (DELETE from partition directly)
+
+  - Stored Procedure and Function Optimization
+    - IMMUTABLE vs STABLE vs VOLATILE: correct classification for inlining
+    - STRICT: short-circuit on NULL inputs
+    - SECURITY DEFINER functions: performance and security implications
+    - PL/pgSQL performance: PERFORM vs SELECT, FOUND variable
+    - Avoiding row-by-row processing in PL/pgSQL (set-based approach)
+    - RETURN QUERY vs RETURN NEXT in set-returning functions
+    - Inlining of SQL functions into calling query plan
+    - LANGUAGE sql vs LANGUAGE plpgsql for simple functions
+    - Avoiding dynamic SQL (EXECUTE) in hot paths
+    - Function volatility impact on parallel query eligibility
+    - pl/python, pl/perl: context switching cost
+    - LEAKPROOF attribute and RLS implications
+
+  - Materialized Views
+    - CREATE MATERIALIZED VIEW: full precomputed result
+    - REFRESH MATERIALIZED VIEW: full refresh (table-level lock)
+    - REFRESH MATERIALIZED VIEW CONCURRENTLY: no lock (requires unique index)
+    - Incremental refresh strategies (manual delta tracking)
+    - Scheduling refresh: pg_cron, external cron
+    - Indexing materialized views
+    - Using materialized views for expensive aggregation queries
+    - Monitoring staleness of materialized views
+    - pg_matviews catalog view
+
+  - OLTP Query Tuning
+    - Primary key lookup optimization (index scan vs index-only scan)
+    - Covering indexes for single-query optimization
+    - Partial indexes to reduce index size for filtered lookups
+    - Connection pooling impact on query response time
+    - Prepared statements and plan caching behavior
+    - statement_timeout per role or query to protect latency SLAs
+    - idle_in_transaction_session_timeout to release locks quickly
+    - lock_timeout to prevent cascade blocking
+
+  - OLAP / Analytical Query Tuning
+    - Partitioning for partition pruning (scan only relevant partitions)
+    - Parallel sequential scans on large tables
+    - Column-store extensions (cstore_fdw, Hydra columnar)
+    - Covering indexes for wide analytical queries
+    - Hash aggregation memory tuning (work_mem)
+    - Materialized views for common aggregations
+    - pg_partman for automated partition management
+    - Tablespaces on fast NVMe for hot analytical tables
+    - JIT compilation (jit = on): when it helps (complex expressions, aggregates)
+    - JIT cost thresholds: jit_above_cost, jit_optimize_above_cost, jit_inline_above_cost
+
+- Indexing
+
+  - Index Types
+    - B-tree
+      - Default index type
+      - Supports: =, <, <=, >, >=, BETWEEN, IN, LIKE 'foo%', IS NULL, IS NOT NULL
+      - Does not support: LIKE '%foo', regular expressions
+      - Index structure: balanced tree, leaf pages contain heap pointers
+      - Fill factor tuning for UPDATE-heavy tables
+      - Deduplication (PostgreSQL 13+): space saving for duplicate entries
+    - Hash
+      - Supports equality (=) only
+      - When to prefer over B-tree (equality-only lookups, large keys)
+      - Hash indexes not WAL-logged before PG 10 (now safe)
+      - Cannot be used for range scans or ordering
+    - GiST (Generalized Search Tree)
+      - Geometric types, ranges, full-text search, nearest neighbor
+      - PostGIS spatial indexes
+      - Range type overlap and containment queries
+      - Nearest neighbor (<->) operator support
+    - SP-GiST (Space-Partitioned GiST)
+      - Non-balanced tree structures
+      - IP addresses, phone numbers, geometric points
+      - When SP-GiST outperforms GiST
+    - GIN (Generalized Inverted Index)
+      - Full-text search (tsvector, tsquery)
+      - Array containment (@>, <@, &&)
+      - JSONB key/value existence and containment
+      - fastupdate: buffered insert mode for GIN
+      - gin_pending_list_limit: flush threshold
+      - GIN vs GiST for full-text: GIN faster reads, GiST faster builds
+    - BRIN (Block Range Index)
+      - Very small index for naturally ordered large tables
+      - Time-series data: created_at, event_time columns
+      - pages_per_range tuning
+      - BRIN correlated with physical storage order
+      - Summarization: manual brin_summarize_range() vs autosummarize
+      - BRIN vs B-tree: when BRIN is appropriate
+    - Bloom Filter Index
+      - Probabilistic multi-column equality queries
+      - Small index size, false positive rate tunable
+      - Requires bloom extension
+      - Use cases: tables with many equality filter columns
+
+  - Index Design Principles
+    - Single-column vs composite (multi-column) indexes
+    - Column ordering in composite indexes (most selective first for point queries, query prefix for range scans)
+    - Index selectivity analysis (n_distinct, most_common_vals)
+    - Index-only scans: include all needed columns, visibility map must be clean
+    - INCLUDE columns in B-tree indexes (PostgreSQL 11+): non-key columns for covering
+    - Partial indexes: WHERE clause to index subset of rows
+      - Partial index for soft deletes (WHERE deleted_at IS NULL)
+      - Partial index for status filters (WHERE status = 'active')
+      - Partial index for non-null columns
+    - Expression indexes (functional indexes)
+      - Index on lower(email) for case-insensitive lookup
+      - Index on date_trunc('day', created_at) for date range queries
+      - Index on (data->>'key') for JSONB key extraction
+      - Index on array_length(tags, 1) for array size filtering
+    - Unique indexes: enforcing uniqueness, partial unique indexes
+    - Index on foreign key columns: preventing full table lock during parent DELETE
+    - Covering index strategy: eliminate heap fetch for common queries
+    - Indexes on expressions with immutable functions only
+    - Descending indexes and mixed ASC/DESC composite indexes
+
+  - Index Maintenance
+    - REINDEX: offline rebuild (table lock)
+    - REINDEX CONCURRENTLY: online rebuild (PostgreSQL 12+)
+    - REINDEX DATABASE CONCURRENTLY: all indexes in database online
+    - Monitoring index bloat: pgstattuple, pgstatindex
+    - pgstatindex: avg_leaf_density, leaf_fragmentation
+    - Index fill factor: reduce bloat on UPDATE-heavy indexes
+    - Detecting invalid indexes: SELECT * FROM pg_indexes WHERE ... (indisvalid)
+    - Dropping and recreating invalid index after failed CONCURRENTLY
+    - pg_repack: online table and index bloat reduction
+    - Index rebuild after pg_upgrade (collation changes)
+    - Duplicate index detection: same columns, same order, same predicate
+    - Unused index detection: pg_stat_user_indexes.idx_scan = 0
+    - Index usage tracking: resetting pg_stat_user_indexes after deployments
+    - CLUSTER: physically reorder table by index (heavy operation)
+    - Autovacuum role in keeping visibility map clean for index-only scans
+
+  - Indexing for Specific Patterns
+    - Full-text search indexing
+      - tsvector column: generated column approach
+      - GIN index on tsvector
+      - ts_rank and ts_rank_cd for ranking
+      - to_tsvector, to_tsquery, plainto_tsquery, websearch_to_tsquery
+      - Text search configuration (dictionaries, stop words, stemming)
+      - Multilingual full-text search
+    - JSONB indexing
+      - GIN index on whole JSONB column (containment, key existence)
+      - B-tree expression index on extracted key: ((data->>'key')::int)
+      - GIN with jsonb_path_ops vs default (size vs operator support)
+      - jsonpath queries and indexing (PostgreSQL 12+ jsonb_path_query)
+    - Array indexing
+      - GIN index for array containment (@>, <@, &&)
+      - B-tree index on array element via expression index (unnest)
+    - Range type indexing
+      - GiST index for range containment, overlap
+      - SP-GiST for range types in some cases
+    - UUID indexing
+      - B-tree on UUID primary key (random inserts cause bloat)
+      - UUID v7 (time-ordered) vs UUID v4 (random) for index efficiency
+      - fill_factor tuning for UUID primary keys
+    - Time-series indexing
+      - BRIN on timestamp column (naturally ordered data)
+      - Partitioning by time range + B-tree on timestamp within partition
+      - Composite index (tenant_id, created_at) for multi-tenant time queries
+    - Multi-tenant indexing
+      - Composite indexes with tenant_id as first column
+      - Partial indexes per tenant (impractical at scale, better: composite)
+      - Row-level security with index selectivity
+
+  - Index Monitoring and Diagnostics
+    - pg_stat_user_indexes: idx_scan, idx_tup_read, idx_tup_fetch
+    - pg_statio_user_indexes: idx_blks_read, idx_blks_hit (cache hit per index)
+    - pgstattuple(index): tuple count, free space, dead tuple count
+    - pgstatindex(index): tree depth, leaf density, fragmentation
+    - Identifying indexes never used since last stats reset
+    - Identifying indexes with low selectivity (high idx_tup_read / idx_scan)
+    - Monitoring index build progress: pg_stat_progress_create_index
+    - Identifying index bloat beyond fill_factor
+    - Confirming index is used by target query via EXPLAIN ANALYZE
+    - Hypothetical indexes via hypopg extension (test index without building)
+
+- Database and System Tuning
+
+  - Memory Configuration
+    - shared_buffers
+      - Recommended: 25% of RAM (starting point)
+      - Too low: high blks_read, low cache hit ratio
+      - Too high: OS page cache crowded, OOM risk
+      - Diminishing returns above 8-16GB in most workloads
+    - effective_cache_size
+      - Planner estimate of OS page cache available
+      - Recommended: 50-75% of total RAM
+      - Does not allocate memory, only influences planner cost model
+      - Too low: planner avoids index scans unnecessarily
+    - work_mem
+      - Per sort/hash operation (not per session)
+      - Total potential: max_connections * max_parallel_workers_per_gather * work_mem
+      - Too low: excessive disk spill (temp files in pgsql_tmp)
+      - Too high: OOM with many concurrent sessions
+      - Set globally conservatively, override per session for analytical workloads
+      - SET LOCAL work_mem = '256MB' for specific queries
+    - maintenance_work_mem
+      - Used by VACUUM, CREATE INDEX, ALTER TABLE ADD FOREIGN KEY, CLUSTER
+      - Recommended: 256MB-2GB for large tables
+      - Higher = faster VACUUM and index builds
+      - autovacuum_work_mem: separate limit for autovacuum workers
+    - temp_buffers
+      - Per-session buffer for temporary tables
+      - Increase for sessions heavily using temporary tables
+    - wal_buffers
+      - WAL write buffer (default: 1/32 of shared_buffers, max 64MB)
+      - Increase to 64MB for high-write workloads
+    - huge_pages
+      - huge_pages = on: use Linux huge pages for shared memory
+      - Reduces TLB pressure on large shared_buffers
+      - Requires vm.nr_hugepages configured in /etc/sysctl.conf
+      - huge_page_size (PG 14+): 2MB or 1GB huge pages
+
+  - WAL and Checkpoint Configuration
+    - wal_level: minimal / replica / logical (production: replica or logical)
+    - synchronous_commit: on / off / local / remote_write / remote_apply
+      - off: async commit, up to wal_writer_delay data loss risk
+      - local: synchronous to local disk, async to standby
+      - on: synchronous to primary and synchronous standbys
+    - wal_writer_delay: WAL writer flush interval (default 200ms)
+    - wal_writer_flush_after: WAL flush when buffer exceeds threshold
+    - commit_delay: group commit delay (add small delay to batch commits)
+    - commit_siblings: minimum concurrent transactions to trigger commit_delay
+    - checkpoint_timeout: max time between checkpoints (default 5min)
+    - max_wal_size: max WAL to accumulate before forced checkpoint (default 1GB)
+    - min_wal_size: minimum WAL retained to avoid recycling
+    - checkpoint_completion_target: spread writes over fraction of checkpoint interval (0.9)
+    - wal_compression: compress full-page writes in WAL
+    - full_page_writes: must be on for crash safety with in-place update storage
+    - wal_sync_method: fsync, fdatasync, open_sync, open_datasync (OS-dependent)
+    - max_wal_senders: max concurrent WAL streaming connections
+    - wal_keep_size: minimum WAL retained for standby reconnect
+
+  - Autovacuum Tuning
+    - autovacuum = on (never disable in production)
+    - autovacuum_max_workers: increase for high-table-count or busy databases (3-6)
+    - autovacuum_naptime: sleep between workers (default 1min; reduce for busy systems)
+    - autovacuum_vacuum_threshold: minimum dead tuples to trigger vacuum (default 50)
+    - autovacuum_vacuum_scale_factor: fraction of table size (default 0.2; reduce for large tables to 0.01-0.05)
+    - autovacuum_analyze_threshold: minimum changed tuples for analyze (default 50)
+    - autovacuum_analyze_scale_factor: fraction for analyze (default 0.1)
+    - autovacuum_vacuum_cost_limit: I/O throttle limit (default 200; increase to 400-800 for fast storage)
+    - autovacuum_vacuum_cost_delay: sleep between cost limit hits (default 2ms; reduce to 0-1ms on NVMe)
+    - autovacuum_freeze_max_age: max age before forced wraparound vacuum (default 200M)
+    - autovacuum_multixact_freeze_max_age: same for multixact IDs
+    - Per-table autovacuum overrides: ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = 0.01)
+    - autovacuum_work_mem: memory for each autovacuum worker (-1 uses maintenance_work_mem)
+    - Monitoring autovacuum via pg_stat_activity and pg_stat_progress_vacuum
+    - Wraparound emergency vacuum: understand age(relfrozenxid) thresholds
+
+  - Connection and Process Configuration
+    - max_connections: total client + replication + superuser connections
+    - superuser_reserved_connections: reserve for emergency DBA access (3-5)
+    - Connection pooling as the correct solution for high concurrency (not max_connections)
+    - pgbouncer pool_mode: session / transaction / statement
+    - pgbouncer max_client_conn, pool_size, reserve_pool_size
+    - pgbouncer server_idle_timeout, client_idle_timeout
+    - max_prepared_transactions: for two-phase commit (0 if not used)
+    - deadlock_timeout: wait before deadlock detection (default 1s)
+    - lock_timeout: maximum wait for a lock (set on role or session for protection)
+    - statement_timeout: maximum query execution time
+    - idle_in_transaction_session_timeout: kill sessions stuck in transaction
+    - tcp_keepalives_idle, tcp_keepalives_interval, tcp_keepalives_count: prevent ghost connections
+
+  - I/O and Storage Tuning
+    - random_page_cost: cost of random page read (default 4.0; set to 1.1-1.5 for SSD/NVMe)
+    - seq_page_cost: cost of sequential page read (default 1.0)
+    - effective_io_concurrency: concurrent I/O requests for bitmap heap scan (200 for SSD)
+    - maintenance_io_concurrency: concurrent I/O for maintenance operations (PG 13+)
+    - wal_sync_method selection per OS and storage
+    - Separate pg_wal to dedicated SSD/NVMe
+    - Separate pg_log to dedicated partition (avoid log filling PGDATA)
+    - Separate tablespaces for hot tables on faster storage
+    - XFS vs ext4 filesystem choice for PGDATA
+    - XFS: better for large sequential writes (WAL), noatime mount option
+    - ext4: reliable, barriers on (never disable)
+    - Disabling atime updates (relatime or noatime mount option)
+    - I/O scheduler: deadline or noop/none for SSDs (avoid CFQ)
+    - vm.dirty_ratio and vm.dirty_background_ratio tuning
+    - vm.swappiness: reduce to 1-10 to prevent swap usage
+    - Transparent Huge Pages: disable for PostgreSQL (performance regression)
+    - NUMA architecture: numactl binding PostgreSQL to specific node
+
+  - OS-Level Tuning
+    - Kernel parameters: vm.overcommit_memory, vm.overcommit_ratio
+    - Open file descriptors: ulimit -n (65536 minimum)
+    - Max processes: ulimit -u for postgres user
+    - POSIX shared memory: kernel.shmmax, kernel.shmall
+    - Semaphores: kernel.sem (SEMMSL, SEMMNS, SEMOPM, SEMMNI)
+    - TCP settings: net.core.somaxconn, net.ipv4.tcp_max_syn_backlog
+    - Network buffer tuning for replication
+    - CPU frequency scaling: set to performance governor
+    - NUMA balancing: numactl --interleave for balanced memory
+    - cgroups: isolate PostgreSQL CPU/memory/I/O on shared servers
+    - Avoiding swap: disable or configure vm.swappiness appropriately
+    - Checking BIOS power management (disable C-states for latency-sensitive workloads)
+
+  - JIT Compilation
+    - jit = on (default PostgreSQL 12+)
+    - jit_above_cost: minimum query cost to apply JIT
+    - jit_optimize_above_cost: minimum cost to apply full JIT optimization
+    - jit_inline_above_cost: minimum cost to enable function inlining
+    - When JIT helps: complex analytical queries with many expressions
+    - When JIT hurts: OLTP queries (compilation overhead > savings)
+    - Disabling JIT per session: SET jit = off
+    - Monitoring JIT: EXPLAIN ANALYZE shows JIT compilation time
+
+  - Partitioning for Performance
+    - Range partitioning: time-based, ID-based
+    - List partitioning: discrete value sets (country, status)
+    - Hash partitioning: even distribution for load balancing
+    - Partition pruning: constraint_exclusion and partition pruning at plan time
+    - Dynamic partition pruning (PG 11+): runtime partition elimination
+    - Partition-wise joins: joining two partitioned tables partition-by-partition
+    - Partition-wise aggregates: aggregate per partition then combine
+    - Declarative partitioning vs inheritance-based (legacy)
+    - Default partition: catch-all for unmatched values
+    - Attaching / detaching partitions: ALTER TABLE ATTACH PARTITION
+    - pg_partman: automated time and serial partition management
+    - Indexing partitioned tables: local indexes vs global indexes (no true global in PG)
+    - Foreign keys to/from partitioned tables (PG 12+)
+    - Partition pruning verification via EXPLAIN ANALYZE
+
+  - Connection Pooling Tuning
+    - pgbouncer architecture: single process, async I/O
+    - Pool modes compared: session / transaction / statement
+    - Transaction pooling: most scalable, limits on SET, prepared statements
+    - Session pooling: safest, least scalable (1:1 server connection per client)
+    - Statement pooling: autocommit only, very restrictive
+    - pgbouncer pool_size per database-user pair
+    - pgbouncer reserve_pool_size: burst handling
+    - pgbouncer server_lifetime: recycle idle server connections
+    - pgbouncer server_idle_timeout: idle server connection cleanup
+    - pgbouncer client_idle_timeout: drop idle clients
+    - pgbouncer max_db_connections: global cap per database
+    - pgbouncer online reload: RELOAD command without restart
+    - pgbouncer with PgBouncer-RR for query routing
+    - pgpool-II: connection pooling + load balancing + query routing
+    - Odyssey: multi-threaded connection pooler alternative
+
+  - Performance Benchmarking
+    - pgbench: built-in benchmark tool
+      - pgbench -i: initialize test database
+      - pgbench -c clients -j threads -T duration -P interval
+      - Custom pgbench scripts for workload simulation
+      - TPS (transactions per second) measurement
+      - Latency measurement (average, percentile)
+    - Custom workload replay tools
+    - Identifying performance regression after configuration changes
+    - Baseline documentation: TPS, query latency, cache hit ratio
+    - pg_test_fsync: measure fsync performance of different wal_sync_methods
+    - pg_test_timing: measure timing overhead for track_io_timing
+
+
+================================================================================
+SECTION 5: RELIABILITY
+  High Availability (HA), Disaster Recovery (DR)
+================================================================================
+
+RELIABILITY
+
+- High Availability Architecture
+
+  - HA Concepts and Terminology
+    - RTO (Recovery Time Objective): maximum tolerable downtime
+    - RPO (Recovery Point Objective): maximum tolerable data loss
+    - Failover: automatic or manual promotion of standby to primary
+    - Switchover: planned, controlled primary change (zero data loss)
+    - Warm standby: standby applies WAL continuously, ready to promote
+    - Hot standby: standby accepts read queries while in recovery
+    - Cold standby: standby not running, started only on failure
+    - Split-brain: two nodes both acting as primary simultaneously
+    - STONITH: fencing mechanism to prevent split-brain
+    - Quorum: minimum nodes needed for decision (DCS-based systems)
+    - VIP (Virtual IP): floating IP that moves with primary
+    - Consensus: distributed coordination protocol (Raft, Paxos)
+
+  - Streaming Replication Setup
+    - Configuring wal_level = replica on primary
+    - Configuring max_wal_senders and max_replication_slots
+    - Creating replication user (REPLICATION privilege)
+    - pg_hba.conf: replication entries for standby IP
+    - primary_conninfo in standby: host, port, user, password, application_name
+    - standby.signal file creation on standby (PG 12+)
+    - pg_basebackup: initial standby creation
+      - pg_basebackup -h primary -U replicator -D /data -P -R --wal-method=stream
+      - --write-recovery-conf flag for automatic primary_conninfo generation
+    - recovery.conf (PG 11 and earlier) vs postgresql.conf + standby.signal (PG 12+)
+    - hot_standby = on: enable read queries on standby
+    - Verifying streaming: pg_stat_replication on primary
+    - Verifying receiver: pg_stat_wal_receiver on standby
+    - Synchronous replication configuration
+      - synchronous_standby_names = 'standby1'
+      - synchronous_standby_names = 'ANY 1 (s1, s2)' (quorum any)
+      - synchronous_standby_names = 'FIRST 1 (s1, s2)' (priority list)
+    - Cascading replication: standby replicating from another standby
+      - recovery_min_apply_delay: delayed standby for point-in-time protection
+
+  - Logical Replication Setup
+    - When to use logical replication vs streaming
+    - wal_level = logical required on publisher
+    - max_logical_replication_workers, max_sync_workers_per_subscription
+    - Creating publication: CREATE PUBLICATION pub1 FOR TABLE t1, t2
+    - Creating publication for all tables: FOR ALL TABLES
+    - Row filters in publication (PG 15+)
+    - Column lists in publication (PG 15+)
+    - Creating subscription: CREATE SUBSCRIPTION sub1 CONNECTION '...' PUBLICATION pub1
+    - Initial table data copy (copy_data = true)
+    - Subscription with create_slot = false (pre-created slot)
+    - Managing logical replication slots manually
+    - DDL not replicated: ALTER TABLE must be applied manually on subscriber
+    - Sequences not replicated: manual synchronization needed
+    - Conflict handling on subscriber (unique violations, update missing rows)
+    - ALTER SUBSCRIPTION ... REFRESH PUBLICATION for new tables
+    - Logical replication for zero-downtime migrations
+    - Logical replication for cross-version upgrades
+    - Logical replication for data distribution (sharding fan-out)
+    - pglogical extension for enhanced logical replication
+
+  - Patroni (Automated HA)
+    - Patroni architecture: DCS + REST API + PostgreSQL process management
+    - Supported DCS backends: etcd, Consul, ZooKeeper, Kubernetes API
+    - patroni.yml configuration
+      - scope, name, namespace
+      - restapi: listen, connect_address
+      - etcd / consul / zookeeper connection settings
+      - bootstrap.dcs: ttl, loop_wait, retry_timeout, maximum_lag_on_failover
+      - bootstrap.pg_hba, bootstrap.initdb, bootstrap.post_init
+      - postgresql.parameters, pg_hba, connect_address, data_dir
+    - Patroni leader election mechanism
+    - patronictl: command-line management tool
+      - patronictl list: cluster status
+      - patronictl switchover: planned switchover
+      - patronictl failover: forced failover
+      - patronictl reinit: rebuild a cluster member
+      - patronictl edit-config: change DCS-stored configuration
+      - patronictl pause / resume: maintenance mode
+      - patronictl show-config: view effective configuration
+    - Patroni REST API endpoints: /health, /leader, /replica, /read-only, /config
+    - Patroni callback scripts: on_start, on_stop, on_restart, on_reload, on_role_change
+    - Patroni + HAProxy: routing reads and writes correctly
+    - Patroni + pgbouncer: online reconfiguration after failover
+    - Patroni watchdog: hardware watchdog for STONITH (prevent split-brain)
+    - Patroni slot management: permanent replication slots (PG 13+)
+    - Patroni with SSL: encrypted DCS and PostgreSQL connections
+    - Patroni upgrade: rolling upgrade procedure
+    - Patroni log analysis and troubleshooting
+    - maximum_lag_on_failover: do not promote lagging standby
+    - failsafe_mode: prevent demotion on DCS connectivity loss (PG 15+)
+
+  - etcd (DCS for Patroni)
+    - etcd cluster architecture (3 or 5 nodes for quorum)
+    - etcd leader election (Raft consensus)
+    - etcd health check: etcdctl endpoint health
+    - etcd cluster status: etcdctl endpoint status
+    - etcd key inspection: etcdctl get --prefix /service/<patroni-scope>
+    - etcd TTL and Patroni loop_wait relationship
+    - etcd version compatibility with Patroni
+    - etcd performance impact on Patroni failover time
+    - etcd backup and restore
+    - etcd TLS configuration
+    - etcd compaction and defragmentation
+    - etcd disk latency impact on Patroni heartbeat
+    - Alternatives: Consul, ZooKeeper, Kubernetes API
+
+  - repmgr (Replication Manager)
+    - repmgr architecture: repmgrd daemon + CLI
+    - repmgr.conf configuration
+    - repmgr primary register
+    - repmgr standby clone: initial standby setup
+    - repmgr standby register
+    - repmgr cluster show: view cluster topology
+    - repmgrd: daemon for automatic failover
+    - repmgr standby switchover: planned switchover
+    - repmgr standby follow: rejoin after failover
+    - repmgr witness server: quorum without full PostgreSQL data copy
+    - repmgr event log: repmgr cluster event
+    - repmgr vs Patroni: feature comparison
+
+  - HAProxy for PostgreSQL
+    - HAProxy backend configuration for PostgreSQL
+    - Health check via HTTP to Patroni REST API (option httpchk GET /health)
+    - Primary backend: route to Patroni leader
+    - Replica backend: route to non-leader members
+    - HAProxy stats page monitoring
+    - HAProxy reload on topology change
+    - Sticky sessions vs round-robin for replica reads
+    - HAProxy timeout configuration (connect, server, client)
+    - HAProxy with SSL termination
+    - HAProxy with TCP mode (pass-through SSL to PostgreSQL)
+
+  - Keepalived / VIP Management
+    - Keepalived VRRP for virtual IP management
+    - keepalived.conf: priority, virtual_ipaddress, track_script
+    - Preemption vs non-preemption mode
+    - Health check scripts for PostgreSQL role detection
+    - VIP failover time and application reconnection
+    - ARP gratuitous announcement on VIP move
+    - Keepalived with Patroni on_role_change callback
+    - Alternative: Pacemaker + Corosync (complex but flexible)
+
+  - Load Balancing for Read Replicas
+    - HAProxy round-robin across replicas
+    - pgbouncer-RR: query-level routing to replica
+    - pgpool-II: connection pooling + load balancing + failover
+    - Application-level read/write splitting (JDBC, PgBouncer, Odyssey)
+    - Replica lag-aware routing (avoid reading from very lagging replica)
+    - Patroni /read-only vs /replica endpoint differences
+    - Lag threshold for excluding replica from read pool
+
+  - Online Schema Changes (Zero-Downtime DDL)
+    - CREATE INDEX CONCURRENTLY: build index without table lock
+    - DROP INDEX CONCURRENTLY: remove index without table lock
+    - pg_repack: table and index rebuilding without locks
+    - ALTER TABLE ... ADD COLUMN with DEFAULT (instant in PG 11+)
+    - ALTER TABLE ... ADD COLUMN NOT NULL with DEFAULT (safe in PG 11+)
+    - NOT VALID constraint then VALIDATE CONSTRAINT in two steps
+    - Renaming columns: compatibility strategies (views, aliases)
+    - Expanding column types: safe widening vs type change requiring rewrite
+    - Adding foreign keys with NOT VALID then VALIDATE
+    - Table rewrites requiring AccessExclusiveLock: plan for maintenance window
+    - gh-ost equivalent for PostgreSQL: pg_repack or logical replication-based approaches
+
+- Disaster Recovery
+
+  - Backup Strategy Design
+    - Backup types: logical (pg_dump) vs physical (pg_basebackup, pgBackRest, WAL-G, Barman)
+    - Backup frequency: full vs incremental vs differential
+    - RPO requirements driving backup frequency and WAL archiving retention
+    - RTO requirements driving restore method and infrastructure readiness
+    - 3-2-1 backup rule: 3 copies, 2 media types, 1 offsite
+    - Backup storage: local disk, NFS, S3, GCS, Azure Blob, Glacier
+    - Backup encryption: at rest and in transit
+    - Backup compression: gzip, lz4, zstd trade-offs
+    - Backup retention policy: daily, weekly, monthly retention windows
+    - Backup ownership and access controls
+
+  - Physical Backup Tools
+    - pg_basebackup
+      - Full cluster backup with WAL streaming
+      - --wal-method=stream (inline WAL in backup)
+      - --wal-method=fetch (fetch WAL separately)
+      - --wal-method=none (relies on archiving)
+      - --checkpoint=fast: trigger immediate checkpoint
+      - --compress: server-side or client-side compression (PG 15+)
+      - --format=tar: compressed tar output
+      - --format=plain: directory format
+      - Parallel tablespace backup handling
+      - Progress monitoring
+    - pgBackRest
+      - Stanza concept: per-cluster configuration
+      - Full, differential, incremental backup types
+      - WAL archiving integration (archive-push, archive-get)
+      - Parallel backup and restore (--process-max)
+      - Backup retention: full-retention, diff-retention
+      - Backup verification: pgbackrest verify
+      - Repository encryption (aes-256-cbc)
+      - Multiple repository support (local + S3)
+      - Remote backup over SSH or HTTPS
+      - Standby backup: take backup from replica to reduce primary load
+      - Bundle mode (PG 15+ style small file bundling)
+      - pgBackRest info: backup catalog view
+    - WAL-G
+      - Go-based WAL archiving and backup tool
+      - S3, GCS, Azure, local storage support
+      - wal-g backup-push: full backup to object storage
+      - wal-g wal-push / wal-fetch: archive_command / restore_command
+      - wal-g backup-list: list available backups
+      - wal-g backup-fetch: restore specific backup
+      - Delta backup support
+      - Parallel upload/download
+      - Server-side encryption with cloud KMS
+      - Compression: lz4, brotli, zstd
+    - Barman (Backup and Recovery Manager)
+      - Server-based backup management with catalog
+      - Streaming WAL (barman-wal-archive) and file-copy (rsync/ssh)
+      - barman backup: trigger backup
+      - barman list-backup: list backups
+      - barman check: pre-flight backup health check
+      - barman switch-wal: force WAL switch before backup
+      - barman recover: restore to target server
+      - barman cron: automated retention and WAL maintenance
+      - Cloud backup with barman-cloud-backup
+
+  - WAL Archiving and PITR
+    - archive_mode = on: enable WAL archiving
+    - archive_command: script or tool called per WAL segment
+      - archive_command with pgBackRest: pgbackrest --stanza=main archive-push %p
+      - archive_command with WAL-G: wal-g wal-push %p
+      - archive_command with custom rsync/scp script
+      - Error handling in archive_command (non-zero exit = retry)
+      - archive_command must be idempotent
+    - archive_library (PG 15+): built-in archive module
+    - restore_command: how standby fetches WAL during recovery
+    - PITR target options
+      - recovery_target_time: restore to specific timestamp
+      - recovery_target_lsn: restore to specific WAL position
+      - recovery_target_xid: restore to specific transaction ID
+      - recovery_target_name: restore to named restore point (pg_create_restore_point)
+      - recovery_target_inclusive: include/exclude target transaction
+      - recovery_target_action: promote / pause / shutdown after reaching target
+      - recovery_target_timeline: latest / specific timeline ID
+    - Named restore points: SELECT pg_create_restore_point('before_migration')
+    - Verifying PITR capability: archive gap detection
+    - Testing PITR: restore on isolated environment, verify data at target time
+    - Timeline branching: each PITR creates new timeline
+    - pg_waldump: inspect WAL content for specific LSN or transaction
+
+  - Logical Backup and Restore
+    - pg_dump
+      - Plain SQL format (-F p): human-readable, no parallel restore
+      - Custom format (-F c): compressed, supports parallel restore
+      - Directory format (-F d): parallel dump, one file per table
+      - Tar format (-F t): portable
+      - Schema-only dump (--schema-only)
+      - Data-only dump (--data-only)
+      - Single table dump (-t tablename)
+      - Single schema dump (-n schemaname)
+      - Exclude table data (--exclude-table-data)
+      - Include large objects (--blobs, default on)
+      - Consistent snapshot: uses single transaction (--serializable-deferrable for truly consistent)
+      - Parallel dump (-j): multiple worker processes
+      - Compression level (--compress=level)
+      - No owner (--no-owner), no privileges (--no-acl) options
+    - pg_dumpall
+      - Dumps all databases + global objects (roles, tablespaces)
+      - --globals-only: only dump roles and tablespaces
+      - Required for full cluster migration
+      - Does not support parallel or custom format (plain SQL only)
+    - pg_restore
+      - Restoring from custom or directory format
+      - Parallel restore (-j workers)
+      - --clean: drop objects before recreating
+      - --if-exists: use DROP ... IF EXISTS
+      - --no-owner, --no-acl
+      - Single table restore (-t tablename)
+      - Schema-only or data-only restore
+      - --disable-triggers: allow data load without FK checks
+      - --use-set-session-authorization vs --no-owner
+      - Handling restore errors: continue vs stop
+    - pg_dump for cross-version migration
+      - Always dump from source, restore to target
+      - Extension availability on target
+      - Collation compatibility check
+    - Logical backup limitations
+      - Not suitable for PITR
+      - Slow for large databases (full rescan)
+      - No incremental option (use logical replication instead)
+
+  - pg_upgrade for Major Version Migration
+    - Pre-upgrade checklist
+      - Check all extensions are available in new version
+      - Run pg_upgrade --check: dry run validation
+      - Review pg_upgrade documentation for version-specific notes
+      - Take full backup before upgrade
+      - Test upgrade on non-production first
+      - Verify application compatibility with new version
+      - Check for removed/changed functions or behaviors
+    - pg_upgrade execution
+      - pg_upgrade -b old_bin -B new_bin -d old_data -D new_data -o '-c config_file=...' -O '-c config_file=...'
+      - --link mode: hard link files (fast, old cluster unusable after)
+      - --clone mode: copy-on-write clone (fast, filesystem support required)
+      - Copy mode: full data copy (safe, double disk space)
+    - Post-upgrade tasks
+      - Run analyze_new_cluster.sh (update statistics)
+      - Run delete_old_cluster.sh (remove old data after validation)
+      - Reindex all indexes (collation may have changed)
+      - Update extensions: SELECT pg_catalog.pg_extension_config_dump(...)
+      - Verify application functionality
+      - Update monitoring dashboards for new metrics
+    - Logical replication based major version upgrade (zero-downtime)
+      - Set up logical replication from old version to new version
+      - Synchronize data
+      - Cutover with minimal downtime (application reconnect)
+    - pg_upgrade limitations
+      - Cannot upgrade if logical replication slots exist
+      - Cannot upgrade if old cluster has unlogged tables (in some cases)
+      - pg_upgrade does not upgrade extensions automatically
+
+  - DR Testing and Validation
+    - Scheduled DR drills (quarterly minimum)
+    - Full failover simulation: primary failure, standby promotion
+    - Application failover test: DNS cutover, VIP movement, pgbouncer reconfiguration
+    - PITR restore test: restore to specific point, verify data integrity
+    - Full offsite restore test: restore from remote backup on isolated infrastructure
+    - RTO measurement: time from failure detection to production ready
+    - RPO validation: verify data loss within acceptable threshold
+    - Documentation of DR test results and gaps
+    - Runbook validation: follow runbook step-by-step during drill
+    - Post-drill debrief and improvement items
+
+  - Backup Monitoring and Validation
+    - Automated backup success/failure alerting
+    - Backup age monitoring: alert if last backup older than RPO window
+    - pg_verifybackup: cryptographic checksum verification of physical backup
+    - pgBackRest verify command
+    - Restore smoke test: start PostgreSQL on restored backup, run basic queries
+    - WAL completeness check: verify no gaps in archive for PITR window
+    - Backup storage capacity monitoring
+    - Backup retention compliance check (old backups deleted per policy)
+    - Backup encryption key rotation and decryption verification
+
+  - Replication Topology Designs
+    - Single primary + single async standby (basic HA)
+    - Single primary + one sync standby + one async standby (HA + performance)
+    - Single primary + multiple async standbys (read scaling)
+    - Primary + sync standby (quorum any 1 of 2) + async standby
+    - Patroni cluster: 3-node (primary + 2 standbys) minimum for quorum
+    - Cascading replication: primary -> intermediate -> leaf standbys
+    - Delayed standby: recovery_min_apply_delay for accidental DDL protection
+    - Multi-region: primary in region A, async standby in region B (DR)
+    - Multi-region sync: primary + sync standby in same AZ, async in different region
+    - Logical replication for cross-version or cross-platform distribution
+    - Bi-directional logical replication (BDR / pglogical) for multi-master
+
+  - Failover and Switchover Procedures
+    - Planned switchover (Patroni)
+      - patronictl switchover --master <node> --candidate <node>
+      - Verify application traffic moves to new primary
+      - Verify old primary demoted to replica
+      - Verify replication resumes on all members
+    - Unplanned failover (Patroni automatic)
+      - Patroni detects leader failure via DCS TTL expiry
+      - Most eligible standby promoted (lowest lag, highest priority)
+      - VIP moved, HAProxy updated
+      - Old primary fenced or isolated (watchdog STONITH)
+    - Manual failover without Patroni
+      - Identify most up-to-date standby (pg_stat_replication replay_lsn)
+      - Stop primary if possible (pg_ctl stop -m fast)
+      - Promote standby: pg_ctl promote or SELECT pg_promote()
+      - Update other standbys: primary_conninfo to new primary
+      - Update HAProxy/VIP/pgbouncer
+      - Rebuild old primary as new standby using pg_rewind or pg_basebackup
+    - pg_rewind
+      - Rewind old primary to sync point with new primary
+      - Requires wal_log_hints = on or checksums enabled
+      - Faster than full pg_basebackup for recently diverged nodes
+      - pg_rewind --target-pgdata --source-server="host=new_primary ..."
+    - Post-failover validation checklist
+      - Verify new primary is accepting writes
+      - Verify all standbys connected to new primary
+      - Verify replication slots recreated if needed
+      - Verify logical replication restarted
+      - Verify application connection routing correct
+      - Verify monitoring dashboards updated
+      - Verify backup jobs pointing to new primary
+
+
+================================================================================
+SECTION 6: AUTOMATION
+  Script-Based and Tool-Driven Task Automation
+================================================================================
+
+AUTOMATION
+
+- Shell Scripting for DBA Tasks
+
+  - Scripting Foundations
+    - Bash scripting best practices for DBA scripts
+    - Strict mode: set -euo pipefail
+    - Logging: timestamped output to log file and stdout
+    - Exit code handling: check every command exit code
+    - Idempotency: scripts that can be safely re-run
+    - Dry-run mode flag: --dry-run for non-destructive preview
+    - Environment variable management (.env files, secure handling)
+    - Secrets management: avoid hardcoded passwords (pgpass, vault)
+    - ~/.pgpass for password-less psql/pg_basebackup connections
+    - PGPASSFILE environment variable override
+    - psql connection variables: PGHOST, PGPORT, PGUSER, PGDATABASE
+    - Using psql --no-psqlrc for clean scripted execution
+    - psql -X: ignore .psqlrc
+    - psql -v ON_ERROR_STOP=1: exit on first SQL error
+    - psql -t -A -F: tuples-only, unaligned, separator for scripted output parsing
+    - Timeout wrapping: timeout 30 psql ... to prevent hanging scripts
+    - Lock file usage: prevent concurrent script execution (flock)
+    - Signal trapping: trap cleanup EXIT INT TERM
+
+  - Connection and Service Management Scripts
+    - PostgreSQL service start/stop/restart/reload wrapper
+    - pg_isready polling loop with retry and timeout
+    - Wait-for-postgres: loop until database accepts connections
+    - Multi-instance service management (multiple clusters on one host)
+    - pgbouncer reload script (RELOAD command via admin console)
+    - Patroni state check script (curl Patroni REST API)
+    - VIP status check script (arping / ping to VIP)
+    - Connection count alerting script
+    - Kill idle-in-transaction connections older than threshold
+    - Kill long-running queries older than threshold (with exclusion list)
+
+  - Backup Automation Scripts
+    - pg_basebackup wrapper with logging, retention, and alerting
+    - pg_dump all databases with timestamped output and error handling
+    - pg_dump individual databases with retention management
+    - WAL archive verification script (check no gaps)
+    - Backup age check script (alert if stale)
+    - Backup size anomaly detection (too small = possible failure)
+    - pg_verifybackup wrapper with alerting
+    - S3 backup upload script with retry and checksum verification
+    - Backup retention cleanup: delete backups older than N days
+    - pgBackRest backup script with pre/post hooks
+    - WAL-G backup-push wrapper with Pushgateway metric reporting
+    - Backup manifest generation for audit trail
+
+  - Maintenance Automation Scripts
+    - Automated VACUUM ANALYZE on tables exceeding dead tuple threshold
+    - Automated REINDEX CONCURRENTLY on bloated indexes (>X% bloat)
+    - Automated statistics refresh for tables with stale stats
+    - Bloat report generation script (email summary of top bloated objects)
+    - Sequence exhaustion check script (alert if >80% of maxvalue)
+    - Transaction ID wraparound check script (alert if age > threshold)
+    - Tablespace usage check script
+    - Index validity check script (alert if indisvalid = false)
+    - Dead connection cleanup script (pg_terminate_backend for zombies)
+    - Automated constraint validation (VALIDATE CONSTRAINT for deferred)
+    - Automated log compression and archival
+    - Temp file cleanup script (orphaned pgsql_tmp files)
+
+  - Monitoring and Health Check Scripts
+    - PostgreSQL health dashboard script (connection count, replication lag, disk)
+    - Replication lag alerting script with PagerDuty API integration
+    - WAL archive lag alerting script
+    - Disk space alerting script with tiered thresholds
+    - Long-running query alerting script
+    - Lock contention alerting script
+    - Checksum failure monitoring script
+    - Autovacuum progress monitoring script
+    - pg_stat_statements top query reporter (scheduled email)
+    - Patroni cluster health check script
+    - etcd cluster health check script
+    - Standby lag vs threshold reporting script
+    - Cache hit ratio alerting script
+    - OOM kill event detection script (dmesg scan)
+
+  - Schema and Data Management Scripts
+    - Schema change deployment script with pre/post validation
+    - Table size reporting script (top N largest tables)
+    - Schema diff script (compare schemas between environments)
+    - Object ownership validation script
+    - Privilege audit script (generate current privilege state report)
+    - Unused index reporting script (weekly)
+    - Duplicate index detection script
+    - Missing foreign key index detection script
+    - Column statistics target management script
+    - Partition management script (create future partitions, detach old partitions)
+    - Data archival script (move old rows to archive table or external store)
+
+  - User and Security Management Scripts
+    - Role creation with standard privilege template
+    - Password rotation script (generate, apply, update .pgpass / vault)
+    - Expired user detection and notification script
+    - Superuser audit script
+    - pg_hba.conf change deployment script with reload
+    - SSL certificate renewal script (copy cert, reload PostgreSQL)
+    - Failed login count monitoring script (brute force detection)
+    - Row-level security policy deployment script
+    - Application credential rotation with zero-downtime (create new, update app, drop old)
+
+- pg_cron (In-Database Scheduling)
+  - Installation and configuration (shared_preload_libraries = 'pg_cron')
+  - cron.host, cron.port, cron.database settings
+  - Creating scheduled jobs: SELECT cron.schedule('job_name', '* * * * *', 'SQL command')
+  - Unscheduling jobs: SELECT cron.unschedule('job_name')
+  - Viewing scheduled jobs: SELECT * FROM cron.job
+  - Viewing job run history: SELECT * FROM cron.job_run_details
+  - Use cases
+    - Scheduled VACUUM ANALYZE on specific tables
+    - Scheduled pg_stat_statements reset
+    - Scheduled partition creation (call pg_partman)
+    - Scheduled data archival (move old rows to archive table)
+    - Scheduled materialized view refresh
+    - Scheduled table statistics export for external monitoring
+    - Scheduled cleanup of expired sessions or application data
+  - pg_cron limitations: runs in one database, not cluster-wide
+  - pg_cron vs external cron (when to use each)
+  - Error handling: job_run_details shows failures
+  - Alerting on pg_cron job failures
+
+- pg_partman (Partition Management Automation)
+  - Installation and setup
+  - Configuring partition maintenance in cron or pg_cron
+  - run_maintenance(): create future partitions, drop old partitions
+  - create_parent(): initial setup of partitioned table
+  - Time-based partitioning: daily, weekly, monthly, yearly
+  - ID-based partitioning: range on integer primary key
+  - Infinite_time_partitions: allow future partition creation indefinitely
+  - premake: number of future partitions to pre-create
+  - retention: automatically drop or detach partitions older than threshold
+  - retention_keep_table: detach instead of drop (for archival)
+  - Partition naming conventions
+  - Migrating existing table to partitioned (logical replication approach)
+  - Monitoring partition set health
+  - Default partition management
+  - Sub-partitioning support
+
+- pgBackRest Automation
+  - Automated full backup schedule (weekly)
+  - Automated differential backup schedule (daily)
+  - Automated incremental backup schedule (hourly if needed)
+  - WAL archiving automation (archive_command integration)
+  - Automated retention enforcement (expire command)
+  - Automated backup verification (verify command)
+  - Stale backup alerting (check last backup timestamp)
+  - Automated restore testing (scheduled restore to DR instance)
+  - Parallel backup using --process-max
+  - Backup from standby automation (reduce primary load)
+  - Notification on backup failure (cron exit code check + alerting)
+  - pgBackRest repository check automation
+
+- Ansible for PostgreSQL Automation
+  - Ansible inventory design for PostgreSQL clusters
+  - PostgreSQL installation playbook (PGDG repo setup, package install)
+  - PostgreSQL cluster initialization playbook (initdb, configuration)
+  - postgresql.conf management with template + notify handler for reload
+  - pg_hba.conf management with Ansible template
+  - Patroni deployment playbook
+  - etcd deployment and configuration playbook
+  - HAProxy deployment and configuration playbook
+  - pgbouncer deployment and configuration playbook
+  - User and role management playbook
+  - Schema deployment playbook (apply SQL migrations)
+  - Backup configuration deployment playbook
+  - SSL certificate deployment and renewal playbook
+  - Minor version upgrade playbook (rolling upgrade across cluster)
+  - Idempotency requirements for all DBA playbooks
+  - Vault integration for credential management
+  - community.postgresql Ansible collection
+    - postgresql_db: database create/drop
+    - postgresql_user: role create/alter/drop
+    - postgresql_privs: grant/revoke privileges
+    - postgresql_ext: extension management
+    - postgresql_query: run arbitrary SQL
+    - postgresql_pg_hba: manage pg_hba.conf entries
+    - postgresql_set: set configuration parameters
+    - postgresql_slot: replication slot management
+    - postgresql_copy: COPY data in/out
+  - Testing playbooks with Molecule
+
+- Terraform for PostgreSQL Infrastructure
+  - Infrastructure-as-code for database server provisioning
+  - hashicorp/postgresql provider
+    - postgresql_database resource
+    - postgresql_role resource
+    - postgresql_grant resource
+    - postgresql_schema resource
+    - postgresql_extension resource
+    - postgresql_default_privileges resource
+  - Cloud PostgreSQL provisioning
+    - AWS RDS / Aurora PostgreSQL Terraform module
+    - Google Cloud SQL PostgreSQL Terraform module
+    - Azure Database for PostgreSQL Terraform module
+  - State management for PostgreSQL resources
+  - Sensitive values in state: password handling
+  - Import of existing PostgreSQL resources into Terraform state
+  - Workspace strategy for environment separation
+
+- Flyway / Liquibase (Schema Migration Automation)
+  - Flyway concepts: versioned migrations, repeatable migrations, undo
+  - Flyway configuration: flyway.url, flyway.user, flyway.schemas
+  - Migration script naming convention: V1__description.sql
+  - flyway migrate: apply pending migrations
+  - flyway info: show migration status
+  - flyway validate: validate applied vs available migrations
+  - flyway repair: fix checksum mismatches
+  - flyway baseline: mark existing schema as baseline version
+  - Flyway callbacks: beforeMigrate, afterMigrate, beforeEachMigrate
+  - Flyway teams: undo migrations, dry run
+  - Liquibase: XML/YAML/JSON changesets
+  - Liquibase rollback: tag and rollback to tag
+  - Database migration in CI/CD pipeline
+  - Schema migration with zero-downtime strategies
+  - Pre-migration checks: disk space, backup confirmation, long lock detection
+  - Post-migration validation: row counts, constraint checks, smoke tests
+
+- CI/CD Pipeline Integration
+  - Automated schema migration in CI/CD (GitHub Actions, GitLab CI, Jenkins)
+  - Ephemeral PostgreSQL in CI: Docker-based test database
+  - Docker Compose for local dev PostgreSQL stack
+  - Pre-migration backup trigger in pipeline
+  - Migration dry-run in staging before production apply
+  - Schema diff validation between environments
+  - pg_dump schema comparison in pipeline
+  - Automated SQL linting (sqlfluff, pgformatter)
+  - Automated EXPLAIN ANALYZE regression testing
+  - Query performance regression detection in CI
+  - pgTAP: unit testing framework for PostgreSQL functions and schemas
+  - Automated role and privilege audit in pipeline
+  - Rollback pipeline: automated restore on migration failure
+
+- Prometheus and Grafana Automation
+  - postgres_exporter automated deployment (Docker, systemd, Ansible)
+  - queries.yaml management: version-controlled custom metric queries
+  - postgres_exporter multi-target configuration (one exporter, many databases)
+  - Prometheus scrape config automation for new PostgreSQL instances
+  - Grafana dashboard provisioning via JSON model in version control
+  - Grafana alerting rule provisioning
+  - Alertmanager routing config as code
+  - Auto-discovery of new PostgreSQL instances (Consul service discovery)
+  - Automated Grafana dashboard deployment via API
+  - Prometheus retention and storage configuration automation
+  - node_exporter deployment automation
+
+- Python Automation for PostgreSQL
+  - psycopg2 / psycopg3: PostgreSQL adapter for Python
+    - Connection pooling: psycopg2.pool.ThreadedConnectionPool
+    - Async connections: psycopg3 async API
+    - Server-side cursors for large result sets
+    - COPY TO / COPY FROM with psycopg2
+    - Listening for NOTIFY events
+    - Error handling: psycopg2.errors hierarchy
+  - SQLAlchemy: ORM and query builder
+    - Engine and connection pool configuration
+    - Session management
+    - Bulk insert optimization
+    - Reflection for schema introspection
+  - pandas + psycopg2: data analysis and reporting scripts
+  - Custom monitoring scripts using psycopg2
+    - pg_stat_statements collector
+    - Replication lag collector and alerter
+    - Backup age checker
+    - Bloat reporter
+  - Automated data validation scripts (row count, checksum comparison between envs)
+  - Data masking scripts for dev/test environment population
+
+- Alerting Automation
+  - Alertmanager configuration as code
+  - PagerDuty integration: routing rules, escalation policies
+  - Slack integration: alert message formatting
+  - Dead man's switch: alert if monitoring stops reporting (absence detection)
+  - Runbook URLs embedded in alert annotations
+  - Alert dependency/inhibition rules (suppress child alerts when parent fires)
+  - Alert silence automation for planned maintenance
+  - Custom alerting scripts with curl PagerDuty API / Slack webhook
+  - Centralized alert history for post-incident analysis
+  - Alert-to-ticket automation (ServiceNow / Jira integration)
+
+- Log Automation
+  - Automated log parsing with pgBadger (daily cron + HTML report)
+  - Filebeat configuration automation (auto-discover new log files)
+  - Logstash pipeline for PostgreSQL csvlog parsing
+  - Log anomaly detection: rate of error increase alerting
+  - Automated slow query digest email (top 10 slow queries daily)
+  - Automated auth failure report (security use case)
+  - Log archiving automation: compress and move to S3 after retention period
+  - Centralized log search automation for incident investigation
+
+- Housekeeping and Cleanup Automation
+  - Automated old partition detachment and archival
+  - Automated temp table cleanup (drop temp tables from crashed sessions)
+  - Automated orphaned large object cleanup (lo_manage trigger or manual)
+  - Automated stale prepared transaction cleanup (pg_prepared_xacts)
+  - Automated dead replication slot cleanup (alert + auto-drop policy)
+  - Automated pg_stat_statements reset on schedule (if desired)
+  - Automated pg_stat_bgwriter snapshot for trending
+  - Automated sequence value sync after logical replication (post-failover)
+  - Automated SSL certificate expiry check and renewal trigger
+  - Automated bloat report scheduling and delivery
+  - Automated unused index report scheduling and delivery
+
+- Configuration Management Automation
+  - Automated postgresql.conf deployment with validation
+  - Automated pg_hba.conf deployment with reload
+  - Configuration drift detection (current vs desired state comparison)
+  - Automated configuration backup before changes
+  - Parameter change impact analysis before apply
+  - Automated reload vs restart decision (check if change requires restart)
+  - Configuration change audit log (who changed what, when)
+  - Environment-specific configuration templating (dev vs staging vs prod)
+  - postgresql.auto.conf monitoring (detect unexpected changes)
+  - Automated GUC (Grand Unified Configuration) documentation generation
+
+================================================================================
+END OF TIER 2 MASTER TOPIC LIST
+PostgreSQL DBA Reference — Performance | Reliability | Automation
+================================================================================

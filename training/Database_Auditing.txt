@@ -1,0 +1,617 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — 2-YEAR PROGRAM
+  Session: Database Auditing — pgaudit Extension + SQL Server Audit Concepts
+  Platform: PostgreSQL
+  Duration: 3-Hour Session with Labs
+  Instructor: [Your Name Here]
+================================================================================
+
+
+Alright, let's get started. Go ahead and close your laptops halfway — I want eyes up here for the first ten minutes before we start typing anything. Trust me, this stuff will make more sense if you understand *why* we're doing it before you see the commands.
+
+So. Auditing.
+
+I know what some of you are thinking. "This is the boring compliance stuff." I've heard it every semester. And every semester, I tell students the same thing: auditing is the thing that saved my job once and cost a colleague his job once. It is not boring. It is survival.
+
+Let me tell you a quick story.
+
+Back in 2009, I was a senior DBA at a financial services firm in Pune. We had a pretty large PostgreSQL setup — this was back in the days when half the room would've laughed at you for using Postgres in finance, but we were scrappy and it worked. One morning, the CISO walks into our team bay at 8 AM looking like he hasn't slept. He sits down next to me — doesn't even say good morning — and says, "Tell me everyone who touched the accounts_receivable table in the last 30 days."
+
+Now. If you don't have auditing configured, that question is a nightmare. You're going to pg_log, you're grep-ing through gigabytes of generic log output, and half of it is missing because log rotation ate it three weeks ago. My colleague — good guy, smart guy — had never set up proper auditing because "we'll do it later." He spent three weeks trying to reconstruct access logs from application logs and partial database logs. He didn't fully recover the picture. The regulators were not happy. He was out of a job by Q2.
+
+I had pgaudit running on a different cluster at that firm. When the CISO came to me the following year with a similar question — different table, same urgency — I ran one query and had the answer in four minutes. That's what we're learning today.
+
+So let's talk about what auditing actually means in the database world, and then we're going to get our hands dirty with pgaudit.
+
+
+--- WHAT IS DATABASE AUDITING, REALLY? ---
+
+When most people say "auditing," they mean one of two things: either they mean logging — just capturing what happened — or they mean audit trails, which is a structured, queryable, tamper-evident record of who did what, when, and to which object.
+
+Standard PostgreSQL logging — the stuff in postgresql.conf with log_statement = 'all' — is a blunt instrument. It's designed for debugging and performance troubleshooting. It will log things, sure, but it logs them in a format that's hard to parse systematically, it has no concept of object-level granularity by default, and it doesn't distinguish well between different categories of statements.
+
+pgaudit fills that gap. It's an extension that hooks into PostgreSQL's internal audit hook mechanism and produces structured, categorized audit records. It gives you what a compliance officer or a security auditor actually wants: granular records of object access, DDL changes, privilege escalation, failed login attempts, and more — all in a structured, predictable format.
+
+Now, some of you may have worked in SQL Server environments — and I know we have a few folks here who came from that background. We're going to draw comparisons to SQL Server Audit as we go, because it's a useful conceptual map. The underlying ideas are the same even if the implementation differs. SQL Server has a very mature built-in auditing framework; PostgreSQL relies on pgaudit as the community-standard solution. Understanding both helps you translate concepts when you're working in mixed environments or moving from one platform to another.
+
+Okay — now let's start typing.
+
+
+--- PART ONE: INSTALLING AND CONFIGURING pgaudit ---
+
+First thing we need to do is make sure pgaudit is available on your system. In most modern Postgres distributions — PGDG packages, EnterpriseDB, managed cloud services — it's bundled. But let's verify.
+
+Go ahead and open your psql session as a superuser. I'm going to assume you're connected to a local PostgreSQL 15 or 16 instance. If you're on a different version, the commands are the same, just make sure your pgaudit version matches your Postgres major version. They're not cross-compatible — I've seen junior DBAs install pgaudit 1.6 on Postgres 14 and wonder why nothing works. Check your versions first.
+
+Let's see what's available:
+
+    SELECT name, default_version, installed_version
+    FROM pg_available_extensions
+    WHERE name = 'pgaudit';
+
+If you see a row come back, you're good. If you see nothing — pgaudit is not installed on your OS-level package. You'd need to do something like:
+
+    -- On RHEL/CentOS/Rocky:
+    -- sudo dnf install pgaudit16    (replace 16 with your PG major version)
+
+    -- On Debian/Ubuntu:
+    -- sudo apt install postgresql-16-pgaudit
+
+But for today, let's assume it's available because I set up these lab machines to have it. What you should NOT do is just run CREATE EXTENSION pgaudit without touching postgresql.conf first. Some extensions are harmless to enable cold. pgaudit is not one of them.
+
+Here's the thing — pgaudit uses a shared preload library. It has to be loaded into the PostgreSQL process at startup. If it's not preloaded, the extension will install but it won't actually capture anything. I have watched this bite experienced DBAs who thought they set up auditing and had nothing. Zero. When the audit request came, they had a clean-looking pgaudit installation and no records.
+
+So. Before you create the extension, you need to edit postgresql.conf. Find your postgresql.conf — on Linux it's usually in /etc/postgresql/16/main/ or your data directory. Add this line:
+
+    shared_preload_libraries = 'pgaudit'
+
+If you already have other libraries in that list — pg_stat_statements is common — you comma-separate them:
+
+    shared_preload_libraries = 'pg_stat_statements, pgaudit'
+
+After you save that, you need to restart PostgreSQL. Not reload — restart. This is a postmaster parameter. Reload won't cut it.
+
+    sudo systemctl restart postgresql
+
+Now connect, and run:
+
+    CREATE EXTENSION IF NOT EXISTS pgaudit;
+
+Verify it installed:
+
+    SELECT extname, extversion FROM pg_extension WHERE extname = 'pgaudit';
+
+Good. Now let's configure what it actually logs.
+
+
+--- CONFIGURING pgaudit LOGGING LEVELS ---
+
+pgaudit has two modes that work together: session-level auditing and object-level auditing. Session auditing is the blunt instrument — it captures statements by category across the whole session or server. Object auditing is the scalpel — you point it at specific tables, sequences, or functions.
+
+Let me show you the session-level configuration first because this is what you'll set at the server level in postgresql.conf, and it's what affects everyone.
+
+The main parameter is pgaudit.log. It takes a comma-separated list of categories. Here are the categories you need to know cold — they will come up in your certification exam and they will come up when a compliance officer is breathing down your neck:
+
+    READ       — SELECT and COPY FROM
+    WRITE      — INSERT, UPDATE, DELETE, TRUNCATE, COPY TO
+    FUNCTION   — Function calls and DO blocks
+    ROLE       — GRANT, REVOKE, CREATE/ALTER/DROP ROLE
+    DDL        — DDL statements that are not ROLE (CREATE TABLE, ALTER TABLE, DROP INDEX, etc.)
+    MISC       — DISCARD, FETCH, CHECKPOINT, VACUUM, etc.
+    MISC_SET   — SET and RESET commands
+    ALL        — Everything above
+
+Let me show you a realistic server-level configuration for a production environment. Go ahead and type this into your postgresql.conf:
+
+    pgaudit.log = 'ddl, role, misc'
+    pgaudit.log_catalog = off
+    pgaudit.log_relation = on
+    pgaudit.log_statement_once = off
+
+Let me walk through each of these.
+
+pgaudit.log = 'ddl, role, misc' — This tells pgaudit to capture all DDL changes and all role/privilege changes and miscellaneous statements. Why not READ and WRITE? Because on a busy OLTP system, capturing every SELECT and INSERT will absolutely bury you in log data. We'll talk about how to add object-level READ/WRITE auditing more selectively in a minute.
+
+pgaudit.log_catalog = off — This suppresses audit records for queries against system catalog tables. If you leave this on, every tool that introspects the database — psql itself, pgAdmin, Liquibase, your monitoring agents — generates a flood of audit records for boring internal queries. Turn it off. Your log storage team will thank you.
+
+pgaudit.log_relation = on — This is important. When this is on, pgaudit will emit a separate audit record for each relation accessed in a statement. So if you have a view that hits four tables, you get audit records for each of those four tables individually, plus the view. This is what compliance auditors want — they want to know which physical objects were touched, not just the top-level SQL.
+
+pgaudit.log_statement_once = off — Leave this off in production. When it's on, pgaudit only logs the statement text on the first record when a statement touches multiple objects, and subsequent records just reference back. Makes your logs slightly smaller but much harder to parse without context.
+
+Now reload — this one you actually CAN reload, unlike the preload_libraries change:
+
+    SELECT pg_reload_conf();
+
+Let's verify the settings took:
+
+    SHOW pgaudit.log;
+    SHOW pgaudit.log_catalog;
+    SHOW pgaudit.log_relation;
+
+
+--- WHERE DO PGAUDIT RECORDS ACTUALLY GO? ---
+
+This trips people up constantly. pgaudit does not have its own storage table by default. It writes through PostgreSQL's logging infrastructure. That means your audit records end up in whatever log destination you've configured — usually the PostgreSQL log files, and potentially pg_log.
+
+If you want queryable audit records — and trust me, you do — you have two good options.
+
+Option one: configure PostgreSQL to log to csvlog format (or jsonlog in PG 15+) and ingest those into a table or an external SIEM like Splunk or Elasticsearch. This is what large enterprises do.
+
+Option two: use pgaudit.log_client = on combined with a log destination that writes to a table. Some teams use a foreign data wrapper to read log files, others use tools like pg_log_userqueries or custom log parsers.
+
+For our labs today, we'll use the simple approach — log to stderr/csvlog and read it directly. In production, please don't rely on flat files you read by hand. Set up ingestion.
+
+In postgresql.conf, make sure you have:
+
+    log_destination = 'csvlog'
+    logging_collector = on
+    log_directory = 'pg_log'
+    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+
+Reload again after any change:
+
+    SELECT pg_reload_conf();
+
+
+--- PART TWO: AUDITING OBJECT ACCESS ---
+
+Okay. Here is where pgaudit gets genuinely powerful and where it diverges from a simple log_statement setup.
+
+Let's say your security policy says: "All access to the customers table in the sales schema must be logged." You don't want to log every SELECT across the entire database — that's overkill. You want surgical precision on that one table.
+
+This is object-level auditing. It works through a dedicated role that pgaudit watches. Here's how you set it up.
+
+First, you need a role that acts as the "audit target owner" — pgaudit calls it the master audit role. You set this in postgresql.conf:
+
+    pgaudit.role = 'auditor'
+
+This tells pgaudit: "watch what the 'auditor' role can do, and generate audit records whenever any user performs an operation that the auditor role has been granted."
+
+Let me show you the full workflow. Go ahead and type all of this:
+
+    -- Step 1: Create the audit role (if it doesn't exist)
+    CREATE ROLE auditor;
+
+    -- Step 2: Grant specific privileges to the auditor role on the objects you want to audit
+    GRANT SELECT ON sales.customers TO auditor;
+    GRANT INSERT, UPDATE, DELETE ON sales.customers TO auditor;
+
+    -- Now add pgaudit.role = 'auditor' to postgresql.conf and reload
+
+    SELECT pg_reload_conf();
+
+Now, any session that performs a SELECT, INSERT, UPDATE, or DELETE on sales.customers will generate an audit record — regardless of who that user is, regardless of what session-level pgaudit.log settings are in place. The object-level setting stacks on top of session-level settings.
+
+Let me show you what an actual audit record looks like. Run a test query:
+
+    -- Switch to a non-superuser session
+    SET ROLE app_user;  -- assuming this role exists in your lab
+    SELECT customer_id, email FROM sales.customers WHERE customer_id = 1;
+    RESET ROLE;
+
+Now look at your pg_log directory. You should see a line like this in the CSV log:
+
+    2024-01-15 14:32:10 UTC,app_user,sales,,,,,,,,"AUDIT: OBJECT,1,1,READ,SELECT,TABLE,
+    sales.customers,SELECT customer_id, email FROM sales.customers WHERE customer_id = 1,<none>"
+
+Let me break down that AUDIT line because this format is what you'll need to parse in real life:
+
+    AUDIT:           — static prefix, makes these records grep-able
+    OBJECT           — audit type (OBJECT = object-level, SESSION = session-level)
+    1                — statement ID (increments per transaction)
+    1                — substatement ID (increments when one statement touches multiple objects)
+    READ             — the audit class (matches pgaudit.log categories)
+    SELECT           — the specific command
+    TABLE            — object type
+    sales.customers  — fully qualified object name
+    SELECT ...       — the full statement text
+    <none>           — parameter values (populated when log_parameters is on)
+
+This structured format is exactly what makes pgaudit useful for compliance. You can write a parser or ingest this into a logging pipeline and query it systematically.
+
+
+--- PART THREE: AUDITING LOGIN FAILURES ---
+
+Now let's talk about something I see most teams get wrong. They set up pgaudit beautifully for DDL and object access, and then they completely ignore failed logins. Failed logins are a critical security signal. Brute force attacks, credential stuffing, misconfigured applications — all of these show up as failed logins before they show up as anything else.
+
+Here's the thing: pgaudit itself does not handle failed login events. I want to be really clear about that because I've seen people go hunting through pgaudit docs looking for a login failure setting and it's not there. Failed logins — authentication failures — happen before a connection is established to a database session. pgaudit hooks into session activity. It can't see pre-session failures.
+
+Failed login auditing in PostgreSQL comes from the core logging system, not pgaudit. Here's what you need in postgresql.conf:
+
+    log_connections = on
+    log_disconnections = on
+
+With these on, PostgreSQL will write a log entry for every connection attempt — successful or failed — and every disconnection. Failed authentications generate a log line that looks like:
+
+    2024-01-15 14:45:01 UTC [1234] app_user@sales FATAL:
+    password authentication failed for user "app_user"
+
+Now, you want to make sure your log_min_messages is set appropriately:
+
+    log_min_messages = warning
+
+And make sure log_min_error_statement is set so the authentication failure statement gets logged:
+
+    log_min_error_statement = error
+
+On top of that, if you're using pg_hba.conf with scram-sha-256 authentication (which you should be in 2024, please tell me none of you are still using md5 in production) — failed authentication attempts are always logged at FATAL level, which will pass through any sane log_min_messages setting.
+
+Let me show you how to test this. In your lab environment, try connecting with a bad password:
+
+    -- From your shell (not psql):
+    psql -U nonexistent_user -d sales -h localhost
+
+When it fails, go look at your pg_log file. You should see the FATAL line. In a real production environment, you'd have a log aggregator watching for spikes in these failures — five failures for the same user in ten seconds should trigger an alert.
+
+Now, here's the SQL Server comparison for those of you with that background: SQL Server Audit has a built-in LOGIN_FAILED_GROUP action group that you can add to a server audit specification. It's cleaner — it's one line of configuration and every failed login flows through the audit system automatically. PostgreSQL's approach requires you to integrate your log parser with the connection log lines manually. Neither is wrong; they're just different philosophies. SQL Server treats login auditing as part of the audit framework. PostgreSQL treats connection logging as an infrastructure concern separate from statement auditing.
+
+The practical implication: if you're building a SIEM pipeline for PostgreSQL, your login failure data will come from a different log format than your pgaudit data. You need to handle both parsers.
+
+
+--- PART FOUR: AUDITING DDL CHANGES ---
+
+Okay, DDL auditing. This is the one that has saved databases — and that's not hyperbole.
+
+DDL changes are things like CREATE TABLE, ALTER TABLE, DROP INDEX, CREATE FUNCTION, DROP SCHEMA. These are structural changes to your database. In a properly controlled production environment, DDL should never happen without a change management ticket. But environments are messy and humans are humans.
+
+The good news is that DDL auditing with pgaudit is straightforward. If you have 'ddl' in your pgaudit.log setting — which we set earlier — you're already capturing DDL. Let me show you what it looks like in practice.
+
+Let's generate some DDL in our lab environment:
+
+    -- Connect as a user with DDL privileges
+    CREATE TABLE sales.audit_test (
+        id SERIAL PRIMARY KEY,
+        description TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE sales.audit_test ADD COLUMN modified_by TEXT;
+
+    DROP TABLE sales.audit_test;
+
+Now check your pg_log. You should see three separate audit records — one for each DDL statement. The audit type will be SESSION (not OBJECT, since these are session-level DDL audits), and the class will be DDL.
+
+Here's a pattern I recommend for production systems: create a dedicated schema for audit testing and destructive DDL validation. Don't ever run DROP statements directly on production without a rollback plan. But more relevant to today — make sure your audit log rotation policy retains DDL records long enough to be useful. I typically recommend 90 days minimum for DDL logs. Application logs you might rotate more aggressively, but DDL records are forensic evidence and they don't take much space.
+
+Let's also look at role and privilege changes, because these are arguably even more sensitive than generic DDL:
+
+    -- Generate some role audit events
+    CREATE ROLE temp_analyst;
+    GRANT SELECT ON sales.customers TO temp_analyst;
+    REVOKE SELECT ON sales.customers FROM temp_analyst;
+    DROP ROLE temp_analyst;
+
+Each of those generates an audit record under the ROLE class. In your logs, look for lines with 'ROLE' in the audit class field. When you're reviewing audit logs for privilege escalation — which is a very common attack vector — these ROLE records are your gold.
+
+
+--- !! INSTRUCTOR WARNING — READ THIS CAREFULLY !! ---
+
+I need to stop here and tell you something that is going to matter a lot in production. This is the mistake I see most often from DBAs who are new to pgaudit, and it has caused real incidents.
+
+DO NOT configure pgaudit.log = 'all' on a high-traffic production database without first calculating your log volume.
+
+I'm serious. I have seen this happen twice in my career. A DBA enables pgaudit with ALL classes on a system doing 50,000 transactions per minute. The log volume is so high that the logging collector falls behind, causing I/O contention. In one case, the logging disk filled up completely, PostgreSQL started throwing errors, and the application went down.
+
+'ALL' means every READ — every SELECT. On a busy OLTP system, that is an enormous volume. Start with 'ddl, role' — maybe add 'misc'. If you need READ/WRITE auditing, use object-level auditing to target specific sensitive tables rather than turning on READ/WRITE globally.
+
+Also — and this is related — make sure your log partition is separate from your data partition. If log files can grow to consume disk space that PostgreSQL needs for its WAL or data files, you have a ticking time bomb. Logs go on a separate mount. Always. No exceptions. I don't care how much the infrastructure team complains.
+
+And one more thing while I'm being scary: pgaudit.log_catalog = on (the default) will generate audit records for every catalog query. Every. Single. One. Your monitoring agent queries catalog tables every 30 seconds. pgAdmin does it constantly. Set log_catalog = off in production unless you have a very specific reason to audit catalog access.
+
+I am telling you this not to scare you away from auditing — I'm telling you this because proper auditing is how you build defensible, compliant, secure databases. But done carelessly, it can hurt you. Do it deliberately.
+
+
+--- PART FIVE: PGAUDIT AND SQL SERVER AUDIT — CONCEPTUAL COMPARISON ---
+
+Let me spend a few minutes connecting the dots for those of you who've worked with SQL Server, and for everyone, this conceptual map will help you reason about audit design in any platform.
+
+SQL Server Audit has three main objects you configure:
+
+1. SERVER AUDIT — defines *where* audit records go (file, Windows event log, Application log) and file rotation settings. This is the destination.
+
+2. SERVER AUDIT SPECIFICATION — defines *what server-level events* to capture (failed logins, successful logins, server-level DDL, etc.)
+
+3. DATABASE AUDIT SPECIFICATION — defines *what database-level events* to capture (SELECT, INSERT, EXECUTE on specific schemas or objects)
+
+The PostgreSQL equivalent mapping looks like this:
+
+    SQL Server SERVER AUDIT             ≈  postgresql.conf logging settings
+                                           (log_destination, logging_collector, log_directory)
+
+    SQL Server SERVER AUDIT SPEC        ≈  postgresql.conf log_connections + log_disconnections
+    (LOGIN_FAILED_GROUP, etc.)             for auth events; pgaudit session-level for server DDL/ROLE
+
+    SQL Server DATABASE AUDIT SPEC      ≈  pgaudit object-level auditing via the auditor role
+    (object-level SELECT, INSERT, etc.)    (GRANT on auditor role for specific tables)
+
+The key philosophical difference: SQL Server builds auditing as a first-class DDL feature with its own CREATE AUDIT, CREATE SERVER AUDIT SPECIFICATION syntax. You manage audit configurations through T-SQL objects that persist in system catalogs and can be queried, backed up, and version-controlled.
+
+PostgreSQL treats auditing more as a logging concern — it's configuration file + extension. This means your audit configuration lives in postgresql.conf and your database (for the auditor role grants), but it's not quite as self-describing as SQL Server's approach. The upside is that PostgreSQL's approach is more flexible and the log output is standard text that integrates with any log pipeline.
+
+Both platforms can achieve full compliance with PCI-DSS, HIPAA, SOX, and similar frameworks. The technique differs; the outcome is the same.
+
+One SQL Server-specific thing worth knowing: SQL Server Audit can write to Windows Security Event Log, which is monitored by SIEM tools natively on Windows environments. PostgreSQL's equivalent is setting up a log forwarder (Fluentd, Filebeat, rsyslog) to ship pgaudit CSV logs to your SIEM. Neither is intrinsically better — it depends on your infrastructure.
+
+
+--- PART SIX: TESTING YOUR AUDIT CONFIGURATION ---
+
+Good audit configurations should be tested, not assumed to work. I want to show you a small test harness you can use to verify that your pgaudit setup is actually capturing what you think it's capturing.
+
+Let's build a test scenario. Type this in your lab environment:
+
+    -- First, let's create a test schema and table
+    CREATE SCHEMA IF NOT EXISTS audit_test_schema;
+
+    CREATE TABLE audit_test_schema.sensitive_data (
+        id SERIAL PRIMARY KEY,
+        ssn TEXT,
+        account_number TEXT
+    );
+
+    -- Grant the auditor role access to audit this table
+    GRANT SELECT, INSERT, UPDATE, DELETE
+    ON audit_test_schema.sensitive_data
+    TO auditor;
+
+    -- Now insert some data
+    INSERT INTO audit_test_schema.sensitive_data (ssn, account_number)
+    VALUES ('555-12-3456', 'ACC-99887');
+
+    -- Now SELECT it
+    SELECT * FROM audit_test_schema.sensitive_data;
+
+    -- Now do an update
+    UPDATE audit_test_schema.sensitive_data
+    SET account_number = 'ACC-00001'
+    WHERE id = 1;
+
+Now, go check your pg_log file. Use your terminal — open a new tab and run:
+
+    grep 'AUDIT' /var/lib/postgresql/data/pg_log/postgresql-*.csv | tail -20
+
+You should see audit records for the INSERT, SELECT, and UPDATE. The object type will be TABLE, the relation will be audit_test_schema.sensitive_data, and the statement text will be present.
+
+If you see nothing — stop. Don't keep going. Work backward: is pgaudit in shared_preload_libraries? Did you restart (not just reload) after adding it? Is the extension created? Is pgaudit.role set and does the 'auditor' role have the right grants? These are the four things to check in that order.
+
+Here's a diagnostic query I keep in my toolkit:
+
+    -- Check current pgaudit settings
+    SELECT name, setting, source
+    FROM pg_settings
+    WHERE name LIKE 'pgaudit%'
+    ORDER BY name;
+
+That will show you exactly what pgaudit thinks its configuration is and where each setting came from (postgresql.conf, pg_hba, default, etc.). The 'source' column is invaluable when you're debugging why a setting didn't take effect.
+
+
+--- PART SEVEN: PRODUCTION AUDIT ARCHITECTURE ---
+
+Okay, let's zoom out for a minute and talk about what a real production audit architecture looks like — because what we've built in this lab is the foundation, not the finished product.
+
+In production, your audit trail needs to be:
+
+  1. Complete — every required event captured with no gaps
+  2. Tamper-evident — a DBA or attacker can't quietly delete audit records
+  3. Queryable — you can answer compliance questions in minutes, not weeks
+  4. Retained — records kept for the legally required duration (often 1-7 years depending on regulation)
+
+PostgreSQL log files in pg_log satisfy point 1 if configured correctly. They are NOT tamper-evident on their own — a superuser can delete log files. They are NOT efficiently queryable — they're flat files. And retention requires external policy enforcement.
+
+Here's what I've seen work well in mature organizations:
+
+The audit logs ship in near-real-time to an immutable log store. This could be an S3 bucket with object lock enabled, a dedicated Splunk index with write-once retention policy, an ELK stack with read-only indexes, or a specialized audit system like IBM Guardium or Imperva SecureSphere.
+
+The pgaudit records get ingested with a structured parser — Filebeat with a CSV log input, or a custom Python script running as a sidecar. The structured fields (audit type, class, object name, statement, user) get indexed separately for fast querying.
+
+Retention policies get enforced by the log store, not by the DBA team. The DBA team should not be able to delete audit logs — that's a separation of duties requirement in SOX and PCI environments.
+
+And critically: the audit configuration itself gets version-controlled and deployed through your change management pipeline. I use a simple approach — keep your postgresql.conf audit section in Git, deploy changes through Ansible or Terraform, and require a second approval for any change to audit settings. A DBA who can unilaterally turn off auditing is an audit gap.
+
+This is real-world DBA architecture. This is what you'll be implementing in your jobs.
+
+
+--- LAB EXERCISES ---
+
+Alright, everyone — here's your lab work for the next hour or so. I'll be walking around, answer questions, but try to work through these independently first. This is exactly the kind of scenario you'll see in your certification practical exam.
+
+The goal of these labs is for you to have a working, tested, documented pgaudit configuration by the end of the session.
+
+
+LAB 1 — Basic pgaudit Setup (20 minutes)
+
+1. On your lab PostgreSQL instance, verify pgaudit is available in pg_available_extensions.
+
+2. Add pgaudit to shared_preload_libraries in postgresql.conf. Restart PostgreSQL.
+
+3. Connect as superuser and run CREATE EXTENSION pgaudit.
+
+4. Configure the following in postgresql.conf and reload:
+       pgaudit.log = 'ddl, role'
+       pgaudit.log_catalog = off
+       pgaudit.log_relation = on
+       pgaudit.log_statement_once = off
+
+5. Generate at least two DDL events (create and drop a table) and verify the audit records appear in pg_log.
+
+6. Run the diagnostic query (SELECT name, setting, source FROM pg_settings WHERE name LIKE 'pgaudit%') and screenshot the output.
+
+Deliverable: Screenshot of audit records in pg_log and diagnostic query output.
+
+
+LAB 2 — Object-Level Auditing (25 minutes)
+
+1. Create a schema called hr and a table called hr.employee_salaries with columns: id SERIAL, employee_id INT, salary NUMERIC, effective_date DATE.
+
+2. Create the 'auditor' role.
+
+3. Set pgaudit.role = 'auditor' in postgresql.conf and reload.
+
+4. Grant SELECT and UPDATE on hr.employee_salaries to auditor.
+
+5. Connect as a non-superuser (use the 'analyst' role I've pre-created on your lab instance) and run:
+       SELECT * FROM hr.employee_salaries;
+       UPDATE hr.employee_salaries SET salary = 50000 WHERE id = 1;
+
+6. Verify that both the SELECT and UPDATE generated audit records in pg_log. Identify the OBJECT vs SESSION audit type in each record.
+
+7. Now, WITHOUT changing pgaudit.log_catalog, grant SELECT on pg_catalog.pg_tables to auditor. Run SELECT * FROM pg_catalog.pg_tables LIMIT 5 as analyst. Does an audit record appear? Why or why not? (Hint: think about log_catalog.)
+
+Deliverable: Written explanation of question 7 with supporting log evidence.
+
+
+LAB 3 — Login Failure Auditing (15 minutes)
+
+1. Add the following to postgresql.conf and reload:
+       log_connections = on
+       log_disconnections = on
+
+2. Attempt to connect to your lab database three times with an incorrect password for an existing user. Use psql from the command line with -W to force password prompt.
+
+3. Find the failed authentication entries in pg_log. Write down the exact log level (FATAL, ERROR, WARNING) and the message format.
+
+4. Now attempt to connect with a username that does not exist at all. Compare the log message to the wrong-password scenario. Are they identical? Should they be identical from a security perspective? Why does PostgreSQL behave this way?
+
+Deliverable: Log entries for both scenarios plus one paragraph answering question 4.
+
+
+LAB 4 — Audit Configuration Stress Test (BONUS — if you finish early)
+
+1. Temporarily set pgaudit.log = 'all' on your lab instance.
+
+2. Open three separate psql sessions and run workloads simultaneously — one running SELECT in a loop, one running INSERTs, one running DDL.
+
+3. Watch your pg_log file grow in real time: watch -n1 'du -sh /var/lib/postgresql/data/pg_log/'
+
+4. After two minutes, revert pgaudit.log to 'ddl, role' and measure how much log data was generated.
+
+5. Write a brief (one paragraph) recommendation for your hypothetical CTO explaining why you would NOT enable pgaudit.log = 'all' in production, with specific reference to the data you just collected.
+
+Deliverable: Log growth numbers and written recommendation.
+
+
+--- CLOSING THOUGHTS ---
+
+Alright, before I let you loose on the labs, I want to leave you with something.
+
+Auditing is one of those topics that feels like overhead — like you're doing it for compliance officers and auditors, not for yourself. I want to challenge that framing.
+
+The best DBAs I've worked with over 20 years all had one thing in common: they were never surprised by what happened in their databases. Not because nothing bad ever happened — bad things happen to every database eventually. But because they had visibility. They had audit trails. When something went wrong — a table got corrupted, a batch job deleted data it shouldn't have, a rogue query locked up the system — they could reconstruct exactly what happened, who initiated it, and when.
+
+That visibility is what pgaudit gives you. It's not overhead. It's intelligence about your own systems.
+
+When you walk into your next job — or your current job — and they say "we don't have auditing because it's too much overhead," you now know how to push back with specifics. You know how to configure surgical object-level auditing that adds negligible overhead. You know how to separate it from the concerns that actually do carry overhead. You know how to build it right.
+
+You're going to do great on your certification. Go do the labs. I'll be around.
+
+
+================================================================================
+QUICK-REFERENCE COMMAND CARD — pgaudit + PostgreSQL Auditing
+================================================================================
+
+INSTALLATION
+------------
+-- Verify availability
+SELECT name, default_version FROM pg_available_extensions WHERE name = 'pgaudit';
+
+-- postgresql.conf (requires restart)
+shared_preload_libraries = 'pgaudit'
+
+-- After restart
+CREATE EXTENSION IF NOT EXISTS pgaudit;
+
+
+POSTGRESQL.CONF AUDIT SETTINGS (reload with pg_reload_conf())
+--------------------------------------------------------------
+pgaudit.log = 'ddl, role'          -- Recommended baseline (add 'read','write' selectively)
+pgaudit.log_catalog = off          -- Suppress catalog query noise
+pgaudit.log_relation = on          -- Log per-relation records (compliance-friendly)
+pgaudit.log_statement_once = off   -- Full context on every record
+pgaudit.role = 'auditor'           -- Role name for object-level audit
+
+log_connections = on               -- Log all connection attempts (including failed auth)
+log_disconnections = on            -- Log session disconnections
+
+
+AUDIT CLASSES (use in pgaudit.log)
+-----------------------------------
+READ       — SELECT, COPY FROM
+WRITE      — INSERT, UPDATE, DELETE, TRUNCATE, COPY TO
+FUNCTION   — Function calls, DO blocks
+ROLE       — GRANT, REVOKE, CREATE/ALTER/DROP ROLE
+DDL        — CREATE/ALTER/DROP (non-role objects)
+MISC       — DISCARD, FETCH, CHECKPOINT, VACUUM
+MISC_SET   — SET, RESET
+ALL        — Everything (use with caution in production)
+
+
+OBJECT-LEVEL AUDITING SETUP
+-----------------------------
+-- 1. Create audit role
+CREATE ROLE auditor;
+
+-- 2. Set pgaudit.role = 'auditor' in postgresql.conf, then:
+SELECT pg_reload_conf();
+
+-- 3. Grant privileges to auditor for objects you want to audit
+GRANT SELECT ON schema.tablename TO auditor;
+GRANT INSERT, UPDATE, DELETE ON schema.tablename TO auditor;
+
+-- 4. Any user accessing that object now generates an audit record
+
+
+DIAGNOSTIC QUERIES
+-------------------
+-- Check current pgaudit configuration and source
+SELECT name, setting, source
+FROM pg_settings
+WHERE name LIKE 'pgaudit%'
+ORDER BY name;
+
+-- Verify extension is installed
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pgaudit';
+
+-- Reload configuration (non-postmaster settings only)
+SELECT pg_reload_conf();
+
+
+READING AUDIT RECORDS FROM LOG
+--------------------------------
+-- From shell
+grep 'AUDIT' /var/lib/postgresql/data/pg_log/postgresql-*.csv | tail -50
+
+-- Audit record field order (csvlog format)
+-- timestamp, user, database, pid, ... , AUDIT: type, stmt_id, substmt_id,
+-- class, command, object_type, object_name, statement, parameters
+
+
+AUDIT RECORD TYPES
+-------------------
+SESSION  — Generated by pgaudit.log session-level configuration
+OBJECT   — Generated by object-level auditing via pgaudit.role grants
+
+
+COMMON PITFALLS
+----------------
+❌  Using pgaudit.log = 'all' on busy OLTP — massive I/O, disk fill risk
+❌  Forgetting to RESTART after adding pgaudit to shared_preload_libraries
+❌  Leaving pgaudit.log_catalog = on in production — catalog query flood
+❌  Expecting pgaudit to capture failed logins — use log_connections instead
+❌  Storing log files on the same partition as data — logs can fill data disk
+✅  Start with 'ddl, role' session auditing + object-level for sensitive tables
+✅  Separate log volume from data volume
+✅  Ship logs to immutable external store for tamper-evident records
+✅  Version-control your postgresql.conf audit section
+
+
+SQL SERVER AUDIT CONCEPTUAL MAPPING
+-------------------------------------
+SQL Server SERVER AUDIT              → postgresql.conf log destination settings
+SQL Server SERVER AUDIT SPEC         → log_connections + log_disconnections
+  (LOGIN_FAILED_GROUP, etc.)           + pgaudit session-level DDL/ROLE
+SQL Server DATABASE AUDIT SPEC       → pgaudit object-level via auditor role grants
+  (object SELECT/INSERT/EXECUTE)
+
+
+================================================================================
+End of Lecture — DBA Technical Diploma, Auditing Session
+================================================================================

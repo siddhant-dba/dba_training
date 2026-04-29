@@ -1,0 +1,953 @@
+================================================================================
+POSTGRESQL PROCESSES: THE BACKBONE OF YOUR DATABASE
+A 30-Minute Overview Lecture
+================================================================================
+
+Alright, everyone grab a coffee — today we're talking about something that
+honestly, a lot of new DBAs avoid until they absolutely have to understand it.
+But here's the thing: once you understand what's actually happening inside your
+PostgreSQL server, when something goes wrong at 2 AM on a Friday, you won't be
+panicking. You'll know exactly what to look for.
+
+I'm going to walk you through every single process that makes PostgreSQL work.
+Some of these are boring. Some are critical. Some will save your career. Let's go.
+
+
+PART 1: THE BIG PICTURE — WHAT ARE WE EVEN TALKING ABOUT?
+================================================================================
+
+So, you boot up your PostgreSQL server. What actually happens? You type:
+
+    sudo systemctl start postgresql
+
+And then... what? Is it just one thing? No. It's a whole orchestra. And like any
+orchestra, if the conductor doesn't know what he's doing, it's a disaster.
+
+PostgreSQL is a **process-based** architecture. That's different from, say, MySQL
+with some of its thread-based models. Each major function in PostgreSQL runs as
+its own separate process. Why? Because isolation. If one thing crashes, the whole
+database doesn't go down.
+
+Think of it like this: I worked at a retail company in 2008, and we had this
+ancient Oracle system. Their whole database lived in one monolithic process. One
+day, a memory leak in one subsystem brought down the entire database. Two hours
+of downtime. Over a hundred grand in lost revenue. You don't want that. We're
+going to learn the PostgreSQL way, which is much smarter.
+
+When you run `ps aux | grep postgres`, you're going to see a bunch of processes
+all related to the same database. Today, I'm going to teach you what each one
+does, why it matters, and what happens when they break.
+
+
+PART 2: THE POSTMASTER — THE SERGEANT MAJOR
+================================================================================
+
+Alright, first one up: the **postmaster**. And yes, that's the real name. I know,
+it sounds weird. One of the PostgreSQL developers back in the day had a sense of
+humor.
+
+The postmaster is the **parent process**. It's the one that starts when you run
+`systemctl start postgresql`. Everything else is a child of this process. And its
+job is simple: listen for new connections, fork a new backend process for each
+connection, and manage the whole family.
+
+Let's see it in action. Go ahead and type this:
+
+    ps aux | grep postmaster
+
+You should see one line that looks something like this:
+
+    postgres   1234  0.0  0.1 123456 5678 ?  Ss  14:23  0:00 /usr/lib/...
+    /bin/postgres -D /var/lib/postgresql/14/main
+
+That's your postmaster. Notice something important: there's only ONE. It's the
+parent. Everything else you see with a postgres process name is either a backend,
+or one of the background workers we're going to talk about.
+
+The postmaster doesn't actually process your queries. It doesn't read data. It's
+a manager. Its job is:
+
+  1. Bind to the port (usually 5432)
+  2. Listen for connections
+  3. When a client connects, fork a new backend process
+  4. Manage that backend's lifecycle
+  5. Coordinate signals (like SIGTERM for shutdown)
+
+Here's something you'll see in production logs that will make sense now. When you
+shut down PostgreSQL gracefully:
+
+    sudo systemctl stop postgresql
+
+What's happening behind the scenes is that init sends a SIGTERM to the postmaster.
+The postmaster then sends SIGTERM to all its child processes, waits for them to
+finish, and then exits cleanly. If something hangs, you get a forced shutdown,
+which is bad. This is why you always, always let PostgreSQL shut down gracefully
+when possible.
+
+I once had a junior DBA who would kill -9 the postgres process when things got
+slow. Don't be that person. Let the postmaster do its job.
+
+
+PART 3: BACKENDS — YOUR ACTUAL WORKERS
+================================================================================
+
+Every time someone connects to PostgreSQL, the postmaster forks a backend process.
+This backend is the one that **actually runs your query**. It's the one that reads
+the data, executes the plan, returns the results.
+
+Let's see some backends:
+
+    ps aux | grep "postgres:" | head -10
+
+You'll see lines that look like:
+
+    postgres   5678  0.0  0.3 234567 8901 ?  Ss  14:23  0:00 postgres: user
+    testdb [local] idle
+    postgres   5679  0.0  0.3 234567 8901 ?  Ss  14:23  0:00 postgres: user
+    testdb [local] SELECT
+
+Each one of those is a backend. The postmaster forked it when a client connected.
+That backend is now running that client's queries.
+
+A couple of critical things about backends:
+
+First, **backends are expensive**. Each backend consumes memory. By default, each
+backend can allocate up to `work_mem` of RAM during query execution. If you have
+a thousand connections, you've got a thousand processes all potentially hungry.
+This is why the `max_connections` parameter is important.
+
+Second, **a backend is a connection**. One client = one backend (usually). If your
+application opens five connections to the database, there are five backends. If
+your connection pool doesn't actually pool connections, you're creating a new
+backend for every single request. This is a performance disaster.
+
+Third, and this is important: **a backend dies when the connection closes**. The
+postmaster cleans it up. That's why you don't leak backends. But if you're opening
+and closing connections constantly without pooling, you're putting massive load
+on the postmaster.
+
+Let me tell you a war story. At my previous job, we had a vendor application that
+was supposed to use connection pooling. But the vendor implemented it wrong. Every
+single query opened a new connection, ran the query, closed the connection. We had
+like 500 applications all doing this. The postmaster was spending 80% of its time
+forking and cleaning up backends. The database was barely responsive. We finally
+forced them to use PgBouncer, a connection pooler, and suddenly everything was
+fast again.
+
+Learn from that mistake: **always use connection pooling in production**. Full stop.
+
+Now, here's something cool you can do right now. Let's actually watch a backend
+running a query. Open two terminal windows.
+
+In the first window, connect to PostgreSQL:
+
+    psql -U postgres -d postgres
+
+In the second window, run:
+
+    watch -n 1 'ps aux | grep "postgres:" | grep -v grep'
+
+Now in your first window, type this query (don't press enter yet):
+
+    SELECT pg_sleep(30);
+
+Press enter. Watch what happens in your second window. You'll see your backend
+process pop up, and you'll see something like:
+
+    postgres   9999  0.0  0.5 234567 8901 ?  Ss  14:23  0:00 postgres: user
+    postgres [local] SELECT
+
+That's your backend, running the query. When the query finishes (30 seconds later),
+the backend disappears.
+
+This is the heartbeat of PostgreSQL. Nothing fancy, but it's the foundation.
+
+
+PART 4: THE SUPPORT CAST — BACKGROUND WORKERS
+================================================================================
+
+Now things get interesting. The postmaster doesn't just manage backends. It also
+starts and manages a whole team of background workers. These are processes that
+do necessary housekeeping that your queries don't directly ask for, but that
+PostgreSQL needs to stay healthy.
+
+Let's run:
+
+    ps aux | grep "postgres:" | head -20
+
+You should see your backends, but you should also see some others. Let me tell
+you about each one.
+
+
+THE BGWRITER (BACKGROUND WRITER)
+================================================================================
+
+There's only one bgwriter, and it's always running. Its job is to write dirty
+pages from shared_buffers out to disk, slowly and steadily.
+
+Here's what's happening: when you UPDATE data in PostgreSQL, the change happens
+in RAM first (in a thing called shared_buffers). It doesn't immediately hit disk.
+If it did, every single UPDATE would require disk I/O, and your database would be
+slow as molasses.
+
+Instead, the bgwriter runs every few seconds and says, "Hey, are there pages
+that have been dirty for a while? Let me write those out to disk." This way, the
+actual query doesn't have to wait for disk I/O.
+
+It's like a mail carrier. Every transaction doesn't have to walk their mail to
+the post office themselves. The mail carrier comes by regularly and picks it all
+up.
+
+You can see the bgwriter doing its job by checking the logs:
+
+    tail -100 /var/log/postgresql/postgresql.log | grep bgwriter
+
+You probably won't see much, because it's very quiet. That's good. You want it
+to be quiet.
+
+The bgwriter has a couple of settings you might tune:
+
+    bgwriter_delay = 200ms          # How often it wakes up
+    bgwriter_lru_maxpages = 100     # How many pages to write per cycle
+    bgwriter_lru_multiplier = 2.0   # How aggressive to be
+
+Most of the time, you don't touch these. But if you're seeing random spikes in
+I/O, the bgwriter might be contributing. Just knowing it exists helps you
+understand your system.
+
+
+THE WALWRITER (WAL WRITER)
+================================================================================
+
+Now, the walwriter is a bit more complex, so stay with me.
+
+Everything PostgreSQL does gets written to the WAL — that stands for
+**Write-Ahead Log**. Before any change gets written to the actual data files,
+PostgreSQL writes what it's about to do to the WAL. This is how it survives
+crashes. If the server goes down, the WAL is replayed on startup, and you get
+back to a consistent state.
+
+The walwriter's job is to make sure the WAL gets written to disk regularly. When
+you run a transaction, your changes go into WAL buffers in RAM. The walwriter
+wakes up every 100 milliseconds (by default) and flushes those buffers to disk.
+
+This is critical for durability. When a client says, "I committed my transaction,"
+we tell them it's safe. That safety comes from the fact that the walwriter has
+flushed their changes to the WAL on disk.
+
+You can see settings for the walwriter:
+
+    wal_writer_delay = 200ms        # How often it wakes up
+    wal_writer_flush_after = 1MB    # Force a flush if WAL fills up
+
+Again, defaults are usually fine. But understanding that the walwriter exists and
+does this work helps you understand your system.
+
+
+THE CHECKPOINTER (CHECKPOINT PROCESS)
+================================================================================
+
+Okay, here's a question: if everything gets written to the WAL, why do we need
+to write the actual data files at all? Why not just replay the WAL every time?
+
+The answer is: because replaying the WAL would take forever. If you haven't
+restarted in 30 days, and your WAL is 100 GB of changes, replaying that on
+startup would take hours.
+
+So PostgreSQL runs something called a **checkpoint**. This is a process that says,
+"Okay, everything in the WAL up to this point has been written to the actual data
+files. I'm going to mark this as done." Now if the server crashes, PostgreSQL only
+has to replay the WAL since the last checkpoint, not the entire history.
+
+The checkpointer process manages this. By default, a checkpoint runs every 5
+minutes, or whenever you've written 1 GB of WAL, whichever comes first.
+
+Here's what happens during a checkpoint:
+
+  1. The checkpointer writes all dirty pages to disk
+  2. It syncs the filesystem
+  3. It writes a checkpoint record to the WAL
+  4. It updates the control file with the checkpoint information
+
+This is **I/O intensive**. A busy database will see spikes in disk I/O every 5
+minutes during checkpoints. This is normal. This is good. It means your
+database is doing its job.
+
+But here's where it gets interesting. If your checkpoints are taking too long,
+you're going to see uneven query performance. You'll run a query, it's fast.
+Then another query, slow. Query fast again. That's probably checkpoint activity.
+
+This happened to me at a fintech company. Their queries were crazy uneven. 100 ms,
+then 2 seconds, then 100 ms again. Turned out their checkpoint was tuned wrong.
+They had:
+
+    checkpoint_timeout = 10 minutes
+    max_wal_size = 4GB
+
+So every 10 minutes or 4GB of WAL (whichever came first), they'd have a massive
+checkpoint that would block everything else. We tuned it to:
+
+    checkpoint_timeout = 5 minutes
+    max_wal_size = 1GB
+
+More frequent, smaller checkpoints. The database became much more consistent.
+
+You can see checkpoint activity in your logs:
+
+    tail -100 /var/log/postgresql/postgresql.log | grep checkpoint
+
+Look for lines like:
+
+    LOG: checkpoint complete: ...
+
+And how long it took.
+
+⚠️  INSTRUCTOR WARNING: Do not set max_wal_size too high on a server with
+limited disk space. WAL files are stored in pg_wal/, and if your checkpoint
+can't run (maybe disk is full), WAL will pile up until you run out of disk.
+Your database goes down hard. I've seen this happen in production. Set
+max_wal_size to about 1/3 of your free disk space. Always.
+
+
+THE AUTOVACUUM LAUNCHER AND AUTOVACUUM WORKER
+================================================================================
+
+Now we're getting into something that trips up a LOT of new DBAs. Let me explain
+vacuuming first, and then the processes around it.
+
+PostgreSQL uses a thing called **MVCC** — Multi-Version Concurrency Control.
+Without getting too deep into it, MVCC means that when you UPDATE a row, the old
+version of the row doesn't disappear. Instead, PostgreSQL creates a new version
+and marks the old one as dead.
+
+This is great for concurrency. Multiple clients can read and write without
+blocking each other. But it creates a problem: dead rows pile up. Eventually,
+your tables get bloated. Your indexes get bloated. Your disk space gets filled
+up with garbage.
+
+That's where **VACUUM** comes in. Vacuum is a maintenance operation that goes
+through tables and marks dead rows as reusable space. It also updates statistics
+that the query planner uses.
+
+There's a stronger version called **VACUUM FULL**, which actually shrinks the
+table back down. But VACUUM FULL locks the table, so we don't run it lightly.
+
+Now, you could run VACUUM manually. But that's a pain. So PostgreSQL has
+**autovacuum**, which runs automatically in the background.
+
+How does autovacuum work?
+
+There's an **autovacuum launcher** process. That's always running, sitting there,
+watching. It monitors every table. It keeps track of how many rows have been
+inserted, updated, and deleted since the last vacuum.
+
+When the launcher decides a table needs vacuuming, it forks off an **autovacuum
+worker**. That worker runs VACUUM on the table, usually on a schedule so it
+doesn't monopolize the server.
+
+You can see the launcher (there's always one):
+
+    ps aux | grep "autovacuum launcher"
+
+And you can see workers when they're running:
+
+    ps aux | grep "autovacuum worker"
+
+By default, autovacuum is enabled and pretty aggressive. It runs every 1 minute
+and vacuums tables that need it. This is generally good. But I'll tell you, in
+20 years, I've seen autovacuum cause problems when people don't understand it.
+
+Here's what happens: you set up a new database. You don't think about autovacuum.
+You do a bunch of bulk loading. The data piles up. Suddenly, autovacuum kicks in
+and decides to vacuum everything. Your queries get slow because autovacuum is
+scanning huge tables. You panic. You turn off autovacuum. Now your tables bloat.
+Your disk fills up. You're in worse shape.
+
+The right answer is: understand autovacuum. Tune it. Leave it on.
+
+Settings to know:
+
+    autovacuum = on                           # Is it on? (usually yes)
+    autovacuum_naptime = 1min                 # How often launcher wakes up
+    autovacuum_vacuum_threshold = 50          # Vacuum if N rows changed
+    autovacuum_analyze_threshold = 50         # Analyze if N rows changed
+    autovacuum_vacuum_cost_limit = 200        # Max I/O cost per worker
+    autovacuum_vacuum_cost_delay = 2ms        # Delay between pages
+
+The cost settings are important. They throttle autovacuum so it doesn't
+monopolize your I/O. But if they're too aggressive, your tables bloat.
+
+Let's actually see autovacuum in action. Type this in psql:
+
+    CREATE TABLE test_vacuum (id SERIAL PRIMARY KEY, data TEXT);
+    INSERT INTO test_vacuum (data) SELECT 'hello world';  -- Run this 10 times
+    SELECT relname, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'test_vacuum';
+
+This shows you the number of dead tuples in the table. Now update some rows:
+
+    UPDATE test_vacuum SET data = 'goodbye world' WHERE id < 5;
+    SELECT relname, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'test_vacuum';
+
+You'll see n_dead_tup has increased. Autovacuum will eventually clean this up.
+You can force it:
+
+    VACUUM ANALYZE test_vacuum;
+    SELECT relname, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'test_vacuum';
+
+Now it's zero. The dead rows have been reclaimed.
+
+Here's my war story: I had a client with a very busy table. 100 million rows,
+thousands of updates per minute. Autovacuum was struggling to keep up. The table
+kept bloating. I tuned autovacuum more aggressively and it started running more
+often, but even more slowly because the table was so big. The problem got worse.
+
+The real solution was that we needed to partition the table. Partitioning breaks
+a big table into smaller pieces, and autovacuum works better on smaller tables.
+But that's a topic for another day.
+
+Point is: autovacuum is your friend, but it has limits. Understand what it does,
+monitor it, and tune it when needed.
+
+
+THE WAL SENDER AND WAL RECEIVER
+================================================================================
+
+These two work together, and they're essential for replication.
+
+Let's say you have two PostgreSQL servers. You want to keep them in sync. You
+have a primary (the main one) and a replica (the copy). When you write to the
+primary, those changes also need to get to the replica.
+
+How does that happen? Through WAL shipping. The primary has a **WAL sender**
+process that reads the WAL on the primary and ships it to the replica. The
+replica has a **WAL receiver** process that receives the WAL and applies it.
+
+It's like a replication stream. The WAL sender says, "Here's what changed on the
+primary." The WAL receiver on the replica says, "Thanks, I'm applying that."
+
+This is how PostgreSQL streaming replication works, and it's critical for
+high-availability setups.
+
+You'll see WAL senders on the primary:
+
+    ps aux | grep "wal sender"
+
+And WAL receivers on replicas:
+
+    ps aux | grep "wal receiver"
+
+Now, here's the important part: WAL senders and receivers only exist if you
+actually have a replica set up. If you're running a standalone server, you won't
+see them.
+
+Configuring replication is a whole lecture in itself, and we'll cover it later
+in the course. But for now, just know: these processes are how your data gets
+from the primary to the replica.
+
+
+THE STATS COLLECTOR
+================================================================================
+
+The stats collector is the quiet one. It runs in the background and collects
+statistics about what's happening in the database.
+
+Every query, every table scan, every index access — the stats collector tracks
+it. This information goes into system catalogs like `pg_stat_user_tables` and
+`pg_stat_user_indexes`.
+
+The query planner uses these statistics to decide how to run your queries. Is it
+faster to do a full table scan or use an index? The planner looks at the
+statistics and decides.
+
+You don't really interact with the stats collector directly. It just sits there,
+collecting. But you use its data constantly. Every time you run:
+
+    SELECT * FROM pg_stat_user_tables;
+
+You're looking at data the stats collector gathered.
+
+One thing to know: the stats collector is delayed. It's not real-time. There's
+usually a slight lag between when something happens and when the stats reflect
+it. This is fine. You don't need real-time statistics for query planning.
+
+You can see the stats collector:
+
+    ps aux | grep "stats collector"
+
+There's only one. It's always running (unless you disabled it, which you
+shouldn't).
+
+
+THE LOGICAL REPLICATION LAUNCHER
+================================================================================
+
+This is a newer feature in PostgreSQL, and it's more advanced. So don't stress
+if this doesn't all make sense yet.
+
+In addition to physical replication (copying the WAL), PostgreSQL supports
+logical replication. Physical replication copies everything — if you delete a
+column on the primary, it gets deleted on the replica too.
+
+Logical replication works at the level of actual data changes. You can set up
+subscriptions where you say, "I want to replicate table A and table B, but not
+table C." Or you can replicate between different PostgreSQL versions, because
+logical replication is version-independent.
+
+The **logical replication launcher** manages these subscriptions. There's one
+launcher, and it spawns worker processes when needed.
+
+You'll see it on servers with logical replication set up:
+
+    ps aux | grep "logical replication launcher"
+
+This is an advanced feature. We'll cover it later in the course when we talk
+about replication in depth.
+
+
+PUTTING IT ALL TOGETHER — A REAL EXAMPLE
+================================================================================
+
+Okay, let's tie this together. I'm going to walk through what happens when you
+run a real query, and you're going to understand what processes are involved.
+
+Scenario: You connect to PostgreSQL and run:
+
+    UPDATE orders SET status = 'shipped' WHERE order_id = 12345;
+
+Here's what happens:
+
+1. Your client connects to the PostgreSQL server on port 5432.
+
+2. The postmaster receives the connection request. It forks a new backend process
+   for you.
+
+3. Your backend process receives your query. It parses it, plans it, optimizes it
+   using statistics from the stats collector.
+
+4. Your backend executes the query. It finds the row with order_id = 12345,
+   updates the status column. This change is made in RAM first (in
+   shared_buffers).
+
+5. Your backend writes this change to the WAL. Not the actual data files, just
+   the WAL. The write goes to the WAL buffer in RAM.
+
+6. Your backend says, "Query complete, transaction committed." But internally,
+   it tells the walwriter, "Hey, this transaction needs to be on disk."
+
+7. The walwriter wakes up (every 200 milliseconds) and flushes the WAL buffer to
+   disk. Now your transaction is safe. If the server crashes right now, the
+   change is still there.
+
+8. The bgwriter runs every 200 milliseconds and notices there's a dirty page in
+   shared_buffers. Over the next few minutes, it slowly writes that page to disk.
+
+9. The checkpointer runs every 5 minutes and says, "All changes up to this point
+   are now on disk." It writes a checkpoint record.
+
+10. The stats collector has been watching this whole time and notes: one UPDATE,
+    one modified row in the orders table. This goes into its statistics.
+
+11. Autovacuum launcher is watching the orders table. It notes that one row has
+    been updated. Not a big deal yet. But if thousands of rows get updated, the
+    launcher will eventually fork an autovacuum worker to clean up the old
+    versions.
+
+12. If you have a replica, the WAL sender on the primary reads the WAL and ships
+    it to the replica's WAL receiver. The replica applies the same change.
+
+All of this happens in a fraction of a second. But now you understand what's
+actually happening under the hood.
+
+
+MONITORING THESE PROCESSES — A REAL SKILL
+================================================================================
+
+Here's something you absolutely need to know: how to monitor what's happening.
+
+Go ahead and type:
+
+    ps aux | grep postgres | head -20
+
+You're going to see something like:
+
+    postgres   1234  0.0  0.1 123456 5678 ?  Ss  14:23  0:00 /usr/lib/...
+    /bin/postgres -D /var/lib/postgresql/14/main
+    postgres   5678  0.0  0.3 234567 8901 ?  Ss  14:23  0:00 postgres: user
+    testdb [local] idle
+    postgres   5679  0.0  0.3 234567 8901 ?  Ss  14:23  0:00 postgres: user
+    testdb [local] SELECT
+    postgres   5680  0.0  0.1 234567 1234 ?  Ss  14:23  0:00 postgres:
+    bgwriter
+    postgres   5681  0.0  0.1 234567 1234 ?  Ss  14:23  0:00 postgres:
+    walwriter
+    postgres   5682  0.0  0.1 234567 1234 ?  Ss  14:23  0:00 postgres:
+    checkpointer
+    postgres   5683  0.0  0.1 234567 1234 ?  Ss  14:23  0:00 postgres:
+    autovacuum launcher
+
+This is the process tree. Every single one of these is a process. The postmaster
+is the parent (PID 1234). Everything else is a child.
+
+Now, here's something useful. Let's actually look at what queries are running:
+
+    psql -U postgres -d postgres
+    SELECT pid, usename, state, query FROM pg_stat_activity WHERE state != 'idle';
+
+This shows you all the active queries. Each one is being run by a backend. You
+can see the PID, which matches the process IDs you saw in ps aux.
+
+Now, let's say a query is hanging. You want to kill it. You can:
+
+    SELECT pg_terminate_backend(5679);
+
+This tells the backend process with PID 5679 to shut down. Clean. Not a kill -9,
+which is rude. We're asking nicely.
+
+Here's another useful thing. Let's see how many connections are active:
+
+    SELECT count(*) FROM pg_stat_activity;
+
+And how many are idle:
+
+    SELECT count(*) FROM pg_stat_activity WHERE state = 'idle';
+
+This is critical information. If you have 500 connections and only 10 are doing
+work, you have a connection pool problem.
+
+One more: let's see which backend has been running the longest:
+
+    SELECT pid, usename, state_change, query
+    FROM pg_stat_activity
+    ORDER BY state_change ASC
+    LIMIT 1;
+
+The one with the oldest state_change is the one that's been running longest.
+
+These queries are going to be your bread and butter as a DBA. Learn them. Know
+them.
+
+
+LAB EXERCISES — YOUR TURN
+================================================================================
+
+Alright, let's do some hands-on work. These are the exercises you're going to do
+right now, in the next 15 minutes.
+
+EXERCISE 1: THE PROCESS TREE
+
+1. Open a terminal and type:
+
+    ps aux | grep postgres
+
+2. Identify the postmaster (the parent process). It usually has a lower PID.
+
+3. Identify the bgwriter, walwriter, and checkpointer. Count how many backends
+   are running.
+
+4. Open a second terminal and connect to PostgreSQL:
+
+    psql -U postgres -d postgres
+
+5. Back in the first terminal, run the ps command again. You should see a new
+   backend process. That's your psql connection.
+
+6. In your psql window, run a query:
+
+    SELECT pg_sleep(10);
+
+7. While that's running, check ps again. You should see your backend in a SELECT
+   state.
+
+EXERCISE 2: MONITORING ACTIVE QUERIES
+
+1. In psql, run:
+
+    SELECT pid, usename, state, query FROM pg_stat_activity;
+
+2. Identify the backends running each query. The PID in pg_stat_activity matches
+   the PID in ps aux.
+
+3. Now open a third terminal and connect again:
+
+    psql -U postgres -d postgres
+
+4. Run the same query in this new connection. You should see another backend in
+   pg_stat_activity.
+
+5. Back in your first terminal, run:
+
+    SELECT count(*) FROM pg_stat_activity;
+
+You should see both connections.
+
+EXERCISE 3: WATCHING AUTOVACUUM
+
+1. Create a test table:
+
+    CREATE TABLE test_bench (id SERIAL PRIMARY KEY, data TEXT);
+
+2. Insert some data:
+
+    INSERT INTO test_bench (data) SELECT 'test' FROM generate_series(1, 10000);
+
+3. Now update some rows:
+
+    UPDATE test_bench SET data = 'updated' WHERE id < 5000;
+
+4. Check the dead tuples:
+
+    SELECT relname, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'test_bench';
+
+5. Wait a minute and check again. Autovacuum should run and clean them up.
+
+6. If you want to force it immediately:
+
+    VACUUM test_bench;
+
+Then check again. n_dead_tup should be zero.
+
+EXERCISE 4: MONITORING PROCESS RESOURCE USAGE
+
+1. In a terminal, run:
+
+    watch -n 1 'ps aux | grep postgres | awk "{print \$2, \$3, \$4, \$6, \$11}"'
+
+This shows you PID, CPU%, MEM%, RSS (memory), and the process name.
+
+2. Run a heavy query in psql:
+
+    SELECT * FROM test_bench, test_bench t2;
+
+3. Watch the memory usage climb. See how the backend is using more RAM.
+
+4. Ctrl+C to stop the query. Memory drops.
+
+EXERCISE 5: THE CHECKPOINT
+
+1. In psql, run:
+
+    CREATE TABLE checkpoint_test (id SERIAL, data TEXT);
+
+2. Insert lots of data:
+
+    INSERT INTO checkpoint_test (data) SELECT md5(random()::text) FROM generate_series(1, 100000);
+
+3. In a terminal, watch the WAL size:
+
+    watch -n 1 'du -sh /var/lib/postgresql/14/main/pg_wal'
+
+4. In psql, force a checkpoint:
+
+    CHECKPOINT;
+
+5. Watch the terminal. You should see a temporary spike in WAL size (if there's
+   pending data), then it should stabilize or drop.
+
+That's checkpoint activity happening.
+
+EXERCISE 6 (BONUS): KILLING A HANGING QUERY
+
+1. In psql, run:
+
+    SELECT pg_sleep(60);
+
+2. In a second terminal, connect to PostgreSQL and run:
+
+    SELECT pid FROM pg_stat_activity WHERE query LIKE '%sleep%' AND query NOT
+    LIKE '%killed%';
+
+3. Note the PID. Let's say it's 12345. Kill it:
+
+    SELECT pg_terminate_backend(12345);
+
+4. Back in the first terminal, the query should error out immediately. The
+   backend was killed cleanly.
+
+That's how you handle a stuck query.
+
+
+CLOSING THOUGHTS
+================================================================================
+
+Okay, let's bring this home.
+
+What we've talked about today is the foundation. The postmaster is the conductor.
+The backends are the musicians. The bgwriter, walwriter, checkpointer, and
+autovacuum are the stage crew keeping everything running smoothly. The WAL
+sender/receiver are the delivery people. The stats collector is the historian.
+The logical replication launcher is the coordinator for advanced setups.
+
+You don't need to be an expert in all of these right now. But you need to know
+they exist, what they do at a high level, and how to monitor them.
+
+Here's what I want you to remember most of all: **PostgreSQL is transparent**. You
+can see everything. You can monitor everything. You have visibility into what's
+happening at every level. Use that power.
+
+Too many people run PostgreSQL as a black box. They don't understand it. So when
+something goes wrong, they panic. But if you know your system — if you understand
+these processes — then when something goes wrong, you become the expert in the
+room who can fix it.
+
+That's what being a DBA is. It's not magic. It's understanding your system deeply
+enough that you can diagnose and fix problems.
+
+In the next lecture, we're going to dive deeper into one of these processes —
+probably autovacuum, because that's where a lot of new DBAs trip up. And then
+we're going to start talking about configuration files and how to actually tune
+PostgreSQL for your workload.
+
+For now, go home and practice. Run these commands. Watch your processes. Connect
+to your database from multiple terminals and see how the process tree grows. Play
+with it. Break it. Fix it. That's how you learn.
+
+I'll see you next time.
+
+
+================================================================================
+QUICK REFERENCE: POSTGRES PROCESSES AT A GLANCE
+================================================================================
+
+POSTMASTER
+  What:     Parent process, connection manager
+  See it:   ps aux | grep postmaster
+  Key job:  Fork new backends, coordinate shutdown, manage whole database
+
+BACKEND
+  What:     Runs your query, one per client connection
+  See it:   ps aux | grep "postgres:" | grep -v grep
+  Key job:  Execute queries, parse, plan, read/write data
+
+BGWRITER
+  What:     Background writer, slow page writer
+  See it:   ps aux | grep "bgwriter"
+  Key job:  Write dirty pages to disk steadily, prevent buffer bloat
+
+WALWRITER
+  What:     WAL writer, fsync the write-ahead log
+  See it:   ps aux | grep "walwriter"
+  Key job:  Flush WAL buffers to disk, guarantee durability
+
+CHECKPOINTER
+  What:     Checkpoint manager, full page writer
+  See it:   ps aux | grep "checkpointer"
+  Key job:  Periodic full flush, mark consistent state, shorten recovery
+
+AUTOVACUUM LAUNCHER
+  What:     Autovacuum orchestrator
+  See it:   ps aux | grep "autovacuum launcher"
+  Key job:  Monitor tables, decide when vacuum is needed, fork workers
+
+AUTOVACUUM WORKER
+  What:     Autovacuum executor
+  See it:   ps aux | grep "autovacuum worker"
+  Key job:  Run VACUUM on specific tables, reclaim dead row space
+
+WAL SENDER
+  What:     Replication stream sender (primary only)
+  See it:   ps aux | grep "wal sender" (on primary)
+  Key job:  Ship WAL to replica, keep replica in sync
+
+WAL RECEIVER
+  What:     Replication stream receiver (replica only)
+  See it:   ps aux | grep "wal receiver" (on replica)
+  Key job:  Receive WAL from primary, apply changes to replica
+
+STATS COLLECTOR
+  What:     Statistics gatherer
+  See it:   ps aux | grep "stats collector"
+  Key job:  Collect query metrics, feed query planner decisions
+
+LOGICAL REPLICATION LAUNCHER
+  What:     Logical replication orchestrator (advanced)
+  See it:   ps aux | grep "logical replication launcher"
+  Key job:  Manage logical subscriptions, fork workers
+
+
+ESSENTIAL COMMANDS YOU SHOULD KNOW
+================================================================================
+
+See all postgres processes:
+  ps aux | grep postgres
+
+See active connections and queries:
+  psql -c "SELECT pid, usename, state, query FROM pg_stat_activity;"
+
+Count connections by state:
+  psql -c "SELECT state, count(*) FROM pg_stat_activity GROUP BY state;"
+
+Find longest-running query:
+  psql -c "SELECT pid, usename, state_change, query FROM pg_stat_activity 
+           ORDER BY state_change ASC LIMIT 1;"
+
+Kill a specific query (safely):
+  psql -c "SELECT pg_terminate_backend(PID);"
+
+View dead tuples (bloat indicator):
+  psql -c "SELECT relname, n_dead_tup FROM pg_stat_user_tables;"
+
+Force VACUUM on a table:
+  psql -c "VACUUM tablename;"
+
+Force a checkpoint:
+  psql -c "CHECKPOINT;"
+
+View checkpoint progress in logs:
+  tail -f /var/log/postgresql/postgresql.log | grep checkpoint
+
+Monitor WAL size:
+  du -sh /var/lib/postgresql/VERSION/main/pg_wal
+
+Watch process tree in real-time:
+  watch -n 1 'ps aux | grep postgres'
+
+
+KEY CONFIGURATION SETTINGS (in postgresql.conf)
+================================================================================
+
+max_connections = 100               # How many clients can connect
+shared_buffers = 256MB              # RAM for data cache (usually 25% of system RAM)
+work_mem = 4MB                      # RAM per query operation
+
+bgwriter_delay = 200ms              # How often bgwriter runs
+bgwriter_lru_maxpages = 100         # Pages to write per bgwriter cycle
+
+wal_writer_delay = 200ms            # How often walwriter flushes
+checkpoint_timeout = 5min           # Max time between checkpoints
+max_wal_size = 1GB                  # Approx WAL size before forced checkpoint
+
+autovacuum = on                     # Enable autovacuum
+autovacuum_naptime = 1min           # How often launcher checks
+autovacuum_vacuum_threshold = 50    # Rows changed before vacuum
+autovacuum_vacuum_cost_limit = 200  # Max I/O weight before throttle
+
+
+THE DBA MINDSET
+================================================================================
+
+You now understand what's actually running in your PostgreSQL server. That's
+powerful. Use it.
+
+When something is slow:
+  - Check ps to see what processes are running
+  - Check pg_stat_activity to see what queries are executing
+  - Check logs to see what the background processes are doing
+  - Make a hypothesis. Test it. Fix it.
+
+When something crashes:
+  - Look at the logs. They'll tell you what happened.
+  - Check if WAL is consistent. If it is, you can recover.
+  - Understand which process failed and why.
+
+When you're tuning:
+  - Know what you're tuning. Is it the postmaster? Backends? Autovacuum?
+  - Make one change at a time.
+  - Monitor before and after.
+  - Have a hypothesis about why that change helps.
+
+You're not a DBA yet. But you're on your way. You understand the system now.
+Keep learning. Good luck out there.
+
+================================================================================
+END OF LECTURE
+================================================================================

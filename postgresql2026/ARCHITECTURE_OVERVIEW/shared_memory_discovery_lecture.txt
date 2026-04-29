@@ -1,0 +1,373 @@
+================================================================================
+  SHARED MEMORY DISCOVERY — LIVE LECTURE
+  2-Year DBA Technical Diploma | PostgreSQL Only
+  Duration: 30 minutes + lab
+================================================================================
+
+Alright, everyone settle in. Today we're talking about something that absolutely confused the hell out of me when I was learning this twenty years ago, and I see it confuse every new DBA I've ever trained. So let's get this right together, because when things go wrong at 3 AM, this is knowledge that will save you.
+
+We're going to look inside PostgreSQL's head — literally inside the shared memory that the database carves out the moment the postmaster starts up. And here's the thing nobody tells you: shared memory is where the REAL action happens. Disk is slow. Network is slow. But shared memory? That's where PostgreSQL lives every second it's running.
+
+Remember when we did the process model discovery? You saw the postmaster start up, fork off backends, and you watched them handle queries. Where do you think those backends actually work? What's the invisible pipeline between them? That's what we're about to see.
+
+
+--- THE MENTAL MODEL ---
+
+Let me paint a picture. Imagine your hard drive is a warehouse. Your RAM is the loading dock. Your CPU cache is your hands. PostgreSQL is a worker who needs to move boxes from the warehouse to the dock, pick them up, and use them.
+
+Now, if every worker had their own private loading dock — their own copy of every box they might need — that would be wasteful, right? And it would be wrong. If Worker A modifies Box 42, then Worker B grabs Box 42 from their own dock, they'd have stale data.
+
+So what does PostgreSQL do? It creates ONE shared loading dock that EVERY worker can see. That's shared memory. And that's where things get interesting. And tricky. And where bugs hide.
+
+That shared memory has several things in it:
+— Actual data pages (the boxes)
+— Lock tables (who's using which box)
+— A process array (who are all the workers)
+— WAL buffers (notes about what was just changed)
+— Prepared transaction state
+— Replication state
+
+And here's the first thing that surprises most people: the OS also has its own cache. So you're looking at double buffering. PostgreSQL has shared_buffers. The OS has its page cache. Data can sit in BOTH places at the same time. We'll come back to that.
+
+Let me show you the thing that trips up every person who comes to me saying "My database is slow, help me." They say: "My shared_buffers is set to 40GB. Why is my query slow?" And I say: "Tell me what you're testing with." And they say: "Three rows." [laughs] Yeah. No, your 40GB shared buffer full of three-row test data isn't your problem.
+
+Let's actually look at what's there.
+
+
+--- FIRST: FINDING SHARED MEMORY ON YOUR SYSTEM ---
+
+Open a terminal. We're going to do this live. Go ahead and type this:
+
+  ipcs -m
+
+That's it. That's the command. ipcs means "inter-process communication status". The -m flag means "show me shared memory segments." Type it. What do you see?
+
+You should see something like this:
+
+  ------ Shared Memory Segments --------
+  key        shmid      owner      perms      bytes      nattch
+  0x00000000 65537      postgres   600        274726912  12
+  0x00000000 65538      postgres   600        16777216   12
+
+Those are PostgreSQL's shared memory segments. The "shmid" is the segment ID. The "bytes" tells you the SIZE. And "nattch" — that's "number attached" — tells you how many processes are currently connected to that segment. If you're running a cluster with 12 connections active, you see nattch of 12.
+
+Now, here's where it gets interesting. On a modern Linux system, you might also see /dev/shm:
+
+  ls -lh /dev/shm
+
+If PostgreSQL uses POSIX shared memory instead of System V shared memory — which is increasingly common on newer systems — the segments will show up here as files. You can literally `cat` them. Well, you can try. It's binary. It won't make sense. But you can see the size:
+
+  ls -lh /dev/shm/PostgreSQL*
+
+Go ahead. Try it right now on your local instance.
+
+[pause for students to run commands]
+
+Okay, so you've found the shared memory. Do you know what you're looking at? No. That's fine. It's binary noise. But you KNOW it's there. You can measure it. That's the first victory.
+
+Now let's look inside.
+
+
+--- THE SHARED MEMORY LAYOUT: WHAT LIVES WHERE ---
+
+PostgreSQL's shared memory is structured. Let me give you the top-level view:
+
+1. **Buffer Pool (shared_buffers)**
+   This is the biggest chunk. Data pages live here. When you SELECT a row, it gets loaded into a buffer. When you UPDATE a row, the dirty page sits here until the background writer flushes it to disk. These are 8KB pages — the same size as the filesystem pages. That matters.
+
+2. **WAL Buffers**
+   A much smaller pool reserved for Write-Ahead Logging. Every change is logged FIRST before it hits disk. These are very hot. Very important. We could do an entire class on this.
+
+3. **Lock Tables**
+   Every table, every relation, every transaction that holds a lock is tracked in here. This is how PostgreSQL prevents two backends from corrupting data by writing at the same time. This is synchronization.
+
+4. **Process Array**
+   Every connected backend has an entry. Its PID, its state, what query it's running, how much shared memory it's using, whether it's in a transaction. This is how the postmaster knows when to fork a new backend, when to clean up, what's happening.
+
+5. **Cache and Catalog Buffers**
+   The system catalog — the metadata about your tables, columns, indexes — that lives in buffers too. When you run a query, PostgreSQL has to read the catalog to know what columns exist. If that's not in cache, it's disk I/O.
+
+Now, the thing I want you to understand right now is this: **shared_buffers is NOT large-scale memory**. It's not your RAM. It's a special pool that PostgreSQL manages DIRECTLY. And the OS has ANOTHER pool called the page cache. Let me explain why this matters.
+
+
+--- DOUBLE BUFFERING: THE THING THAT CONFUSES EVERYONE ---
+
+Here's a story from 2009. I was working at a financial services company. Three-node replication cluster. The senior DBA — a guy named Martin — he had set shared_buffers to 80GB. The server had 256GB of RAM. Eighty gigs going to PostgreSQL, the rest going to the OS cache.
+
+He said, "I'm maximizing my buffer pool." He thought more shared_buffers meant faster queries. That's what makes intuitive sense, right?
+
+His query response time was terrible. We ran EXPLAIN ANALYZE and found that the query was doing sequential scans of tables that should have been fitting in memory.
+
+You know what was happening? The OS page cache had the data. PostgreSQL's shared_buffers didn't. So when PostgreSQL requested a page from disk, the OS said, "Oh, I have that in cache. Here you go." But PostgreSQL had to load it into shared_buffers ANYWAY, because that's where it works.
+
+So the same data lived in TWO places: OS cache AND PostgreSQL shared_buffers. It was waste. It was inefficiency.
+
+The right setting for shared_buffers is usually 25% of your RAM. Not 80%. Twenty-five percent. Leave the rest for the OS cache. Let the OS cache and PostgreSQL share the work. That's when you get performance.
+
+I'm telling you this now because I see people make this mistake CONSTANTLY. They think "shared memory" means "all my data fits in RAM." It doesn't. It means "PostgreSQL has a dedicated pool." And the OS cache is still there, still working, still mattering.
+
+Remember that when you're tuning in production.
+
+
+--- SEEING WHAT'S IN SHARED MEMORY: THE pg_buffercache EXTENSION ---
+
+Okay, now let's actually look at what's taking up space in shared_buffers. PostgreSQL gives us a tool: the pg_buffercache extension.
+
+Go ahead and connect to your local instance. If you're following along:
+
+  psql -U postgres
+
+Now, let's create the extension. Type this:
+
+  CREATE EXTENSION pg_buffercache;
+
+That's it. One line. PostgreSQL now exposes a view called pg_buffercache that shows you every single page in shared_buffers.
+
+Now, let's look at the structure:
+
+  \d pg_buffercache
+
+You'll see columns like:
+  - bufferid: which buffer slot this is
+  - relfilenode: which relation this page belongs to (a table or index)
+  - relblocknumber: which block number within that relation
+  - isdirty: is this page different from what's on disk
+  - usagecount: how many times has this page been accessed
+
+That last one — usagecount — that's important. PostgreSQL doesn't use a simple LRU eviction policy. It uses a "clock sweep" algorithm. Every time a page is accessed, its usagecount goes up. When buffers fill and PostgreSQL needs a page, it evicts the page with the LOWEST usagecount, not necessarily the oldest one. Pages that are accessed frequently stay. Pages that are accessed once and forgotten go away.
+
+Now let's run a real query. Type this:
+
+  SELECT relname, count(*) as buffers_used
+    FROM pg_buffercache 
+    JOIN pg_class ON pg_buffercache.relfilenode = pg_class.relfilenode 
+   WHERE relname IS NOT NULL 
+   GROUP BY relname 
+   ORDER BY buffers_used DESC 
+   LIMIT 10;
+
+What you're seeing is: the top 10 tables and indexes, by buffer count. Which ones are taking up the most space in shared_buffers right now.
+
+If you've been running queries, you should see your recently-queried tables at the top. If your shared_buffers is barely used, you'll see nothing or very little. That's fine. It means your working set fits in the OS cache.
+
+Let me show you something more interesting. Let's look at the distribution of usagecount:
+
+  SELECT usagecount, count(*) as buffer_count
+    FROM pg_buffercache 
+   WHERE usagecount IS NOT NULL 
+   GROUP BY usagecount 
+   ORDER BY usagecount;
+
+This shows you the "heat" of your buffer pool. Pages with usagecount=1 are cold. Pages with high usagecount are hot. If you see a bunch of pages with usagecount=1, it means your working set is larger than your buffer pool — pages are being evicted before they get reused.
+
+That's valuable diagnostic information. That tells you: you need more shared_buffers, or your query patterns are poor, or both.
+
+Now here's a war story to lock this in. I was at a SaaS company in 2015. Their application was doing batch processing at night. Every night, the batch would scan a table with 50 million rows. The table was 200GB. shared_buffers was 10GB.
+
+The first time the batch ran, it loaded 10GB worth of pages into shared_buffers. Then it kept scanning, evicting those pages, loading new ones. Every single page got loaded once and thrown away. usagecount stayed at 1 for basically everything.
+
+The batch took 8 hours. We profiled it, saw the usagecount distribution, and realized: the working set doesn't fit in memory, and each page is touched exactly once. You know what we did? We increased shared_buffers to 30GB. Suddenly the working set fit. Batch time dropped to 3 hours.
+
+But that only works if your total working set is smaller than available memory. This customer's was. Not all situations are like that.
+
+The point: pg_buffercache shows you the truth. Look at it.
+
+
+--- WHAT ELSE LIVES IN SHARED MEMORY ---
+
+Beyond the buffer pool, there are other critical things in shared memory that I want you aware of:
+
+**Lock Tables**: When you run SELECT ... FOR UPDATE, PostgreSQL creates a lock entry in shared memory. Multiple backends can look at this and know that Backend A is holding a lock on this row. If Backend B tries to lock the same row, it waits. This is synchronization. This is correctness. If lock memory fills up — yes, it has a limit — you get "out of shared memory" errors. Rare, but it happens.
+
+**Process Array**: The postmaster keeps an array of every connected backend. Each entry tracks:
+  - The process PID
+  - The database OID
+  - The user OID
+  - Current query text
+  - Transaction state
+  - Memory used
+
+This is how the postmaster knows what's running. This is how you see backend processes when you run `SELECT * FROM pg_stat_activity;`. It's reading from shared memory.
+
+**Prepared Transaction State**: When you use two-phase commit (PREPARE TRANSACTION / COMMIT PREPARED), that state lives in shared memory until the transaction is committed or rolled back. If you crash in the middle, the prepared transaction state is recovered from disk.
+
+**Replication State**: If you're running streaming replication, the replication status — what WAL has been sent, what's been received, feedback about replica sync — all that lives in shared memory. Multiple replication senders can check this.
+
+Now, you don't usually interact with these directly. They're internal. But they ARE there. And they're finite. Configure them wrong, and you get out-of-memory errors or contention.
+
+
+--- THE REAL WARNING: SHARED MEMORY ALLOCATION IN PRODUCTION ---
+
+Okay, I need to stop and give you a critical warning right now. Listen carefully.
+
+**You cannot easily resize shared_buffers on a running server.**
+
+If you change shared_buffers in postgresql.conf and run `SELECT pg_reload_config();`, the postmaster will NOT reallocate shared memory. It's too risky. The postmaster requires a full restart.
+
+I have seen — SEEN, personally, not heard about — I have SEEN a person in production try to increase shared_buffers from 4GB to 32GB on a running server because they thought pg_reload_config would do it. They bounced the database at 2 PM on a Tuesday.
+
+Turns out they had no idea how long the database recovery was going to take. No one had tested it. The database had 500GB of WAL to replay. It took three hours. The whole company was down. Their boss was standing behind them the entire time. Do not be that person.
+
+Here's what you do:
+1. **Test the memory in a non-production environment FIRST.**
+2. **Measure the WAL recovery time.** How long would a restart take?
+3. **Plan a maintenance window.** Notify stakeholders.
+4. **Have a rollback plan.** If something goes wrong, how do you back out?
+
+Changing memory parameters is not low-risk. Treat it like a maintenance task. Because it is one.
+
+
+--- PRACTICAL EXERCISE: INSPECTING YOUR OWN CLUSTER ---
+
+Alright, let's actually do this. I want you to:
+
+1. Start your local PostgreSQL instance (you should have one from earlier labs).
+
+2. Connect to it and create the pg_buffercache extension:
+   
+   psql -U postgres
+   CREATE EXTENSION pg_buffercache;
+
+3. Run these three queries in sequence:
+
+   QUERY 1 — What's consuming buffer space right now?
+   
+   SELECT 
+     relname, 
+     count(*) as pages_in_buffer,
+     pg_size_pretty(count(*) * 8192) as buffer_space
+   FROM pg_buffercache 
+   JOIN pg_class ON pg_buffercache.relfilenode = pg_class.relfilenode 
+   WHERE relname IS NOT NULL 
+   GROUP BY relname 
+   ORDER BY pages_in_buffer DESC 
+   LIMIT 20;
+
+   QUERY 2 — How "hot" is my buffer pool?
+
+   SELECT 
+     usagecount, 
+     count(*) as pages,
+     pg_size_pretty(count(*) * 8192) as total_size
+   FROM pg_buffercache 
+   GROUP BY usagecount 
+   ORDER BY usagecount;
+
+   QUERY 3 — What's the size of shared_buffers right now?
+
+   SHOW shared_buffers;
+
+4. Take a screenshot. Write down:
+   - What's the largest relation in buffer space?
+   - How many pages have usagecount=1?
+   - What is shared_buffers set to?
+
+5. Now run a realistic query that scans a table. If you have test data from earlier labs, use that. If not, create a test table and insert 100,000 rows. Then:
+
+   SELECT COUNT(*) FROM your_test_table WHERE some_column > 500;
+
+6. Run QUERY 1 again. Did buffer usage change? How?
+
+7. Run QUERY 2 again. What changed in the usagecount distribution?
+
+8. Open a SECOND terminal and run `ipcs -m` from there. Note the number of attached processes (nattch). Now open a THIRD connection to psql in a third terminal. Re-run `ipcs -m`. Did the nattch number increase?
+
+This exercise shows you shared memory is LIVE. It changes. Processes attach and detach. Pages are evicted and reloaded. You're not looking at static documentation. You're looking at a real, running, breathing system.
+
+Write down your observations. We're going to talk about them.
+
+
+--- TYING IT TOGETHER ---
+
+Here's what we've learned today:
+
+**Shared memory is where PostgreSQL actually works.** Every query execution, every page read, every lock acquisition — it happens in shared memory first. Disk is the backup. Shared memory is the real-time store.
+
+**The OS page cache is separate and important.** Don't confuse them. PostgreSQL's shared_buffers is a small, dedicated pool that PostgreSQL controls. The OS page cache is much larger and handles everything else. They work together. Setting shared_buffers too high starves the OS cache. That's a mistake.
+
+**pg_buffercache shows you the truth.** When you have a performance problem, this extension answers the question: "What's actually in memory right now?" and "Which pages are hot and which are cold?" That's diagnostic gold.
+
+**Changing memory parameters requires a restart and planning.** This is a maintenance task. Treat it seriously. Test it. Have a plan.
+
+And here's the bigger picture: understanding shared memory is understanding PostgreSQL's execution model. When you write a query, you're not just writing SQL. You're sending a request that will:
+1. Get parsed and planned (in backend memory)
+2. Load pages into shared_buffers (from disk if needed)
+3. Check locks in the shared lock table (synchronization)
+4. Execute the plan (using those pages)
+5. Write changes to WAL in shared WAL buffers (durability first)
+6. Return results
+
+Every step involves shared memory. Every step is governed by limits, timeouts, and configuration. Master this, and you master PostgreSQL.
+
+
+--- QUICK REFERENCE CARD FOR SHARED MEMORY DISCOVERY ---
+
+Commands you need to remember:
+
+1. FIND SHARED MEMORY ON YOUR SYSTEM:
+   ipcs -m                              # System V shared memory
+   ls -lh /dev/shm/PostgreSQL*          # POSIX shared memory (newer systems)
+
+2. CHECK SHARED MEMORY CONFIGURATION:
+   SHOW shared_buffers;                 # Current setting
+   SHOW shared_memory_type;             # Which method: posix or sysv
+
+3. CREATE pg_buffercache EXTENSION:
+   CREATE EXTENSION pg_buffercache;
+
+4. FIND WHAT'S IN SHARED MEMORY — TOP RELATIONS:
+   SELECT relname, count(*) as buffers_used,
+     pg_size_pretty(count() * 8192) as buffer_space
+   FROM pg_buffercache 
+   JOIN pg_class ON pg_buffercache.relfilenode = pg_class.relfilenode 
+   WHERE relname IS NOT NULL 
+   GROUP BY relname 
+   ORDER BY buffers_used DESC 
+   LIMIT 20;
+
+5. ANALYZE BUFFER HEAT (usagecount DISTRIBUTION):
+   SELECT usagecount, count(*) as buffer_count,
+     pg_size_pretty(count() * 8192) as total_size
+   FROM pg_buffercache 
+   WHERE usagecount IS NOT NULL 
+   GROUP BY usagecount 
+   ORDER BY usagecount;
+
+6. CHECK PAGES IN SPECIFIC RELATION:
+   SELECT count(*) as pages_in_buffer
+   FROM pg_buffercache 
+   WHERE relfilenode = pg_relation_filenode('table_name'::regclass);
+
+7. FIND DIRTY (UNFLUSHED) PAGES:
+   SELECT count(*) as dirty_pages
+   FROM pg_buffercache 
+   WHERE isdirty = TRUE;
+
+8. MEASURE HOW FULL BUFFERS ARE:
+   SELECT 
+     sum(1) as total_buffers,
+     sum(CASE WHEN usagecount > 0 THEN 1 ELSE 0 END) as used_buffers,
+     round(100.0 * sum(CASE WHEN usagecount > 0 THEN 1 ELSE 0 END) / sum(1), 2) as percent_used
+   FROM pg_buffercache;
+
+THE CRITICAL RULES:
+— shared_buffers is usually 25% of RAM
+— Changing it requires a restart
+— OS page cache is separate and important
+— pg_buffercache shows you the real situation
+— Double-buffering is waste, not waste-free
+
+
+--- CLOSING ---
+
+Alright, you've got this. Shared memory is not magic. It's not mysterious. It's a finite, measurable, inspectable resource that PostgreSQL lives in every single second. When something is slow, come here. Look at what's in memory. See what's hot and cold. That's how you learn what's really happening in your database.
+
+Next session we're going to talk about WAL — Write-Ahead Logging — which is where durability lives. We'll see how data gets written to shared WAL buffers, flushed to disk, and replayed on standby nodes. That's where the real synchronization happens.
+
+For now: go home, spin up your local instance, install pg_buffercache, and play with it. Query it. Look at the numbers. Get a feel for it. This is where intuition comes from — time spent looking at real data.
+
+You're doing great. See you next session.
+
+================================================================================
+END LECTURE
+================================================================================

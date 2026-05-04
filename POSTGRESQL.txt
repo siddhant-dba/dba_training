@@ -83,6 +83,262 @@ M0: Architecture Overview
  └── META LAYER (all modules):
       Observability | Application Integration | Incident Response | Communication
 ================================================================================
+Module 0: PostgreSQL Architecture Overview
+  - Process Model (postmaster, backend, bgwriter, walwriter, checkpointer, autovacuum launcher/worker, WAL sender/receiver, stats collector, logical replication launcher)
+  - Directory Structure (PGDATA: base/, global/, pg_wal/, pg_stat/, pg_stat_tmp/, pg_tblspc/, pg_logical/, pg_xact/, pg_subtrans/, pg_multixact/, pg_commit_ts/, pg_dynshmem/, pg_notify/, pg_serial/, pg_snapshots/, pg_twophase/)
+  - Shared Memory (shared_buffers, lock tables, process array, WAL buffers)
+  - Configuration System (postgresql.conf, postgresql.auto.conf, ALTER SYSTEM, pg_settings contexts)
+  - Architecture Diagram (complete data/control flow)
+
+Module 1: Installation & Environment Production Setup
+  - Platform Installation (PGDG repository, multiple versions)
+  - initdb (parameters, directory creation, locale consequences, data checksums, WAL segment size)
+  - Production Filesystem Layout (separate mounts: PGDATA, pg_wal, pg_log, WAL archive, backup staging, tablespaces)
+  - Process Environment (dedicated user, ulimits, systemd service)
+  - Kernel Parameter Tuning (shared memory, semaphores, memory overcommit, swappiness, huge pages, dirty page writeback)
+
+Module 2: PSQL Mastery & System Catalogs
+  - Connection Methods (Unix socket, TCP/IP, URI, environment variables, .pgpass, .pg_service.conf)
+  - Meta-Commands (information display, object detail, session control, execution, output control)
+  - psql as Programming Environment (variables, conditional execution, error handling, .psqlrc, dynamic SQL)
+  - System Catalog Navigation (pg_database, pg_class, pg_attribute, pg_index, pg_stat_activity, pg_locks, pg_stat_user_tables, pg_stat_user_indexes, pg_statio_user_tables, pg_stat_bgwriter)
+  - Essential Diagnostic Queries (bloat, wraparound, unused indexes, blocking chains, replication lag, cache hit ratio)
+
+Module 3: Data Storage — Pages, Tuples, TOAST
+  - Page Layout Internals (page header, item pointers, tuple data, special space)
+  - Tuple Lifecycle (INSERT/UPDATE/DELETE, commit status, hint bits)
+  - HOT Updates (conditions, chain traversal, pruning)
+  - TOAST (strategies: PLAIN, EXTENDED, EXTERNAL, MAIN; chunk storage)
+  - Free Space Map (FSM) and Visibility Map (VM)
+
+Module 4: MVCC & Transaction Isolation
+  - Transaction ID Fundamentals (XID wraparound, special values)
+  - Transaction Snapshots (xmin, xmax, xip_list; READ COMMITTED vs REPEATABLE READ vs SERIALIZABLE)
+  - Visibility Check Algorithm (full tuple visibility test)
+  - Isolation Levels in Practice (anomalies allowed, SSI)
+  - Monitoring MVCC Health (backend_xid, backend_xmin, age(), long-running transactions)
+
+Module 5: VACUUM & Autovacuum
+  - Manual VACUUM Operations (plain, FULL, ANALYZE, FREEZE, options)
+  - Autovacuum Configuration (core parameters, trigger formula)
+  - Autovacuum Monitoring (pg_stat_user_tables, pg_stat_progress_vacuum, pg_stat_activity)
+  - Vacuum Blockage Detection (long transactions, prepared transactions, replication slots, DDL locks)
+  - Vacuum Phase Internals (scanning heap, vacuuming indexes, vacuuming heap, cleanup, truncation)
+  - Vacuum Cost System (cost parameters, throttling, tuning for modern storage)
+  - Emergency Vacuum Procedures (wraparound, extreme bloat, pg_repack)
+
+Module 6: WAL, Checkpoints & Crash Recovery
+  - WAL Fundamentals (Write-Ahead Logging, segment naming, LSN, wal_level)
+  - WAL Writer Process (wal_writer_delay, group commit, commit_delay)
+  - Checkpoint Mechanics (checkpointer, checkpoint_timeout, max_wal_size, checkpoint_completion_target)
+  - Crash Recovery Process (REDO point, full_page_writes, recovery time)
+  - Monitoring (pg_stat_bgwriter, WAL generation rate, checkpoint frequency)
+  - PITR Recovery (restore_command, recovery targets, timeline)
+  - pg_rewind
+
+Module 7: Indexing — Types, Design & Maintenance
+  - B-tree Index Structure (root, internal pages, leaf pages, page split, deduplication)
+  - Index Types (B-tree, Hash, GiST, SP-GiST, GIN, BRIN, Bloom)
+  - Index Design Principles (single vs composite, column ordering, covering, partial, expression)
+  - Index Maintenance (REINDEX, REINDEX CONCURRENTLY, bloat detection, unused/duplicate indexes)
+  - Index Type Selection Matrix (workload-based)
+  - Fillfactor for Indexes
+
+Module 8: Query Planning & EXPLAIN Analytics
+  - EXPLAIN Fundamentals (plan tree, node types: Seq Scan, Index Scan, Index Only Scan, Bitmap Heap Scan, Nested Loop, Hash Join, Merge Join, Sort, Hash, Aggregate, Limit)
+  - EXPLAIN Options (ANALYZE, BUFFERS, TIMING, VERBOSE, COSTS, JSON/YAML/XML, SETTINGS, WAL)
+  - The Cost Model (seq_page_cost, random_page_cost, cpu_tuple_cost, cpu_index_tuple_cost, cpu_operator_cost)
+  - Reading EXPLAIN ANALYZE (actual time, rows, loops, buffer usage, temp blocks)
+  - Common Plan Patterns (nested loop explosion, sort spilling, hash join batching)
+  - Plan Stability (prepared statements, plan_cache_mode, pg_hint_plan)
+  - Parallel Query
+
+Module 9: Locking & Concurrency Control
+  - Lock Fundamentals (granularities, table-level modes: AccessShare to AccessExclusive, row-level: FOR UPDATE/SHARE)
+  - pg_locks Deep Dive (locktype, granted, fastpath)
+  - Blocking Chain Detection (blocked vs blocker, root blocker, idle in transaction)
+  - Lock Monitoring (log_lock_waits, deadlock_timeout, lock_timeout, idle_in_transaction_session_timeout)
+  - Deadlock Detection (waits-for graph, resolution)
+  - Advisory Locks
+  - Recovery Conflicts on Standby
+
+Module 10: Statistics, ANALYZE & Planner Intelligence
+  - Statistics Collection (ANALYZE, default_statistics_target, per-column statistics target)
+  - Statistics Storage (pg_statistic, pg_stats: null_frac, avg_width, n_distinct, most_common_vals/freqs, histogram_bounds, correlation)
+  - How Planner Uses Statistics (equality, range, multiple predicates, join cardinality)
+  - When ANALYZE Runs (autoanalyze thresholds, pg_stat_user_tables)
+  - Extended Statistics (dependencies, ndistinct, mcv)
+  - Statistics Tuning for Skewed/Correlated Columns
+
+Module 11: Partitioning & Data Lifecycle
+  - Partitioning Concepts (RANGE, LIST, HASH; declarative partitioning; partition key)
+  - Partition Pruning (plan-time, run-time, requirements)
+  - Partition Management (CREATE, DETACH, ATTACH, DROP)
+  - Indexing and Constraints (per-partition indexes, unique constraints must include partition key)
+  - pg_partman (automated partition management)
+  - Sub-Partitioning
+  - Conversion Strategies (greenfield, brownfield)
+
+Module 12: Streaming Replication Architecture
+  - Streaming Replication Concepts (primary, standby, hot standby, sync vs async)
+  - Setup (wal_level, max_wal_senders, pg_basebackup, standby.signal, primary_conninfo)
+  - Replication Monitoring (pg_stat_replication: sent/write/flush/replay_lsn, lag, sync_state; pg_stat_wal_receiver)
+  - Replication Lag (write, flush, replay lag; causes)
+  - Replication Slots (physical slots, WAL retention, max_slot_wal_keep_size)
+  - Cascading Replication
+  - Timeline Management
+
+Module 13: Logical Replication & ETL Patterns
+  - Logical Replication Concepts (publication, subscription, logical decoding, use cases)
+  - Setup (wal_level=logical, publication, subscription, copy_data)
+  - Monitoring (pg_stat_replication, pg_replication_slots, pg_stat_subscription)
+  - Limitations (no DDL, no sequences, replication identity required)
+  - Conflict Resolution (two-way replication, row filters)
+  - Logical Replication for Upgrades (zero-downtime major version upgrades)
+  - Logical Decoding Internals (output plugins: pgoutput, test_decoding, wal2json)
+
+Module 14: Backup & Recovery Engineering
+  - Backup Types (logical: pg_dump/pg_dumpall; physical: pg_basebackup)
+  - Backup Tools (pgBackRest, WAL-G, Barman)
+  - Point-in-Time Recovery (PITR) Concepts (base backup + WAL archive, recovery targets)
+  - pg_restore and Recovery Testing
+  - WAL Archiving (archive_command, archive_timeout, pg_stat_archiver)
+  - Backup Strategy Design (RPO, RTO, schedule, verification, offsite)
+  - pgBackRest Deep Dive (stanza, full/differential/incremental, parallel)
+
+Module 15: High Availability — Patroni Deep Dive
+  - HA Concepts (RTO, RPO, failover vs switchover, split-brain, fencing, quorum)
+  - Patroni Architecture (Patroni daemon, DCS: etcd/Consul/ZooKeeper, REST API, HAProxy integration)
+  - Patroni Configuration (scope, DCS, bootstrap, postgresql, tags)
+  - patronictl Commands (list, switchover, failover, reinit, restart, pause/resume, edit-config)
+  - etcd for PostgreSQL HA (cluster sizing, performance, backup, TLS)
+  - Synchronous Replication in Patroni
+  - Callback Scripts (on_role_change for VIP/PgBouncer reconfiguration)
+
+Module 16: Connection Pooling — PgBouncer Architecture
+  - Why Connection Pooling Exists (PostgreSQL process model, resource consumption)
+  - PgBouncer Architecture (single process, async I/O, pool modes: session/transaction/statement)
+  - PgBouncer Configuration (databases, pool sizing: default_pool_size, reserve_pool_size, max_client_conn, max_db_connections)
+  - Authentication (auth_file, auth_query)
+  - Monitoring (SHOW POOLS/STATS/CLIENTS/SERVERS/DATABASES; cl_waiting, maxwait, sv_idle)
+  - HA Integration (Patroni callback for reconfiguration)
+  - Alternative Poolers (Pgpool-II, Odyssey, Supavisor)
+
+Module 17: Performance Tuning — Memory, I/O, OS
+  - Memory Configuration (shared_buffers, effective_cache_size, work_mem, maintenance_work_mem, temp_buffers, wal_buffers)
+  - I/O Configuration (random_page_cost, effective_io_concurrency, wal_sync_method)
+  - Workload-Based Resource Allocation (OLTP vs OLAP/DWH vs mixed)
+  - Operating System Monitoring (CPU, memory, disk I/O, network, context switches)
+  - Linux Kernel Tuning for PostgreSQL (dirty page writeback, huge pages, NUMA, I/O scheduler)
+  - Storage Benchmarking (pg_test_fsync, pgbench, fio)
+  - Cgroups Resource Control
+
+Module 18: Query Optimization Deep Dive
+  - Identify Optimization Targets (pg_stat_statements: total_time, mean_time, calls, temp_blks_written, stddev_time)
+  - Rewrite Patterns (subquery to JOIN, NOT IN with NULL trap, IN vs EXISTS, scalar subquery)
+  - DISTINCT and GROUP BY (unnecessary DISTINCT, multiple COUNT DISTINCT)
+  - LIMIT and OFFSET (keyset/cursor pagination)
+  - UNION vs UNION ALL vs OR
+  - CTE Optimization (MATERIALIZED vs NOT MATERIALIZED, recursive CTE)
+  - Parallel Query Optimization (when it helps/hurts, tuning parameters)
+  - Materialized View Strategy
+
+Module 19: Extensions Ecosystem
+  - Extension Management (shared_preload_libraries, CREATE EXTENSION, upgrade, version compatibility)
+  - pg_stat_statements (configuration, key fields, query normalization, monitoring usage)
+  - PostGIS (geospatial types: geometry/geography, GiST index, nearest neighbor, SRID)
+  - Full-Text Search (tsvector, tsquery, GIN index, ranking, dictionaries)
+  - JSONB (operators: ->, ->>, @>, ?, jsonpath, GIN indexing)
+  - Other Key Extensions (pg_cron, pg_partman, pg_repack, pgvector, pg_trgm, postgres_fdw, amcheck, pageinspect, pg_buffercache)
+  - Foreign Data Wrappers (postgres_fdw, query push-down, connection management)
+
+Module 20: Security Architecture
+  - Authentication — pg_hba.conf Mastery (connection types, methods: scram-sha-256, md5, cert, ldap, peer; entry order, CIDR)
+  - Role Management (LOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION; role membership, inheritance; group roles)
+  - Privileges (object types: DATABASE, SCHEMA, TABLE, SEQUENCE, FUNCTION; GRANT/REVOKE; default privileges; column-level)
+  - Row-Level Security (RLS) (policies: USING vs WITH CHECK, FORCE ROW LEVEL SECURITY, performance)
+  - SSL/TLS Configuration (server certificates, client certificate verification, TLS version, cipher limits)
+  - Encryption at Rest (LUKS, storage encryption, pg_tde)
+  - Audit Logging with pgaudit (statement classes, log level, per-role auditing)
+  - Security Hardening Checklist
+
+Module 21: Enterprise Monitoring — Prometheus + Grafana
+  - Prometheus + postgres_exporter Setup (metrics collection, queries.yaml, custom metrics, multi-target)
+  - Key Metrics to Monitor (service up, connections, transactions, cache hit ratio, replication lag, WAL, vacuum, locks, disk, system)
+  - Grafana Dashboards (overview, details, replication, query performance, system)
+  - pg_stat_statements in Prometheus (snapshot approach to avoid expensive queries)
+  - Log Monitoring with pgBadger (log_line_prefix requirements, reports: slow queries, connections, checkpoints, vacuum, locks)
+  - pg_stat_monitor Extension (alternative with plan hashes, histogram buckets)
+
+Module 22: Alerting & Incident Response
+  - Alert Design Principles (signal vs noise, SLI/SLO, threshold, duration, severity levels: P1-P4)
+  - PostgreSQL-Specific Alerts (service down, disk space, replication lag, wraparound, connections, lock wait, deadlocks, checkpoints, cache hit ratio, vacuum, long queries, idle in transaction, backup age, SSL expiry)
+  - Notification Channels (PagerDuty/OpsGenie, Slack/Teams, email, SMS, webhook)
+  - Incident Response Process (detection, triage, investigation, mitigation, resolution, post-mortem)
+  - Runbook Creation (symptom, urgency, diagnosis steps, mitigation steps, resolution steps, escalation)
+  - Alertmanager Configuration (routing, grouping, inhibition, silence)
+  - Runbook Automation
+
+Module 23: Automation — Ansible, Terraform, CI/CD
+  - Shell Scripting for DBA Tasks (backup, health check, vacuum management, bloat report; patterns: set -euo pipefail, logging, lock file, timeout, idempotency)
+  - Ansible for PostgreSQL Management (community.postgresql collection: modules for db, user, privs, query, pg_hba, set, slot; playbooks for deployment, Patroni, roles)
+  - Terraform for Database Infrastructure (cloud PostgreSQL: RDS, Cloud SQL; postgresql provider for objects; state management; prevent_destroy)
+  - CI/CD for Database Changes (schema migration tools: Flyway/Liquibase; pipeline: commit → lint → test ephemeral → staging → production approval; pre/post checks; rollback)
+  - pg_cron for Scheduled Jobs (cron.schedule, job_run_details, use cases, limitations with Patroni)
+  - GitOps for PostgreSQL
+  - Infrastructure Testing (molecule, terratest, kitchen-terraform)
+  - Fleet Management at Scale
+
+Module 24: Upgrades & Zero-Downtime Migrations
+  - Minor Version Upgrades (package update, restart, rolling with Patroni)
+  - pg_upgrade for Major Versions (modes: --link, --clone, copy; pre-check; procedure; downtime; rollback)
+  - Logical Replication for Zero-Downtime Upgrade (publication/subscription, catch up, cutover, sequence sync, limitations)
+  - Extension Compatibility (contrib vs third-party, compatibility matrix, upgrade order)
+  - pg_upgrade Internals (hard links, catalog upgrade, what it does/doesn't do)
+  - Multi-Version Upgrade Path (direct vs incremental)
+  - Testing Upgrade on Different Hardware
+
+Module 25: Disaster Recovery & Business Continuity
+  - DR Planning (define RTO/RPO, disaster scenarios, strategy per scenario)
+  - DR Architecture Patterns (single region HA, cross-region async standby, cross-region sync standby, backup-based DR, logical replication DR)
+  - DR Procedures and Runbooks (scenario: region loss; decision, promotion, DNS/VIP, verification, communication, rebuild)
+  - DR Testing (tabletop, simulation, full drill; frequency; validation metrics)
+  - Backup Verification for DR (restore test, PITR validation, cross-region backup, integrity checks)
+  - Multi-Site Active-Active (BDR, pgEdge, conflict resolution)
+  - Chaos Engineering for Databases
+  - DR Documentation
+
+Integration Topics (after every 2-3 modules):
+  - M0-M2: Connection trace from TCP accept to query result
+  - M3-M4: MVCC-to-Storage chain (INSERT → page → tuple → xmin → UPDATE → dead tuple → vacuum → reclaim)
+  - M5-M6: Vacuum-to-WAL-to-Checkpoint chain
+  - M7-M9: Query performance chain (query → planner → statistics → index choice → lock acquisition → MVCC snapshot → heap access → result)
+  - M10-M11: Data lifecycle chain (INSERT → statistics update → partition growth → vacuum per partition → archive → drop)
+  - M12-M14: Durability chain (write → WAL → stream to standby → archive → backup → PITR)
+  - M15-M17: Scaling chain (connection → pooler → backend → shared_buffers → query execution → I/O → replication)
+  - M18-M20: Application integration chain (application → authentication → authorization → query → extension processing → result → connection return)
+  - M21-M23: Operational excellence chain (monitoring detects → alert fires → on-call responds → runbook guides → diagnosis → recovery → postmortem → automation prevents)
+  - M24-M25: Complete enterprise chain (deployment → operation → failure → detection → response → recovery → learning → improvement → deployment)
+
+Meta Topics (after each module):
+  - Observability (metrics, alert thresholds, Grafana panels)
+  - Application Integration (interaction patterns, failure impact, retry/fallback logic)
+  - Incident Response (runbook entries, decision trees, rollback procedures)
+  - Communication (explanations for developer, VP Engineering, customer)
+
+Chaos Topics (fortnightly, cumulative):
+  - Session 1 (M0-M2): Startup failures, connection failures
+  - Session 2 (M3-M4): Page corruption, dead tuple accumulation
+  - Session 3 (M5-M6): Bloat + WAL full simultaneously
+  - Session 4 (M7-M9): Bad query plan + lock contention
+  - Session 5 (M10-M11): Stale statistics + partition not pruning
+  - Session 6 (M12-M14): Replication lag + backup failure
+  - Session 7 (M15-M17): Pool exhaustion + checkpoint storm
+  - Session 8 (M18-M20): Query regression + security incident
+  - Session 9 (M21-M23): Alert storm + automation failure
+  - Session 10 (M24-M25): Failed upgrade + DR scenario
+
+
 
 ================================================================================
 MODULE 0: POSTGRESQL ARCHITECTURE OVERVIEW

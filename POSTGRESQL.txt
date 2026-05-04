@@ -11,6 +11,13 @@ METHODOLOGY:
   No code. No timeframes. No solutions. Pure learning objectives.
 ================================================================================
 
+Category	Final Count
+Theory Topics	188
+Learning Tasks (all layers)	347
+Failure Scenarios (all types)	257
+Total Syllabus Elements	792
+
+
 SKILL TYPE TAGS:
   [CON]  Conceptual      — Understand how/why something works
   [OP]   Operational     — Execute, configure, build, implement

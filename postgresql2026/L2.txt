@@ -1,0 +1,3749 @@
+================================================================================
+         DBA TRAINING PROGRAM — ALL AREAS — LEVEL 2 (FAMILIARITY)
+         PostgreSQL on Debian Linux
+         Complete ALL tasks before requesting L3
+================================================================================
+
+LEVEL 2 OVERVIEW
+-----------------
+At L1 you identified and described components.
+At L2 you understand how components interact. You interpret output, spot
+anomalies, and connect cause to effect. Tasks now involve configuration
+changes, safe restarts, and deliberate observation of system behaviour
+under controlled conditions. You are moving from observer to operator.
+
+L2 Promotion Criteria: You will be ready for L3 when your answers show
+understanding beyond surface level — you can explain WHY something behaves
+the way it does, not just WHAT it shows.
+
+PROGRESS DASHBOARD (L2 Start)
+------------------------------
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L2/10  ║ 0            ║ ~9            ║ 10%          ║
+║ 2. Provision ║ L2/10  ║ 0            ║ ~8            ║ 10%          ║
+║ 3. Security  ║ L2/10  ║ 0            ║ ~8            ║ 10%          ║
+║ 4. Data Mgmt ║ L2/10  ║ 0            ║ ~8            ║ 10%          ║
+║ 5. Perf/Mon  ║ L2/10  ║ 0            ║ ~8            ║ 10%          ║
+║ 6. Maint/Com ║ L2/10  ║ 0            ║ ~7            ║ 10%          ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~10%                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Total estimated L2 tasks across all 6 areas: ~48 tasks
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 1 — DATABASE SERVER / INSTANCE
+   Level 2 — Familiarity (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Perform a Controlled PostgreSQL Service Reload vs Restart
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Not every configuration change requires a full restart. Knowing WHICH changes
+need a reload vs a restart is critical — an unnecessary restart on a production
+system disconnects all sessions. You must understand this interaction deeply.
+
+STEPS
+1. Query which parameters require restart vs reload:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit, context
+        FROM pg_settings
+        WHERE context IN ('postmaster','sighup','superuser','user')
+        ORDER BY context, name
+        LIMIT 40;"
+
+   Understand the context values:
+       postmaster — requires full server RESTART
+       sighup     — can be reloaded with pg_reload_conf() or SIGHUP
+       superuser  — superuser can SET per session
+       user       — any user can SET per session
+
+2. Make a safe sighup-only change: enable connection logging.
+   Edit postgresql.conf:
+       sudo nano /etc/postgresql/XX/main/postgresql.conf
+
+   Find and set (or add):
+       log_connections = on
+       log_disconnections = on
+
+   Save and exit.
+
+3. Apply the change WITHOUT a restart — just a reload:
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+   Verify it applied:
+       sudo -u postgres psql -c "SHOW log_connections;"
+
+4. Confirm the reload was logged in the server log:
+       sudo tail -5 /var/log/postgresql/postgresql-XX-main.log
+
+5. Now identify a parameter that REQUIRES a restart. Check:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, pending_restart
+        FROM pg_settings
+        WHERE pending_restart = true;"
+   (pending_restart = true means a change was made but needs a restart)
+
+6. Perform a full controlled restart (this WILL disconnect all sessions —
+   safe since this is a training instance):
+       sudo systemctl restart postgresql
+       sudo -u postgres psql -c "SELECT pg_postmaster_start_time();"
+
+   Compare the start time to confirm the restart happened.
+
+SAFETY
+Risk: Low
+Restarting a training instance is safe. On production, always check active
+sessions with pg_stat_activity before restarting. Never restart during
+business hours without a maintenance window.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Reload vs restart decision-making and pg_settings context awareness
+
+REVIEW QUESTION
+A colleague asks you to change max_connections from 100 to 200 immediately
+without a restart. Can you? What does the "context" column in pg_settings
+tell you, and what happens if you try to change a postmaster-context
+parameter with just a reload?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Trace How a Client Connection Becomes a Backend Process
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Understanding the connection lifecycle helps a DBA diagnose connection
+failures, authentication errors, and resource exhaustion. You need to
+trace the path from client to process to understand what can go wrong
+at each step.
+
+STEPS
+1. From one terminal, open a persistent psql session and leave it open:
+       sudo -u postgres psql -c "SELECT pg_backend_pid();"
+   Note the PID returned.
+
+2. In a SECOND terminal, verify the process exists at the OS level:
+       ps aux | grep "postgres: postgres"
+   Find the process matching the PID from step 1. Note the full command
+   shown — it tells you: user, database, client address, and state.
+
+3. In the second terminal, query pg_stat_activity for that PID:
+       sudo -u postgres psql -c \
+       "SELECT pid, usename, datname, client_addr, client_port,
+               backend_start, state, backend_type
+        FROM pg_stat_activity
+        WHERE pid = REPLACE_WITH_YOUR_PID;"
+
+4. Understand what happens during connection setup:
+       a. Client connects to TCP port 5432 (or Unix socket)
+       b. Postmaster forks a new backend process (the PID you see)
+       c. pg_hba.conf is consulted for authentication method
+       d. Authentication is performed (peer/md5/scram)
+       e. Backend process is now owned by that session
+
+5. Check the listen address to understand where connections can come from:
+       sudo -u postgres psql -c "SHOW listen_addresses;"
+       sudo -u postgres psql -c "SHOW port;"
+
+6. Open 3 more connections simultaneously in separate terminals and
+   observe how pg_stat_activity grows:
+       sudo -u postgres psql -c \
+       "SELECT count(*), state FROM pg_stat_activity GROUP BY state;"
+
+7. Close all extra sessions. Verify pg_stat_activity shrinks back.
+
+SAFETY
+Risk: None
+Opening and closing psql sessions on a training instance has no risk.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Connection lifecycle — from TCP to backend process to pg_stat_activity
+
+REVIEW QUESTION
+When a client connects to PostgreSQL, what is the sequence of steps the
+postmaster takes before the connection is considered "established"? What
+would you check first if a client reports "connection refused"?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Modify a Key Instance Parameter and Observe the Effect
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Familiarity means understanding how a parameter change propagates through
+the system. You need to be able to change a parameter, verify it applied,
+and observe its effect — closing the loop between config and behaviour.
+
+STEPS
+1. Record the current value of log_min_duration_statement:
+       sudo -u postgres psql -c "SHOW log_min_duration_statement;"
+
+2. Set it to log all queries taking more than 100ms (a common tuning step):
+       sudo nano /etc/postgresql/XX/main/postgresql.conf
+   Set:
+       log_min_duration_statement = 100
+
+3. Reload the config (this is a sighup parameter):
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+       sudo -u postgres psql -c "SHOW log_min_duration_statement;"
+
+4. Now deliberately create a slow query to trigger the log:
+       sudo -u postgres psql -c \
+       "SELECT pg_sleep(0.2);"   -- sleeps 200ms, exceeds 100ms threshold
+
+5. Check the server log for the logged slow query:
+       sudo tail -10 /var/log/postgresql/postgresql-XX-main.log
+
+   You should see a line like:
+       duration: 200.XXX ms  statement: SELECT pg_sleep(0.2);
+
+6. Now change it to 0 (logs ALL queries — use only briefly in testing):
+       sudo -u postgres psql -c "ALTER SYSTEM SET log_min_duration_statement = 0;"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+   Run a quick query and check the log. Then reset it:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_min_duration_statement = -1;"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+7. Understand ALTER SYSTEM vs direct file editing:
+       ALTER SYSTEM writes to postgresql.auto.conf (takes precedence
+       over postgresql.conf). Check:
+       cat /etc/postgresql/XX/main/postgresql.auto.conf
+
+SAFETY
+Risk: Low
+log_min_duration_statement = 0 can generate very high log volume on a busy
+system. Set it briefly and reset immediately. On production, always test
+logging parameter changes in off-peak hours.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Parameter change workflow — edit, reload, verify, observe — and ALTER SYSTEM
+
+REVIEW QUESTION
+What is the difference between editing postgresql.conf directly and using
+ALTER SYSTEM? Which takes precedence, and what file does ALTER SYSTEM write
+to? What risk does this create if you forget it exists?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Observe Checkpoint Behaviour in Real Time
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L1 you read checkpoint stats. At L2 you must understand HOW checkpoints
+interact with shared_buffers and WAL, and observe the sequence of events
+that makes a checkpoint happen. This is core to write-heavy performance work.
+
+STEPS
+1. Enable checkpoint logging (if not already on):
+       sudo -u postgres psql -c "ALTER SYSTEM SET log_checkpoints = on;"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+2. Record the current checkpoint stats as a baseline:
+       sudo -u postgres psql -c \
+       "SELECT checkpoints_timed, checkpoints_req,
+               buffers_checkpoint, buffers_clean, buffers_backend,
+               checkpoint_write_time, checkpoint_sync_time
+        FROM pg_stat_bgwriter;"
+
+3. Record the current WAL LSN:
+       sudo -u postgres psql -c "SELECT pg_current_wal_lsn();"
+
+4. Manually trigger a checkpoint and time it:
+       time sudo -u postgres psql -c "CHECKPOINT;"
+
+5. Immediately re-query pg_stat_bgwriter and compare:
+       sudo -u postgres psql -c \
+       "SELECT checkpoints_timed, checkpoints_req,
+               buffers_checkpoint, buffers_clean, buffers_backend
+        FROM pg_stat_bgwriter;"
+   Note: checkpoints_timed or checkpoints_req will have incremented.
+
+6. Check the log for the checkpoint entry:
+       sudo tail -5 /var/log/postgresql/postgresql-XX-main.log
+
+   A log entry like this confirms checkpoint logging is working:
+   "checkpoint complete: wrote X buffers ... write=Xs, sync=Xs, total=Xs"
+
+7. Query the WAL LSN again and calculate how much WAL was generated:
+       sudo -u postgres psql -c \
+       "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), 'PASTE_OLD_LSN_HERE')
+        AS bytes_since_checkpoint;"
+
+SAFETY
+Risk: Low
+Manual CHECKPOINT is safe on a non-production system. On production it
+causes a brief I/O spike. Never issue manual checkpoints during peak load.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Checkpoint mechanics — triggering, observing, and reading checkpoint metrics
+
+REVIEW QUESTION
+After running CHECKPOINT, you see buffers_backend increased but
+buffers_checkpoint did not. What does this tell you about the workload
+intensity relative to the background writer's ability to keep up?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Interpret a PostgreSQL Crash Recovery Sequence from the Log
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A DBA must be able to read a crash recovery log sequence and understand what
+PostgreSQL is doing. If you cannot read this, you will panic during an actual
+recovery event. This task makes you simulate and read an unclean shutdown
+recovery — the safest way to understand it.
+
+STEPS
+1. First, confirm current instance uptime and start time:
+       sudo -u postgres psql -c "SELECT pg_postmaster_start_time();"
+
+2. Simulate an unclean shutdown by sending SIGKILL to the postmaster
+   (this bypasses normal shutdown — PostgreSQL will need to recover on startup):
+       sudo kill -9 $(head -1 /var/lib/postgresql/XX/main/postmaster.pid)
+
+   WARNING: This forcibly kills the process. It is safe ONLY on a training
+   instance with no active user data. This is intentional and educational.
+
+3. Check the cluster state using pg_controldata (instance is now down):
+       sudo -u postgres pg_controldata /var/lib/postgresql/XX/main/ \
+       | grep "cluster state"
+   Expected: "in production" — meaning it was not cleanly shut down.
+
+4. Start the instance back up:
+       sudo systemctl start postgresql
+
+5. Immediately tail the log and observe the crash recovery sequence:
+       sudo tail -30 /var/log/postgresql/postgresql-XX-main.log
+
+   You should see lines like:
+       "database system was interrupted; last known up at ..."
+       "database system was not properly shut down; automatic recovery in progress"
+       "redo starts at ..."
+       "consistent recovery state reached at ..."
+       "redo is not required"  OR  "redo in progress ..."
+       "database system is ready to accept connections"
+
+6. After recovery completes, check pg_controldata again:
+       sudo -u postgres pg_controldata /var/lib/postgresql/XX/main/ \
+       | grep "cluster state"
+   Expected: "in production" — the cluster is healthy again.
+
+SAFETY
+Risk: Medium
+SIGKILL on the postmaster is safe ONLY on a training instance with no
+important data. NEVER do this on production. This teaches you what a crash
+looks like so you are not surprised when it happens for real.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Crash recovery log reading — recognising the WAL replay sequence
+
+REVIEW QUESTION
+After a crash, PostgreSQL says "redo starts at LSN X" and then
+"consistent recovery state reached at LSN Y". What happened between
+those two LSN positions, and why is the "consistent" point important
+before the instance accepts connections?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand shared_buffers and How PostgreSQL Uses Memory
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+shared_buffers is the single most important memory parameter in PostgreSQL.
+It controls the buffer cache that all backends share. Too small means
+constant disk I/O. Too large can cause OS memory pressure. You must
+understand how it interacts with the OS page cache and how to verify
+its effect.
+
+STEPS
+1. Check the current shared_buffers size:
+       sudo -u postgres psql -c "SHOW shared_buffers;"
+
+2. Calculate how many 8KB buffer pages this represents:
+       sudo -u postgres psql -c \
+       "SELECT current_setting('shared_buffers') AS configured,
+               pg_size_bytes(current_setting('shared_buffers')) / 8192
+               AS buffer_pages;"
+
+3. Check total system RAM:
+       free -h
+       grep MemTotal /proc/meminfo
+
+4. Understand the sizing guidance:
+       - Recommended: 25% of total RAM for a dedicated DB server
+       - PostgreSQL also uses the OS page cache (double caching happens)
+       - effective_cache_size should reflect OS cache + shared_buffers
+
+5. Check effective_cache_size setting and compare to RAM:
+       sudo -u postgres psql -c \
+       "SHOW effective_cache_size;"
+
+   Note: effective_cache_size does not allocate memory — it only tells
+   the query planner how much cache it can assume is available.
+
+6. Observe what is currently in shared_buffers using pg_buffercache
+   (install if not present):
+       sudo -u postgres psql -c \
+       "CREATE EXTENSION IF NOT EXISTS pg_buffercache;"
+
+       sudo -u postgres psql -c \
+       "SELECT c.relname,
+               count(*) AS buffers,
+               pg_size_pretty(count(*) * 8192) AS buffered_size
+        FROM pg_buffercache b
+        JOIN pg_class c ON b.relfilenode = c.relfilenode
+        WHERE b.reldatabase IN (
+              SELECT oid FROM pg_database
+              WHERE datname = current_database())
+        GROUP BY c.relname
+        ORDER BY buffers DESC
+        LIMIT 10;"
+
+SAFETY
+Risk: None
+All read-only observation. pg_buffercache extension is safe to install and
+query. It does not modify the buffer state.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : shared_buffers sizing awareness and buffer cache content inspection
+
+REVIEW QUESTION
+If shared_buffers is set to 128MB on a server with 16GB RAM, and your
+database is 8GB in size, what does this imply about how often data must
+be fetched from disk? What would you change and why?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Interpret WAL Generation Rate and Understand Its Implications
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+WAL generation rate directly impacts disk usage, replication lag, backup size,
+and recovery time. A DBA must be able to measure how fast WAL is being produced
+and what that means for storage, archiving, and DR objectives.
+
+STEPS
+1. Capture the starting WAL LSN:
+       sudo -u postgres psql -c "SELECT pg_current_wal_lsn() AS start_lsn;"
+
+2. Wait 60 seconds (or generate some activity with a loop):
+       sudo -u postgres psql -c \
+       "DO \$\$
+        DECLARE i int;
+        BEGIN
+          FOR i IN 1..10000 LOOP
+            PERFORM pg_sleep(0);  -- minimal WAL generator
+          END LOOP;
+        END\$\$;"
+
+3. Capture the ending WAL LSN:
+       sudo -u postgres psql -c "SELECT pg_current_wal_lsn() AS end_lsn;"
+
+4. Calculate WAL generated using pg_wal_lsn_diff:
+       sudo -u postgres psql -c \
+       "SELECT pg_size_pretty(
+          pg_wal_lsn_diff('END_LSN_HERE', 'START_LSN_HERE')
+        ) AS wal_generated;"
+
+5. Count current WAL files and total WAL directory size:
+       sudo ls /var/lib/postgresql/XX/main/pg_wal/ | wc -l
+       sudo du -sh /var/lib/postgresql/XX/main/pg_wal/
+
+6. Understand what WAL retention means:
+       sudo -u postgres psql -c "SHOW wal_keep_size;"
+       sudo -u postgres psql -c "SHOW max_wal_size;"
+       sudo -u postgres psql -c "SHOW min_wal_size;"
+
+7. Relate WAL rate to Recovery Time:
+       If your RTO is 1 hour and WAL generates 5GB/hour,
+       how much WAL must a standby process during failover?
+       Write down your calculation.
+
+SAFETY
+Risk: None
+The DO loop generates minimal WAL. This is safe on any training instance.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : WAL generation rate measurement and its relationship to storage and DR
+
+REVIEW QUESTION
+WAL archiving is failing and has been failing for 2 hours. Your WAL
+generation rate is 2GB/hour. What will happen to pg_wal directory size,
+and at what point does this become a system-stopping problem?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 8 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Interpret pg_settings — Understand Units, Defaults and Pending Changes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+pg_settings is the authoritative source for all runtime configuration.
+A DBA must be able to use it fluently — finding parameters, understanding
+their units, distinguishing effective values from file values, and spotting
+pending changes that need a restart.
+
+STEPS
+1. Query parameters that are currently different from their compiled default:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit, boot_val, reset_val, source
+        FROM pg_settings
+        WHERE setting != boot_val
+        ORDER BY name;"
+
+   Understand the source values:
+       default           — never changed from compiled default
+       configuration file — set in postgresql.conf
+       override          — set via ALTER SYSTEM (postgresql.auto.conf)
+       session           — set within this session only
+       command line      — set via pg_ctlcluster options
+
+2. Find all parameters that have been modified from the config file:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit, source, sourcefile, sourceline
+        FROM pg_settings
+        WHERE source = 'configuration file'
+        ORDER BY name;"
+
+3. Check for any parameters with pending_restart = true:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit, pending_restart
+        FROM pg_settings
+        WHERE pending_restart = true;"
+
+4. Practice unit conversion — some parameters store values in different units:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit,
+               CASE unit
+                 WHEN '8kB' THEN setting::bigint * 8192
+                 WHEN 'kB'  THEN setting::bigint * 1024
+                 WHEN 'MB'  THEN setting::bigint * 1048576
+                 WHEN 'ms'  THEN setting::bigint
+                 ELSE NULL
+               END AS value_in_bytes_or_ms
+        FROM pg_settings
+        WHERE unit IN ('8kB','kB','MB','ms')
+        AND name IN ('shared_buffers','work_mem','maintenance_work_mem',
+                     'wal_buffers','checkpoint_timeout');"
+
+5. Use pg_settings to find every memory-related parameter at once:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit
+        FROM pg_settings
+        WHERE name LIKE '%mem%' OR name LIKE '%buffer%'
+        ORDER BY name;"
+
+SAFETY
+Risk: None
+Read-only query of pg_settings. No changes made.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : pg_settings fluency — source, units, boot values, pending restarts
+
+REVIEW QUESTION
+A parameter appears in pg_settings with source = 'configuration file'
+but you cannot find it in /etc/postgresql/XX/main/postgresql.conf.
+Where else would you look, and why might it be there instead?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L2/10 — Familiarity
+TASK   : 9 of est. ~9 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Use pg_ctlcluster to Manage Cluster State and Understand Its Modes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+On Debian, pg_ctlcluster is the correct way to manage PostgreSQL clusters.
+It wraps pg_ctl with Debian-specific paths. A DBA must understand all
+available modes (start, stop, restart, reload, promote) and when each is
+appropriate — especially the different stop modes.
+
+STEPS
+1. Read the pg_ctlcluster man page:
+       man pg_ctlcluster | head -80
+   Or:
+       pg_ctlcluster --help
+
+2. Understand the stop modes (this is critical knowledge):
+       smart   — waits for all clients to disconnect, then shuts down
+       fast    — disconnects clients and shuts down cleanly (default)
+       immediate — like SIGKILL; no checkpoint, requires crash recovery
+
+3. Check the current cluster status:
+       pg_lsclusters
+
+4. Practice a SMART stop and observe the difference from FAST:
+       sudo pg_ctlcluster XX main stop --mode smart
+   Check the log:
+       sudo tail -10 /var/log/postgresql/postgresql-XX-main.log
+   Start it back up:
+       sudo pg_ctlcluster XX main start
+
+5. Practice a FAST stop:
+       sudo pg_ctlcluster XX main stop --mode fast
+   Check the log (note the shutdown message):
+       sudo tail -10 /var/log/postgresql/postgresql-XX-main.log
+   Start it back up:
+       sudo pg_ctlcluster XX main start
+
+6. Verify the cluster is running and healthy after each restart:
+       pg_lsclusters
+       sudo -u postgres psql -c "SELECT pg_postmaster_start_time();"
+       sudo -u postgres psql -c "SELECT version();"
+
+7. Compare the log messages from smart vs fast stop. Note the differences.
+
+SAFETY
+Risk: Low
+Stopping and starting a training instance is safe. Smart stop is safer for
+production because it allows in-flight transactions to complete. Fast stop
+is the standard for planned maintenance. Never use immediate mode unless
+the instance is already compromised.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : pg_ctlcluster stop modes — smart vs fast vs immediate — and when to use each
+
+REVIEW QUESTION
+During a planned maintenance window, you need to stop PostgreSQL as
+quickly as possible but still ensure a clean recovery-free startup.
+Which stop mode do you use and why? What makes "immediate" mode dangerous
+compared to a SIGKILL on an application process?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 1 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 2 — DATABASE PROVISIONING
+   Level 2 — Familiarity (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create a Database with Explicit Owner, Encoding, and Locale
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Creating a database with defaults is easy. Creating one correctly — with
+the right owner, encoding, locale, and connection limit — is what a DBA
+is paid for. Each parameter has lasting consequences that cannot be changed
+without dropping and recreating the database.
+
+STEPS
+1. Create a role to be the database owner (do NOT use postgres as owner):
+       sudo -u postgres psql -c \
+       "CREATE ROLE appowner WITH LOGIN PASSWORD 'TrainPass1!';"
+
+2. Create a database with explicit settings:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE traindb
+          OWNER = appowner
+          ENCODING = 'UTF8'
+          LC_COLLATE = 'en_US.UTF-8'
+          LC_CTYPE = 'en_US.UTF-8'
+          TEMPLATE = template0
+          CONNECTION LIMIT = 20;"
+
+   Note: TEMPLATE = template0 is required when specifying a non-default encoding
+   or locale that differs from template1.
+
+3. Verify the database was created correctly:
+       sudo -u postgres psql -c \
+       "SELECT datname, pg_encoding_to_char(encoding),
+               datcollate, datctype, datconnlimit
+        FROM pg_database WHERE datname = 'traindb';"
+
+4. Connect to it and verify the owner:
+       sudo -u postgres psql -d traindb -c "SELECT current_database(), session_user;"
+
+5. Check the physical directory was created:
+       sudo -u postgres psql -c \
+       "SELECT oid FROM pg_database WHERE datname='traindb';"
+       sudo ls /var/lib/postgresql/XX/main/base/ | grep REPLACE_OID
+
+6. Check the size immediately after creation (baseline):
+       sudo -u postgres psql -c \
+       "SELECT pg_size_pretty(pg_database_size('traindb'));"
+
+SAFETY
+Risk: Low
+Creating a database is safe. Use a training database name that is clearly
+not production. Never create databases on production without a change ticket.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Correct database creation — owner, encoding, locale, template selection
+
+REVIEW QUESTION
+Why must you specify TEMPLATE = template0 (not template1) when creating
+a database with a custom encoding or locale? What would happen if you
+used template1 and it had a different locale set?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create and Assign Roles with Correct Privilege Separation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Real provisioning involves a layered role model — a group role for permissions,
+login roles for each user, and privilege grants at the database/schema level.
+This task builds that pattern, which is the standard in any well-managed
+PostgreSQL environment.
+
+STEPS
+1. Using the traindb you created in the previous task, set up a proper
+   role hierarchy:
+
+   -- Step A: create a group role (no login) for the application:
+       sudo -u postgres psql -c \
+       "CREATE ROLE app_readwrite NOLOGIN;"
+
+   -- Step B: create an application login role and grant it the group:
+       sudo -u postgres psql -c \
+       "CREATE ROLE appuser WITH LOGIN PASSWORD 'AppUser1!' IN ROLE app_readwrite;"
+
+   -- Step C: create a read-only role for reporting:
+       sudo -u postgres psql -c \
+       "CREATE ROLE app_readonly NOLOGIN;"
+
+       sudo -u postgres psql -c \
+       "CREATE ROLE reporter WITH LOGIN PASSWORD 'Report1!' IN ROLE app_readonly;"
+
+2. Connect to traindb and create a schema for the application:
+       sudo -u postgres psql -d traindb -c \
+       "CREATE SCHEMA appschema AUTHORIZATION appowner;"
+
+3. Grant correct privileges on the schema:
+       sudo -u postgres psql -d traindb -c \
+       "GRANT USAGE ON SCHEMA appschema TO app_readwrite, app_readonly;"
+       sudo -u postgres psql -d traindb -c \
+       "GRANT CREATE ON SCHEMA appschema TO app_readwrite;"
+
+4. Set default privileges for future tables (critical — often forgotten):
+       sudo -u postgres psql -d traindb -c \
+       "ALTER DEFAULT PRIVILEGES IN SCHEMA appschema
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_readwrite;"
+
+       sudo -u postgres psql -d traindb -c \
+       "ALTER DEFAULT PRIVILEGES IN SCHEMA appschema
+        GRANT SELECT ON TABLES TO app_readonly;"
+
+5. Verify the role membership:
+       sudo -u postgres psql -c \
+       "SELECT r.rolname AS role, m.rolname AS member_of
+        FROM pg_auth_members am
+        JOIN pg_roles r ON am.member = r.oid
+        JOIN pg_roles m ON am.roleid = m.oid
+        WHERE r.rolname IN ('appuser','reporter');"
+
+SAFETY
+Risk: Low
+Role and privilege creation on the training database is safe. Never use
+simple passwords like these on production — use strong generated passwords.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Role hierarchy design — group roles, login roles, schema grants, default privileges
+
+REVIEW QUESTION
+Why is setting ALTER DEFAULT PRIVILEGES critical when provisioning a
+database? What problem occurs if you grant privileges on existing tables
+but forget to set default privileges, and an application later creates
+new tables?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Configure pg_hba.conf for the New Database and Reload
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Every provisioned database needs correct pg_hba.conf entries or it is
+either inaccessible (too restrictive) or exposed (too permissive). This
+task closes the loop between role creation and actual connection access.
+
+STEPS
+1. Open pg_hba.conf for editing:
+       sudo nano /etc/postgresql/XX/main/pg_hba.conf
+
+2. Add entries that allow your new roles to connect to traindb.
+   Add these lines BEFORE the existing "host all all" rules:
+
+       # traindb access — local and loopback only
+       local   traindb   appuser                     scram-sha-256
+       local   traindb   reporter                    scram-sha-256
+       host    traindb   appuser    127.0.0.1/32     scram-sha-256
+       host    traindb   reporter   127.0.0.1/32     scram-sha-256
+
+3. Save the file. Validate the syntax BEFORE reloading:
+       sudo -u postgres pg_ctlcluster XX main reload
+   Check the log for any errors:
+       sudo tail -5 /var/log/postgresql/postgresql-XX-main.log
+
+4. Test that appuser can connect:
+       psql -U appuser -d traindb -h 127.0.0.1 -W
+   Enter the password (TrainPass1! or whatever you set).
+   Run a simple query:
+       SELECT current_user, current_database();
+       \q
+
+5. Test that appuser CANNOT connect to the postgres database
+   (because you have not added a rule for that):
+       psql -U appuser -d postgres -h 127.0.0.1 -W
+   Expected: connection rejected (pg_hba.conf should reject it)
+
+6. Check the currently active pg_hba rules from inside psql:
+       sudo -u postgres psql -c "SELECT * FROM pg_hba_file_rules;"
+
+SAFETY
+Risk: Low
+pg_hba.conf changes take effect on reload. A syntax error in pg_hba.conf
+can lock everyone out — always test the reload and watch the log immediately.
+Keep a superuser session open before reloading on production.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : pg_hba.conf provisioning — writing access rules and testing connectivity
+
+REVIEW QUESTION
+You add a rule for appuser to connect to traindb, but accidentally place
+it AFTER a rule that says "host all all 127.0.0.1/32 reject". Will appuser
+be able to connect? Why does rule ORDER in pg_hba.conf matter so much?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Manage Database Growth — Monitor Size and Set Storage Expectations
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Storage is finite. A DBA must be able to measure a database's growth,
+understand where space is being consumed, and anticipate when action
+will be needed. This prevents the most embarrassing production failure:
+running out of disk.
+
+STEPS
+1. Create some test objects in traindb to simulate real usage:
+       sudo -u postgres psql -d traindb -c \
+       "CREATE TABLE appschema.orders (
+          id serial PRIMARY KEY,
+          customer_id int,
+          amount numeric(10,2),
+          created_at timestamptz DEFAULT now()
+        );"
+
+       sudo -u postgres psql -d traindb -c \
+       "INSERT INTO appschema.orders (customer_id, amount)
+        SELECT (random()*1000)::int, (random()*500)::numeric(10,2)
+        FROM generate_series(1, 50000);"
+
+2. Measure the database size after loading data:
+       sudo -u postgres psql -c \
+       "SELECT pg_size_pretty(pg_database_size('traindb'));"
+
+3. Measure individual table and index sizes:
+       sudo -u postgres psql -d traindb -c \
+       "SELECT schemaname, relname,
+               pg_size_pretty(pg_relation_size(schemaname||'.'||relname)) AS tbl,
+               pg_size_pretty(pg_indexes_size(schemaname||'.'||relname)) AS idx,
+               pg_size_pretty(pg_total_relation_size(schemaname||'.'||relname)) AS total
+        FROM pg_stat_user_tables
+        ORDER BY pg_total_relation_size(schemaname||'.'||relname) DESC;"
+
+4. Measure the physical data directory growth on disk:
+       sudo du -sh /var/lib/postgresql/XX/main/base/
+       df -h /var/lib/postgresql/
+
+5. Check available disk space and calculate a rough "days to full" estimate:
+       DISK_AVAIL=$(df /var/lib/postgresql/ | awk 'NR==2{print $4}')
+       DB_SIZE=$(sudo -u postgres psql -tAc \
+       "SELECT pg_database_size('traindb');")
+       echo "Available KB: $DISK_AVAIL"
+       echo "Database bytes: $DB_SIZE"
+
+6. Check if there are any tablespace quotas or limits configured (there
+   are none by default in PostgreSQL — this is a gap to note):
+       sudo -u postgres psql -c \
+       "SELECT spcname, pg_size_pretty(pg_tablespace_size(spcname))
+        FROM pg_tablespace;"
+
+SAFETY
+Risk: Low
+Inserting 50,000 rows into a training table is safe and uses minimal space.
+On production, always know free disk space before bulk inserts.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Database growth monitoring — size measurement at DB, table, and disk level
+
+REVIEW QUESTION
+PostgreSQL has no built-in tablespace quota feature. Given this, what
+are TWO mechanisms a DBA must rely on to prevent a single database from
+consuming all available disk space on a shared server?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Modify Database Properties — Connection Limit and Rename
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Databases are not static after creation. DBAs must be able to safely alter
+their properties — changing connection limits, renaming, or modifying defaults
+— without dropping and recreating. This task covers the ALTER DATABASE workflow.
+
+STEPS
+1. Check current traindb properties:
+       sudo -u postgres psql -c \
+       "SELECT datname, datconnlimit FROM pg_database WHERE datname = 'traindb';"
+
+2. Change the connection limit to 10 (simulating a constrained environment):
+       sudo -u postgres psql -c \
+       "ALTER DATABASE traindb CONNECTION LIMIT 10;"
+
+3. Verify the change:
+       sudo -u postgres psql -c \
+       "SELECT datname, datconnlimit FROM pg_database WHERE datname = 'traindb';"
+
+4. Set a database-level parameter override (e.g., a custom search_path):
+       sudo -u postgres psql -c \
+       "ALTER DATABASE traindb SET search_path TO appschema, public;"
+
+5. Verify the override is stored:
+       sudo -u postgres psql -c \
+       "SELECT datname, setconfig
+        FROM pg_db_role_setting s
+        JOIN pg_database d ON d.oid = s.setdatabase
+        WHERE d.datname = 'traindb';"
+
+6. Connect to traindb and verify search_path took effect:
+       sudo -u postgres psql -d traindb -c "SHOW search_path;"
+
+7. Read what ALTER DATABASE can and cannot change at runtime:
+       sudo -u postgres psql -c "\h ALTER DATABASE"
+   Note: encoding and locale CANNOT be changed after creation.
+
+SAFETY
+Risk: Low
+ALTER DATABASE on a training database is safe. On production, changing
+connection limits can immediately impact running applications — always
+verify current active connections first.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : ALTER DATABASE — connection limits, parameter overrides, and runtime modification
+
+REVIEW QUESTION
+You need to change the default search_path for all connections to a
+production database. You have two options: change it in postgresql.conf
+(server-wide) or use ALTER DATABASE SET search_path. What is the advantage
+of using ALTER DATABASE for this, and when would you choose postgresql.conf
+instead?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand Template Databases — Modify template1 and Observe Effect
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+template1 is copied every time you run CREATE DATABASE without specifying
+a template. Any objects or settings you add to template1 propagate to every
+new database. A DBA must understand this to prevent accidental contamination
+and to use it deliberately for standardisation.
+
+STEPS
+1. Connect to template1 and add a test extension:
+       sudo -u postgres psql -d template1 -c \
+       "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
+
+2. Verify the extension is in template1:
+       sudo -u postgres psql -d template1 -c \
+       "SELECT extname FROM pg_extension;"
+
+3. Create a new database WITHOUT specifying a template:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE fromtemplate1;"
+
+4. Connect to the new database and check if the extension propagated:
+       sudo -u postgres psql -d fromtemplate1 -c \
+       "SELECT extname FROM pg_extension;"
+   It should already be there — inherited from template1.
+
+5. Now create a database explicitly using template0:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE fromtemplate0 TEMPLATE template0;"
+
+6. Connect and verify it does NOT have the extension:
+       sudo -u postgres psql -d fromtemplate0 -c \
+       "SELECT extname FROM pg_extension;"
+   It should be empty — template0 is always pristine.
+
+7. Clean up:
+       sudo -u postgres psql -c "DROP DATABASE fromtemplate1;"
+       sudo -u postgres psql -c "DROP DATABASE fromtemplate0;"
+   Remove the extension from template1 to restore its state:
+       sudo -u postgres psql -d template1 -c \
+       "DROP EXTENSION pg_stat_statements;"
+
+SAFETY
+Risk: Low
+Modifying template1 affects ALL future databases. Always restore template1
+to a clean state after testing. On production, changes to template1 should
+be treated as a change to the server standard — not done casually.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Template database inheritance — understanding template1 propagation vs template0
+
+REVIEW QUESTION
+A DBA wants every new database to automatically have the pg_trgm extension
+and a standard "audit" schema. How would they use template1 to achieve this
+standardisation? What is the risk of this approach?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Safely Deprovision a Database — Terminate Connections and Drop
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Dropping a production database is an irreversible operation. A DBA must
+know the correct pre-drop checklist: verify backups, terminate connections,
+revoke access, and confirm the right target. Skipping steps has ended careers.
+
+STEPS
+1. Before deprovisioning, simulate a pre-drop verification:
+       -- Step 1: Confirm you are targeting the right database:
+       sudo -u postgres psql -c \
+       "SELECT datname, pg_size_pretty(pg_database_size(datname)),
+               datconnlimit
+        FROM pg_database WHERE datname = 'traindb';"
+
+2. Check for active connections you need to terminate:
+       sudo -u postgres psql -c \
+       "SELECT pid, usename, application_name, state, query_start
+        FROM pg_stat_activity
+        WHERE datname = 'traindb';"
+
+3. Terminate all existing connections to traindb gracefully:
+       sudo -u postgres psql -c \
+       "SELECT pg_terminate_backend(pid)
+        FROM pg_stat_activity
+        WHERE datname = 'traindb'
+        AND pid <> pg_backend_pid();"
+
+4. Prevent NEW connections before dropping (optional but best practice):
+       sudo -u postgres psql -c \
+       "UPDATE pg_database SET datallowconn = false WHERE datname = 'traindb';"
+
+5. Confirm no connections remain:
+       sudo -u postgres psql -c \
+       "SELECT count(*) FROM pg_stat_activity WHERE datname = 'traindb';"
+
+6. Drop the database:
+       sudo -u postgres psql -c "DROP DATABASE traindb;"
+
+7. Verify it is gone:
+       sudo -u postgres psql -c \
+       "SELECT datname FROM pg_database ORDER BY datname;"
+
+SAFETY
+Risk: Medium
+DROP DATABASE is permanently irreversible. Always take a final backup
+before dropping any database, even on training systems. This is the
+correct procedure — do not rush it.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Safe database deprovisioning — connection termination, access revocation, drop
+
+REVIEW QUESTION
+You run DROP DATABASE and get the error: "ERROR: database traindb is being
+accessed by other users." What are the two commands you should have run
+BEFORE attempting the drop, and why does PostgreSQL refuse to drop a
+connected database?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L2/10 — Familiarity
+TASK   : 8 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create a Custom Tablespace and Provision a Database Into It
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Tablespaces are how a DBA places databases or tables on specific storage
+volumes. This is essential when you have fast SSDs for active data and
+slower HDDs for archives. Understanding the mechanics prevents filesystem
+confusion and data loss from misplaced objects.
+
+STEPS
+1. Create a directory for the custom tablespace (simulate a separate volume):
+       sudo mkdir -p /var/lib/postgresql/tblspc_train
+       sudo chown postgres:postgres /var/lib/postgresql/tblspc_train
+       sudo chmod 700 /var/lib/postgresql/tblspc_train
+
+2. Create the tablespace in PostgreSQL:
+       sudo -u postgres psql -c \
+       "CREATE TABLESPACE tblspc_train
+        OWNER postgres
+        LOCATION '/var/lib/postgresql/tblspc_train';"
+
+3. Verify the tablespace was created:
+       sudo -u postgres psql -c \
+       "SELECT spcname, pg_tablespace_location(oid),
+               pg_size_pretty(pg_tablespace_size(spcname))
+        FROM pg_tablespace;"
+
+4. Create a database that uses this tablespace as its default:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE tblspc_testdb
+        TABLESPACE = tblspc_train;"
+
+5. Verify the database is using the tablespace:
+       sudo -u postgres psql -c \
+       "SELECT datname, spcname
+        FROM pg_database d
+        JOIN pg_tablespace t ON d.dattablespace = t.oid
+        WHERE d.datname = 'tblspc_testdb';"
+
+6. Check that data files appeared in the tablespace directory:
+       sudo ls -la /var/lib/postgresql/tblspc_train/
+       sudo ls -la /var/lib/postgresql/XX/main/pg_tblspc/
+
+7. Clean up:
+       sudo -u postgres psql -c "DROP DATABASE tblspc_testdb;"
+       sudo -u postgres psql -c "DROP TABLESPACE tblspc_train;"
+       sudo rm -rf /var/lib/postgresql/tblspc_train
+
+SAFETY
+Risk: Low
+Creating directories and tablespaces on a training system is safe. On
+production, tablespace directories must reside on the correct mounted volume.
+Dropping a tablespace requires it to be empty — PostgreSQL enforces this.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Custom tablespace creation and database placement on specific storage
+
+REVIEW QUESTION
+You drop a tablespace and get: "ERROR: tablespace tblspc_train is not empty."
+What does this mean, and what steps must you take before the DROP TABLESPACE
+will succeed?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 2 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 3 — SECURITY (SERVER LEVEL)
+   Level 2 — Familiarity (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create Roles with Minimum Necessary Privileges (Least Privilege)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Least privilege is the foundational security principle for database roles.
+Every role should have exactly the access it needs — no more. This task
+makes you implement it deliberately and verify it works correctly.
+
+STEPS
+1. Create a database for this security exercise:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE secdb OWNER postgres;"
+
+2. Create a read-only reporting role (no login, no create, no superuser):
+       sudo -u postgres psql -c \
+       "CREATE ROLE ro_reporter NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;"
+
+3. Create a login user for the reporter:
+       sudo -u postgres psql -c \
+       "CREATE ROLE report_user LOGIN PASSWORD 'Rep0rt!Secure'
+        NOSUPERUSER NOCREATEDB NOCREATEROLE
+        IN ROLE ro_reporter;"
+
+4. In secdb, create a schema and grant minimum access:
+       sudo -u postgres psql -d secdb -c \
+       "CREATE SCHEMA appdata;"
+
+       sudo -u postgres psql -d secdb -c \
+       "CREATE TABLE appdata.sales (id serial, amount numeric, sold_at date);"
+
+       sudo -u postgres psql -d secdb -c \
+       "INSERT INTO appdata.sales(amount, sold_at)
+        VALUES (100.00, '2025-01-01'), (200.00, '2025-01-02');"
+
+       sudo -u postgres psql -d secdb -c \
+       "GRANT USAGE ON SCHEMA appdata TO ro_reporter;"
+       sudo -u postgres psql -d secdb -c \
+       "GRANT SELECT ON ALL TABLES IN SCHEMA appdata TO ro_reporter;"
+
+5. Add pg_hba.conf entry for report_user and reload:
+       sudo bash -c \
+       "echo 'local secdb report_user scram-sha-256' \
+       >> /etc/postgresql/XX/main/pg_hba.conf"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+6. Verify least privilege — report_user can SELECT but NOT INSERT:
+       psql -U report_user -d secdb -c "SELECT * FROM appdata.sales;"
+   Expected: rows returned.
+       psql -U report_user -d secdb -c \
+       "INSERT INTO appdata.sales(amount, sold_at) VALUES(999, '2025-06-01');"
+   Expected: ERROR: permission denied
+
+SAFETY
+Risk: Low
+Creating roles and testing privilege denial is safe and is exactly how
+you should verify a security model before production deployment.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Least privilege role design — implementing and verifying minimum access grants
+
+REVIEW QUESTION
+You grant SELECT on all current tables to ro_reporter, but six months later
+the application creates a new table. Will ro_reporter be able to read it?
+What should you have also set up, and why is this a common security gap?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Upgrade Password Storage from MD5 to SCRAM-SHA-256
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+MD5 password hashing is cryptographically weak and has been deprecated since
+PostgreSQL 14. Migrating to scram-sha-256 is one of the most important
+security hardening steps. A DBA must know how to do this without locking
+users out.
+
+STEPS
+1. Check current password_encryption setting:
+       sudo -u postgres psql -c "SHOW password_encryption;"
+
+2. Change the server default to scram-sha-256:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET password_encryption = 'scram-sha-256';"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+       sudo -u postgres psql -c "SHOW password_encryption;"
+
+3. Create a test user WITH the old md5 method (to simulate migration):
+       sudo -u postgres psql -c \
+       "SET password_encryption = 'md5';
+        CREATE ROLE testuser LOGIN PASSWORD 'OldPass123!';"
+
+4. Confirm the user has md5 hash:
+       sudo -u postgres psql -c \
+       "SELECT rolname,
+               CASE WHEN rolpassword LIKE 'md5%' THEN 'MD5 (WEAK)'
+                    WHEN rolpassword LIKE 'SCRAM%' THEN 'SCRAM-SHA-256'
+               END AS hash_type
+        FROM pg_authid WHERE rolname = 'testuser';"
+
+5. Migrate testuser to scram-sha-256 by resetting the password
+   (password_encryption is now scram-sha-256 at server level):
+       sudo -u postgres psql -c \
+       "ALTER ROLE testuser WITH PASSWORD 'OldPass123!';"
+
+6. Verify the hash type changed:
+       sudo -u postgres psql -c \
+       "SELECT rolname,
+               CASE WHEN rolpassword LIKE 'md5%' THEN 'MD5 (WEAK)'
+                    WHEN rolpassword LIKE 'SCRAM%' THEN 'SCRAM-SHA-256'
+               END AS hash_type
+        FROM pg_authid WHERE rolname = 'testuser';"
+
+7. Update pg_hba.conf: change any 'md5' entries to 'scram-sha-256'.
+   Clean up: DROP ROLE testuser;
+
+SAFETY
+Risk: Low
+Changing password_encryption only affects NEW passwords — existing passwords
+are not automatically rehashed. Changing pg_hba.conf to scram-sha-256 while
+users still have md5 hashes will lock them out. Always migrate the hash first,
+then update pg_hba.conf.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Password encryption migration — MD5 to SCRAM-SHA-256 without user lockout
+
+REVIEW QUESTION
+You change pg_hba.conf to require scram-sha-256 for all connections, but
+you have not yet reset any user passwords (they still have md5 hashes).
+What will happen when those users try to connect, and what is the correct
+order of operations to avoid this?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Implement and Test a Connection Restriction on a Role
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL roles can have connection limits, validity periods, and IP-level
+restrictions via pg_hba.conf. Understanding how these combine is essential
+for implementing service accounts that cannot be abused if credentials leak.
+
+STEPS
+1. Create a service account role with strict restrictions:
+       sudo -u postgres psql -c \
+       "CREATE ROLE svc_etl LOGIN PASSWORD 'Svc3tl!Safe'
+        CONNECTION LIMIT 2
+        VALID UNTIL '2035-01-01';"
+
+2. Verify the role properties:
+       sudo -u postgres psql -c \
+       "SELECT rolname, rolcanlogin, rolconnlimit, rolvaliduntil
+        FROM pg_roles WHERE rolname = 'svc_etl';"
+
+3. Add a pg_hba.conf rule that restricts svc_etl to ONLY the loopback IP:
+       sudo bash -c \
+       "echo 'host secdb svc_etl 127.0.0.1/32 scram-sha-256' \
+       >> /etc/postgresql/XX/main/pg_hba.conf"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+4. Grant svc_etl access to secdb schema:
+       sudo -u postgres psql -d secdb -c \
+       "GRANT USAGE ON SCHEMA appdata TO svc_etl;"
+       sudo -u postgres psql -d secdb -c \
+       "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA appdata TO svc_etl;"
+
+5. Test the connection limit — open 3 connections simultaneously:
+   In terminal 1: psql -U svc_etl -d secdb -h 127.0.0.1 -c "SELECT pg_sleep(30);" &
+   In terminal 2: psql -U svc_etl -d secdb -h 127.0.0.1 -c "SELECT pg_sleep(30);" &
+   In terminal 3: psql -U svc_etl -d secdb -h 127.0.0.1
+   Terminal 3 should get: "FATAL: too many connections for role svc_etl"
+
+6. Expire the role immediately and verify the effect:
+       sudo -u postgres psql -c \
+       "ALTER ROLE svc_etl VALID UNTIL '2000-01-01';"
+       psql -U svc_etl -d secdb -h 127.0.0.1
+   Expected: "FATAL: password authentication failed" (expired)
+   Restore it: ALTER ROLE svc_etl VALID UNTIL '2035-01-01';
+
+SAFETY
+Risk: Low
+Connection limit and expiry testing on training roles is safe and informative.
+Deliberately expiring a role is reversible.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Role-level restrictions — connection limits, validity periods, and IP-based access
+
+REVIEW QUESTION
+A service account credential is confirmed to have been leaked. You need to
+block access immediately without dropping the role (because it owns objects).
+What are THREE different controls you can use in PostgreSQL to prevent the
+leaked credential from being used while you rotate the password?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Harden the Public Schema and Revoke Dangerous Default Privileges
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+By default in PostgreSQL versions before 15, every user can CREATE objects in
+the public schema. This is a known privilege escalation vector. Hardening it
+is a standard security baseline task on any new database.
+
+STEPS
+1. Check the current privileges on the public schema:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT nspname, nspacl FROM pg_namespace WHERE nspname = 'public';"
+
+2. Check if PUBLIC (all users) can create in public schema:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT has_schema_privilege('public', 'public', 'CREATE')
+        AS public_can_create;"
+
+3. If true (PostgreSQL < 15), revoke CREATE from PUBLIC on public schema:
+       sudo -u postgres psql -d secdb -c \
+       "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+
+4. Also revoke CONNECT on the database from PUBLIC (so only explicitly
+   granted users can connect):
+       sudo -u postgres psql -c \
+       "REVOKE CONNECT ON DATABASE secdb FROM PUBLIC;"
+
+5. Verify the revoke worked — PUBLIC should no longer be able to create:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT has_schema_privilege('public', 'public', 'CREATE');"
+   Expected: false
+
+6. Now connect as report_user and try to create a table in public schema
+   to verify the restriction is enforced:
+       psql -U report_user -d secdb -c \
+       "CREATE TABLE public.hacktest (id int);"
+   Expected: ERROR: permission denied for schema public
+
+7. Verify report_user can still SELECT from appdata.sales (their legitimate
+   access should be unaffected):
+       psql -U report_user -d secdb -c "SELECT * FROM appdata.sales;"
+
+SAFETY
+Risk: Low
+Revoking PUBLIC privileges from the public schema does not affect existing
+tables or grants. It only prevents new object creation by unprivileged users.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Public schema hardening and dangerous default privilege revocation
+
+REVIEW QUESTION
+Why is REVOKE CONNECT ON DATABASE db FROM PUBLIC considered a security
+best practice? What could an unprivileged user do in a database they can
+connect to, even if they have no object-level grants?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Enable and Verify Connection Logging for Security Audit
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Connection logs are the audit trail that proves who connected, when, from
+where, and whether authentication failed. Without this, you cannot answer
+a security incident investigation. This task enables and verifies it works.
+
+STEPS
+1. Set a comprehensive log_line_prefix that captures audit-relevant fields:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_line_prefix =
+        '%t [%p]: user=%u,db=%d,app=%a,client=%h ';"
+
+   Fields:
+       %t  — timestamp with milliseconds
+       %p  — process ID
+       %u  — username
+       %d  — database name
+       %a  — application name
+       %h  — client hostname/IP
+
+2. Enable connection and disconnection logging:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_connections = on;"
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_disconnections = on;"
+
+3. Reload:
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+4. Generate test connections to populate the log:
+       psql -U report_user -d secdb -h 127.0.0.1 -c "SELECT 1;" 2>/dev/null || true
+       psql -U report_user -d secdb -h 127.0.0.1 -c "SELECT 1;" 2>/dev/null || true
+
+5. Also generate a FAILED login attempt:
+       PGPASSWORD=wrongpassword psql -U report_user -d secdb \
+       -h 127.0.0.1 2>/dev/null || true
+
+6. Read the log and find the connection, disconnection, and failed auth entries:
+       sudo tail -30 /var/log/postgresql/postgresql-XX-main.log
+
+   Look for lines like:
+       "connection received: host=127.0.0.1 port=XXXX"
+       "connection authorized: user=report_user database=secdb"
+       "password authentication failed for user"
+       "disconnection: session time: ..."
+
+SAFETY
+Risk: Low
+Enabling connection logging increases log volume. On a very busy production
+server, log rotation must be confirmed before enabling. On a training system,
+this is entirely safe and should always be enabled.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Connection audit logging — log_line_prefix, log_connections, failed auth capture
+
+REVIEW QUESTION
+You have log_connections = on and a connection attempt fails. The log
+shows "password authentication failed for user X" but does NOT show a
+"connection received" line before it. What does this tell you about
+where in the process the failure occurred?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand and Restrict listen_addresses and Port Exposure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL's listen_addresses controls which network interfaces accept
+connections. A database that listens on 0.0.0.0 (all interfaces) is exposed
+to your entire network. Understanding this setting is the network-level
+security baseline.
+
+STEPS
+1. Check current listen_addresses:
+       sudo -u postgres psql -c "SHOW listen_addresses;"
+
+2. Check which actual port and address PostgreSQL is bound to at the OS:
+       sudo ss -tlnp | grep postgres
+   or:
+       sudo netstat -tlnp | grep postgres
+
+3. Understand the options:
+       listen_addresses = 'localhost'    -- only Unix socket + 127.0.0.1
+       listen_addresses = '10.0.0.5'    -- only a specific internal IP
+       listen_addresses = '*'           -- all interfaces (risky)
+       listen_addresses = ''            -- Unix socket ONLY (no TCP at all)
+
+4. Check if PostgreSQL is reachable from outside localhost:
+       From the server itself, test:
+       pg_isready -h 127.0.0.1 -p 5432
+       pg_isready -h $(hostname -I | awk '{print $1}') -p 5432
+
+5. Understand the layered security model for network access:
+       Layer 1: listen_addresses — can this IP even reach the process?
+       Layer 2: pg_hba.conf      — is this IP/user combination allowed?
+       Layer 3: Role privileges  — what can this user do once connected?
+   All three layers must be correct for secure access.
+
+6. If listen_addresses is currently '*', simulate what you would change it to
+   for a server that should only accept local connections, and note that it
+   requires a RESTART (not just a reload) to take effect:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, context
+        FROM pg_settings WHERE name = 'listen_addresses';"
+   Note that context = 'postmaster' — confirms restart is required.
+
+SAFETY
+Risk: None for this task (observation only).
+If you change listen_addresses in production, ensure you have an alternative
+access method (console access, Unix socket) before restarting, or you may
+lock yourself out.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Network exposure awareness — listen_addresses, port binding, and layered access
+
+REVIEW QUESTION
+An application server at IP 10.0.5.20 cannot connect to PostgreSQL even
+though pg_hba.conf has a rule allowing it. You check pg_hba.conf and the
+rule is correct. What else would you check and why?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Audit Superuser Activity and Understand the Risk of SUPERUSER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Superusers bypass ALL security checks in PostgreSQL. Every superuser login
+is a security event worth auditing. This task teaches you how to detect
+superuser usage, log it, and evaluate whether superuser roles are justified.
+
+STEPS
+1. List all current superuser roles:
+       sudo -u postgres psql -c \
+       "SELECT rolname, rolcanlogin, rolsuper
+        FROM pg_roles WHERE rolsuper = true;"
+
+2. Enable logging of all statements by superusers:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_statement = 'all';"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+3. Connect as postgres superuser and run a DDL command:
+       sudo -u postgres psql -c "SELECT current_user, 'superuser audit test';"
+
+4. Check the log and verify the statement was captured:
+       sudo tail -10 /var/log/postgresql/postgresql-XX-main.log
+   You should see the SELECT statement logged.
+
+5. Now set log_statement back to 'ddl' (log only schema changes — common
+   production setting):
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET log_statement = 'ddl';"
+       sudo -u postgres psql -c "SELECT pg_reload_conf();"
+
+6. Understand what each log_statement value logs:
+       none  — nothing (worst for audit)
+       ddl   — CREATE, ALTER, DROP (minimum for compliance)
+       mod   — DDL + INSERT, UPDATE, DELETE
+       all   — every statement (high volume but maximum audit trail)
+
+7. Verify: can you reduce superuser count?
+       SELECT rolname FROM pg_roles WHERE rolsuper = true;
+   Document why each superuser role exists. If any are not needed,
+   they should be demoted: ALTER ROLE rolename NOSUPERUSER;
+   (Only do this on test roles, not on postgres itself.)
+
+SAFETY
+Risk: Low
+log_statement = 'all' generates very high log volume on a busy server.
+Set it briefly and revert. Never set it permanently in production without
+log rotation and storage planning.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Superuser audit trail — log_statement configuration and superuser role governance
+
+REVIEW QUESTION
+A security audit finds that 4 different roles have SUPERUSER privilege.
+Only postgres itself needs it for server management. What process would
+you follow to safely remove superuser from the other 3 roles without
+breaking the applications they serve?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L2/10 — Familiarity
+TASK   : 8 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Verify SSL Is Active and Connections Use Encryption
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Knowing SSL is "configured" is not enough. A DBA must verify that SSL is
+actually active and that specific connections are actually encrypted. Misconfigured
+SSL silently falls back to unencrypted connections if you are not careful.
+
+STEPS
+1. Verify SSL is enabled at runtime:
+       sudo -u postgres psql -c "SHOW ssl;"
+       sudo -u postgres psql -c "SHOW ssl_cert_file;"
+       sudo -u postgres psql -c "SHOW ssl_key_file;"
+
+2. Check the SSL certificate expiry (critical for compliance):
+       sudo openssl x509 -in /etc/postgresql/XX/main/server.crt \
+       -noout -dates 2>/dev/null || \
+       sudo openssl x509 -in /var/lib/postgresql/XX/main/server.crt \
+       -noout -dates 2>/dev/null || \
+       echo "Certificate not found at expected path — check ssl_cert_file setting"
+
+3. Connect to PostgreSQL using SSL explicitly and verify:
+       psql -U postgres -h 127.0.0.1 -d postgres \
+       "sslmode=require" -c \
+       "SELECT ssl, version, cipher, bits FROM pg_stat_ssl
+        WHERE pid = pg_backend_pid();"
+
+4. Query pg_stat_ssl for all current connections:
+       sudo -u postgres psql -c \
+       "SELECT a.pid, a.usename, a.datname, a.client_addr,
+               s.ssl, s.version, s.cipher, s.bits
+        FROM pg_stat_activity a
+        JOIN pg_stat_ssl s ON a.pid = s.pid;"
+
+5. Identify any connections NOT using SSL (ssl = false):
+       sudo -u postgres psql -c \
+       "SELECT pid, usename, client_addr, ssl
+        FROM pg_stat_ssl
+        JOIN pg_stat_activity USING(pid)
+        WHERE ssl = false AND client_addr IS NOT NULL;"
+   Non-NULL client_addr with ssl = false means remote unencrypted connection.
+
+6. Understand how to force SSL only for specific rules in pg_hba.conf:
+       grep -E "hostssl|hostnossl|host " /etc/postgresql/XX/main/pg_hba.conf
+   Document which rules currently require SSL vs allow unencrypted.
+
+SAFETY
+Risk: None
+Read-only SSL verification and certificate inspection.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : SSL verification — active encryption confirmation and unencrypted connection detection
+
+REVIEW QUESTION
+pg_stat_ssl shows a connection from a remote IP with ssl = false. The
+pg_hba.conf rule for this connection says "host" (not "hostssl"). Is
+this a security finding? What would you change, and what client-side
+setting must also be updated to enforce SSL from both sides?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 3 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 4 — DATA MANAGEMENT
+   Level 2 — Familiarity (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Perform Your First pg_dump Backup and Verify It
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A backup that has never been tested is not a backup — it is a theory. This
+task has you take a real pg_dump, verify its integrity using pg_restore,
+and inspect its contents. You will do this correctly, not just run the command.
+
+STEPS
+1. Create a backup directory with correct permissions:
+       sudo mkdir -p /var/lib/postgresql/backups
+       sudo chown postgres:postgres /var/lib/postgresql/backups
+       sudo chmod 750 /var/lib/postgresql/backups
+
+2. Take a custom-format backup of secdb:
+       sudo -u postgres pg_dump \
+         -Fc \
+         -v \
+         -f /var/lib/postgresql/backups/secdb_$(date +%Y%m%d_%H%M%S).dump \
+         secdb
+
+3. Verify the file was created and note its size:
+       sudo ls -lh /var/lib/postgresql/backups/
+
+4. Verify the backup is internally valid using pg_restore --list:
+       sudo -u postgres pg_restore \
+         -l /var/lib/postgresql/backups/secdb_*.dump \
+         | head -30
+   This lists all objects in the dump WITHOUT restoring them.
+   If this fails, the backup file is corrupt.
+
+5. Check the dump header for metadata:
+       sudo -u postgres pg_restore \
+         --schema-only \
+         -f /tmp/secdb_schema.sql \
+         /var/lib/postgresql/backups/secdb_*.dump
+       head -40 /tmp/secdb_schema.sql
+   You should see: PostgreSQL version, dump date, encoding, original DB name.
+
+6. Record and note the following from your backup:
+       - Backup file name
+       - Backup file size
+       - Dump start time (from verbose output)
+       - PostgreSQL version in dump header
+       - Encoding recorded in dump
+
+SAFETY
+Risk: Low
+pg_dump is a read-only operation on the source database. It does not lock
+tables or interrupt queries in custom format mode.
+
+SKILL BUILT
+Area  : Data Management
+Skill : pg_dump execution — custom format, verbose output, and backup file validation
+
+REVIEW QUESTION
+After creating a pg_dump backup, how do you verify the backup file is
+valid WITHOUT restoring it to a live database? What does pg_restore -l
+tell you that a simple "file exists" check does not?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Perform a Full Restore from pg_dump to a New Database
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Taking backups is only half the job. The other half is restoring them.
+Many DBAs have never actually done a restore until they need one in
+production under pressure. This task makes you do it deliberately and
+calmly in advance.
+
+STEPS
+1. Create a clean target database for the restore:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE secdb_restored OWNER postgres;"
+
+2. Restore the backup into the new database using pg_restore:
+       sudo -u postgres pg_restore \
+         -v \
+         -d secdb_restored \
+         -j 2 \
+         /var/lib/postgresql/backups/secdb_*.dump
+
+   Flags explained:
+       -v      — verbose output (watch for errors)
+       -d      — target database
+       -j 2    — parallel restore using 2 workers
+
+3. Check the verbose output carefully. Look for any lines starting with:
+       "pg_restore: error:" — these are failures to note.
+
+4. Verify the restored data matches the original:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT count(*) FROM appdata.sales;"
+
+       sudo -u postgres psql -d secdb_restored -c \
+       "SELECT count(*) FROM appdata.sales;"
+
+   Both counts must match.
+
+5. Compare schemas between original and restored:
+       sudo -u postgres pg_dump --schema-only secdb > /tmp/orig_schema.sql
+       sudo -u postgres pg_dump --schema-only secdb_restored > /tmp/rest_schema.sql
+       diff /tmp/orig_schema.sql /tmp/rest_schema.sql
+
+6. Clean up:
+       sudo -u postgres psql -c "DROP DATABASE secdb_restored;"
+
+SAFETY
+Risk: Low
+Restore operations only affect the TARGET database. The source (secdb) is
+untouched. Always restore into a NEW database first — never overwrite production.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Full logical restore — pg_restore execution, error detection, and data validation
+
+REVIEW QUESTION
+Your pg_restore verbose output shows several "pg_restore: error: could not
+execute query: ERROR: role X does not exist" lines. The restore continues
+and finishes. Is the restore usable? What caused these errors and how
+would you handle them in a production restore scenario?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Enable WAL Archiving and Verify It Works End-to-End
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+WAL archiving is the prerequisite for Point-in-Time Recovery. Until you have
+enabled it and confirmed that WAL files are being successfully archived, you
+have no PITR capability. This task makes you set it up and verify it is working.
+
+STEPS
+1. Create an archive directory:
+       sudo mkdir -p /var/lib/postgresql/wal_archive
+       sudo chown postgres:postgres /var/lib/postgresql/wal_archive
+       sudo chmod 700 /var/lib/postgresql/wal_archive
+
+2. Configure WAL archiving in postgresql.conf:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET wal_level = 'replica';"
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET archive_mode = 'on';"
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET archive_command =
+        'cp %p /var/lib/postgresql/wal_archive/%f';"
+
+   Note: archive_mode and wal_level require a RESTART.
+
+3. Restart PostgreSQL:
+       sudo systemctl restart postgresql
+       sudo -u postgres psql -c "SHOW archive_mode;"
+       sudo -u postgres psql -c "SHOW wal_level;"
+
+4. Force a WAL segment switch to trigger archiving:
+       sudo -u postgres psql -c "SELECT pg_switch_wal();"
+
+5. Wait 10 seconds and check the archive directory:
+       sleep 10
+       ls -lh /var/lib/postgresql/wal_archive/
+
+   You should see at least one WAL file (24-char hex name).
+
+6. Verify success via pg_stat_archiver:
+       sudo -u postgres psql -c \
+       "SELECT archived_count, last_archived_wal,
+               last_archived_time, failed_count, last_failed_wal
+        FROM pg_stat_archiver;"
+   archived_count > 0 and failed_count = 0 = archiving is working.
+
+SAFETY
+Risk: Low
+Enabling WAL archiving requires a restart. The archive_command uses a simple
+cp — safe for training. In production, use rsync or pgbackrest for reliability.
+
+SKILL BUILT
+Area  : Data Management
+Skill : WAL archiving setup — wal_level, archive_mode, archive_command, and verification
+
+REVIEW QUESTION
+Your archive_command is "cp %p /mnt/archive/%f". The /mnt/archive/ filesystem
+becomes full. What happens to the pg_wal/ directory, what happens to
+PostgreSQL's ability to accept writes, and what is your recovery action?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Run VACUUM and ANALYZE Manually and Observe Their Effects
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L1 you read about VACUUM. At L2 you must run it, observe what changes,
+and understand the before-and-after difference in catalog statistics. This
+is the competency gap between knowing what VACUUM does and actually operating it.
+
+STEPS
+1. Connect to secdb and add then delete rows to create dead tuples:
+       sudo -u postgres psql -d secdb -c \
+       "INSERT INTO appdata.sales(amount, sold_at)
+        SELECT (random()*100)::numeric(10,2), now()::date
+        FROM generate_series(1, 10000);"
+
+       sudo -u postgres psql -d secdb -c \
+       "DELETE FROM appdata.sales WHERE id > 2000;"
+
+2. Record baseline dead tuple count BEFORE vacuum:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname, n_live_tup, n_dead_tup, last_vacuum, last_autovacuum
+        FROM pg_stat_user_tables WHERE relname = 'sales';"
+
+3. Record the table size BEFORE vacuum:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT pg_size_pretty(pg_relation_size('appdata.sales'));"
+
+4. Run VACUUM with verbose output to observe what it does:
+       sudo -u postgres psql -d secdb -c \
+       "VACUUM VERBOSE appdata.sales;"
+
+   Read the output carefully. Note:
+       - Pages scanned
+       - Dead tuples removed
+       - Pages with remaining free space
+       - Tuple IDs frozen
+
+5. Record dead tuple count AFTER vacuum:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname, n_live_tup, n_dead_tup, last_vacuum
+        FROM pg_stat_user_tables WHERE relname = 'sales';"
+   n_dead_tup should now be 0 (or very close).
+
+6. Check if table size changed (VACUUM does NOT return space to the OS):
+       sudo -u postgres psql -d secdb -c \
+       "SELECT pg_size_pretty(pg_relation_size('appdata.sales'));"
+   Size is the same — dead space is marked free for reuse but not released.
+
+7. Now run ANALYZE and observe the statistics update:
+       sudo -u postgres psql -d secdb -c "ANALYZE VERBOSE appdata.sales;"
+       sudo -u postgres psql -d secdb -c \
+       "SELECT last_analyze, last_autoanalyze FROM pg_stat_user_tables
+        WHERE relname='sales';"
+
+SAFETY
+Risk: Low
+VACUUM and ANALYZE are safe on any running database. They do not lock tables
+for reads or writes (unlike VACUUM FULL). They are standard maintenance operations.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Manual VACUUM and ANALYZE execution — dead tuple removal and statistics refresh
+
+REVIEW QUESTION
+After running VACUUM, the table size did not decrease even though thousands
+of rows were deleted. A developer asks "why is the disk still full?".
+How do you explain this, and when would you use VACUUM FULL — and what
+is the operational cost of doing so?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand and Observe Autovacuum Behaviour
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Autovacuum is the background maintenance system you depend on in production.
+A DBA must understand how it decides when to run, how to observe it in action,
+and how to tune it when default thresholds are not appropriate for a table.
+
+STEPS
+1. Check current autovacuum threshold settings:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit
+        FROM pg_settings
+        WHERE name LIKE 'autovacuum%'
+        ORDER BY name;"
+
+   Understand the trigger formula:
+       autovacuum runs when:
+       n_dead_tup > autovacuum_vacuum_threshold +
+                    (autovacuum_vacuum_scale_factor * n_live_tup)
+       Default: 50 + (0.2 * n_live_tup)
+       On a 1,000,000 row table: 50 + 200,000 = 200,050 dead tuples needed
+
+2. Check which tables are currently candidates for autovacuum:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname, n_live_tup, n_dead_tup,
+               50 + (0.2 * n_live_tup) AS vacuum_threshold,
+               n_dead_tup > 50 + (0.2 * n_live_tup) AS needs_vacuum
+        FROM pg_stat_user_tables
+        ORDER BY needs_vacuum DESC, n_dead_tup DESC;"
+
+3. Watch for autovacuum in the pg_stat_activity view:
+       sudo -u postgres psql -c \
+       "SELECT pid, query, state, wait_event_type, wait_event
+        FROM pg_stat_activity
+        WHERE backend_type = 'autovacuum worker';"
+   Run this a few times over a minute to see if autovacuum launches.
+
+4. Set a per-table autovacuum override (simulate a high-churn table needing
+   more aggressive vacuum):
+       sudo -u postgres psql -d secdb -c \
+       "ALTER TABLE appdata.sales SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 100
+        );"
+   This triggers autovacuum after only 1% dead tuples on this table.
+
+5. Verify the per-table setting:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname, reloptions
+        FROM pg_class
+        WHERE relname = 'sales';"
+
+6. Check the autovacuum log (if log_autovacuum_min_duration is set):
+       sudo -u postgres psql -c "SHOW log_autovacuum_min_duration;"
+       sudo grep "autovacuum:" /var/log/postgresql/postgresql-XX-main.log \
+       | tail -10
+
+SAFETY
+Risk: None
+Observing autovacuum is entirely safe. Per-table storage parameters are
+reversible with ALTER TABLE RESET.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Autovacuum trigger logic, observation, and per-table threshold tuning
+
+REVIEW QUESTION
+A high-write table with 5 million rows uses default autovacuum_vacuum_scale_factor
+of 0.2. How many dead tuples must accumulate before autovacuum runs?
+Is this appropriate for a table that receives 10,000 updates per minute?
+What would you change and why?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create an Index and Observe Its Effect on Query Plans
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Indexes are the primary tool for query performance. But creating them wrong
+(on the wrong column, at the wrong time, without CONCURRENTLY) can cause
+outages. A DBA must understand index creation, verification, and impact.
+
+STEPS
+1. Confirm your sales table has data and check its structure:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT count(*), min(amount), max(amount) FROM appdata.sales;"
+
+2. Run a query WITHOUT an index and get the query plan:
+       sudo -u postgres psql -d secdb -c \
+       "EXPLAIN ANALYZE SELECT * FROM appdata.sales WHERE amount > 400;"
+   Note: the plan shows "Seq Scan" (full table scan) and execution time.
+
+3. Create an index on the amount column using CONCURRENTLY
+   (this is the safe production method — does not lock the table):
+       sudo -u postgres psql -d secdb -c \
+       "CREATE INDEX CONCURRENTLY idx_sales_amount
+        ON appdata.sales(amount);"
+
+4. Verify the index was created:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT indexname, indexdef FROM pg_indexes
+        WHERE tablename = 'sales';"
+
+5. Run the same query again and compare the plan:
+       sudo -u postgres psql -d secdb -c \
+       "EXPLAIN ANALYZE SELECT * FROM appdata.sales WHERE amount > 400;"
+   Look for "Index Scan" or "Bitmap Index Scan" instead of "Seq Scan".
+   Compare execution time: is the indexed version faster?
+
+6. Check the index size:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT indexname,
+               pg_size_pretty(pg_relation_size(indexname::regclass))
+        FROM pg_indexes WHERE tablename = 'sales';"
+
+7. Understand when the planner might NOT use an index even if it exists:
+       -- Very high selectivity (e.g., amount > 1) returns most rows:
+       sudo -u postgres psql -d secdb -c \
+       "EXPLAIN SELECT * FROM appdata.sales WHERE amount > 1;"
+   Note: "Seq Scan" may still be chosen because a full scan is cheaper
+   when most rows qualify.
+
+SAFETY
+Risk: Low
+CREATE INDEX CONCURRENTLY is the safe production method. It does not lock
+the table for writes. Regular CREATE INDEX takes a ShareLock that blocks
+INSERT/UPDATE/DELETE — never use it on a live production table.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Index creation with CONCURRENTLY, plan comparison, and planner selectivity
+
+REVIEW QUESTION
+You create an index on a column and the query planner still chooses a
+Seq Scan. What are THREE reasons the planner might ignore an available
+index, and how would you investigate which reason applies?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Use pg_dump to Backup Only a Schema or Specific Tables
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Full database backups are not always what you need. A DBA must know how
+to selectively dump specific schemas or tables — for migrations, refreshing
+environments, or targeted recovery. Selective pg_dump is a daily DBA skill.
+
+STEPS
+1. First, add a second schema to secdb to have something to select from:
+       sudo -u postgres psql -d secdb -c \
+       "CREATE SCHEMA reporting;"
+       sudo -u postgres psql -d secdb -c \
+       "CREATE TABLE reporting.daily_summary AS
+        SELECT sold_at, sum(amount) AS total
+        FROM appdata.sales GROUP BY sold_at;"
+
+2. Dump ONLY the appdata schema:
+       sudo -u postgres pg_dump \
+         -Fc \
+         -n appdata \
+         -f /var/lib/postgresql/backups/secdb_appdata_only.dump \
+         secdb
+       sudo ls -lh /var/lib/postgresql/backups/
+
+3. Dump ONLY a specific table:
+       sudo -u postgres pg_dump \
+         -Fc \
+         -t appdata.sales \
+         -f /var/lib/postgresql/backups/secdb_sales_only.dump \
+         secdb
+
+4. Verify only the intended objects are in each dump:
+       sudo -u postgres pg_restore -l \
+         /var/lib/postgresql/backups/secdb_appdata_only.dump
+       sudo -u postgres pg_restore -l \
+         /var/lib/postgresql/backups/secdb_sales_only.dump
+
+5. Dump EXCLUDING a schema (e.g., exclude reporting from full backup):
+       sudo -u postgres pg_dump \
+         -Fc \
+         -N reporting \
+         -f /var/lib/postgresql/backups/secdb_no_reporting.dump \
+         secdb
+       sudo -u postgres pg_restore -l \
+         /var/lib/postgresql/backups/secdb_no_reporting.dump | grep -i reporting
+   Expected: no reporting schema objects in the list.
+
+6. Use pg_dumpall to capture global objects (roles, tablespaces):
+       sudo -u postgres pg_dumpall --globals-only \
+         > /var/lib/postgresql/backups/globals_only.sql
+       head -30 /var/lib/postgresql/backups/globals_only.sql
+
+SAFETY
+Risk: None for source database
+pg_dump with -n or -t is read-only and cannot affect the source.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Selective pg_dump — schema-only, table-only, exclusion flags, and globals backup
+
+REVIEW QUESTION
+You need to move a single schema from a production database to a new
+server. The schema has tables with foreign keys to tables in other schemas.
+What problem will you encounter during pg_restore, and how does pg_dump's
+--no-acl and ordering behaviour affect this?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L2/10 — Familiarity
+TASK   : 8 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Enable Data Checksums Awareness and Test amcheck on an Index
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Index corruption is one of the hardest data integrity problems to diagnose
+because corrupted indexes can return wrong query results silently. The amcheck
+extension lets you verify B-tree index integrity online without taking the
+database offline. A DBA must know how to use it.
+
+STEPS
+1. Install the amcheck extension:
+       sudo -u postgres psql -d secdb -c \
+       "CREATE EXTENSION IF NOT EXISTS amcheck;"
+
+2. List all B-tree indexes on appdata.sales that can be checked:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE tablename = 'sales'
+        AND indexdef LIKE '%USING btree%';"
+
+3. Run a structure-only check on the index (fast, no table access):
+       sudo -u postgres psql -d secdb -c \
+       "SELECT bt_index_check('appdata.idx_sales_amount');"
+   No output = no corruption detected.
+
+4. Run a thorough check that also verifies heap table consistency:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT bt_index_parent_check('appdata.idx_sales_amount', true);"
+   The second parameter (true) enables cross-check against the heap.
+
+5. Understand what amcheck detects:
+       - Incorrect key ordering within pages
+       - Pages with wrong links to siblings
+       - Duplicate keys in unique indexes
+       - Keys present in index but missing from heap (and vice versa)
+   It does NOT detect all forms of corruption — only B-tree structural issues.
+
+6. Check the pg_stat_database for any detected checksum failures:
+       sudo -u postgres psql -c \
+       "SELECT datname, checksum_failures, checksum_last_failure
+        FROM pg_stat_database
+        ORDER BY checksum_failures DESC NULLS LAST;"
+
+SAFETY
+Risk: None
+amcheck runs as a read-only operation. It takes lightweight locks and does
+not block normal queries during the check.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Online index integrity verification using amcheck — bt_index_check and parent_check
+
+REVIEW QUESTION
+amcheck's bt_index_parent_check returns successfully with no errors. Does
+this guarantee your data is uncorrupted? What types of data corruption
+would amcheck NOT detect, and what other tools would catch them?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 4 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 5 — PERFORMANCE AND MONITORING
+   Level 2 — Familiarity (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Read and Interpret EXPLAIN ANALYZE Output
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+EXPLAIN ANALYZE is the single most important diagnostic tool for query
+performance. A DBA who cannot read a query plan cannot tune queries. This
+task makes you read it systematically, not just scan it superficially.
+
+STEPS
+1. Run a query with EXPLAIN ANALYZE and capture full output:
+       sudo -u postgres psql -d secdb -c \
+       "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+        SELECT s.sold_at, sum(s.amount)
+        FROM appdata.sales s
+        WHERE s.amount > 300
+        GROUP BY s.sold_at
+        ORDER BY sold_at;"
+
+2. Read the output and identify each of these elements:
+
+   NODE TYPE: (Seq Scan / Index Scan / Hash Join / Sort / Aggregate etc.)
+   cost=X..Y    — estimated startup cost .. total cost (planner estimate)
+   actual time=X..Y — measured startup time .. total time (real execution)
+   rows=X       — estimated row count
+   actual rows=X — real row count
+   loops=X      — how many times this node executed
+   Buffers: shared hit=X, read=X — cache hits vs disk reads
+   Planning Time: X ms
+   Execution Time: X ms
+
+3. Calculate the row estimate accuracy:
+       estimated rows / actual rows = accuracy ratio
+   A ratio far from 1.0 (e.g., 0.01 or 100) means stale statistics.
+
+4. Identify the most expensive node (highest actual time).
+
+5. Check BUFFERS output — high "read" relative to "hit" means disk I/O.
+
+6. Now run EXPLAIN (without ANALYZE) to see just the planner estimate:
+       sudo -u postgres psql -d secdb -c \
+       "EXPLAIN SELECT * FROM appdata.sales WHERE amount > 300;"
+   Compare estimated rows to what ANALYZE told you the actual count was.
+
+SAFETY
+Risk: None
+EXPLAIN alone never executes the query. EXPLAIN ANALYZE does execute it —
+never use EXPLAIN ANALYZE on a destructive query (DELETE, UPDATE) without
+wrapping it in a transaction and rolling back.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : EXPLAIN ANALYZE reading — nodes, cost vs actual, row estimates, buffers
+
+REVIEW QUESTION
+EXPLAIN ANALYZE shows estimated rows=10 but actual rows=50,000 for a
+table scan. What does this mean for the query plan's quality, and what
+one command would you run to fix the root cause?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Simulate and Detect a Locking Conflict
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Lock waits are one of the most frequent causes of application slowdowns and
+timeouts. A DBA must be able to CREATE a lock conflict (to understand the
+mechanics), DETECT it from system views, and identify the blocking chain.
+
+STEPS
+1. Open TERMINAL 1 — start a transaction and hold a lock:
+       sudo -u postgres psql -d secdb
+   Inside psql:
+       BEGIN;
+       UPDATE appdata.sales SET amount = amount WHERE id = 1;
+       -- Do NOT commit yet — leave this terminal open
+
+2. Open TERMINAL 2 — attempt a conflicting operation:
+       sudo -u postgres psql -d secdb -c \
+       "UPDATE appdata.sales SET amount = amount WHERE id = 1;"
+   This will HANG because terminal 1 holds the row lock.
+
+3. Open TERMINAL 3 — diagnose the lock situation:
+       sudo -u postgres psql -c \
+       "SELECT
+          blocked.pid AS blocked_pid,
+          blocked.usename,
+          blocked.query AS blocked_query,
+          blocking.pid AS blocking_pid,
+          blocking.query AS blocking_query,
+          now() - blocked.query_start AS wait_duration
+        FROM pg_stat_activity blocked
+        JOIN pg_stat_activity blocking
+          ON blocking.pid = ANY(pg_blocking_pids(blocked.pid));"
+
+4. In terminal 3, also check pg_locks:
+       sudo -u postgres psql -c \
+       "SELECT pid, relation::regclass, locktype, mode, granted
+        FROM pg_locks
+        WHERE relation = 'appdata.sales'::regclass
+        ORDER BY granted DESC;"
+
+5. In terminal 1, commit the transaction to release the lock:
+       COMMIT;
+   Observe terminal 2 immediately complete.
+
+6. Check the server log for any lock timeout messages:
+       sudo tail -5 /var/log/postgresql/postgresql-XX-main.log
+
+SAFETY
+Risk: None
+This is a deliberate controlled lock conflict on a training database.
+It resolves cleanly when the blocking transaction commits.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Lock conflict simulation, detection via pg_stat_activity, and blocking chain tracing
+
+REVIEW QUESTION
+You see a blocking chain: session A blocks B, B blocks C, C blocks D.
+If you terminate session A (pg_terminate_backend), what happens to B, C,
+and D? What happens if instead you terminate session B only?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Monitor Connection Count and Simulate a Near-Limit Scenario
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Running out of connections is a production-stopping event. PostgreSQL gives
+no graceful degradation — it simply refuses new connections once max_connections
+is hit. A DBA must know how to monitor this in real time and respond before
+the limit is reached.
+
+STEPS
+1. Check the current connection limit and usage:
+       sudo -u postgres psql -c \
+       "SELECT max_conn, used, res_for_super,
+               max_conn - used - res_for_super AS available_for_users
+        FROM
+          (SELECT setting::int AS max_conn FROM pg_settings
+           WHERE name = 'max_connections') m,
+          (SELECT count(*) AS used FROM pg_stat_activity) u,
+          (SELECT setting::int AS res_for_super FROM pg_settings
+           WHERE name = 'superuser_reserved_connections') r;"
+
+2. Temporarily lower max_connections to a small number for testing:
+       sudo -u postgres psql -c \
+       "ALTER SYSTEM SET max_connections = 10;"
+       sudo systemctl restart postgresql
+       sudo -u postgres psql -c "SHOW max_connections;"
+
+3. Open connections one at a time in background and count until rejection:
+       for i in $(seq 1 12); do
+         sudo -u postgres psql -c "SELECT pg_sleep(60);" &
+         echo "Opened connection $i"
+       done
+   Note at which number you start seeing:
+       "FATAL: remaining connection slots are reserved for replication
+        or superuser connections"
+   And then:
+       "FATAL: sorry, too many clients already"
+
+4. Observe from another session as connections fill up:
+       sudo -u postgres psql -c \
+       "SELECT count(*) AS total_conns,
+               max_conn,
+               max_conn - count(*) AS slots_remaining
+        FROM pg_stat_activity,
+             (SELECT setting::int AS max_conn FROM pg_settings
+              WHERE name='max_connections') m
+        GROUP BY max_conn;"
+
+5. Kill all background sleep sessions:
+       sudo -u postgres psql -c \
+       "SELECT pg_terminate_backend(pid)
+        FROM pg_stat_activity
+        WHERE query = 'SELECT pg_sleep(60);';"
+
+6. Restore max_connections to the original value and restart:
+       sudo -u postgres psql -c "ALTER SYSTEM RESET max_connections;"
+       sudo systemctl restart postgresql
+
+SAFETY
+Risk: Low
+Lowering max_connections and restarting is safe on a training instance.
+Restore the original value immediately after the test.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Connection saturation monitoring, limit behaviour, and real-time connection tracking
+
+REVIEW QUESTION
+At max_connections = 100 and superuser_reserved_connections = 3, which
+connection number triggers "too many clients already" for a non-superuser?
+Why is the superuser reservation critical, and what is it used for?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Identify Slow Queries Using pg_stat_statements
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+pg_stat_statements is your performance black box recorder. Every DBA must
+know how to extract meaningful insight from it — finding the top offenders
+by total time, by average time, by I/O, and by frequency. This task teaches
+you to read it as a diagnostic tool, not just run the query.
+
+STEPS
+1. Confirm pg_stat_statements is active:
+       sudo -u postgres psql -c \
+       "SELECT name, setting FROM pg_settings
+        WHERE name = 'shared_preload_libraries';"
+   pg_stat_statements should appear in the value.
+
+2. Generate some varied workload to populate statistics:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT * FROM appdata.sales WHERE amount > 100;" 2>/dev/null
+       sudo -u postgres psql -d secdb -c \
+       "SELECT count(*) FROM appdata.sales;" 2>/dev/null
+       sudo -u postgres psql -d secdb -c \
+       "SELECT sold_at, sum(amount) FROM appdata.sales GROUP BY sold_at;" 2>/dev/null
+
+3. Query top queries by TOTAL execution time (biggest overall cost):
+       sudo -u postgres psql -c \
+       "SELECT calls,
+               round(total_exec_time::numeric, 2) AS total_ms,
+               round(mean_exec_time::numeric, 2) AS avg_ms,
+               round(stddev_exec_time::numeric, 2) AS stddev_ms,
+               shared_blks_hit, shared_blks_read,
+               left(query, 80) AS query
+        FROM pg_stat_statements
+        ORDER BY total_exec_time DESC
+        LIMIT 10;"
+
+4. Find HIGH FREQUENCY, low individual cost queries (cumulative load):
+       sudo -u postgres psql -c \
+       "SELECT calls,
+               round(mean_exec_time::numeric, 4) AS avg_ms,
+               round(total_exec_time::numeric, 2) AS total_ms,
+               left(query, 80) AS query
+        FROM pg_stat_statements
+        WHERE calls > 10
+        ORDER BY calls DESC LIMIT 10;"
+
+5. Find HIGH I/O queries (disk-heavy):
+       sudo -u postgres psql -c \
+       "SELECT calls, shared_blks_read, shared_blks_hit,
+               round(shared_blks_read * 100.0 /
+                     NULLIF(shared_blks_read + shared_blks_hit, 0), 2)
+               AS disk_pct,
+               left(query, 80) AS query
+        FROM pg_stat_statements
+        WHERE shared_blks_read > 0
+        ORDER BY shared_blks_read DESC LIMIT 5;"
+
+6. Reset stats and re-run to start fresh (useful before a load test):
+       sudo -u postgres psql -c "SELECT pg_stat_statements_reset();"
+
+SAFETY
+Risk: None
+pg_stat_statements reset only clears counters — it does not affect the
+database in any way. Useful to isolate metrics for a specific time window.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : pg_stat_statements analysis — total time, frequency, I/O, and stats reset
+
+REVIEW QUESTION
+Two queries appear in pg_stat_statements:
+  Query A: calls=1, total_ms=30,000, avg_ms=30,000
+  Query B: calls=10,000, total_ms=50,000, avg_ms=5
+Which query should you optimise first for maximum system-wide impact,
+and what approach would you take for each?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand wait events and What They Reveal
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+When a session is not executing, it is waiting. The wait_event and
+wait_event_type columns in pg_stat_activity tell you WHAT it is waiting for.
+Reading wait events is the first step in diagnosing why a system feels slow
+when CPU usage looks normal.
+
+STEPS
+1. Query current wait events across all sessions:
+       sudo -u postgres psql -c \
+       "SELECT wait_event_type, wait_event, count(*) AS sessions
+        FROM pg_stat_activity
+        WHERE state != 'idle'
+        GROUP BY wait_event_type, wait_event
+        ORDER BY sessions DESC;"
+
+2. Understand the most important wait event types:
+       Lock        — waiting for a database lock (common blocking cause)
+       LWLock      — lightweight internal lock (I/O, buffer access)
+       IO          — waiting for disk read/write (DataFileRead, WALWrite)
+       Client      — waiting for client to send data (ClientRead)
+       Activity    — background process sleeping (normal for idle workers)
+       BufferPin   — waiting for a buffer to be unpinned
+
+3. Create a deliberate IO wait to observe it:
+   In terminal 1:
+       sudo -u postgres psql -c \
+       "SELECT count(*) FROM pg_stat_activity;" &
+   Immediately in terminal 2 (run repeatedly):
+       sudo -u postgres psql -c \
+       "SELECT pid, wait_event_type, wait_event, state
+        FROM pg_stat_activity
+        WHERE state != 'idle'
+        AND backend_type = 'client backend';"
+
+4. Look up the full list of wait events in the PostgreSQL documentation:
+       sudo -u postgres psql -c \
+       "SELECT DISTINCT wait_event_type, wait_event
+        FROM pg_stat_activity
+        WHERE wait_event IS NOT NULL
+        ORDER BY wait_event_type, wait_event;"
+
+5. Understand the difference between:
+       wait_event_type = 'Lock' AND wait_event = 'relation'
+                        — waiting for a table-level lock
+       wait_event_type = 'Lock' AND wait_event = 'tuple'
+                        — waiting for a row-level lock
+       wait_event_type = 'IO' AND wait_event = 'DataFileRead'
+                        — waiting for data to be read from disk
+
+SAFETY
+Risk: None
+Read-only monitoring of wait events.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Wait event analysis — wait_event_type taxonomy and performance implication
+
+REVIEW QUESTION
+You see 40 sessions with wait_event_type='Lock' and wait_event='tuple'.
+Only 2 sessions show wait_event_type='IO'. What does this pattern tell you
+about the performance problem and where you should look first?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Set Up a Simple Alert Query for Cache Hit Ratio Degradation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Monitoring is only useful if it alerts you BEFORE an incident becomes
+visible to users. A DBA must know how to build threshold-based alert
+queries that can be scheduled or integrated into monitoring tools.
+
+STEPS
+1. Write a cache hit ratio monitoring query with a threshold check:
+       sudo -u postgres psql -c \
+       "SELECT datname,
+               round(100.0 * blks_hit / NULLIF(blks_hit + blks_read, 0), 2)
+               AS cache_hit_pct,
+               CASE
+                 WHEN blks_hit + blks_read = 0 THEN 'no data'
+                 WHEN (blks_hit * 100.0 / NULLIF(blks_hit + blks_read,0)) < 95
+                 THEN 'ALERT: cache hit below 95%'
+                 ELSE 'OK'
+               END AS status
+        FROM pg_stat_database
+        WHERE datname NOT LIKE 'template%'
+        ORDER BY cache_hit_pct;"
+
+2. Write a dead connection alert query (idle-in-transaction > 10 minutes):
+       sudo -u postgres psql -c \
+       "SELECT pid, usename, datname,
+               now() - state_change AS idle_duration,
+               left(query, 60) AS last_query,
+               'ALERT: long idle-in-transaction' AS status
+        FROM pg_stat_activity
+        WHERE state = 'idle in transaction'
+        AND state_change < now() - interval '10 minutes';"
+
+3. Write a connection saturation alert (>80% of max_connections used):
+       sudo -u postgres psql -c \
+       "SELECT count(*) AS used,
+               max_conn,
+               round(count(*) * 100.0 / max_conn, 1) AS pct_used,
+               CASE WHEN count(*) * 100.0 / max_conn > 80
+                    THEN 'ALERT: >80% connections used'
+                    ELSE 'OK' END AS status
+        FROM pg_stat_activity,
+             (SELECT setting::int AS max_conn FROM pg_settings
+              WHERE name = 'max_connections') m
+        GROUP BY max_conn;"
+
+4. Write a replication lag alert (if a standby exists):
+       sudo -u postgres psql -c \
+       "SELECT client_addr,
+               state,
+               pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(),
+                              sent_lsn)) AS send_lag,
+               pg_size_pretty(pg_wal_lsn_diff(sent_lsn,
+                              replay_lsn)) AS replay_lag
+        FROM pg_stat_replication;"
+
+5. Save all four alert queries to a file for future use:
+       cat > ~/dba_alert_queries.sql << 'EOF'
+       -- Alert 1: Cache hit ratio
+       SELECT datname, round(100.0*blks_hit/NULLIF(blks_hit+blks_read,0),2)
+       AS cache_hit_pct FROM pg_stat_database WHERE datname NOT LIKE 'template%';
+       -- Alert 2: Idle-in-transaction > 10 min
+       SELECT pid, usename, now()-state_change AS idle_dur
+       FROM pg_stat_activity WHERE state='idle in transaction'
+       AND state_change < now() - interval '10 minutes';
+       -- Alert 3: Connection saturation
+       SELECT count(*), max_conn, count(*)*100.0/max_conn AS pct
+       FROM pg_stat_activity,
+       (SELECT setting::int AS max_conn FROM pg_settings WHERE name='max_connections') m
+       GROUP BY max_conn;
+       EOF
+
+SAFETY
+Risk: None
+All read-only monitoring queries. No system changes.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Alert query design — threshold-based checks for cache, connections, and locks
+
+REVIEW QUESTION
+You want to run these alert queries every 5 minutes and email you if any
+return a warning. Without using a third-party monitoring tool, what
+Debian Linux facility would you use to schedule this, and what would the
+query output need to look like for the script to know when to alert?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Interpret bgwriter Statistics and Understand Their Tuning Signals
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+The background writer (bgwriter) and checkpointer work together to manage
+buffer writes. Their statistics reveal whether your write workload is
+manageable or whether backend processes are doing forced I/O that should
+be handled by the bgwriter — a key performance tuning signal.
+
+STEPS
+1. Reset bgwriter stats to get a clean baseline:
+       sudo -u postgres psql -c "SELECT pg_stat_reset_shared('bgwriter');"
+
+2. Record the starting state of bgwriter stats:
+       sudo -u postgres psql -c \
+       "SELECT checkpoints_timed, checkpoints_req,
+               buffers_checkpoint, buffers_clean,
+               maxwritten_clean, buffers_backend,
+               buffers_backend_fsync, buffers_alloc,
+               stats_reset
+        FROM pg_stat_bgwriter;"
+
+3. Generate write activity to populate stats:
+       sudo -u postgres psql -d secdb -c \
+       "INSERT INTO appdata.sales(amount, sold_at)
+        SELECT (random()*100)::numeric(10,2), now()::date
+        FROM generate_series(1, 100000);"
+
+4. Re-query bgwriter stats and compare:
+       sudo -u postgres psql -c \
+       "SELECT checkpoints_timed, checkpoints_req,
+               buffers_checkpoint, buffers_clean,
+               maxwritten_clean, buffers_backend,
+               buffers_alloc
+        FROM pg_stat_bgwriter;"
+
+5. Interpret each metric:
+       buffers_checkpoint — written by checkpointer (expected, normal)
+       buffers_clean      — written by bgwriter between checkpoints (good)
+       maxwritten_clean   — bgwriter hit its write limit and stopped
+                            (means bgwriter_lru_maxpages is too low)
+       buffers_backend    — written DIRECTLY by a backend because no clean
+                            buffer available (BAD — indicates memory pressure)
+
+6. Check the bgwriter tuning parameters:
+       sudo -u postgres psql -c \
+       "SELECT name, setting, unit
+        FROM pg_settings
+        WHERE name LIKE 'bgwriter%';"
+
+SAFETY
+Risk: Low
+Inserting 100,000 rows and resetting stats is safe on a training instance.
+pg_stat_reset_shared resets the counters — it does not affect data.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : bgwriter statistics interpretation — buffers_backend as a key performance signal
+
+REVIEW QUESTION
+You observe buffers_backend is consistently high (thousands per minute) and
+buffers_clean is near zero. What does this pattern mean, and what are the
+TWO most likely root causes you would investigate?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L2/10 — Familiarity
+TASK   : 8 of est. ~8 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Use pg_stat_replication and pg_stat_wal_receiver for Lag Monitoring
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Replication lag is a silent killer of DR objectives. If your standby is
+10 minutes behind, your actual RPO is 10 minutes — not zero. A DBA must
+understand how to read and interpret replication lag from both the primary
+and standby perspectives.
+
+STEPS
+1. Check if replication is currently running:
+       sudo -u postgres psql -c "SELECT pg_is_in_recovery();"
+   FALSE = primary. TRUE = standby.
+
+2. If primary — check replication slots and connected standbys:
+       sudo -u postgres psql -c "SELECT * FROM pg_stat_replication;"
+       sudo -u postgres psql -c "SELECT * FROM pg_replication_slots;"
+
+3. Understand the lag columns in pg_stat_replication:
+       sent_lsn    — last WAL position sent to standby
+       write_lsn   — standby has written this to its WAL files
+       flush_lsn   — standby has flushed to disk
+       replay_lsn  — standby has applied (replayed) this to data files
+       write_lag   — time between primary write and standby write
+       flush_lag   — time between primary flush and standby flush
+       replay_lag  — time between primary flush and standby replay
+
+4. Calculate byte-based lag:
+       sudo -u postgres psql -c \
+       "SELECT client_addr,
+               pg_size_pretty(
+                 pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)
+               ) AS replay_lag_bytes
+        FROM pg_stat_replication;"
+
+5. If no standby is connected — simulate what the monitoring query would
+   show in a scenario where replay_lsn is behind by 500MB:
+       -- Write this query in your notes:
+       SELECT pg_size_pretty(pg_wal_lsn_diff('0/5000000', '0/1000000'))
+              AS simulated_lag;
+       sudo -u postgres psql -c \
+       "SELECT pg_size_pretty(pg_wal_lsn_diff('0/5000000','0/1000000'))
+        AS simulated_lag_example;"
+
+6. Understand the relationship between lag and RPO:
+       If replay_lag = 15 minutes, your RPO at this moment is 15 minutes.
+       This means a primary failure right now would lose 15 minutes of data.
+       Document what your acceptable RPO is for your training instance.
+
+SAFETY
+Risk: None
+All read-only replication monitoring queries.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Replication lag monitoring — sent/write/flush/replay LSN interpretation
+
+REVIEW QUESTION
+pg_stat_replication shows write_lag = 0ms, flush_lag = 0ms, but
+replay_lag = 45 seconds. What does this tell you about where the standby
+is falling behind, and what would you investigate on the standby server
+to find the cause?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 5 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 6 — MAINTENANCE AND COMPLIANCE
+   Level 2 — Familiarity (~7 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 1 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Create and Test a Backup Script with Rotation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A backup that runs manually once is not a backup policy. A DBA must have a
+working, tested, automated backup script with rotation. This task builds one
+from scratch and tests it end-to-end.
+
+STEPS
+1. Create a backup script at /usr/local/bin/pg_backup.sh:
+
+       sudo tee /usr/local/bin/pg_backup.sh << 'EOF'
+       #!/bin/bash
+       # PostgreSQL backup script with 7-day rotation
+       BACKUP_DIR="/var/lib/postgresql/backups"
+       DATE=$(date +%Y%m%d_%H%M%S)
+       LOG="/var/log/postgresql/backup.log"
+       RETENTION_DAYS=7
+
+       echo "[$(date)] Starting backup" >> "$LOG"
+
+       # Backup each database
+       for DB in $(sudo -u postgres psql -tAc \
+         "SELECT datname FROM pg_database WHERE datistemplate = false"); do
+         FILE="${BACKUP_DIR}/${DB}_${DATE}.dump"
+         sudo -u postgres pg_dump -Fc "$DB" -f "$FILE"
+         if [ $? -eq 0 ]; then
+           SIZE=$(du -sh "$FILE" | cut -f1)
+           echo "[$(date)] SUCCESS: $DB -> $FILE ($SIZE)" >> "$LOG"
+         else
+           echo "[$(date)] FAILED: $DB backup failed!" >> "$LOG"
+         fi
+       done
+
+       # Rotate old backups
+       find "$BACKUP_DIR" -name "*.dump" \
+         -mtime +${RETENTION_DAYS} -delete
+       echo "[$(date)] Rotation complete: removed files older than \
+       ${RETENTION_DAYS} days" >> "$LOG"
+       EOF
+
+       sudo chmod +x /usr/local/bin/pg_backup.sh
+
+2. Run the script and verify it completes without errors:
+       sudo /usr/local/bin/pg_backup.sh
+       ls -lh /var/lib/postgresql/backups/
+       cat /var/log/postgresql/backup.log
+
+3. Verify the backup files are valid:
+       for f in /var/lib/postgresql/backups/*.dump; do
+         echo -n "Checking $f: "
+         sudo -u postgres pg_restore -l "$f" > /dev/null 2>&1 \
+         && echo "OK" || echo "CORRUPT"
+       done
+
+4. Schedule the backup with cron as the postgres user:
+       sudo crontab -u postgres -e
+   Add this line (runs at 2:00 AM daily):
+       0 2 * * * /usr/local/bin/pg_backup.sh
+
+5. Verify the cron entry:
+       sudo crontab -u postgres -l
+
+SAFETY
+Risk: Low
+The script only reads databases and writes to the backup directory. Rotation
+deletes old .dump files after 7 days — confirm the backup directory before
+running. Never point rotation at a directory with important files.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Automated backup script creation — rotation, logging, and cron scheduling
+
+REVIEW QUESTION
+Your backup script runs pg_dump for each database sequentially. You have
+5 large databases and the total backup window is 4 hours. What problem
+does sequential backup create for your RPO, and what approach would you
+use to reduce the backup window?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 2 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Take a pg_basebackup and Understand Its Output
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+pg_basebackup is the foundation of physical backup and PITR. A DBA must
+understand how to take one, what it produces, how long it takes, and what
+is inside it — because restoring from it requires understanding its structure.
+
+STEPS
+1. Create a directory for the physical backup:
+       sudo mkdir -p /var/lib/postgresql/physical_backup
+       sudo chown postgres:postgres /var/lib/postgresql/physical_backup
+
+2. Take a pg_basebackup in tar format with progress:
+       sudo -u postgres pg_basebackup \
+         -D /var/lib/postgresql/physical_backup \
+         -Ft \
+         -z \
+         -P \
+         -v \
+         --wal-method=stream
+
+   Flags:
+       -D   — destination directory
+       -Ft  — tar format
+       -z   — gzip compress
+       -P   — show progress
+       -v   — verbose
+       --wal-method=stream — stream WAL during backup (captures in-flight WAL)
+
+3. List the output files:
+       ls -lh /var/lib/postgresql/physical_backup/
+
+   You should see:
+       base.tar.gz   — the data directory
+       pg_wal.tar.gz — WAL files captured during backup
+
+4. Check the backup label file (inside base.tar.gz):
+       sudo -u postgres tar -xzf \
+         /var/lib/postgresql/physical_backup/base.tar.gz \
+         --to-stdout backup_label 2>/dev/null | head -20
+
+   The backup_label contains:
+       - START WAL LOCATION
+       - CHECKPOINT LOCATION
+       - Backup start time
+       - Label
+
+5. Calculate the backup duration and compare to database size:
+       sudo du -sh /var/lib/postgresql/XX/main/
+       sudo du -sh /var/lib/postgresql/physical_backup/
+
+6. Understand why pg_basebackup requires wal_level >= replica:
+       sudo -u postgres psql -c "SHOW wal_level;"
+   Physical backups require WAL streaming to be consistent.
+
+SAFETY
+Risk: Low
+pg_basebackup is a read operation on the source cluster. It does not
+lock tables or pause writes. It requires wal_level = replica or higher.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : pg_basebackup execution — tar format, WAL streaming, and backup_label content
+
+REVIEW QUESTION
+Why does pg_basebackup include a backup_label file, and what specific
+information from it is required when restoring the backup for Point-in-Time
+Recovery? What happens if backup_label is missing from a restored backup?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 3 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Generate a Database Inventory Report for Compliance
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Compliance requires proof of what databases exist, who owns them, how large
+they are, and when they were last maintained. A DBA must be able to produce
+this report on demand. This task builds a reusable compliance report script.
+
+STEPS
+1. Create a SQL script that generates a compliance inventory report:
+       cat > /tmp/db_inventory.sql << 'EOF'
+       \echo '========================================'
+       \echo 'PostgreSQL Database Inventory Report'
+       \echo 'Generated: ' :now
+       \echo '========================================'
+
+       \echo ''
+       \echo '--- Instance Info ---'
+       SELECT version() AS pg_version,
+              pg_postmaster_start_time() AS started_at,
+              now() - pg_postmaster_start_time() AS uptime;
+
+       \echo ''
+       \echo '--- All Databases ---'
+       SELECT datname AS database,
+              r.rolname AS owner,
+              pg_encoding_to_char(encoding) AS encoding,
+              datcollate AS collation,
+              datconnlimit AS conn_limit,
+              pg_size_pretty(pg_database_size(datname)) AS size
+       FROM pg_database d
+       JOIN pg_roles r ON d.datdba = r.oid
+       ORDER BY pg_database_size(datname) DESC;
+
+       \echo ''
+       \echo '--- All Roles ---'
+       SELECT rolname, rolsuper, rolcreatedb, rolcanlogin,
+              rolconnlimit, rolvaliduntil
+       FROM pg_roles ORDER BY rolname;
+
+       \echo ''
+       \echo '--- Backup Status (pg_stat_archiver) ---'
+       SELECT archived_count, last_archived_wal,
+              last_archived_time, failed_count
+       FROM pg_stat_archiver;
+       EOF
+
+2. Run the report and save it to a file with today's date:
+       sudo -u postgres psql \
+         -v now="'$(date)'" \
+         -f /tmp/db_inventory.sql \
+         > /var/lib/postgresql/backups/db_inventory_$(date +%Y%m%d).txt 2>&1
+
+3. View the report:
+       cat /var/lib/postgresql/backups/db_inventory_$(date +%Y%m%d).txt
+
+4. Add a section for tables without recent VACUUM:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT schemaname, relname, last_autovacuum,
+               n_dead_tup,
+               CASE WHEN last_autovacuum < now() - interval '7 days'
+                         OR last_autovacuum IS NULL
+                    THEN 'ATTENTION NEEDED'
+                    ELSE 'OK' END AS vacuum_status
+        FROM pg_stat_user_tables
+        ORDER BY vacuum_status DESC, n_dead_tup DESC;"
+
+5. Save the full report script to ~/compliance_report.sh for reuse.
+
+SAFETY
+Risk: None
+Read-only reporting queries. Output is written to the backup directory.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Compliance report generation — database inventory, role audit, backup status
+
+REVIEW QUESTION
+An auditor asks for a report showing "all users with elevated database
+privileges as of today." What specific combination of pg_roles columns
+and privilege views would you query to produce a complete answer?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 4 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Test a Backup Restore End-to-End and Document the RTO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Untested backups are not backups. Compliance frameworks (ISO 27001, SOC 2)
+require periodic restore testing. A DBA must be able to perform a timed
+restore test and document the actual RTO (Recovery Time Objective) achieved.
+
+STEPS
+1. Record the start time:
+       START=$(date +%s)
+       echo "Restore test started at: $(date)"
+
+2. Create a fresh restore target database:
+       sudo -u postgres psql -c \
+       "CREATE DATABASE restore_test OWNER postgres;"
+
+3. Restore the most recent backup of secdb into restore_test:
+       sudo -u postgres pg_restore \
+         -v \
+         -d restore_test \
+         $(ls -t /var/lib/postgresql/backups/secdb_*.dump | head -1)
+
+4. Validate the restore — compare row counts:
+       echo "=== Source (secdb) ==="
+       sudo -u postgres psql -d secdb -c \
+       "SELECT schemaname, relname, n_live_tup
+        FROM pg_stat_user_tables ORDER BY relname;"
+
+       echo "=== Restored (restore_test) ==="
+       sudo -u postgres psql -d restore_test -c \
+       "SELECT schemaname, relname, n_live_tup
+        FROM pg_stat_user_tables ORDER BY relname;"
+
+5. Record the end time and calculate actual RTO:
+       END=$(date +%s)
+       echo "Restore test completed at: $(date)"
+       echo "Total RTO: $((END - START)) seconds"
+
+6. Write a one-paragraph restore test report:
+       cat > /var/lib/postgresql/backups/restore_test_$(date +%Y%m%d).txt << EOF
+       RESTORE TEST REPORT
+       Date: $(date)
+       Source DB: secdb
+       Target DB: restore_test
+       Backup file: $(ls -t /var/lib/postgresql/backups/secdb_*.dump | head -1)
+       Duration: $((END - START)) seconds
+       Row count match: [YES/NO - fill in manually]
+       Result: PASS / FAIL
+       EOF
+
+7. Clean up:
+       sudo -u postgres psql -c "DROP DATABASE restore_test;"
+
+SAFETY
+Risk: Low
+Restore operations are isolated to the restore_test database. Production
+data in secdb is untouched. Always use a separate database for restore testing.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Restore test execution — timed recovery, data validation, and RTO documentation
+
+REVIEW QUESTION
+Your restore test shows that restoring secdb (2GB) takes 45 minutes.
+Your business has an RTO of 30 minutes for this database. What are two
+architectural or procedural changes that could reduce your actual restore
+time to meet the 30-minute RTO?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 5 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Understand Transaction ID Wraparound Risk and How to Monitor It
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Transaction ID (XID) wraparound is one of the most severe PostgreSQL failure
+modes. When a database approaches 2 billion transactions without VACUUM,
+PostgreSQL enters a forced read-only mode to prevent data corruption. A DBA
+must monitor this proactively — it is entirely preventable.
+
+STEPS
+1. Check the current transaction ID age for all databases:
+       sudo -u postgres psql -c \
+       "SELECT datname,
+               age(datfrozenxid) AS xid_age,
+               2147483648 - age(datfrozenxid) AS xids_remaining,
+               round(age(datfrozenxid) * 100.0 / 2147483648, 2)
+               AS pct_toward_wraparound
+        FROM pg_database
+        ORDER BY age(datfrozenxid) DESC;"
+
+2. Understand the thresholds:
+       autovacuum_freeze_max_age (default 200,000,000) — autovacuum MUST run
+       vacuum_freeze_max_age (default 150,000,000) — VACUUM forces freeze
+       At age 2,000,000,000 — PostgreSQL refuses all writes (emergency)
+
+3. Check which tables are oldest (most urgent for freezing):
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname,
+               age(relfrozenxid) AS table_xid_age,
+               round(age(relfrozenxid)*100.0/2147483648, 4)
+               AS pct_toward_wraparound
+        FROM pg_class
+        WHERE relkind = 'r'
+        ORDER BY age(relfrozenxid) DESC
+        LIMIT 10;"
+
+4. Check the autovacuum_freeze_max_age setting:
+       sudo -u postgres psql -c \
+       "SELECT name, setting FROM pg_settings
+        WHERE name IN (
+          'autovacuum_freeze_max_age',
+          'vacuum_freeze_min_age',
+          'vacuum_freeze_max_age'
+        );"
+
+5. Run VACUUM FREEZE on a table to manually advance the freeze horizon:
+       sudo -u postgres psql -d secdb -c \
+       "VACUUM FREEZE VERBOSE appdata.sales;"
+   Check the age after:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT relname, age(relfrozenxid) FROM pg_class
+        WHERE relname = 'sales';"
+
+6. Write a wraparound alert query (tables aged > 1.5 billion = danger):
+       sudo -u postgres psql -c \
+       "SELECT datname, age(datfrozenxid) AS xid_age,
+               CASE WHEN age(datfrozenxid) > 1500000000
+                    THEN 'CRITICAL WRAPAROUND RISK'
+                    WHEN age(datfrozenxid) > 500000000
+                    THEN 'WARNING'
+                    ELSE 'OK' END AS status
+        FROM pg_database ORDER BY xid_age DESC;"
+
+SAFETY
+Risk: Low
+VACUUM FREEZE is safe but more aggressive than regular VACUUM — it marks
+tuples as frozen regardless of age. Safe on a training database. On production,
+schedule during off-peak hours as it can be I/O intensive.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : XID wraparound monitoring — age calculation, thresholds, and VACUUM FREEZE
+
+REVIEW QUESTION
+A database has been running for years with autovacuum disabled on one
+critical table (a misconfiguration). The table's relfrozenxid age is now
+1.8 billion. What are the two things PostgreSQL will do as the age
+approaches 2 billion, and what action must you take RIGHT NOW?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 6 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Interpret PostgreSQL Log for a Simulated Incident Timeline
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+During and after an incident, the PostgreSQL log is your primary evidence
+source. A DBA must be able to construct a timeline of events from the log
+— not just grep for errors. This task makes you practice forensic log reading.
+
+STEPS
+1. Deliberately create several loggable events in sequence:
+
+   Event 1 — connection:
+       sudo -u postgres psql -d secdb -c "SELECT 'incident log test 1';"
+
+   Event 2 — slow query (triggers log_min_duration_statement):
+       sudo -u postgres psql -d secdb -c "SELECT pg_sleep(0.15);"
+
+   Event 3 — failed authentication:
+       PGPASSWORD=wrong psql -U report_user -d secdb \
+       -h 127.0.0.1 2>/dev/null || true
+
+   Event 4 — a DDL statement (logged because log_statement='ddl'):
+       sudo -u postgres psql -d secdb -c \
+       "CREATE TABLE appdata.incident_log_test (id int);"
+
+   Event 5 — DROP:
+       sudo -u postgres psql -d secdb -c \
+       "DROP TABLE appdata.incident_log_test;"
+
+2. Wait 5 seconds, then extract the last 60 lines of the log:
+       sudo tail -60 /var/log/postgresql/postgresql-XX-main.log
+
+3. Build a timeline from the log — write it in this format:
+       TIME       | EVENT TYPE     | DETAIL
+       ---------- | -------------- | -------
+       HH:MM:SS   | connection     | user=postgres db=secdb
+       HH:MM:SS   | slow query     | duration: XXXms SELECT pg_sleep...
+       HH:MM:SS   | auth failure   | user=report_user
+       HH:MM:SS   | DDL            | CREATE TABLE ...
+       HH:MM:SS   | DDL            | DROP TABLE ...
+
+4. Note the log_line_prefix format in each line and parse:
+       timestamp, PID, user, database, application, client IP.
+
+5. Practice using grep with timestamps to isolate a time window:
+       sudo grep "$(date '+%Y-%m-%d %H')" \
+       /var/log/postgresql/postgresql-XX-main.log | tail -30
+
+SAFETY
+Risk: None
+All deliberately generated test events. Forensic log reading has no risk.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Incident log forensics — timeline construction and event classification from logs
+
+REVIEW QUESTION
+An incident report requires you to prove: "The table 'orders' was dropped
+at 14:32:07 by user 'deployer' from IP 10.0.1.5." What MUST have been
+enabled in postgresql.conf for this statement to appear in the log, and
+what log_line_prefix fields would you need to capture all three pieces of
+evidence (who, what, from where)?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L2/10 — Familiarity
+TASK   : 7 of est. ~7 total in this level
+TIME   : 30–60 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build and Execute a Structured Weekly DBA Maintenance Checklist
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+L2 mastery means you now have the understanding to execute a structured
+maintenance routine — not just observe. This final task has you run a
+complete weekly maintenance pass, record the findings, and save a health
+report. This is the operational discipline that separates a DBA from
+a database user.
+
+STEPS
+1. Run each check below and record the result (PASS / WARN / FAIL + value):
+
+   Check 1 — Instance running and uptime:
+       sudo -u postgres psql -c \
+       "SELECT pg_postmaster_start_time(), \
+        now()-pg_postmaster_start_time() AS uptime;"
+
+   Check 2 — No ERROR/FATAL in the last 24 hours:
+       sudo grep -c "ERROR\|FATAL" \
+       /var/log/postgresql/postgresql-XX-main.log || echo "0 errors"
+
+   Check 3 — Cache hit ratio > 95% for all databases:
+       sudo -u postgres psql -c \
+       "SELECT datname, \
+        round(100.0*blks_hit/NULLIF(blks_hit+blks_read,0),2) \
+        FROM pg_stat_database WHERE datname NOT LIKE 'template%';"
+
+   Check 4 — No idle-in-transaction sessions > 10 minutes:
+       sudo -u postgres psql -c \
+       "SELECT count(*) FROM pg_stat_activity \
+        WHERE state='idle in transaction' \
+        AND state_change < now() - interval '10 minutes';"
+
+   Check 5 — WAL archiving not failing:
+       sudo -u postgres psql -c \
+       "SELECT failed_count, last_failed_wal FROM pg_stat_archiver;"
+
+   Check 6 — Backup files exist and are less than 24 hours old:
+       find /var/lib/postgresql/backups/ -name "*.dump" \
+       -mtime -1 | wc -l
+
+   Check 7 — Disk usage below 80%:
+       df -h /var/lib/postgresql/ | awk 'NR==2{print $5}'
+
+   Check 8 — XID wraparound age < 500 million:
+       sudo -u postgres psql -c \
+       "SELECT max(age(datfrozenxid)) FROM pg_database;"
+
+   Check 9 — No tables with >20% dead tuples:
+       sudo -u postgres psql -d secdb -c \
+       "SELECT count(*) FROM pg_stat_user_tables \
+        WHERE n_dead_tup > 0.2*(n_live_tup+n_dead_tup) \
+        AND n_live_tup+n_dead_tup > 1000;"
+
+   Check 10 — No superuser roles added unexpectedly:
+       sudo -u postgres psql -c \
+       "SELECT rolname FROM pg_roles WHERE rolsuper=true;"
+
+2. Save all results to a weekly report file:
+       /var/lib/postgresql/backups/weekly_health_$(date +%Y%m%d).txt
+
+3. For any WARN or FAIL items, write one sentence explaining what you
+   would do to resolve it.
+
+SAFETY
+Risk: None
+All read-only monitoring queries. This is a structured observation exercise.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Structured weekly DBA maintenance execution and health report generation
+
+REVIEW QUESTION
+Looking at your completed health report: which of the 10 checks would
+have the most severe consequence if it showed FAIL and was left unaddressed
+for one week? Rank your top 3 by severity and explain why.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 6 — ALL L2 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   ALL AREAS — L2 COMPLETE
+████████████████████████████████████████████████████████████████████████████████
+
+FINAL L2 PROGRESS DASHBOARD
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L2/10  ║ 9            ║ 0             ║ 20%*         ║
+║ 2. Provision ║ L2/10  ║ 8            ║ 0             ║ 20%*         ║
+║ 3. Security  ║ L2/10  ║ 8            ║ 0             ║ 20%*         ║
+║ 4. Data Mgmt ║ L2/10  ║ 8            ║ 0             ║ 20%*         ║
+║ 5. Perf/Mon  ║ L2/10  ║ 8            ║ 0             ║ 20%*         ║
+║ 6. Maint/Com ║ L2/10  ║ 7            ║ 0             ║ 20%*         ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~20% (L2 of 10 levels complete across all areas)   ║
+╚══════════════════════════════════════════════════════════════════════╝
+* Area % promoted to 20% upon coach review and L3 unlock
+
+────────────────────────────────────────────────────────────────────────
+TOTAL TASK SUMMARY
+────────────────────────────────────────────────────────────────────────
+Area 1 — Instance       : 9 tasks
+Area 2 — Provisioning   : 8 tasks
+Area 3 — Security       : 8 tasks
+Area 4 — Data Mgmt      : 8 tasks
+Area 5 — Perf/Mon       : 8 tasks
+Area 6 — Maint/Comp     : 7 tasks
+────────────────────────────────────────────────────────────────────────
+TOTAL L2 TASKS          : 48 tasks
+────────────────────────────────────────────────────────────────────────
+
+WHAT CHANGED FROM L1 TO L2
+────────────────────────────────────────────────────────────────────────
+L1 — You observed and described.
+L2 — You interacted with the system:
+     - Made configuration changes and reloaded / restarted
+     - Created databases, roles, and schemas
+     - Ran backups and restores end-to-end
+     - Deliberately created problems (locks, crashes, full connections)
+       and diagnosed them from the system views
+     - Built scripts and scheduled them
+
+WHAT L3 BRINGS (Operational)
+────────────────────────────────────────────────────────────────────────
+At L3 you perform ROUTINE tasks without guidance — confidently and
+accurately. You will handle connection pool failures, triage slow queries
+autonomously, manage backup failures, rebuild indexes without downtime,
+and execute planned maintenance windows correctly. Tasks become longer,
+more realistic, and less guided.
+
+────────────────────────────────────────────────────────────────────────
+WHEN READY: Return to Claude and say:
+"L2 complete. Ready for L3 across all areas."
+────────────────────────────────────────────────────────────────────────
+================================================================================

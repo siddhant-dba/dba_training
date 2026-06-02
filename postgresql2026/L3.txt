@@ -1,9 +1,10 @@
+
 ================================================================================
          DBA TRAINING PROGRAM — ALL AREAS — LEVEL 3 (OPERATIONAL)
          PostgreSQL on Debian Linux
-         Complete ALL 68 tasks before requesting L4
+         Complete ALL tasks before requesting L4
 ================================================================================
-
+ 
 LEVEL 3 OVERVIEW
 -----------------
 At L1 you identified components.
@@ -13,11 +14,11 @@ guidance. You diagnose problems, execute maintenance, respond to incidents,
 and make decisions based on system state. Tasks are longer, more realistic,
 and often combine multiple skill areas. You are now a practicing DBA, not
 a trainee.
-
+ 
 L3 Promotion Criteria: You will be ready for L4 when your answers show you
 can TRIAGE and EXECUTE independently — you know what to check, in what order,
 and when to act vs when to wait. You handle the unexpected without panic.
-
+ 
 PROGRESS DASHBOARD (L3 Start)
 ------------------------------
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -34,58 +35,1611 @@ PROGRESS DASHBOARD (L3 Start)
 ╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
 ║ Overall Mastery: ~20%                                                ║
 ╚══════════════════════════════════════════════════════════════════════╝
-
+ 
 Total estimated L3 tasks across all 6 areas: ~68 tasks
-
 ================================================================================
-SUMMARY OF ALL AREAS (Quick Reference)
+ 
+ 
+ 
+ 
+████████████████████████████████████████████████████████████████████████████████
+   AREA 1 — DATABASE SERVER / INSTANCE
+   Level 3 — Operational (~12 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 1 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Diagnose and Resolve a Connection Pool Exhaustion Incident
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Connection pool exhaustion is one of the most frequent production incidents
+a DBA handles. You must be able to diagnose the root cause (idle sessions,
+connection leaks, legitimate spike) and take appropriate action without
+causing a wider outage.
+ 
+SCENARIO
+Your monitoring alert fires: "PostgreSQL connection count at 95 of 100."
+Applications report timeouts. You have 10 minutes to resolve before
+customer-facing impact becomes severe.
+ 
+YOUR TASK (No step-by-step — use your judgement)
+1. Diagnose the root cause:
+   - Is this an idle session leak (aged sessions doing nothing)?
+   - Is this a connection spike (legitimate new load)?
+   - Are sessions stuck waiting for locks?
+   - Is something continuously opening connections without closing?
+ 
+2. Identify which database/role is consuming the most connections.
+ 
+3. Determine whether to:
+   - Terminate idle-in-transaction sessions (safe)
+   - Increase max_connections (requires restart — risky)
+   - Investigate and close the connection leak source
+ 
+4. Execute your chosen remediation step.
+ 
+5. Verify the connection count dropped and applications recovered.
+ 
+6. Post-incident: document the root cause, what you did, and what
+   configuration or monitoring change would have prevented this.
+ 
+SAFETY
+Risk: Medium
+Terminating connections impacts running queries. Proceed only after you
+have verified they are blocking others. On production, notify the
+application team before massive termination.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Incident diagnosis and remediation — independent decision-making under time pressure
+ 
+REVIEW QUESTION
+After you terminate 30 blocked sessions, new connections still fail with
+"too many clients." What is the ONE thing you should check before increasing
+max_connections, and what problem could increasing it WITHOUT checking first
+cause?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 2 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Tune PostgreSQL Instance Parameters for a Known Workload Type
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+PostgreSQL's default configuration assumes a generic server. A DBA must
+be able to assess a workload (OLTP, OLAP, batch processing) and apply
+appropriate parameter tuning. This is not reading a checklist — it is
+making informed decisions based on system behaviour.
+ 
+SCENARIO
+You are asked to optimize PostgreSQL for a known workload:
+- High-frequency OLTP transactions (5,000 TPS, 100,000 concurrent connections)
+- 64GB RAM server
+- Data size: 200GB
+- SSD storage
+- Business requirement: sub-100ms query latency
+ 
+YOUR TASK (Use your knowledge from L1-L2, no guidance given)
+1. Identify which parameters matter MOST for this workload type.
+ 
+2. Calculate appropriate values for:
+   - shared_buffers
+   - effective_cache_size
+   - work_mem
+   - maintenance_work_mem
+   - max_connections (or use a connection pooler — which is better?)
+   - checkpoint parameters (checkpoint_timeout, max_wal_size)
+   - log parameters for OLTP
+ 
+3. Document your reasoning for each choice.
+ 
+4. Apply your changes to postgresql.conf, reload, and verify.
+ 
+5. Run a simulated OLTP workload (bulk inserts + selects) and compare
+   query performance BEFORE and AFTER tuning using EXPLAIN ANALYZE
+   and pg_stat_statements.
+ 
+6. Take a baseline of pg_stat_bgwriter and pg_stat_activity metrics
+   and note what changed after tuning.
+ 
+SAFETY
+Risk: Medium
+Parameter changes require testing on a training instance first. Some changes
+(max_connections, wal_level) require a RESTART. Always have a recovery plan.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Workload-based parameter tuning — assessment, calculation, and verification
+ 
+REVIEW QUESTION
+For this OLTP workload, you chose work_mem = 512MB. What problem could
+this cause with 100,000 concurrent connections, and what is the correct
+approach to work_mem tuning for high-concurrency OLTP vs batch queries?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 3 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Perform a Production-Grade Upgrade: Minor Version (e.g., 15.2 → 15.5)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Minor version upgrades (within the same major version) are low-risk but
+still require careful planning and validation. A DBA must be able to
+execute an upgrade with zero downtime or planned maintenance windows.
+ 
+SCENARIO
+PostgreSQL 15.2 is running in production. PostgreSQL 15.5 is available
+with important security and bug fixes. You have a 30-minute maintenance
+window scheduled.
+ 
+YOUR TASK (Use your operational knowledge)
+1. Pre-upgrade checklist:
+   - Verify which packages are installed (use dpkg)
+   - Check if standby replicas are running the same version
+   - Confirm backups are recent and valid
+   - Review PostgreSQL 15.5 release notes for breaking changes
+ 
+2. Plan your upgrade sequence:
+   - Will you update standby first or primary first? Why?
+   - Do you need to coordinate with the application team?
+   - What is your rollback plan?
+ 
+3. Execute the upgrade:
+   - Update the PostgreSQL packages on Debian
+   - Verify the binary version changed
+   - Perform a controlled restart (or no restart for minor versions?)
+   - Confirm the instance started and recovered cleanly
+   - Run a sanity query on every database to confirm functionality
+ 
+4. Post-upgrade validation:
+   - Compare performance metrics before/after
+   - Check all scheduled backups and WAL archiving still work
+   - Verify replication (if any standby exists) is in sync
+ 
+5. Document the upgrade in your change log with start/end times
+   and any issues encountered.
+ 
+SAFETY
+Risk: Low
+Minor version upgrades are usually safe. Always back up before starting.
+Test the upgrade on a development server first if possible.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Minor version upgrade execution — planning, coordination, validation
+ 
+REVIEW QUESTION
+During the upgrade, the standby replica failed to upgrade to 15.5 due to
+a package dependency issue. Replication is now broken (primary is 15.5,
+standby is 15.2). Can they talk? What must you do immediately, and what
+is the long-term fix?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 4 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Investigate and Resolve a Performance Degradation Over Time
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A system that works fine on day 1 but degrades over weeks is a classic DBA
+problem. The root cause is often not a sudden change but an accumulation
+of work (dead tuples, stale statistics, bloat). You must diagnose this
+systematically without being given the answer.
+ 
+SCENARIO
+A database that has been running for 6 weeks is now taking 3x longer to
+complete the same nightly batch job. Nothing obvious changed in the application.
+You have until tomorrow morning to fix it.
+ 
+YOUR TASK (Diagnose independently)
+1. Rule in/out each of these potential causes:
+   - Stale statistics (when was ANALYZE last run on key tables?)
+   - Table/index bloat (dead tuples, missing VACUUM)
+   - Growing table size (is the data actually larger now?)
+   - Slow query plans changing (EXPLAIN the slow queries)
+   - Lock contention on specific tables
+   - Disk I/O bottleneck or cache hit ratio degradation
+ 
+2. For the top 5 slowest queries, capture EXPLAIN ANALYZE output
+   and compare row estimates to actual rows — are estimates wrong?
+ 
+3. Check autovacuum activity — is it running often enough?
+ 
+4. Identify the root cause and execute a fix:
+   - If stale stats: run ANALYZE and re-test query performance
+   - If bloat: VACUUM (or VACUUM FULL if >50% dead tuples)
+   - If bad query plan: check if it's a planning bug or data distribution
+ 
+5. Implement a permanent monitoring solution to catch this earlier next time.
+ 
+SAFETY
+Risk: Medium
+VACUUM FULL locks tables and requires exclusive access. Perform during
+a maintenance window. Regular VACUUM is safe anytime.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Performance degradation triage — systematic root cause identification
+ 
+REVIEW QUESTION
+You find that the 6-week-old table now has 60% dead tuples, yet autovacuum
+appears to have run multiple times. What configuration issue could cause
+autovacuum to run but still leave that much bloat, and what parameter
+would you adjust?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 5 of est. ~12 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Plan and Execute a Controlled Restart During Business Hours
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Sometimes a restart is unavoidable — a critical parameter needs changing, or
+a corrupted shared buffer cache must be cleared. A DBA must be able to restart
+PostgreSQL with MINIMAL application disruption, not a full outage.
+ 
+SCENARIO
+A critical parameter (max_connections, shared_buffers) must be changed
+during business hours. You cannot wait for the scheduled 2 AM maintenance
+window. You have 1 hour to perform the restart with <5 minutes of downtime.
+ 
+YOUR TASK (Plan and execute)
+1. Pre-restart coordination:
+   - Notify the application team when you will restart and how long it will take
+   - Disable automated alerts/monitoring that might trigger false alarms
+   - Confirm a backup was taken in the last 24 hours
+   - Have a rollback plan (what if something goes wrong?)
+ 
+2. Create a checklist of validation steps you will perform IMMEDIATELY
+   after restart completes:
+   - Instance online and accepting connections?
+   - All databases accessible?
+   - Replication (if any) re-synced?
+   - First slow query executes correctly?
+   - No errors in the server log?
+ 
+3. Execute the restart:
+   - Make the configuration change
+   - Use pg_ctlcluster stop --mode fast (not immediate)
+   - Verify it is stopped (wait for postmaster PID to disappear)
+   - Start it back up
+   - Measure and record the startup time
+ 
+4. Run your validation checklist immediately after startup.
+ 
+5. Document:
+   - Reason for restart
+   - Start time, stop time, restart duration
+   - Any issues encountered
+   - Verification steps taken
+   - Time when full availability was restored
+ 
+SAFETY
+Risk: Medium
+A restart disconnects ALL sessions. Coordinating with the application team
+is essential. A fast stop is safer than immediate — it allows in-flight
+transactions to finish before shutdown.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Controlled restart execution — planning, coordination, validation under time pressure
+ 
+REVIEW QUESTION
+After your restart completes, the instance comes online but applications
+report "connection refused" for 30 seconds, then connections succeed.
+What is most likely happening during those 30 seconds, and is this normal?
+What monitoring alert would you want to suppress during this window?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 6 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Diagnose Unexplained Slow Queries and Build a Query Optimization Plan
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Slow queries are the #1 performance complaint users report. A DBA must be able
+to identify which queries are slow (not just guess), prove it with data, and
+recommend optimizations — or escalate intelligently to the development team.
+ 
+SCENARIO
+Users report "the system is slow" but cannot point to a specific feature.
+You have pg_stat_statements enabled. You need to identify the actual slow
+queries, quantify the impact, and recommend fixes.
+ 
+YOUR TASK (No guidance — use your operational knowledge)
+1. Use pg_stat_statements to answer:
+   - Which queries consume the MOST total time? (Biggest system impact)
+   - Which queries have the WORST average latency? (Worst user experience)
+   - Which queries perform the MOST disk I/O? (Storage stress)
+ 
+2. For each of the top 3 slow queries:
+   - Run EXPLAIN ANALYZE and interpret the plan
+   - Check if row estimates match actual rows (stale stats?)
+   - Identify if it is using indexes or doing full table scans
+   - Calculate the I/O cost (shared_blks_read) relative to hit rate
+ 
+3. For each slow query, propose ONE optimization:
+   - Missing index?
+   - Query rewrite (join order, WHERE clause)?
+   - Stale statistics (need ANALYZE)?
+   - Table design issue (denormalization needed)?
+   - Application cache opportunity?
+ 
+4. Test your proposed optimization on a copy of the data:
+   - Create the index (CONCURRENTLY)
+   - Re-run EXPLAIN ANALYZE
+   - Measure the improvement
+   - Calculate the storage cost of the index
+ 
+5. Prepare a recommendation:
+   - Which optimization would have the MOST impact?
+   - What is the risk/effort to implement?
+   - What monitoring would prove the optimization worked?
+ 
+SAFETY
+Risk: Low
+EXPLAIN ANALYZE always executes the query (but doesn't modify data for SELECT).
+Testing on a copy of data is safe. CREATE INDEX CONCURRENTLY does not lock.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Slow query diagnosis and optimization planning — data-driven recommendations
+ 
+REVIEW QUESTION
+You identify a slow query but find it is hitting indexes efficiently and
+row estimates are accurate. EXPLAIN shows it is CPU-bound, not I/O-bound.
+There is no obvious missing index. What would your next investigation steps
+be, and when would you escalate this to the development team?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 7 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Implement a High-Availability Instance Configuration
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A single PostgreSQL server is not "highly available." A DBA at the operational
+level must understand streaming replication architecture and be able to set
+up a primary + standby pair with automatic failover capability (or manual
+failover at minimum).
+ 
+SCENARIO
+You are asked to design HA for an existing single-instance PostgreSQL database.
+Requirements:
+- RTO < 5 minutes (failover time acceptable)
+- RPO < 1 hour (loss of 1 hour of data unacceptable)
+- Automatic failover is desired but manual is acceptable
+ 
+Your current instance: 15.5, 200GB data, 100 TPS sustained load
+ 
+YOUR TASK (Design then implement)
+1. Architecture decision:
+   - Will you use streaming replication or logical replication? Why?
+   - Synchronous or asynchronous replication? Tradeoffs?
+   - Where will the standby server be located? (physical or cloud)
+   - Will you use a failover manager (pg_auto_failover, Patroni) or manual?
+ 
+2. For your chosen architecture, document:
+   - Primary PostgreSQL configuration needed
+   - Standby PostgreSQL configuration
+   - WAL archiving requirements
+   - Network assumptions (how do primary/standby communicate?)
+   - DNS failover strategy (if using one)
+ 
+3. Implement the configuration (simulate with two instances on your
+   training server, or document the steps):
+   - Set up WAL archiving on primary
+   - Configure primary for replication (wal_level, max_wal_senders)
+   - Take a pg_basebackup for the standby
+   - Start the standby and verify replication begins
+   - Monitor pg_stat_replication on the primary
+   - Monitor pg_stat_wal_receiver on the standby
+ 
+4. Test a planned failover:
+   - Promote the standby to primary
+   - Verify the new primary accepts writes
+   - Document the failover time and any data loss
+   - Consider: Can you switch back to the original primary? How?
+ 
+5. Create a failover runbook documenting:
+   - How to detect the primary is down
+   - How to promote the standby
+   - How to communicate the failover to applications
+   - How to rebuild the failed primary as a new standby
+ 
+SAFETY
+Risk: Medium
+Replication setup requires careful coordination of WAL, recovery.conf, and
+standby_mode. Test thoroughly on non-production servers first.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : HA architecture design and implementation — replication setup and failover
+ 
+REVIEW QUESTION
+After promoting the standby to primary, the original primary comes back
+online and still has its recovery.conf file. What happens if someone
+reconnects it to the new primary? What safeguard would you put in place
+to prevent accidental dual-primary problems?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 8 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build a Comprehensive Monitoring and Alerting Strategy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A DBA at L3 cannot rely on ad-hoc monitoring. You must build a proactive
+system that warns you of problems BEFORE users notice. This requires
+threshold-based alerting on key metrics and a clear escalation path.
+ 
+SCENARIO
+You are building the monitoring infrastructure for a production PostgreSQL
+instance. You need to identify:
+- Which metrics matter most?
+- What thresholds warrant an alert?
+- How will alerts be delivered (email, Slack, PagerDuty)?
+- How will you prevent alert fatigue (too many false positives)?
+ 
+YOUR TASK (Design and partially implement)
+1. Identify 15-20 key metrics to monitor. For each, define:
+   - The metric name
+   - Why it matters
+   - The WARNING threshold
+   - The CRITICAL threshold
+   - What the alert should SAY (actionable, not cryptic)
+ 
+   Examples:
+   - Cache hit ratio < 95% → WARNING
+   - Cache hit ratio < 90% → CRITICAL
+   - Connection count > 80% of max → WARNING
+   - Connection count = max → CRITICAL
+   - Replication lag > 5 min → WARNING
+   - Replication lag > 30 min → CRITICAL
+   - Backup age > 26 hours → WARNING
+   - XID wraparound age > 1.5 billion → CRITICAL
+ 
+2. Write a monitoring SQL script that runs these checks and outputs
+   in a format suitable for parsing (JSON or CSV):
+   - Metric name
+   - Current value
+   - Threshold
+   - Status (OK / WARNING / CRITICAL)
+ 
+3. Build a simple wrapper script that:
+   - Runs the monitoring SQL
+   - Parses the output
+   - Sends email/log alerts for anything > OK
+   - Includes the metric value and recommendation in the alert
+ 
+4. Schedule the monitoring script to run every 5 minutes via cron.
+ 
+5. Create a runbook for each alert type:
+   - What does this metric mean?
+   - What are the common causes?
+   - What immediate action should the on-call person take?
+   - When to escalate to the application team vs DBA team?
+ 
+SAFETY
+Risk: Low
+Monitoring is observation-only. Alerts only notify — they don't change the
+system unless you explicitly build corrective actions (which should be rare).
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Monitoring architecture — metric selection, threshold tuning, alert design
+ 
+REVIEW QUESTION
+You have 5 CRITICAL alerts that fire simultaneously at 3 AM:
+- Cache hit ratio < 80%
+- Replication lag 45 minutes
+- Backup failed
+- WAL archiving failed
+- Connections maxed
+All happened at the same time. What is the ONE first thing you would
+check that might be the ROOT CAUSE of all of them?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 9 of est. ~12 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Respond to a Critical Incident — Disk Space Running Out
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+One of the most severe incidents a DBA handles is "disk full." Writes fail,
+replication breaks, backups are impossible. You must be able to diagnose
+where space is being consumed and take emergency action to free space without
+data loss or corruption.
+ 
+SCENARIO
+Alert fires at 3:15 AM: "PostgreSQL disk usage 98%!"
+You have <30 minutes of writes left before the filesystem fills completely
+and PostgreSQL becomes read-only.
+ 
+Root causes could be:
+- pg_wal directory is huge (archiving failed)
+- A table grew unexpectedly (runaway inserts)
+- Backups are stacking up and not being cleaned (rotation broken)
+- Log files are not rotating (log_rotation misconfigured)
+- Core dumps from a crash
+ 
+YOUR TASK (Diagnose and respond without guidance)
+1. Immediately establish what is taking disk space:
+   - du -sh on each major directory under /var/lib/postgresql/
+   - du -sh on /var/log/postgresql/
+   - Is it pg_wal? Backups? Data files? Logs?
+ 
+2. Based on what you find, take the appropriate emergency action:
+   - If pg_wal is full → WAL archiving failed; move or delete old WAL?
+   - If backups are stacking → manually delete old backups
+   - If logs are huge → truncate or compress them
+   - If a table grew → investigate the insert source (is it still running?)
+ 
+3. Understand the consequences of each action:
+   - Deleting WAL files that haven't been archived = potential RPO loss
+   - Compressing logs = lose forensic detail from old logs
+   - Can you delete backups safely?
+ 
+4. Make a decision and execute it.
+ 
+5. Verify:
+   - Disk usage dropped enough to buy time
+   - PostgreSQL is still running and accepts writes
+   - No data corruption is evident
+ 
+6. Post-incident (after the crisis is over):
+   - Root cause analysis: WHY did this happen?
+   - Configuration fix: Set up proper log rotation, WAL archiving
+   - Process fix: Add disk utilization monitoring before it hits 98%
+   - Storage planning: Calculate growth rate and estimate when you'll outgrow the current disk
+ 
+SAFETY
+Risk: CRITICAL
+Deleting the wrong files can cause permanent data loss. Understand what each
+file is BEFORE you delete it. When in doubt, ask for help or take a backup first.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Emergency incident response — rapid diagnosis and corrective action under pressure
+ 
+REVIEW QUESTION
+During the incident, you need to delete 50GB of old backups to buy time.
+However, your backup retention policy says "keep 30 days" and the oldest
+backup is only 10 days old. Do you delete them anyway? Explain your decision
+and what you would want in your documented incident response procedure.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 10 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Plan and Execute a Major Version Upgrade (e.g., 14 → 15)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Major version upgrades (14 to 15, 15 to 16) require pg_upgrade, which is
+more complex than minor version updates. A DBA must plan carefully, test
+thoroughly, and have a rollback strategy. This is often the most stressful
+task a DBA performs.
+ 
+SCENARIO
+PostgreSQL 14 is in production. PostgreSQL 15 is available. You need to upgrade
+with minimal downtime (ideally < 2 hours). The database is 500GB.
+ 
+YOUR TASK (Plan thoroughly before executing)
+1. Pre-upgrade research and testing:
+   - Read the PostgreSQL 15 release notes — are there breaking changes
+     that affect your application?
+   - Install PostgreSQL 15 binaries on a test system
+   - Test pg_upgrade on a copy of your database (practice run)
+   - Time the practice upgrade — how long will 500GB take?
+   - Identify any extensions that need special handling
+ 
+2. Create a detailed upgrade plan including:
+   - Exact commands and timing (will take 1-3 hours)
+   - Rollback steps (how do you revert if something goes wrong?)
+   - Communication plan (notify users, application team)
+   - Validation steps (what must pass before you declare success?)
+   - Who is available if something fails at 2 AM?
+ 
+3. Perform the upgrade:
+   - Take a full backup of the old cluster
+   - Run pg_upgrade (it is parallelizable for faster speed)
+   - Run the analyze script pg_upgrade created
+   - Perform detailed validation
+ 
+4. Validation checklist (EVERYTHING must pass before declaring victory):
+   - All databases accessible?
+   - Data integrity check (SELECT count(*) on large tables matches)
+   - Replication re-established (if any standby)?
+   - Backups working?
+   - Scheduled jobs (cron) still executing correctly?
+   - Application team confirms their functionality tests pass?
+   - Performance is not degraded (compare EXPLAIN plans before/after)?
+ 
+5. Post-upgrade maintenance:
+   - Delete the old cluster files (after confirmations pass)
+   - Document the upgrade in your change log
+   - Update documentation for the new version
+   - Plan next: When will you upgrade 15 to 16?
+ 
+SAFETY
+Risk: CRITICAL
+pg_upgrade is a complex operation. A failed upgrade can require starting over.
+Test on a copy first. Have a rollback plan (go back to the old cluster, then
+retry the upgrade). ALWAYS have a recent full backup.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Major version upgrade — planning, execution, validation, rollback readiness
+ 
+REVIEW QUESTION
+During pg_upgrade, an extension fails to upgrade with "ERROR: required
+extension version 2.5 does not exist." You are 45 minutes into the upgrade
+of a 500GB database. Do you continue or rollback? What is the impact of
+each choice?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 11 of est. ~12 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Audit and Harden a Legacy PostgreSQL Instance
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+You will often inherit poorly configured PostgreSQL servers. A DBA must be
+able to audit the current state, identify risks, and create a roadmap to
+harden the instance without disrupting operations.
+ 
+SCENARIO
+You inherit a PostgreSQL 14 instance that has been running for 3 years with
+minimal DBA oversight. You need to audit it, identify risks, and propose
+remediation steps.
+ 
+YOUR TASK (Complete security and operational audit)
+1. Audit checklist (run systematically, document findings):
+ 
+   SECURITY:
+   - How many superuser roles exist? Are they justified?
+   - Are any roles still using MD5 passwords?
+   - Is listen_addresses set to '*' or restricted?
+   - Are pg_hba.conf rules as strict as they should be?
+   - Is SSL enabled? Is it enforced?
+   - Is PUBLIC granted dangerous privileges?
+   - Are there any SECURITY DEFINER functions?
+ 
+   OPERATIONS:
+   - Is autovacuum enabled and appropriately tuned?
+   - When was the last ANALYZE on each database?
+   - Are there tables with >30% dead tuples?
+   - Is WAL archiving working?
+   - When were backups last taken and tested?
+   - What is the current XID wraparound risk?
+   - Is disk usage trending toward full?
+ 
+   MONITORING:
+   - Is pg_stat_statements installed and useful?
+   - What metrics are currently monitored?
+   - Are alerts configured and tested?
+ 
+2. For each finding, assign a severity (Low / Medium / High / Critical).
+ 
+3. Create a remediation plan with estimated effort for each:
+   - Which fixes are quick (< 1 hour)?
+   - Which require a maintenance window?
+   - Which require application team coordination?
+ 
+4. Implement the top 3 High/Critical fixes.
+ 
+5. Document a 6-month roadmap for remaining improvements.
+ 
+SAFETY
+Risk: Medium
+Hardening changes (especially password hashing, SSL enforcement) can lock
+users out. Always test on a copy first and have a rollback plan.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Legacy system audit and hardening roadmap — risk-based prioritization
+ 
+REVIEW QUESTION
+During your audit, you find that MD5 password hashing is still in use and
+there is no SSL enabled. You need to harden both during a maintenance window.
+What is the correct order to make these changes to avoid locking users out?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L3/10 — Operational
+TASK   : 12 of est. ~12 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Perform Capacity Planning and Growth Rate Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A DBA is responsible for ensuring the database has adequate resources for
+current and near-future workloads. Capacity planning is not guesswork — it
+is data-driven forecasting based on historical growth patterns.
+ 
+SCENARIO
+Your CFO asks: "How much will we spend on PostgreSQL storage next year?"
+You need to provide a data-backed answer, not a guess. You have 12 months
+of historical data.
+ 
+YOUR TASK (Analyze growth, project future needs)
+1. Gather historical data:
+   - Database size over the last 12 months (monthly snapshots)
+   - Per-database size breakdown
+   - WAL volume per day (from archiving or pg_stat_archiver)
+   - Backup size and frequency
+   - User/transaction growth rate
+ 
+2. Calculate growth rates:
+   - Is growth linear or exponential?
+   - Is growth constant or seasonal?
+   - Which databases are growing fastest?
+   - What is the WAL generation rate trend?
+ 
+3. Project forward:
+   - At current growth rate, when will you run out of disk?
+   - What are the costs of adding storage?
+   - What is the impact of storage on backup/recovery time?
+   - Should you plan for compression, archival, or sharding?
+ 
+4. Analyze resource consumption:
+   - How much RAM and CPU are being used?
+   - Is there headroom for load spikes?
+   - How does this compare to the provisioned resources?
+ 
+5. Create a capacity report including:
+   - Historical growth charts
+   - Projections for next 12, 24, 36 months
+   - Recommendations for resource upgrades
+   - Cost estimates for each scenario
+   - Timeline for when action is needed (e.g., "increase disk by Q3 2025")
+ 
+6. Document assumptions:
+   - What growth rate are you assuming?
+   - What would cause the projection to be wrong?
+   - How often should this analysis be updated?
+ 
+SAFETY
+Risk: None
+This is analysis and planning — no changes to the system.
+ 
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Capacity planning and forecasting — data-driven infrastructure decisions
+ 
+REVIEW QUESTION
+Your analysis shows 18 months until disk is full at current growth rate.
+However, you notice the growth rate is actually accelerating (Q1 was 10GB,
+Q2 was 15GB, Q3 was 22GB). How would you model this in your projections,
+and what confidence level would you assign to your forecast?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+[ AREA 1 — ALL L3 TASKS COMPLETE ]
 ================================================================================
-
-AREA 1 — DATABASE SERVER / INSTANCE (12 tasks)
-Connection pool exhaustion diagnosis | Parameter tuning | Minor/major upgrades
-Performance degradation triage | Controlled restarts | Slow query optimization
-HA architecture design | Monitoring strategy | Disk space emergency | XID wraparound
-Legacy hardening | Capacity planning
-
-AREA 2 — DATABASE PROVISIONING (10 tasks)
-Provisioning governance | Zero-downtime migration | Multi-tenant design
-Full lifecycle management | Creation troubleshooting | Naming standards
-Privilege escalation management | Self-service system design | Consolidation planning
-Enterprise onboarding pipeline
-
-AREA 3 — SECURITY (10 tasks)
-Breach response | Access control audits | Encryption implementation | Compliance violations
-Audit trail forensics | Privilege abuse detection | Network security hardening
-Secret rotation | Role consolidation | Incident investigation
-
-AREA 4 — DATA MANAGEMENT (12 tasks)
-Data corruption diagnosis | PITR with partial data loss | Restore failure recovery
-Backup failure investigation | Data validation | Large table migrations
-Tablespace management | Replication lag incident | Partition strategy design
-Data archival | Disaster recovery drill | Compliance data retention
-
-AREA 5 — PERFORMANCE & MONITORING (13 tasks)
-Query plan regression diagnosis | Index bloat and rebuild | Deadlock prevention
-Memory pressure incident | I/O bottleneck diagnosis | Connection pooler tuning
-Query result caching | Workload characterization | Alert fatigue reduction
-Workload migration | Performance baseline changes | Real-time metrics analysis
-
-AREA 6 — MAINTENANCE & COMPLIANCE (11 tasks)
-Backup corruption recovery | PITR procedure testing | Compliance audit response
-Change management process | Scheduled maintenance execution | Incident postmortem
-Disaster recovery drill | Service level agreement tuning | License compliance
-Audit log retention | Data retention policy enforcement
-
-================================================================================
-AREAS 1-2 TASK DETAILS
-================================================================================
-
-[Areas 1-2 content truncated — see DBA_Training_L3_All_Areas_Part1.txt for 
- the 22 complete tasks covering Instance Management and Database Provisioning]
-
-================================================================================
-
-
+ 
+ 
+ 
+ 
+████████████████████████████████████████████████████████████████████████████████
+   AREA 2 — DATABASE PROVISIONING
+   Level 3 — Operational (~10 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 1 of est. ~10 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Evaluate a Database Provisioning Request and Execute It With Governance
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A DBA at L3 does not just provision on-demand. You evaluate requests against
+organizational policy, ask clarifying questions, and sometimes push back.
+You understand the downstream implications (backup costs, security risks,
+storage growth) of every database you create.
+ 
+SCENARIO
+A business unit submits a provisioning request:
+"Need a new PostgreSQL database for a customer reporting application.
+150GB initial data, expecting 50% monthly growth. 50 concurrent users.
+Expected to run 2 years."
+ 
+YOUR TASK (Evaluate and provision)
+1. Clarify the requirements by asking smart questions:
+   - Is 50 concurrent users realistic or a worst-case?
+   - Why 50% monthly growth? Is this sustainable?
+   - What is the RPO/RTO requirement?
+   - What compliance/regulatory requirements apply (PII, GDPR, HIPAA)?
+   - Who owns this database (for access control)?
+   - What is the estimated cost if they truly need the resources they're asking for?
+ 
+2. Capacity planning assessment:
+   - At 50% monthly growth, calculate storage needed for 24 months
+   - Calculate backup disk/cost for that period
+   - Assess if this growth pattern is realistic or needs to be challenged
+ 
+3. Design the provisioning:
+   - Create dedicated role(s) for this application
+   - Create the database with appropriate settings
+   - Set up schema and default privileges
+   - Configure pg_hba.conf for network access
+   - Set up replication if required
+ 
+4. Document a deployment checklist:
+   - Database created? ✓
+   - Roles and users created? ✓
+   - Backups scheduled and tested? ✓
+   - Monitoring/alerting configured? ✓
+   - Application team provided connection string and security requirements? ✓
+ 
+5. Provide the application team with:
+   - Connection string
+   - Credentials (via secure channel, never plain text)
+   - Backup/recovery expectations
+   - Support hours and escalation path
+ 
+SAFETY
+Risk: Low
+Database provisioning is a normal operation. Governance and questioning
+prevents costly mistakes (over-provisioning, under-securing).
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Provisioning governance — requirements clarification, capacity assessment, delivery
+ 
+REVIEW QUESTION
+You calculate that at 50% monthly growth, this database will exceed 2TB
+in 24 months. The organization only has 1.5TB available for PostgreSQL.
+You flag this to the business unit. They say "we'll deal with it later."
+What do you do? Accept their risk or escalate? Why?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 2 of est. ~10 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Migrate a Database Between Servers With Zero Downtime
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Eventually, a database needs to move — to a better server, different cloud,
+or decommissioned hardware. A DBA must perform this move with ZERO downtime
+using logical replication or physical backup methods.
+ 
+SCENARIO
+Database "appdb" (100GB) must move from an old physical server to a new
+server in the cloud. Applications cannot tolerate downtime. You have a
+maintenance window of 5 minutes for the final cutover.
+ 
+YOUR TASK (Plan and execute zero-downtime migration)
+1. Choose your migration method:
+   - pg_basebackup + WAL streaming (physical) — fastest
+   - pg_dump + pg_restore (logical) — compatible with version differences
+   - Logical replication (publication/subscription) — true zero-downtime
+   Justify your choice based on the scenario.
+ 
+2. For logical replication (the zero-downtime approach):
+   - Create a publication on the source for all tables
+   - Create a subscription on the target
+   - Wait for replication to catch up (may take hours for 100GB)
+   - Monitor replication lag until it approaches zero
+   - During the maintenance window:
+     * Pause the application
+     * Wait for replication lag to be zero
+     * Confirm data match between source and target (row counts)
+     * Update the application connection string to the new server
+     * Resume the application
+     * Monitor for errors
+ 
+3. For physical backup approach (if logical replication is not suitable):
+   - Take a pg_basebackup on the target
+   - Start the standby in recovery mode
+   - Stream WAL from source to target
+   - When WAL is caught up, promote the standby
+   - During the maintenance window:
+     * Stop the application
+     * Verify WAL is fully replayed on the target
+     * Redirect application to the new server
+     * Resume the application
+ 
+4. Validate the migration:
+   - All databases, schemas, tables present on the new server?
+   - Data integrity checks (row counts, checksums)?
+   - Replication lag is zero or acceptable?
+   - Backups working on the new server?
+   - Monitoring and alerts configured on the new server?
+ 
+5. Post-migration:
+   - Decommission the old server (or keep as a warm standby for a period)
+   - Update documentation
+   - Document the migration steps for next time
+ 
+SAFETY
+Risk: Medium
+Zero-downtime migration is complex. Test the entire procedure on a copy
+first. Have a rollback plan (revert the application connection string).
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Zero-downtime database migration — method selection and execution
+ 
+REVIEW QUESTION
+During the migration cutover, you discover the target server is still 50GB
+behind in WAL replay. The maintenance window is half-way through. Do you
+wait for it to catch up (extending the downtime window), or promote it
+now with the 50GB delta? Explain your decision and the risks.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 3 of est. ~10 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Implement Multi-Tenant Database Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Multi-tenant systems (SaaS) require careful schema and security design.
+A DBA must understand the isolation and performance implications of different
+approaches: separate databases vs shared database + row-level security.
+ 
+SCENARIO
+You are building a SaaS platform with 1,000+ customers. Each customer's
+data must be isolated and secure. Design the database architecture.
+ 
+YOUR TASK (Design and implement)
+1. Evaluate the three common approaches:
+ 
+   Option A: One database per tenant
+   - Pros: Strong isolation, easy backups per tenant
+   - Cons: Many databases to manage, overhead
+ 
+   Option B: Shared database, separate schema per tenant
+   - Pros: Fewer databases, better resource sharing
+   - Cons: Complex role management
+ 
+   Option C: Shared database/schema, row-level security
+   - Pros: Simplest to manage, elastic scaling
+   - Cons: Complex application logic, performance overhead
+ 
+   Choose one and justify it for a 1,000+ customer SaaS.
+ 
+2. Design the access control for your chosen approach:
+   - How do you prevent Tenant A from seeing Tenant B's data?
+   - How do you manage credentials (one password per tenant)?
+   - How do you grant reporting access without breaking isolation?
+ 
+3. Implement for 3 test tenants:
+   - Create the database structure
+   - Set up roles and privileges per your design
+   - Load sample data for each tenant
+   - Write a query that proves isolation works (Tenant 1 cannot see Tenant 2 data)
+ 
+4. Design a backup and restore strategy:
+   - Can you restore Tenant B without affecting Tenant A?
+   - What if Tenant B data is corrupted — can you restore just their data?
+   - Is your approach testable (can you test restore without hitting production)?
+ 
+5. Design a migration strategy:
+   - How do you add a new tenant to the system?
+   - How do you decommission a tenant (without affecting others)?
+   - How do you move a tenant from one database to another?
+ 
+SAFETY
+Risk: Medium
+Multi-tenant security is critical. A misconfiguration could expose one
+tenant's data to another. Test thoroughly before going live.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Multi-tenant architecture design — isolation, security, operations
+ 
+REVIEW QUESTION
+You chose Option C (shared database, row-level security). During a crisis,
+a customer's password is compromised. Can they access only their own data
+with their password, or is the RLS policy your only defense? What
+additional security controls would you implement?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 4 of est. ~10 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Manage the Full Lifecycle of a Database From Provisioning to Deprovisioning
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A DBA's job doesn't end at creation. You must support a database through its
+entire lifecycle: initial provisioning, growth management, performance
+optimization, and eventual retirement. This task exercises the complete cycle.
+ 
+SCENARIO
+Manage a "project database" through its complete lifecycle:
+- Week 1: Provision for a new project
+- Weeks 2-8: Manage growth and performance
+- Week 9: Project ends; secure data, plan deprovisioning
+- Week 10: Decommission, ensuring compliance with data retention
+ 
+YOUR TASK (Simulate a 10-week lifecycle)
+1. WEEK 1 — Provision:
+   - Create the database with appropriate settings
+   - Set up roles, schemas, access control
+   - Configure backups
+   - Set up monitoring
+ 
+2. WEEKS 2-8 — Growth Management:
+   - Simulate data growth (INSERT sample data weekly)
+   - Monitor table sizes, growth trends
+   - Analyze growth: is it linear? Sustainable?
+   - Address performance as the database grows
+   - Manage bloat (run VACUUM as needed)
+   - Analyze and adjust access control as team membership changes
+ 
+3. WEEK 8 — Project Review:
+   - Assess whether the database is still meeting requirements
+   - Have requirements changed? (storage, users, performance)
+   - Document lessons learned about capacity planning
+ 
+4. WEEK 9 — End of Project:
+   - Retain the data per compliance requirements (e.g., 7 years for financial)
+   - Create a final archival backup (move to cold storage if possible)
+   - Disable write access (convert to read-only or read-archive)
+   - Revoke active user access
+   - Document the database state for future audit
+ 
+5. WEEK 10 — Deprovisioning:
+   - If retention period expired: DROP DATABASE
+   - Otherwise: Archive the database (backup to tape/S3, drop from active server)
+   - Confirm deletion from backups and logs
+   - Document the deprovisioning in change logs
+ 
+6. Post-lifecycle lessons:
+   - What would you do differently next time?
+   - Did your capacity planning prove accurate?
+   - Were there surprises in growth, performance, or access control?
+ 
+SAFETY
+Risk: Medium
+Deprovisioning is irreversible. Confirm retention requirements BEFORE dropping.
+Archive data per legal/compliance requirements before deletion.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Database lifecycle management — provisioning through deprovisioning
+ 
+REVIEW QUESTION
+Six months after deprovisioning, your compliance officer asks "prove we
+deleted customer data from the project database." How do you respond, and
+what documentation/process would prevent this question from catching you off-guard?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 5 of est. ~10 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Troubleshoot Database Creation Failures and Root Cause Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Not every CREATE DATABASE succeeds. A DBA must be able to diagnose why and
+fix the root cause, not just retry. Common issues: insufficient disk space,
+template database problem, role permissions, encoding mismatches.
+ 
+SCENARIO
+A developer asks you to create a new database. The first attempt fails with
+an error. You must diagnose why and fix it.
+ 
+YOUR TASK (Diagnose and resolve)
+1. Simulate a CREATE DATABASE failure (intentionally):
+   - Try to create a database with encoding that mismatches the system
+   - Try to create with a non-existent template
+   - Try to create with a non-existent owner role
+   - Try to create when disk space is nearly full (or very low)
+ 
+2. For each failure, capture the exact error message.
+ 
+3. For each error:
+   - Explain what caused it
+   - What would the user see? (cryptic error or clear message?)
+   - How would you fix it?
+   - How would you prevent it next time?
+ 
+4. Design a "database creation validation" checklist that DBAs follow
+   to prevent common mistakes:
+   - Owner role exists and is appropriate?
+   - Encoding is valid and compatible with locale?
+   - Template database exists and is appropriate?
+   - Sufficient disk space available?
+   - Sufficient connection slots available?
+ 
+5. Build a safe CREATE DATABASE script that validates these conditions
+   before executing the create (or exits with a clear error if validation fails).
+ 
+SAFETY
+Risk: Low
+Intentional failures in a training environment are safe. No data loss.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Database creation troubleshooting — error diagnosis and preventive checks
+ 
+REVIEW QUESTION
+A developer gets the error: "ERROR: permission denied to create database"
+when they try to CREATE DATABASE themselves. But their role has CREATEDB=true.
+What is the likely cause, and how would you fix it while maintaining
+appropriate access control?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 6 of est. ~10 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Establish and Enforce Database Naming Conventions and Standards
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+When a DBA manages 50+ databases, naming chaos causes confusion, prevents
+automation, and hides problems. Enforcing naming standards from day 1
+(via documentation and validation checks) is a best practice in mature DBAs.
+ 
+SCENARIO
+Your organization is starting to standardize PostgreSQL. You need to establish
+and document naming conventions for:
+- Database names
+- Role names
+- Schema names
+- Table naming (singular vs plural, prefix conventions)
+- Index naming
+ 
+YOUR TASK (Design and implement standards)
+1. Design naming conventions covering:
+   - Database names (format: [project]_[environment]_[function])
+     Examples: "analytics_prod_reporting", "api_dev_transactional"
+   - Role names (distinguish login users, group roles)
+     Examples: "app_readwrite_prod", "dba_admin", "analyst_readonly"
+   - Schema names (by team or function)
+     Examples: "public", "analytics", "security_audit"
+   - Table names (singular, snake_case, optionally prefixed)
+     Examples: "customer", "order_detail", "dim_date"
+   - Index names (descriptive and functional)
+     Examples: "idx_customer_email", "idx_order_created_date_status"
+ 
+2. Write a comprehensive style guide with examples, rationale, and exceptions.
+ 
+3. Create a validation script that checks existing databases against the
+   standard and reports non-compliant names.
+ 
+4. Apply the standard:
+   - Audit your existing databases — are they compliant?
+   - For non-compliant ones, create a remediation plan (rename or accept
+     as "legacy exception")
+   - Document any exceptions with justification
+ 
+5. Set up automation to catch violations:
+   - When someone tries to CREATE DATABASE with a non-compliant name,
+     stop them with a clear error message
+   - (This requires a DDL trigger or event trigger — demonstrate the concept)
+ 
+SAFETY
+Risk: Low
+Naming standard enforcement is advisory and corrective, not destructive.
+Renaming is reversible.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Standards and governance — naming conventions, enforcement, documentation
+ 
+REVIEW QUESTION
+A project team insists on naming their database "BIG_DATA_WAREHOUSE" (all caps,
+with underscores). Your standard says snake_case, lowercase. Do you enforce
+your standard strictly, or allow exceptions? How do you decide when exceptions
+are justified?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 7 of est. ~10 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Manage Privilege Escalation Requests and Approve Them Safely
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+A developer will eventually ask for elevated privileges ("I need SUPERUSER
+to debug a problem"). A DBA must be able to evaluate the request, approve
+the MINIMUM necessary privileges, and revoke them afterward.
+ 
+SCENARIO
+Three privilege requests come in:
+1. Developer needs SUPERUSER to debug a transaction isolation issue
+2. Analyst needs SELECT on all tables in a database (now has SELECT on none)
+3. Contractor needs INSERT/UPDATE on specific tables during a data migration
+ 
+YOUR TASK (Evaluate and grant appropriate privileges)
+1. For each request:
+   - Understand the actual business need (not what they asked for)
+   - Determine the MINIMUM necessary privilege to meet that need
+   - Evaluate the risk
+   - Determine the scope (temporary or permanent?)
+   - Decide: approve, approve with restrictions, or deny
+ 
+2. For Request 1 (SUPERUSER for debugging):
+   - Why is debugging transactions requiring SUPERUSER? Investigate.
+   - Is there a narrower privilege that would work? (e.g., CONNECT to the DB)
+   - If SUPERUSER is truly needed: limit it to a temporary role, set an expiry
+   - Document the specific issue being debugged
+ 
+3. For Request 2 (SELECT all tables):
+   - Grant SELECT on the schema(s), not all tables individually
+   - Use ALTER DEFAULT PRIVILEGES to handle future tables
+   - Consider: do they need to see ALL tables or just some? Narrow the scope.
+ 
+4. For Request 3 (INSERT/UPDATE for data migration):
+   - Create a temporary role valid for 2 weeks
+   - Grant only INSERT/UPDATE on the specific tables
+   - Set up logging to audit their activity during the migration
+   - Schedule automatic revocation when the migration ends
+ 
+5. Document a privilege request policy:
+   - What information must a requester provide?
+   - What is the approval process?
+   - How are temporary privileges tracked and revoked?
+   - How is abuse detected and prevented?
+ 
+SAFETY
+Risk: Medium
+Granting elevated privileges is a security risk. Approve minimally and audit.
+Always set expiry dates for temporary privileges.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Privilege governance — request evaluation, minimum necessary principle, auditing
+ 
+REVIEW QUESTION
+A contractor's temporary INSERT/UPDATE privilege is set to expire in 2 weeks.
+The day before expiry, they request a 1-week extension. Their manager
+confirms the migration is taking longer than expected. Do you grant it?
+What process would you put in place to handle these requests systematically?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 8 of est. ~10 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Self-Service Database Provisioning System (With Guardrails)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+As an organization grows, manual database provisioning becomes a bottleneck.
+A DBA at L3 should design (and partially implement) a self-service system
+that allows developers to provision databases WITHOUT the DBA becoming the
+blocker, while maintaining safety guardrails.
+ 
+SCENARIO
+Your organization gets 20+ provisioning requests per month. Manual DBA
+review is slowing down development. You need to design a system where
+developers can self-provision with appropriate guardrails.
+ 
+YOUR TASK (Design and implement)
+1. Design the system architecture:
+   - What information does a developer provide? (database name, owner, size estimate, etc.)
+   - What validation happens? (naming standard, owner exists, disk space available, etc.)
+   - What approval workflow exists? (auto-approve or require DBA sign-off?)
+   - How is provisioning executed? (script, API, web form?)
+   - How are failures handled? (clear error messages, audit trail)
+ 
+2. Define the guardrails:
+   - Max storage per database? (e.g., 500GB to prevent abuse)
+   - Max concurrent connections allowed?
+   - What features are auto-provisioned? (backups, monitoring, replication)
+   - What requires manual DBA configuration? (special security, performance tuning)
+ 
+3. Build a basic self-service script:
+   - Accepts input (database name, owner role, size estimate)
+   - Validates against standards and guardrails
+   - Executes the provision (creates role, database, schemas, sets privileges)
+   - Returns connection string and backup info
+   - Logs the action for audit trail
+ 
+4. Test the script with several scenarios:
+   - Valid request → provisioning succeeds
+   - Non-compliant database name → provisioning fails with helpful error
+   - Owner role doesn't exist → fails, suggests correct approach
+   - Exceeds max storage → fails, requests DBA approval
+ 
+5. Design the approval workflow:
+   - Who reviews out-of-policy requests?
+   - How are they tracked?
+   - What is the SLA for approval?
+   - How is the final provision triggered after approval?
+ 
+6. Plan the monitoring:
+   - Which provisioning requests happen?
+   - How many complete successfully?
+   - Which fail and why?
+   - Are there patterns of non-compliance?
+ 
+SAFETY
+Risk: Medium
+Self-service provisioning can create chaos if guardrails are weak. Test
+thoroughly. Have DBA oversight and audit trails mandatory.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Self-service infrastructure design — guardrails, approval workflows, automation
+ 
+REVIEW QUESTION
+A developer uses your self-service system to provision "test_db_1", tests it
+briefly, then abandons it. Six months later, it still exists, unused but
+consuming 200GB. How does your self-service system detect and handle this,
+and what approval is needed before deprovisioning an abandoned database?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 9 of est. ~10 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Plan a Database Consolidation Project (Reducing Total Databases)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+Many organizations end up with dozens of small, underutilized databases.
+A DBA should recognize this problem and design a consolidation project
+that reduces operational complexity while improving performance and cost.
+ 
+SCENARIO
+Your organization has 47 PostgreSQL databases, but many are small (<10GB)
+and underutilized. Your CFO wants to reduce the management burden and cost.
+You are asked to evaluate consolidation.
+ 
+YOUR TASK (Evaluate and plan)
+1. Analyze the current database portfolio:
+   - Size, growth rate, utilization (connections, transactions)
+   - Purpose (OLTP, reporting, archive, development)
+   - Ownership (which teams?)
+   - SLA/criticality
+ 
+2. Identify consolidation candidates:
+   - Small databases (<10GB) that are not critical
+   - Databases with similar purposes that could merge
+   - Development/test databases that could share infrastructure
+ 
+3. Design a consolidation strategy:
+   - Merge several small databases into one?
+   - Move some to a shared instance for development?
+   - Archive and decommission unused databases?
+ 
+4. For specific consolidation targets:
+   - Migration plan (zero-downtime or planned maintenance?)
+   - Application changes needed? (connection strings, role modifications)
+   - Risk assessment (what could go wrong?)
+   - Rollback plan (can you go back if consolidation breaks something?)
+ 
+5. Calculate the business case:
+   - Current cost: number of databases × per-DB cost
+   - Consolidated cost: fewer databases × per-DB cost, plus consolidation effort
+   - Cost savings over 1, 3, 5 years
+   - Risk quantification (is there a cost if consolidation fails?)
+ 
+6. Create a phased migration plan:
+   - Phase 1: Move non-critical dev/test databases
+   - Phase 2: Consolidate small staging databases
+   - Phase 3: Evaluate remaining candidates
+   - Phase 4: Post-consolidation: optimize the remaining fewer databases
+ 
+SAFETY
+Risk: Medium
+Database consolidation is complex and carries risk. Plan thoroughly, test on
+copies first, have rollback plans. Start with non-critical databases.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Database consolidation planning — analysis, business case, phased migration
+ 
+REVIEW QUESTION
+You propose consolidating 10 small development databases into 1 shared
+development database. The teams object: "We need separate databases to avoid
+stepping on each other's toes and for independent backups." How do you
+address their concerns while still achieving consolidation?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+ 
+ 
+ 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L3/10 — Operational
+TASK   : 10 of est. ~10 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build a Data Onboarding Pipeline for Enterprise Customers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 
+WHY THIS MATTERS
+In a SaaS or enterprise context, onboarding customers (which includes setting
+up their databases) is a repeatable, automated process. A DBA must understand
+this pipeline from initial order to live service, and design it to be
+scalable and error-resistant.
+ 
+SCENARIO
+Your company is expanding to handle enterprise customers. Each customer
+needs to onboard with their own database, schema, roles, and initial data.
+The onboarding process is currently manual and error-prone.
+ 
+YOUR TASK (Design and implement)
+1. Design the onboarding workflow:
+   - What information is collected from the customer? (company name, data size, users)
+   - What validation happens? (is the request reasonable? is the organization ready?)
+   - What automated steps execute? (database provisioning, role setup, data load)
+   - What manual steps exist? (customer config collection, final approval)
+   - What communications go to the customer? (welcome email, connection details, onboarding guide)
+ 
+2. Build an onboarding script that:
+   - Accepts customer configuration as input
+   - Validates it against constraints (naming, size limits, user limits)
+   - Creates the database, roles, schemas
+   - Seeds initial data if provided
+   - Configures backups and monitoring
+   - Outputs a "customer onboarding package" (connection string, user creds, docs)
+   - Logs all actions for audit
+ 
+3. Implement error handling:
+   - What happens if a customer name is invalid?
+   - What if disk space is insufficient?
+   - What if onboarding fails midway? (Rollback to clean state or manual recovery?)
+ 
+4. Design a status dashboard:
+   - Can you see which customers are onboarded and which are pending?
+   - Can you track the progress of an onboarding in progress?
+   - Can you see failures and why they happened?
+ 
+5. Test the complete flow:
+   - Onboard 3 test customers
+   - Verify each customer can connect with their credentials
+   - Verify data isolation (customer 1 cannot see customer 2 data)
+   - Simulate failure scenarios
+ 
+6. Document the onboarding SLA:
+   - How long should onboarding take? (target: < 1 hour from order to live)
+   - What is acceptable? (< 2 hours)
+   - What is unacceptable? (> 4 hours requires investigation)
+ 
+SAFETY
+Risk: Medium
+Onboarding automation must have strong safeguards. Errors affect customers.
+Test thoroughly. Have manual override and audit trail for all actions.
+ 
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Enterprise onboarding pipeline — automation, error handling, SLA management
+ 
+REVIEW QUESTION
+Your onboarding pipeline automatically creates a database, but the customer's
+data load (1TB) takes 6 hours instead of the expected 1 hour. Meanwhile,
+5 more customers are waiting in the queue. Do you wait for the first one
+to complete, or start the next customer's onboarding on a different
+PostgreSQL instance? What are the implications of each choice?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 ████████████████████████████████████████████████████████████████████████████████

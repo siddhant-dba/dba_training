@@ -3449,43 +3449,1798 @@ backups. The latest backup is 25 hours old (you have RPO of 1 hour violation).
 Who do you notify first? When do you tell them "we're recovering 25 hours
 of data loss"? What questions will they ask you should have answered?
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-[ AREA 4 — ALL L3 TASKS COMPLETE ]
 ================================================================================
-[Continuation with Areas 5-6 provided in final section...]
+         DBA TRAINING PROGRAM — LEVEL 3 (OPERATIONAL)
+         AREAS 5-6 COMPLETE DETAILED TASKS
+         PostgreSQL on Debian Linux
 ================================================================================
 
 ████████████████████████████████████████████████████████████████████████████████
-   AREA 5 — PERFORMANCE AND MONITORING (13 Tasks)
-   AREA 6 — MAINTENANCE AND COMPLIANCE (11 Tasks)
+   AREA 5 — PERFORMANCE AND MONITORING
+   Level 3 — Operational (~13 Tasks)
 ████████████████████████████████████████████████████████████████████████████████
 
-[Due to comprehensive file size, Areas 5-6 task details follow the same L3 
-operational pattern as Areas 1-4. Summary of tasks included:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 1 of est. ~13 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Diagnose and Recover From Query Plan Regression
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-AREA 5 (13 tasks): Query plan regression diagnosis | Index management | Deadlock
-prevention | Memory pressure incident | I/O bottleneck triage | Pooler tuning |
-Result caching | Workload characterization | Alert fatigue reduction | Workload
-migration | Performance baseline drift | Metrics stream analysis | Performance
-testing framework
+WHY THIS MATTERS
+A query that was fast yesterday is now slow today — the data hasn't changed,
+the query hasn't changed, but the plan did. This "plan regression" is insidious
+because it appears random. A DBA must diagnose why the planner chose a worse
+plan and force it back to the good one.
 
-AREA 6 (11 tasks): Backup corruption recovery | PITR procedure testing |
-Compliance audit response | Change management process | Maintenance execution |
-Postmortem procedures | DR drill execution | SLA tuning | License compliance |
-Audit log management | Data retention enforcement
+SCENARIO
+A frequently used reporting query (generates 10,000 rows) suddenly takes 10x
+longer (5 seconds to 50 seconds). The query hasn't been modified. No schema
+changes. But something changed the query plan.
 
-Each task contains:
-- Realistic scenario (1-3 paragraphs)
-- YOUR TASK (independent execution, no step-by-step)
-- SAFETY (risk assessment)
-- SKILL BUILT (learning outcome)
-- REVIEW QUESTION (understanding verification)
+YOUR TASK (Independent diagnosis and fix)
+1. Capture the current query plan:
+   - Run EXPLAIN ANALYZE on the slow query
+   - Compare to baseline (if you have it)
+   - Identify: Is it a different join method? Different index?
 
-Complete task descriptions for Areas 5-6 can be generated on request.]
+2. Investigate potential causes:
+   - Stale statistics: Run ANALYZE, re-plan the query. Did it improve?
+   - Changed settings: Did max_parallel_workers or random_page_cost change?
+   - Index removed or broken: Did an index disappear? Is it corrupted?
+   - Different parameter values: Are bind variables different now?
 
+3. Identify the bad plan vs good plan:
+   - If ANALYZE fixes it: statistics were stale (and autovacuum failed)
+   - If plan is still bad: force the planner to use a better plan
+   - Review indexes: are there missing indexes that would help?
+
+4. Implement a fix:
+   - Option A: Regular ANALYZE (if statistics are the culprit)
+   - Option B: CREATE INDEX on a missing column
+   - Option C: Use query hints (pg_hint_plan extension) or rewrite the query
+   - Option D: Adjust planner parameters (work_mem, random_page_cost)
+
+5. Verify the fix:
+   - Re-run EXPLAIN ANALYZE — is it using the good plan?
+   - Measure actual execution time — is it back to 5 seconds?
+   - Run the query 5 times — is it consistently fast?
+
+6. Prevent future regression:
+   - Increase autovacuum frequency (so statistics don't become stale)
+   - Set up pg_stat_statements monitoring for sudden slowdowns
+   - Document: why the regression happened and how you fixed it
+
+SAFETY
+Risk: Medium
+Query rewrites or index changes can have unintended consequences. Test
+thoroughly on a copy. Have a rollback plan (drop the new index, revert settings).
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Query plan regression diagnosis — statistics, planner decisions, remediation
+
+REVIEW QUESTION
+You fix the regression by running ANALYZE, and query speed returns to normal.
+But statistics were probably stale for hours before you noticed. What should
+have caught this earlier, and what would an automated alert look like?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 2 of est. ~13 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Identify and Rebuild Bloated Indexes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Indexes accumulate dead entries as underlying data is updated/deleted.
+A bloated index occupies more disk space, has more pages to scan, and
+harms query performance. A DBA must identify bloated indexes and rebuild
+them efficiently (without locking the table).
+
+SCENARIO
+You notice that certain queries have slowed down slightly. Disk space
+is being consumed more than expected. Analysis reveals several indexes
+are 50%+ bloat (dead entries, wasted space).
+
+YOUR TASK (Index bloat detection and remediation)
+1. Identify bloated indexes:
+   - Query pg_stat_user_indexes and compare size to expected size
+   - Check: are there unused indexes consuming space?
+   - Look for high ratio of pages scanned vs actual data (bloat indicator)
+
+2. Use pgstattuple to measure bloat precisely:
+   - Install the extension: CREATE EXTENSION pgstattuple;
+   - Measure index bloat: SELECT pgstattuple('index_name');
+   - Note: bloat percentage for each index
+
+3. Prioritize which to rebuild:
+   - High bloat (>40%) + frequently used = priority rebuild
+   - High bloat + rarely used = candidate for deletion
+   - Low bloat (<10%) = leave alone
+
+4. Rebuild indexes without locking:
+   - REINDEX INDEX CONCURRENTLY index_name;
+   - This creates a new index, swaps it in place, drops the old one
+   - No locks on the table during this process
+
+5. Verify the rebuild:
+   - Query pgstattuple again — bloat should be near 0%
+   - Query size should be significantly smaller
+   - Query performance on queries using this index
+
+6. Implement prevention:
+   - Monitor index bloat monthly
+   - Set up alerts if any index exceeds 30% bloat
+   - Adjust autovacuum parameters if indexes are bloating too fast
+
+SAFETY
+Risk: Low
+REINDEX INDEX CONCURRENTLY is safe. It does not lock the table for writes.
+The index is unavailable briefly during the swap, but that is transparent to users.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Index bloat detection and concurrent rebuild — pgstattuple, REINDEX
+
+REVIEW QUESTION
+You identify a 2GB index that is 60% bloat. Rebuilding it will free 1.2GB.
+However, it will take 2 hours (your instance is busy). The server has only
+3GB free disk. Can you rebuild this index? What are your options if you
+cannot wait for a maintenance window?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 3 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Diagnose and Prevent Deadlocks
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Deadlocks occur when two transactions lock resources in opposite order
+(Transaction A locks Row 1, wants Row 2; Transaction B locks Row 2, wants Row 1).
+PostgreSQL detects deadlocks and rolls back one transaction. A DBA must
+find deadlock patterns and help the application avoid them.
+
+SCENARIO
+Your application reports frequent deadlock errors (1-2 per hour). Users
+see "ERROR: deadlock detected" and have to retry their operations. You
+must find the root cause and prevent future deadlocks.
+
+YOUR TASK (Deadlock diagnosis and prevention)
+1. Find deadlock evidence in the log:
+   - Search for "deadlock" in PostgreSQL logs
+   - Extract: which queries were involved? Which tables?
+   - Note the pattern: are the same tables always involved?
+
+2. Understand the deadlock cycle:
+   - Each deadlock log entry shows: which query locked what, in what order
+   - Trace the cycle: Query A → Row 1 → wait for Row 2, Query B → Row 2 → wait for Row 1
+   - This is a classic deadlock pattern
+
+3. Identify the root cause:
+   - Is the application accessing tables in inconsistent order?
+   - Is there a long-running transaction holding locks unnecessarily?
+   - Are there missing indexes causing longer lock holds?
+
+4. Implement prevention:
+   - Option A: Enforce consistent lock order (application must always lock A before B)
+   - Option B: Reduce transaction duration (shorter transactions = fewer conflicts)
+   - Option C: Add indexes (faster queries = shorter lock holds)
+   - Option D: Use NOWAIT or SKIP LOCKED to fail fast instead of waiting
+
+5. Verify the fix:
+   - Monitor deadlock frequency — should drop to zero
+   - If not zero: deadlock pattern involves different tables or different order
+
+6. Document for the application team:
+   - What deadlock was happening
+   - Why it happened (inconsistent lock order)
+   - What the application should do differently
+   - Provide code example showing the correct order
+
+SAFETY
+Risk: Medium
+Deadlock fixes often require application changes. Coordinate with the
+development team. Some fixes (adding indexes) are DB-only and safe.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Deadlock investigation and prevention — lock cycle analysis, application coordination
+
+REVIEW QUESTION
+You identify deadlocks between the "orders" and "inventory" tables. The
+application always updates both tables together. Deadlocks happen intermittently.
+How would you ensure the application always locks in the same order?
+What is the advantage of explicit locking (SELECT FOR UPDATE) vs relying
+on implicit locking?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 4 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Respond to Memory Pressure and OOM (Out of Memory) Incident
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL is memory-intensive. A poorly tuned query (huge work_mem) or a
+connection spike can exhaust RAM. The system begins swapping, performance
+collapses. A DBA must quickly respond: kill processes, adjust parameters,
+or restart.
+
+SCENARIO
+At 3 PM, your monitoring alerts: "Available memory < 100MB" on the database
+server. Queries are timing out. The system is swapping heavily (iostat shows
+swap I/O). You need to restore functionality immediately.
+
+YOUR TASK (Memory incident response)
+1. Assess the situation immediately:
+   - How much swap is in use? (swapon --show, free -h)
+   - Is the server actually out of memory or just under pressure?
+   - Which process is using the most memory? (ps aux --sort=-%mem)
+
+2. Identify the culprit:
+   - Is it PostgreSQL itself? (shared_buffers too large?)
+   - Is it a runaway query? (huge work_mem allocation?)
+   - Is it a connection spike? (too many sessions, each with work_mem allocated?)
+
+3. Take emergency action:
+   - Option A: Kill the largest query:
+       SELECT pid FROM pg_stat_activity ORDER BY memory DESC LIMIT 1;
+       SELECT pg_terminate_backend(pid);
+   - Option B: Lower work_mem temporarily:
+       SET work_mem TO '1MB';  (default is probably 4MB, this is emergency mode)
+   - Option C: Restart PostgreSQL (nuclear option, causes downtime)
+   - Option D: Add swap or RAM (if possible in your infrastructure)
+
+4. Monitor recovery:
+   - Memory freed? Swap usage dropping?
+   - Queries executing normally again?
+   - No new errors in the log?
+
+5. Root cause analysis (after emergency):
+   - Why did memory get exhausted?
+   - Was there a valid reason (large sort operation)?
+   - Or a bug (misconfigured connection pooler opening too many connections)?
+   - Or a surprise spike in query complexity?
+
+6. Implement prevention:
+   - Add more RAM if this is a capacity issue
+   - Lower work_mem if it was over-allocated
+   - Set up connection pooling (limits total connections)
+   - Set up memory alerts at 70%, 80%, 90% thresholds
+
+SAFETY
+Risk: HIGH
+Memory exhaustion causes performance collapse and can lead to OS killing
+PostgreSQL processes (OOM killer). Respond urgently. Have a recovery plan.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Memory incident response — process identification, emergency mitigation
+
+REVIEW QUESTION
+You kill a 5GB query that was consuming all the memory. Memory is freed,
+but 10 other queries are now queued waiting to run. However, if they all
+run at full work_mem, you'll exhaust memory again. What do you do?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 5 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Diagnose and Resolve I/O Bottlenecks
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Disk I/O is often the true bottleneck — faster than memory to disk is not
+the same as "fast enough." A DBA must identify which tables/indexes cause
+the most I/O and optimize them (add indexes, improve queries, increase cache).
+
+SCENARIO
+Your database is hitting 100% disk utilization. Queries that should be fast
+are slow. The server has plenty of RAM (not swapping), plenty of CPU (not CPU-bound),
+but disk I/O is the constraint.
+
+YOUR TASK (I/O bottleneck diagnosis)
+1. Measure disk I/O:
+   - Run iostat -x 2 10 to watch disk utilization in real-time
+   - Note: which disk is busy? (sda, sdb?)
+   - Note: queue length, wait time, %util
+
+2. Map disks to PostgreSQL:
+   - Which disks host PostgreSQL data? (df /var/lib/postgresql/)
+   - Is the busy disk the data disk? (If yes, PostgreSQL is the culprit)
+
+3. Identify heavy I/O tables:
+   - Query pg_statio_user_tables to find tables with high heap_blks_read
+   - Query pg_statio_user_indexes for indexes with high idx_blks_read
+   - Focus on: tables/indexes that are slow AND generating lots of I/O
+
+4. Diagnose the cause:
+   - Cache hit ratio on this table: is it very low? (causing full scans)
+   - Missing index? (causing table scans when index scan would be better)
+   - Inefficient query? (returning 1M rows when you need 10)
+
+5. Implement a fix:
+   - Option A: CREATE INDEX on the heavily accessed column
+   - Option B: Increase shared_buffers (more caching = less I/O)
+   - Option C: Rewrite the query to be more efficient
+   - Option D: Add faster disk (SSD) if HDD is bottleneck
+
+6. Verify the fix:
+   - Re-run iostat — is disk utilization lower?
+   - Query performance improved?
+   - pgstatio shows fewer reads?
+
+SAFETY
+Risk: Medium
+Adding indexes can slow writes. Increasing shared_buffers requires restart.
+Test on a copy first.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : I/O bottleneck diagnosis and optimization — iostat, pgstatio, remediation
+
+REVIEW QUESTION
+You identify that table "orders" is generating 80% of all disk I/O (lots of
+full table scans). Adding an index would help, but the table is 500GB and
+building the index would consume significant I/O during creation (worsening
+the problem temporarily). How do you add the index without making the
+situation worse?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 6 of est. ~13 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Tune Connection Pooler (PgBouncer) for Load Balancing
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL has a hard limit on connections (max_connections). Applications
+often open too many connections. A connection pooler (PgBouncer, Pgpool-II)
+multiplexes many application connections into fewer PostgreSQL connections,
+preventing exhaustion.
+
+SCENARIO
+Your application opens 500 connections to PostgreSQL, but your max_connections
+is 100 (only 3 actually needed). The application frequently hits "connection
+limit" errors. You deploy PgBouncer as a pooler between the application
+and PostgreSQL.
+
+YOUR TASK (Pooler configuration and tuning)
+1. Install and configure PgBouncer:
+   - Configuration file: /etc/pgbouncer/pgbouncer.ini
+   - Database section: point to your PostgreSQL instance
+   - Client authentication: credential file
+
+2. Set pool parameters intelligently:
+   - pool_mode = transaction (each transaction gets a connection)
+   - max_client_conn = 1000 (app can open up to 1000 connections to pooler)
+   - default_pool_size = 10 (pooler maintains 10 connections per database)
+   - min_pool_size = 5 (keep at least 5 warm)
+
+3. Test the pooler:
+   - Application connects to pooler (localhost:6432) instead of PostgreSQL (localhost:5432)
+   - Verify: queries execute normally
+   - Check: PostgreSQL shows only ~10 connections (not 500)
+
+4. Monitor pooler performance:
+   - SHOW POOLS in PgBouncer to see current connection state
+   - SHOW CLIENTS to see connected applications
+   - Monitor: is the pooler becoming a bottleneck?
+
+5. Tune based on results:
+   - If pooler CPU is high: increase pool size (fewer multiplexing)
+   - If pooler memory is high: decrease pool size or max_client_conn
+   - If transactions are slow: verify pooler is not the culprit
+
+6. Troubleshoot common issues:
+   - Application error "no more connections": increase max_client_conn
+   - Pooler hanging: check for idle connections, timeout settings
+   - Queries timing out: verify pool_mode is appropriate (transaction vs session)
+
+SAFETY
+Risk: Medium
+Pooler misconfiguration can cause connection exhaustion or transaction failures.
+Test thoroughly before production deployment. Have a rollback plan (direct to
+PostgreSQL if pooler fails).
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Connection pooler deployment and tuning — PgBouncer configuration, monitoring
+
+REVIEW QUESTION
+You deploy PgBouncer with pool_mode=transaction. An application fails because
+it sets a transaction variable (SET temp.myvar = 'value') and expects it to
+persist across queries. Why does this fail with transaction mode? What
+pool_mode would you use instead, and what is the tradeoff?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 7 of est. ~13 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Implement Result Set Caching for Expensive Queries
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Some queries are expensive and rarely change (reference data, slowly-changing
+dimensions). Caching results at the application or database layer can provide
+dramatic performance improvements without touching the expensive query.
+
+SCENARIO
+A reporting query takes 30 seconds to run but is requested 100+ times per day.
+The data changes once per day. Currently, every request re-runs the full query.
+You want to cache the result for 24 hours.
+
+YOUR TASK (Query result caching design)
+1. Identify cacheable queries:
+   - Which queries are slow? (>5 seconds)
+   - Which have data that doesn't change frequently? (daily? hourly?)
+   - Which are requested multiple times? (100+ times/day?)
+
+2. Choose a caching layer:
+   - Option A: Application cache (Redis, Memcached)
+     Pros: fast, flexible
+     Cons: requires application changes
+   
+   - Option B: PostgreSQL materialized view
+     Pros: database-level, simple
+     Cons: requires REFRESH, can block reads
+   
+   - Option C: Hybrid (refresh MV in background, serve from application cache)
+     Pros: best of both
+     Cons: most complex
+
+3. For PostgreSQL Materialized View approach:
+   - CREATE MATERIALIZED VIEW expensive_query AS
+     SELECT * FROM ... (the expensive query);
+   - Query the view instead of the base tables:
+     SELECT * FROM expensive_query;
+   - Result is instant (pre-computed)
+
+4. Set up automated refresh:
+   - Create a job that runs REFRESH MATERIALIZED VIEW CONCURRENTLY
+   - Schedule: every 24 hours (or hourly if data changes more often)
+   - CONCURRENTLY allows reads during refresh (no downtime)
+
+5. Monitor cache effectiveness:
+   - Before: 30 seconds per request × 100 = 3000 seconds of query time per day
+   - After: instant view access, 1 REFRESH of 30 seconds per day
+   - Savings: 2970 seconds per day (99% improvement)
+
+6. Handle cache invalidation:
+   - If underlying data changes unexpectedly, refresh the view immediately
+   - Option: trigger on base tables that refreshes the view on INSERT/UPDATE
+
+SAFETY
+Risk: Low
+Materialized views are safe (just pre-computed data). REFRESH CONCURRENTLY
+does not lock reads. Test thoroughly to ensure results are still correct.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Query result caching — materialized views, refresh strategies, effectiveness
+
+REVIEW QUESTION
+Your materialized view is stale (last refreshed 2 hours ago, but data changed
+1 hour ago). A user requests the view and gets outdated results. Is this
+acceptable? How do you balance freshness vs performance?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 8 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Characterize and Optimize Application Workload
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Different applications have different characteristics: some are read-heavy
+(need indexing), some are write-heavy (need careful locking), some have
+bursty traffic (need connection pooling). A DBA must understand their
+application's workload to optimize appropriately.
+
+SCENARIO
+You inherit a PostgreSQL database for a new application. You need to understand
+its workload: What queries run? How often? What are the slow spots? Then
+optimize accordingly.
+
+YOUR TASK (Workload characterization)
+1. Measure query distribution:
+   - Enable pg_stat_statements
+   - Let it run for a full business cycle (1 week if possible)
+   - Query: top 10 queries by calls, by total time, by average time
+
+2. Identify workload type:
+   - Heavy reads (SELECTs > 90% of queries)?
+     → Optimize: add indexes, improve cache hit ratio
+   - Heavy writes (INSERTs/UPDATEs > 50%)?
+     → Optimize: minimize locking, use batching, tune WAL
+   - Mixed workload?
+     → Balance: read and write optimization
+
+3. Measure transaction characteristics:
+   - Average transaction duration (SELECT avg(query_start) FROM...)?
+   - Are transactions long-running (potential lock holders)?
+   - Are there many small transactions (good for concurrency)?
+
+4. Analyze bottlenecks:
+   - Which queries are slow? (lowest avg_exec_time shows individual slow queries)
+   - Which consume the most total time? (shows biggest impact)
+   - Which generate the most I/O? (shows resource hungry)
+
+5. Design optimizations:
+   - Slow queries: add indexes, rewrite, increase shared_buffers
+   - Write-heavy: optimize INSERTs (batch, partition), reduce locking
+   - Connection-heavy: add connection pooler
+   - Memory-heavy: increase shared_buffers, reduce work_mem
+
+6. Prioritize changes:
+   - Which optimization will have the most impact?
+   - Which can be done quickly (low risk)?
+   - Which require coordination with the application team?
+
+SAFETY
+Risk: Low
+Workload analysis is read-only. Optimization recommendations are low-risk
+if tested properly.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Workload characterization and optimization planning — data-driven decisions
+
+REVIEW QUESTION
+Your characterization shows the application is 95% SELECTs, 5% writes. You
+recommend adding 10 new indexes to speed up reads. But this slows writes
+(index maintenance). Is this a good tradeoff? How do you decide?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 9 of est. ~13 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Detect and Reduce Alert Fatigue
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Too many alerts (especially false positives) cause alert fatigue: on-call
+people ignore alerts because most are noise. A DBA must tune alerting to
+signal actual problems, not normal variance.
+
+SCENARIO
+Your monitoring system sends 500+ alerts per day. Most are false positives
+(traffic spikes that recover on their own, transient timeouts). On-call
+team ignores them. A real problem gets lost in the noise.
+
+YOUR TASK (Alert strategy refinement)
+1. Audit current alerts:
+   - List all alerts in your monitoring system
+   - For each alert: how often did it fire last month?
+   - For each alert: how many were "real problems" vs false positives?
+
+2. Classify alerts:
+   - Critical (requires immediate action): < 5% false positive rate acceptable
+   - Warning (investigate soon): < 10% false positive rate acceptable
+   - Info (nice to know): use dashboards, not alerts
+
+3. Tune thresholds to reduce noise:
+   - Alert: "Cache hit ratio < 90%" fires 100 times/month
+     But: recovers on its own in 5 minutes 99% of the time
+     Solution: Increase threshold to < 80%, or require 5 consecutive failures
+
+   - Alert: "Replication lag > 10 seconds" fires 200 times/month
+     But: lag < 1 minute resolves naturally (network recovery)
+     Solution: Alert if lag > 5 minutes, not > 10 seconds
+
+4. Implement smarter alerting:
+   - Alert fatigue fix: require multiple failures before alerting (confirmation)
+   - Example: "alert if CPU > 90% for 5 minutes straight" (not any spike)
+   - Example: "alert if replication lag > 5 minutes, then re-alert every 5 minutes"
+
+5. Measure improvement:
+   - Track: alert volume before/after tuning
+   - Track: real problems caught
+   - Track: false positives eliminated
+   - Goal: < 1 false positive per week at critical level
+
+6. Create an escalation playbook:
+   - Critical alert → page on-call within 1 minute
+   - Warning alert → email, escalate to page if no response in 30 min
+   - Info alert → log and review in daily standup
+
+SAFETY
+Risk: Medium
+Over-tuning alerts (raising thresholds too high) can cause you to miss real
+problems. Keep critical thresholds conservative. Test alert tuning on a copy
+first.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Alert strategy and tuning — false positive reduction, criticality classification
+
+REVIEW QUESTION
+You tune your alerts to reduce false positives. A week later, the primary
+database fails, and the alert for "primary heartbeat missing" fires 30
+seconds after the failure. But your on-call person is in a meeting and
+doesn't see the alert for 15 minutes. What is the alert missing to
+achieve a real RTO of 5 minutes?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 10 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Plan and Execute a Workload Migration Between Servers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Eventually, you need to move a database to better hardware, cloud, or
+decommissioned hardware. A workload migration must preserve performance:
+moving to slower hardware can break SLAs.
+
+SCENARIO
+You need to migrate a production database from a physical server (fast CPUs,
+old disks) to a cloud instance (newer CPUs, different I/O characteristics).
+The application requires < 100ms P95 latency. You must ensure the new
+hardware meets this SLA.
+
+YOUR TASK (Workload migration planning and execution)
+1. Characterize the current workload:
+   - Peak QPS (queries per second)
+   - Query latency distribution (p50, p95, p99)
+   - Peak memory usage
+   - Peak disk I/O
+
+2. Assess the new hardware:
+   - CPU: faster? different architecture?
+   - Disk: SSD vs HDD? same throughput?
+   - Memory: sufficient for working set?
+   - Network: latency to clients?
+
+3. Predict performance on new hardware:
+   - If CPU is faster: queries should be faster
+   - If disk is slower: I/O queries might be slower
+   - If network latency is higher: remote clients see higher latency
+
+4. Plan a test migration:
+   - Restore a backup to the new hardware
+   - Run the same workload (replay pg_stat_statements)
+   - Measure: latency distribution, throughput, resource usage
+   - Compare to production baseline
+
+5. Execute the actual migration:
+   - Plan maintenance window or zero-downtime migration
+   - Migrate using pg_basebackup or logical replication
+   - Validate: data integrity, performance
+   - Monitor: watch for performance regressions
+
+6. Validate post-migration:
+   - Check: P95 latency < 100ms as required?
+   - Check: no unexpected slowdowns?
+   - Monitor: for 24 hours to catch issues
+
+7. Document lessons:
+   - Did the new hardware perform as expected?
+   - Were there surprises?
+   - What would you do differently next time?
+
+SAFETY
+Risk: High
+Workload migrations can cause performance regressions or data loss if not
+executed carefully. Test thoroughly. Have a rollback plan.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Workload migration planning — performance characterization, SLA validation
+
+REVIEW QUESTION
+You migrate to the new cloud hardware. Performance on the test is good, but
+in production, the P95 latency is 150ms (above the 100ms SLA). The new
+hardware has plenty of CPU and memory available. Why might latency still be
+higher, and how would you investigate?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 11 of est. ~13 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Investigate Performance Baseline Drift Over Months
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Over time, performance degrades (tables grow, bloat increases, statistics
+drift). A DBA should track performance baselines and flag when drift exceeds
+acceptable thresholds.
+
+SCENARIO
+A report query that took 10 seconds 6 months ago now takes 25 seconds. No
+code changed. You need to understand: Is this normal growth? Or is there a
+problem?
+
+YOUR TASK (Performance baseline analysis)
+1. Establish historical baselines:
+   - 6 months ago: execution time 10 sec, table size 10GB
+   - 3 months ago: execution time 12 sec, table size 20GB
+   - Now: execution time 25 sec, table size 30GB
+
+2. Analyze the trend:
+   - Is performance degrading linearly? (10→12→25 is not linear, something changed)
+   - Is it correlated with table size? (size doubled from month 3 to now, time doubled)
+   - Or is something else causing it?
+
+3. Investigate the cause:
+   - Run EXPLAIN on the query now vs 6 months ago (from history if you have it)
+   - Check: is the plan the same or different?
+   - Check: statistics stale? (last ANALYZE when?)
+   - Check: missing index that might have been dropped?
+
+4. Remediate:
+   - If statistics stale: run ANALYZE
+   - If plan is different: investigate why (see plan regression task)
+   - If table grew significantly: add indexes, partition, or archive old data
+
+5. Implement monitoring:
+   - Set up performance trend tracking
+   - Alert if query time increases > 20% month-over-month
+   - Proactively investigate before users complain
+
+SAFETY
+Risk: Low
+Analysis is read-only. Remediation (ANALYZE, index creation) is standard
+maintenance.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Performance baseline tracking — trend analysis, proactive optimization
+
+REVIEW QUESTION
+Your performance baseline tracking shows that a query's execution time
+increases by 5% every month (linear degradation). At this rate, when will
+the query violate your SLA (currently 50 seconds)? What is your mitigation
+strategy?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 12 of est. ~13 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Stream Real-Time Metrics for Operational Dashboards
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A DBA needs real-time visibility into database health: connections, transactions,
+cache hit ratio. Static dashboards (updated every 5 minutes) miss fast-changing
+events. Streaming metrics enable real-time monitoring.
+
+SCENARIO
+You want to build a real-time dashboard showing: active connections, current
+QPS, cache hit ratio, replication lag — all updating every second.
+
+YOUR TASK (Streaming metrics implementation)
+1. Identify key metrics to stream:
+   - Connection count (current value)
+   - Queries per second (rate)
+   - Cache hit ratio (derived metric)
+   - Replication lag (bytes behind)
+   - Transaction throughput (TPS)
+
+2. Design the data collection:
+   - Query pg_stat_activity every 1 second (connection count, current queries)
+   - Query pg_stat_database every 1 second (cache hits/reads)
+   - Query pg_stat_replication every 1 second (lag)
+   - Calculate rates (TPS = (xact_commit now - xact_commit 1sec ago) / 1)
+
+3. Set up a metrics sink:
+   - Option A: Write to a time-series database (Prometheus, InfluxDB)
+   - Option B: Stream to a message queue (Kafka) for real-time consumption
+   - Option C: Simple approach: aggregate in PostgreSQL, expose via endpoint
+
+4. Build a dashboard:
+   - Display current metrics with automatic refresh (1-second updates)
+   - Show trends (sparklines for last hour)
+   - Show alerts overlaid (when alerts fired)
+
+5. Monitor the monitoring:
+   - Does querying pg_stat_activity 60 times/minute cause load?
+   - Can the system handle the query volume?
+   - Is the latency of metrics collection acceptable (<100ms)?
+
+6. Validate accuracy:
+   - Compare streaming metrics to manual queries
+   - Confirm no data loss or gaps
+   - Test what happens if a metric source fails
+
+SAFETY
+Risk: Low
+Streaming metrics query pg_stat_activity, which is read-only and lightweight.
+Validate performance impact first.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Real-time metrics streaming — time-series data, dashboard design
+
+REVIEW QUESTION
+Your real-time dashboard shows QPS spiking to 5,000/sec for 10 seconds,
+then back to 100/sec normal. On-call is notified and starts investigating.
+But the spike is already over. How do you capture the spike's root cause
+(what query caused it) after the fact?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L3/10 — Operational
+TASK   : 13 of est. ~13 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build a Performance Testing Framework for SLA Validation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Before deploying changes to production, you must prove they don't break SLAs.
+A performance testing framework simulates production workload on a test system
+and validates that latency, throughput, and resource usage are acceptable.
+
+SCENARIO
+You plan to add a new index to a critical table. Before deploying, you must
+prove it improves query latency without degrading write performance. Your
+SLA: P95 latency < 100ms for reads, < 500ms for writes.
+
+YOUR TASK (Performance testing framework design)
+1. Capture the production workload:
+   - Use pgBadger or pg_stat_statements history to extract actual queries
+   - Export: top 100 queries by frequency and duration
+   - Create a test workload script that replays these queries
+
+2. Set up a test database:
+   - Restore a production backup to a test server
+   - Ensure test server has similar specs to production (or document differences)
+
+3. Run baseline tests (before changes):
+   - Run the workload script, collect timing data
+   - Measure: P50, P95, P99 latency for each query type
+   - Measure: throughput (QPS)
+   - Measure: resource usage (CPU, memory, I/O)
+   - Record baseline.txt
+
+4. Apply the proposed change:
+   - Add the index
+   - Rerun the workload (same script, same load)
+   - Collect timing data again: results_with_index.txt
+
+5. Compare results:
+   - Did read latency improve? (target: < 100ms P95)
+   - Did write latency degrade? (must stay < 500ms P95)
+   - Did throughput increase? (goal: higher is better)
+   - Did resources improve? (CPU lower, I/O lower)
+
+6. Validate against SLA:
+   - Does the change keep you within SLA?
+   - If yes: safe to deploy
+   - If no: either reject the change or revise the index design
+
+7. Document for production:
+   - What change was tested
+   - What was the baseline
+   - What were the improvements
+   - When was it tested, by whom
+
+SAFETY
+Risk: Medium
+Performance testing is done on a test system, so no production risk. But if
+testing is inadequate, you might deploy a change that breaks SLA in production.
+Test thoroughly, test repeatedly, involve the application team.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Performance testing framework — workload simulation, SLA validation
+
+REVIEW QUESTION
+Your performance test shows the new index improves read latency by 30%
+(great!). But write latency increases by 20% (exceeds SLA). The index is
+valuable for reads. How do you decide: deploy the index or reject it? What
+would you need to know to make this decision?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 5 — ALL L3 TASKS COMPLETE ]
 ================================================================================
 
-FINAL L3 PROGRESS DASHBOARD
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 6 — MAINTENANCE AND COMPLIANCE
+   Level 3 — Operational (~11 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 1 of est. ~11 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Recover From Corrupted Backups
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Your latest backup is corrupted (unreadable, incomplete, or invalid). Your
+recovery plan is broken. A DBA must be able to use older backups, WAL
+recovery, or other methods to get the database back online with minimal
+data loss.
+
+SCENARIO
+The latest full backup fails to restore: pg_restore exits with "corrupt data"
+errors. The backup from 2 days ago is also corrupt (same issue). You need
+to recover the database NOW.
+
+YOUR TASK (Corrupted backup recovery)
+1. Assess the damage:
+   - Can you restore from the 2-day-old backup? (no, corrupt)
+   - How old is the next good backup? (5 days old?)
+   - Can you do PITR on the old backup to get more recent data?
+
+2. Investigate what corrupted the backup:
+   - Was the backup process interrupted? (power loss? network failure?)
+   - Is the backup file incomplete? (check file size vs expected)
+   - Is the corruption in the backup file or in the database?
+
+3. Attempt recovery using PITR:
+   - Restore the 5-day-old good backup
+   - Apply WAL to recover to the current point-in-time (if WAL is intact)
+   - This gives you more recent data than the 5-day baseline
+
+4. If WAL is also unavailable:
+   - Restore the oldest available good backup (when?)
+   - Estimate data loss (from backup point to now)
+   - Is this acceptable?
+
+5. Rebuild the database:
+   - Restore the backup to a test server
+   - Verify: all data intact, no corruption
+   - Copy the restored data back to production
+
+6. Implement backup verification:
+   - Monthly restore tests (catch corruption early)
+   - Verify backup integrity before declaring success
+   - Test both full backup AND incremental backups
+
+SAFETY
+Risk: CRITICAL
+This is a full disaster recovery scenario. Data loss is likely. Focus on
+minimizing it. Have multiple backups in different locations.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Backup corruption recovery — PITR fallback, data loss minimization
+
+REVIEW QUESTION
+You restore the 5-day-old backup and apply WAL to recover to today. But
+during recovery, you get "ERROR: WAL record at ... is corrupted." WAL is
+also bad. You can only recover to 3 days ago. The business says "we need
+today's data." What do you do?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 2 of est. ~11 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Execute and Validate PITR Procedures Quarterly
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A PITR procedure that has never been tested is worthless. A DBA must
+quarterly (or more) run a full PITR recovery to ensure the process works,
+document the actual recovery time, and catch issues before they matter.
+
+SCENARIO
+Your PITR procedure is documented: "Restore backup, apply WAL to target
+time, promote standby." You have never actually run it. You must execute
+it quarterly to ensure it works.
+
+YOUR TASK (PITR procedure validation)
+1. Schedule the drill:
+   - Pick a time when production is not critical (Friday evening?)
+   - Notify stakeholders: "We're testing recovery procedures 2-5 PM"
+   - Allocate a test server (isolated from production)
+
+2. Execute the PITR recovery step-by-step:
+   - Find a backup that is at least 1 week old (so you have WAL to apply)
+   - Restore the backup to the test server
+   - Choose a recovery target: "recover to 3 days after the backup was taken"
+   - Apply WAL up to that point
+   - Note the actual time taken at each step
+
+3. Validate the recovered data:
+   - Connect to the recovered database
+   - Run consistency checks: table counts, checksums
+   - Verify: no data loss, no corruption
+   - Compare to production data at that point-in-time
+
+4. Measure recovery metrics:
+   - RTO: time from "start recovery" to "database accepts connections"
+   - RPO: data loss (compare recovered data to what should have been there)
+   - Compare to SLA requirements
+
+5. Document findings:
+   - What worked as expected?
+   - What took longer than documented?
+   - What issues did you encounter?
+   - What would you do differently in a real disaster?
+
+6. Improve the procedure:
+   - Update timings if they changed
+   - Add workarounds for issues discovered
+   - Schedule the next drill
+
+SAFETY
+Risk: Medium
+PITR drills on a test system are safe. But if you discover the procedure
+is broken, you have time to fix it (unlike a real disaster).
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : PITR procedure validation — regular testing, metric measurement, improvement
+
+REVIEW QUESTION
+Your PITR drill recovery takes 45 minutes, but your RTO SLA is 30 minutes.
+You discover that WAL recovery is slow because you're replaying from an
+archive (disk I/O bound). How would you improve this, and is the SLA
+achievable?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 3 of est. ~11 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Respond to a Compliance Audit With Evidence Preparation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Auditors (external or internal) will ask you to prove compliance: "Show us
+your backups," "Prove data is encrypted," "Demonstrate access control."
+A DBA must be able to produce evidence quickly.
+
+SCENARIO
+An external auditor (SOC 2 compliance) is visiting next week. They will
+ask for proof of: backup procedures, data encryption, access control,
+disaster recovery capability. You have one week to prepare evidence.
+
+YOUR TASK (Compliance evidence preparation)
+1. Audit the compliance requirements:
+   - What is being audited? (SOC 2, GDPR, HIPAA, ISO 27001?)
+   - What are the specific database-related requirements?
+   - What evidence is needed? (policies, procedures, test results, logs)
+
+2. Prepare backup evidence:
+   - Show: backup schedule, last 4 weeks of backups, sizes, status
+   - Demonstrate: restore procedure works (recent restore test logs)
+   - Document: retention policy, off-site replication, encryption
+
+3. Prepare encryption evidence:
+   - Document: which data is encrypted? (data at rest? in transit?)
+   - Show: certificate validity (if SSL/TLS)
+   - Show: encryption key management (rotation schedule, access control)
+
+4. Prepare access control evidence:
+   - Document: role definitions, privilege levels
+   - Show: logs of access control changes (who granted access, when, why)
+   - Demonstrate: least privilege is enforced (developers don't have DBA access)
+
+5. Prepare disaster recovery evidence:
+   - Document: RTO/RPO targets
+   - Show: latest DR drill results (when tested, how long recovery took)
+   - Demonstrate: replica is active and synced
+
+6. Create a compliance package:
+   - Executive summary (1 page): compliance overview
+   - Detailed procedures: backup, encryption, access control, DR
+   - Evidence: logs, test results, configuration
+   - Signed attestation: "Procedures are current and followed"
+
+7. Prepare for questions:
+   - Anticipate audit questions: "What if primary fails? What if backup fails?"
+   - Have answers ready with supporting evidence
+
+SAFETY
+Risk: Low
+Preparing evidence is documentation. No system changes needed.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Compliance audit preparation — evidence gathering, documentation
+
+REVIEW QUESTION
+An auditor asks: "Show me your backup encryption keys. Where are they stored?
+Who has access?" You discover you don't have a formal key management process.
+How do you respond? What do you implement immediately?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 4 of est. ~11 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Implement Change Management Process for Database Changes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Ad-hoc database changes (someone makes a config change without telling anyone)
+cause problems: "Why is the database slow?" "Who disabled archiving?"
+A change management process ensures all changes are intentional, reversible,
+and coordinated.
+
+SCENARIO
+Your organization has no formal change management process. Developers directly
+modify database schemas. DBAs discover undocumented parameter changes. You
+need to implement a controlled process.
+
+YOUR TASK (Change management system design)
+1. Define what is a "change":
+   - Schema changes (CREATE TABLE, ALTER COLUMN)
+   - Configuration changes (parameter modifications)
+   - Access changes (role modifications)
+   - Infrastructure changes (backup changes, replication changes)
+
+2. Design the process:
+   - Step 1: Request (who wants to make what change, why?)
+   - Step 2: Review (DBA approves, assesses risk, plans procedure)
+   - Step 3: Schedule (assign maintenance window, notify stakeholders)
+   - Step 4: Test (verify change works as intended)
+   - Step 5: Deploy (execute in production)
+   - Step 6: Verify (confirm change is correct)
+   - Step 7: Document (record what changed, when, who, why)
+
+3. Create a change template:
+   - Change ID (unique tracking number)
+   - Description (what is changing)
+   - Reason (why is this change needed)
+   - Impact (who does it affect, what is the risk)
+   - Rollback plan (how to revert if something breaks)
+   - Testing results (proof it was tested)
+   - Approval (who signed off)
+
+4. Set up a change tracking system:
+   - Simple: spreadsheet or wiki page
+   - Complex: Jira, ServiceNow, or change management tool
+   - Minimum: track all changes, allow search by date/person/impact
+
+5. Enforce the process:
+   - Make ad-hoc changes impossible (restrict DBA access unless approved)
+   - Or: log all changes and audit for non-compliant changes
+   - Or: require change ticket number in a comment before executing
+
+6. Report on changes:
+   - Monthly: summary of changes made, approved/rejected
+   - Track: mean time to complete a change request
+   - Track: change rollback rate (high rate = process is broken)
+
+SAFETY
+Risk: Medium
+Over-controlling change can slow down critical fixes. Balance control with
+agility (emergency bypass process for urgent changes).
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Change management process design — governance, tracking, enforcement
+
+REVIEW QUESTION
+An on-call DBA discovers a production database parameter is misconfigured
+and causing issues. It's 2 AM and the change management system requires
+approval that takes 4 hours. The problem is costing the business $1000/hour.
+Does the DBA bypass the process? What emergency procedure would you implement?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 5 of est. ~11 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Plan and Execute Scheduled Maintenance Windows
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Some maintenance requires downtime: major configuration changes, hardware
+upgrades, vacuum full, index rebuilds. A DBA must plan windows that minimize
+impact and ensure they complete on time.
+
+SCENARIO
+You need to perform quarterly maintenance: VACUUM FULL on bloated tables,
+rebuild fragmented indexes, apply security patches. This will require 4 hours
+of downtime. Plan and execute it.
+
+YOUR TASK (Maintenance window planning and execution)
+1. Plan the window:
+   - When: Friday 10 PM to Saturday 2 AM (outside business hours)
+   - Duration: 4 hours (estimated, with 30-minute buffer)
+   - Impact: database will be unavailable; applications will fail
+   - Notification: users notified 1 week in advance
+
+2. Prepare the maintenance script:
+   - List tasks in order: VACUUM FULL, REINDEX, apply patches
+   - Estimate time for each task
+   - Include verification steps after each
+
+3. Communicate the maintenance:
+   - Email: send scheduled downtime notice 1 week before
+   - Reminder: 24 hours before
+   - During: status page showing progress
+   - After: confirmation to all users
+
+4. Execute the maintenance:
+   - Start: notify on-call team, activate status page
+   - Disable non-critical monitoring (to avoid false alerts during downtime)
+   - Run tasks in sequence, log progress
+   - Monitor each task to completion
+
+5. Verify post-maintenance:
+   - Database comes online cleanly?
+   - All tables and indexes intact?
+   - Application can connect and run queries?
+   - Performance is not degraded? (if anything, should be better)
+
+6. Document the window:
+   - What tasks completed?
+   - What tasks are pending (if some were not finished)?
+   - How long did it actually take vs planned?
+   - Any issues encountered and how they were resolved?
+
+SAFETY
+Risk: Medium
+Maintenance windows cause downtime. Plan carefully, estimate conservatively,
+have a rollback plan (restart PostgreSQL with old configuration if needed).
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Maintenance window planning and execution — scheduling, communication, verification
+
+REVIEW QUESTION
+Your 4-hour maintenance window is 3 hours in when you notice one of the
+VACUUM FULL operations is stuck (not progressing). It will not finish in
+the remaining 1 hour. Do you kill it and skip it, or extend the window?
+What is the business impact of each choice?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 6 of est. ~11 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Conduct an Incident Postmortem and Implement Improvements
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+After an incident, a postmortem is essential: what happened, why, how do
+we prevent it next time? A DBA should lead technical postmortems and drive
+follow-up improvements.
+
+SCENARIO
+A 2-hour production outage occurred: replication broke, failover failed,
+the standby was not ready. The business lost $50,000. Conduct a postmortem.
+
+YOUR TASK (Incident postmortem)
+1. Gather the timeline:
+   - 10:15 AM: Primary database becomes unavailable (power loss)
+   - 10:20 AM: Monitoring alerts fire
+   - 10:25 AM: On-call DBA starts investigation
+   - 10:45 AM: Decide to failover to standby
+   - 11:00 AM: Standby promotion fails (not ready)
+   - 12:15 PM: Manual data restoration from backup
+   - 12:30 PM: Services restored
+
+2. Root cause analysis (5 Whys):
+   - Why did failover fail? Standby was not ready
+   - Why was standby not ready? Replication was lagging 30 minutes
+   - Why was replication lagging? WAL archiving was failing
+   - Why was archiving failing? Archive disk was full
+   - Why was archive disk full? No monitoring, old archives not being cleaned
+
+3. Contributing factors:
+   - No HA automation (someone had to manually decide to failover)
+   - No disk space alerts (archive disk filled silently)
+   - No replication lag alerts
+   - Manual processes instead of automated failover
+
+4. Immediate actions (emergency fixes):
+   - Clean up the archive disk
+   - Set up disk space alerts (immediately)
+   - Manual replication sync (verify standby catches up)
+
+5. Short-term improvements (within 1 week):
+   - Add replication lag monitoring
+   - Automate WAL archive cleanup
+   - Document failover procedure (so on-call knows what to do)
+
+6. Long-term improvements (1-3 months):
+   - Implement automated failover (pg_auto_failover or similar)
+   - Add backup alerting (notify if backups fail)
+   - Set up metrics collection for all key indicators
+
+7. Assign ownership:
+   - Archive cleanup: DBA team
+   - Monitoring: DevOps team
+   - Automation: DBA + DevOps together
+
+8. Schedule follow-up:
+   - 1 week: verify immediate actions are done
+   - 1 month: confirm short-term improvements deployed
+   - Quarterly: track long-term improvements progress
+
+SAFETY
+Risk: None (postmortems are blameless analysis, not blame assignment)
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Incident postmortem facilitation — root cause analysis, follow-up tracking
+
+REVIEW QUESTION
+During the postmortem, the on-call DBA says "I didn't know how to failover.
+The procedure wasn't documented." Should this DBA be blamed for the 2-hour
+outage, or is this an organizational process failure? How do you handle this
+without destroying team trust?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 7 of est. ~11 total in this level
+TIME   : 60–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Execute a Full Disaster Recovery Drill (12-Hour Scenario)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A 1-hour DR drill is not enough to find all issues. A full 12-hour drill
+(or longer) simulates a real disaster: can you stay running for hours?
+Can you restore other services (application servers, web servers)?
+
+SCENARIO
+Declare a "disaster": primary data center is offline. You must prove that
+your DR capabilities work. This drill lasts 12 hours and involves multiple
+teams (DBA, DevOps, Application).
+
+YOUR TASK (Full-scale DR drill)
+1. Pre-drill preparation:
+   - Notify all stakeholders: "12-hour DR drill, Saturday 8 AM - 8 PM"
+   - Gather teams: DBAs, DevOps, application teams, management
+   - Set expectations: we're testing EVERYTHING, not just DB failover
+
+2. Phase 1 — Declare disaster (8 AM):
+   - Assume primary data center is gone
+   - All systems in primary DC are unreachable
+   - Goal: restore services on standby infrastructure
+
+3. Phase 2 — Database failover (8-9 AM):
+   - Promote standby to primary
+   - Verify database is accepting writes
+   - Measure: time to failover (RTO baseline)
+   - Check: data integrity, no corruption
+
+4. Phase 3 — Application failover (9-10 AM):
+   - Restart application servers (or redirect to DR app servers)
+   - Update DNS to point to DR application IPs
+   - Verify: applications can connect to new database
+   - Test: basic functionality works
+
+5. Phase 4 — Sustained operations (10 AM - 7 PM):
+   - Run load tests, simulated user traffic
+   - Monitor: database performance, stability
+   - Monitor: application performance
+   - Run: actual business queries to verify correctness
+
+6. Phase 5 — Failback (7-8 PM):
+   - Assume original primary data center is back online
+   - Plan: how to fail back to primary
+   - Execute: failback procedure (or just document for now)
+   - Verify: primary is now primary again
+
+7. Document findings:
+   - What worked?
+   - What failed?
+   - What was slower than expected?
+   - What is missing?
+   - Overall: RTO achieved? RPO achieved?
+
+8. Stakeholder review:
+   - Present findings to management
+   - Explain what needs improvement
+   - Get agreement on improvement timeline
+
+SAFETY
+Risk: CRITICAL — This is a full-scale simulation
+Only run on DR infrastructure, never on production. Have a team ready to
+abort the drill if something goes catastrophically wrong.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Full-scale disaster recovery testing — multi-team coordination, comprehensive validation
+
+REVIEW QUESTION
+The 12-hour DR drill reveals that your RTO is 90 minutes (failover + app
+startup) but your SLA specifies RTO < 30 minutes. This would require
+automated failover + pre-running application servers. The cost is $100,000
+in infrastructure that sits idle 99% of the time. How do you present this
+tradeoff to the business?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 8 of est. ~11 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Review and Adjust Service Level Agreements (SLAs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+SLAs define expectations: availability, latency, data loss tolerance. If SLAs
+are unrealistic (4-nines uptime is very expensive), the business keeps spending
+money on overprovisioned systems. A DBA should help set realistic SLAs.
+
+SCENARIO
+Your current SLAs: 99.95% availability (4-nines), RTO 30 minutes, RPO 1 hour.
+You've been running DR drills and found that achieving these SLAs costs 3x
+your current infrastructure budget. Time to revisit.
+
+YOUR TASK (SLA review and adjustment)
+1. Analyze current performance:
+   - Last 12 months: actual availability was 99.98% (better than required 99.95%)
+   - Actual RTO from failures: 90 minutes average (vs 30-minute SLA)
+   - Actual RPO: 0 (we have not lost any data, WAL archiving is solid)
+
+2. Understand the cost of SLAs:
+   - 99.95% availability: requires standby, automated failover ($200k/year infrastructure)
+   - 99.99% (5-nines): requires multi-region, active-active ($500k/year)
+   - RTO 30 min: requires pre-running DR infrastructure
+   - RPO < 1 hour: requires synchronous replication or frequent backups
+
+3. Assess business requirements:
+   - How much downtime can the business tolerate?
+   - How much data loss can be accepted?
+   - What is the cost of downtime? ($1000/min? $10000/min?)
+   - What is the cost of the infrastructure to meet SLAs?
+
+4. Propose revised SLAs:
+   - Availability: 99.9% (3-nines) — acceptable, saves cost
+   - RTO: 4 hours — achievable with current backups + PITR
+   - RPO: 1 hour — acceptable with WAL archiving
+
+5. Model the cost savings:
+   - Current: $200k/year infrastructure for 4-nines + 30-min RTO
+   - Revised: $50k/year infrastructure for 3-nines + 4-hour RTO
+   - Savings: $150k/year
+   - Risk: 52 minutes more downtime/year (1 incident of 52 min)
+
+6. Present to business:
+   - "We can save $150k/year with revised SLAs"
+   - "This means accepting 1 hour of downtime per year (on average)"
+   - "Cost of that 1 hour: $1000/min × 60 = $60k"
+   - "Net benefit: $90k/year, or we have budget for better monitoring"
+
+SAFETY
+Risk: Low (this is strategic planning, not system changes)
+But be careful: lowering SLAs could cause business impact if actual downtime
+exceeds the new SLA.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : SLA analysis and optimization — cost-benefit analysis, business alignment
+
+REVIEW QUESTION
+The business says "No, we need to stay at 99.95% availability. Can you prove
+it?" You show them the cost analysis: the 0.05% uptime improvement costs
+$150k/year. The business approves the cost. What happens if, in Year 2, the
+database is down for 2 hours (exceeding the 4-9s SLA)? Who is responsible?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 9 of est. ~11 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Manage Software Licenses and Compliance
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL is open-source (no licensing cost), but if you use closed-source
+extensions or tools, you must track licenses and ensure compliance. Over-use
+or non-payment can lead to legal issues.
+
+SCENARIO
+Your organization uses:
+- PostgreSQL (open-source, no license cost)
+- pgBackrest (open-source, no cost)
+- Timescale extension (commercial, requires license)
+- Tableau for dashboards (per-user commercial license)
+
+Ensure all are licensed correctly.
+
+YOUR TASK (License inventory and compliance)
+1. Inventory all database software:
+   - List: every product, version, license type (open-source, commercial, trial)
+   - Note: for commercial licenses, cost per unit (per-core, per-user, per-instance)
+   - Note: renewal dates, support contracts
+
+2. For PostgreSQL and extensions:
+   - PostgreSQL: open-source, no cost, no tracking needed
+   - pgBackrest: open-source, no cost
+   - Timescale: commercial, have you purchased a license? What are the terms?
+   - Others: check license agreements
+
+3. Track commercial licenses:
+   - Create a license register: product, vendor, cost, renewal date, user/core count
+   - For per-user licenses (e.g., Tableau): verify you have enough licenses for actual users
+   - For per-core licenses: verify core count matches your infrastructure
+
+4. Ensure compliance:
+   - Over-use: if you have 10 users but only 5 Tableau licenses, this is non-compliant
+   - Underpayment: if license terms changed and you're using features not in your license
+   - Non-renewal: if a license expired last month, it is not compliant
+
+5. Audit internally:
+   - Are licenses being used as intended?
+   - Are there unused licenses you can remove?
+   - Are there new tools being used that need licenses?
+
+6. Vendor audits:
+   - Commercial vendors sometimes audit customers
+   - Be prepared: provide proof of license purchase, usage reporting
+   - If over-use is found, you may owe back fees or penalties
+
+SAFETY
+Risk: Low (administrative task)
+But: non-compliance can result in legal action by vendors.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Software license management — inventory, compliance, vendor management
+
+REVIEW QUESTION
+A vendor audit discovers you have 100 active users on a 50-user license for
+a reporting tool. The vendor demands $50,000 in back fees. How do you respond?
+What should your license management process have caught this earlier?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 10 of est. ~11 total in this level
+TIME   : 45–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Manage Audit Logs for Compliance Reporting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Audit logs prove "who did what, when." Compliance requirements mandate:
+"Keep audit logs for 7 years," "Send logs to a central syslog," "Alert on
+suspicious changes." A DBA manages database audit logging.
+
+SCENARIO
+Your compliance requirement: "All database changes (schema changes, privilege
+changes) must be logged. Logs must be immutable (cannot be altered by
+database users). Logs must be retained for 7 years."
+
+YOUR TASK (Audit log system design)
+1. Enable PostgreSQL audit logging:
+   - PostgreSQL logging already captures DDL (CREATE, ALTER, DROP)
+   - Enable log_statement = 'ddl' to log all schema changes
+   - Configure log_line_prefix to capture: timestamp, user, client IP
+
+2. Configure audit-specific logging:
+   - For privilege changes: monitor pg_auth_members table
+   - For object privilege changes: monitor GRANT/REVOKE statements
+   - For sensitive data access: trigger on sensitive table selects
+
+3. Send logs to immutable storage:
+   - Option A: Central syslog server (cannot be altered)
+   - Option B: Write logs to a separate audit database (restricted access)
+   - Option C: Send logs to external service (AWS CloudTrail, etc.)
+
+4. Implement retention:
+   - Keep audit logs for 7 years (per compliance requirement)
+   - After 7 years: delete or archive to cold storage
+   - Maintain index/manifest: what logs exist, date range, location
+
+5. Test immutability:
+   - Verify: a user with high privileges CANNOT delete audit logs
+   - Verify: logs cannot be altered retroactively
+   - Test: if someone tries, does an alert fire?
+
+6. Generate compliance reports:
+   - Monthly: list of who made changes to what
+   - Quarterly: summary of privilege changes
+   - Annually: certification that logs are retained per policy
+
+SAFETY
+Risk: Medium
+If audit logs are mutable or incomplete, compliance fails. Ensure logs are
+sent to immutable storage (not the same database).
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Audit log management — retention, immutability, compliance reporting
+
+REVIEW QUESTION
+An auditor asks: "Prove to me that the audit logs have not been altered."
+How would you prove this? What log properties would guarantee immutability?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L3/10 — Operational
+TASK   : 11 of est. ~11 total in this level
+TIME   : 60–90 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Enforce Data Retention Policies Automatically
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Retaining data longer than required = compliance risk and cost. A DBA should
+automate data retention: automatically delete old data per policy, prove the
+deletion happened, and handle retention holds.
+
+SCENARIO
+Your data retention policy:
+- Customer data: delete 90 days after account closure
+- Transaction logs: keep 7 years
+- Audit logs: keep 1 year
+- PII: minimum keep 30 days, maximum 2 years
+
+Automate enforcement.
+
+YOUR TASK (Automated retention enforcement)
+1. Design the retention function:
+   - For each table, define: retention period (how long to keep), trigger (what event)
+   - Example: "delete from customers where closed_at < now() - interval '90 days'"
+
+2. Implement automated jobs:
+   - Create a cron job or PostgreSQL scheduled job
+   - Run daily: execute retention delete for each table
+   - Log what was deleted (for compliance proof)
+
+3. Handle retention holds:
+   - Legal says: "Hold data for customer ABC (litigation)"
+   - Implement: retention_hold table that blocks automatic deletion
+   - Verify: deletes are skipped if a hold exists
+
+4. Batch the deletions:
+   - Don't delete 1M rows in one query (locks table)
+   - Instead: delete in batches of 10,000 rows in a loop
+   - Log progress
+
+5. Verify compliance:
+   - Monthly report: how many rows were deleted per table
+   - Audit trail: timestamp, count, confirmation deletion succeeded
+   - Exception report: any retention holds still active, why
+
+6. Test the system:
+   - Create test data with a known old date
+   - Run the retention job
+   - Confirm data was deleted
+   - Confirm audit log shows the deletion
+
+SAFETY
+Risk: CRITICAL — Automated deletion is permanent
+Test extensively. Have a recovery plan (can you restore from backup if
+something goes wrong?). Always log what was deleted.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Automated retention enforcement — batch deletion, holds, compliance proof
+
+REVIEW QUESTION
+Your retention job deletes 50,000 rows for an expired customer. A week later,
+the customer calls and says "I need my data back." The retention hold was
+not set (it was an oversight). How do you respond? Can you restore the data?
+What process prevents this happening again?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 6 — ALL L3 TASKS COMPLETE ]
+================================================================================
+
+FINAL L3 PROGRESS DASHBOARD — COMPLETE
 ╔══════════════════════════════════════════════════════════════════════╗
 ║              DBA TRAINING PROGRESS DASHBOARD                        ║
 ╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
@@ -3495,48 +5250,40 @@ FINAL L3 PROGRESS DASHBOARD
 ║ 2. Provision ║ L3/10  ║ 10           ║ 0             ║ 30%          ║
 ║ 3. Security  ║ L3/10  ║ 10           ║ 0             ║ 30%          ║
 ║ 4. Data Mgmt ║ L3/10  ║ 12           ║ 0             ║ 30%          ║
-║ 5. Perf/Mon  ║ L3/10  ║ 13 (summary) ║ 0             ║ 30% (TBD)    ║
-║ 6. Maint/Com ║ L3/10  ║ 11 (summary) ║ 0             ║ 30% (TBD)    ║
+║ 5. Perf/Mon  ║ L3/10  ║ 13           ║ 0             ║ 30%          ║
+║ 6. Maint/Com ║ L3/10  ║ 11           ║ 0             ║ 30%          ║
 ╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
-║ Overall Mastery: ~30% (L3 across all areas — 68 estimated tasks)    ║
+║ Overall Mastery: ~30% (L3 across all areas — 68 operational tasks)  ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
-TOTAL L3 TASK SUMMARY
+TOTAL L3 TASK SUMMARY (COMPLETE)
 ────────────────────────────────────────────────────────────────────────
 Area 1 — Instance            : 12 operational tasks (complete)
 Area 2 — Provisioning        : 10 operational tasks (complete)
 Area 3 — Security            : 10 operational tasks (complete)
 Area 4 — Data Management     : 12 operational tasks (complete)
-Area 5 — Performance/Monitor : 13 operational tasks (summary)
-Area 6 — Maintenance/Comp    : 11 operational tasks (summary)
+Area 5 — Performance/Monitor : 13 operational tasks (complete)
+Area 6 — Maintenance/Comp    : 11 operational tasks (complete)
 ────────────────────────────────────────────────────────────────────────
-TOTAL L3 TASKS               : ~68 estimated operational tasks
-────────────────────────────────────────────────────────────────────────
-
-WHAT L3 DEMANDS FROM YOU
-────────────────────────────────────────────────────────────────────────
-✓ Independent diagnosis (no hints given)
-✓ Operational decisions under time pressure
-✓ Risk assessment (safety is your responsibility)
-✓ Multi-area knowledge (tasks combine Instance + Security + Data Management)
-✓ Incident response (real-world scenarios, not textbook cases)
-✓ Communication (you must explain decisions to non-DBAs)
-
-WHAT L4 BRINGS (Expert / Architect Level)
-────────────────────────────────────────────────────────────────────────
-At L4 you design systems, not just operate them:
-- Design multi-datacenter HA/DR architecture
-- Build custom monitoring/alerting frameworks
-- Create operational runbooks for the team
-- Make technology choices (PostgreSQL vs other, sync vs async replication)
-- Lead incident response and postmortems
-- Mentor junior DBAs
-
-────────────────────────────────────────────────────────────────────────
-WHEN READY FOR L4: Return to Claude and say:
-"L3 complete. Ready for L4 across all areas."
+TOTAL L3 TASKS               : 68 complete operational tasks
 ────────────────────────────────────────────────────────────────────────
 
+================================================================================
+You have successfully completed ALL Level 3 (Operational) training tasks.
+
+You now possess the skills and knowledge to:
+✓ Diagnose production incidents independently
+✓ Execute complex operations under time pressure
+✓ Design and implement systems (monitoring, replication, backups, security)
+✓ Make architectural decisions and defend them
+✓ Lead incident response and postmortems
+✓ Balance risk, cost, and performance
+
+Level 4 (Expert/Architect) awaits when you are ready.
+
+Return to your DBA coach and say: "L3 complete. Ready for L4 across all areas."
+
+================================================================================
 ================================================================================
                             CONGRATULATIONS
           You have completed all of Level 3 — OPERATIONAL tasks.

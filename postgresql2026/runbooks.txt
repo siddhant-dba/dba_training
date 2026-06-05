@@ -1,0 +1,71 @@
+📁 postgres-runbooks/
+│
+├── 📁 00_quick_reference/
+│   └── 📄 decision_tree.md
+│
+├── 📁 01_high_severity_p1_p2/
+│   ├── 📄 incident_01_connection_pool_exhaustion.md
+│   ├── 📄 incident_02_high_replication_lag.md
+│   ├── 📄 incident_03_backup_failure.md
+│   ├── 📄 incident_04_disk_usage_85_percent.md
+│   ├── 📄 incident_05_primary_process_not_responding.md
+│   └── 📄 incident_06_deadlock.md
+│
+├── 📁 02_performance_slow_queries/
+│   ├── 📄 incident_07_long_running_query_blocking.md
+│   ├── 📄 incident_08_slow_queries_p95_doubled.md
+│   ├── 📄 incident_09_query_plan_regression.md
+│   └── 📄 incident_10_high_cpu_usage.md
+│
+├── 📁 03_maintenance_vacuum/
+│   ├── 📄 incident_11_autovacuum_not_keeping_up.md
+│   ├── 📄 incident_12_txid_wraparound_imminent.md
+│   ├── 📄 incident_13_table_bloat.md
+│   └── 📄 incident_14_autovacuum_worker_stuck.md
+│
+├── 📁 04_storage_disk/
+│   ├── 📄 incident_15_disk_usage_gt_95_percent.md
+│   ├── 📄 incident_16_slow_disk_io.md
+│   └── 📄 incident_17_tablespace_full.md
+│
+├── 📁 05_replication_ha/
+│   ├── 📄 incident_18_replica_out_of_sync.md
+│   ├── 📄 incident_19_logical_replication_slot_memory.md
+│   └── 📄 incident_20_failback_after_promotion.md
+│
+├── 📁 06_backup_recovery/
+│   ├── 📄 incident_21_pitr_failure.md
+│   ├── 📄 incident_22_backup_integrity_check_fails.md
+│   └── 📄 incident_23_wal_archiving_fails.md
+│
+├── 📁 07_security_access/
+│   ├── 📄 incident_24_user_cannot_connect.md
+│   ├── 📄 incident_25_role_privileges_missing.md
+│   └── 📄 incident_26_ssl_certificate_expired.md
+│
+├── 📁 08_configuration_parameters/
+│   ├── 📄 incident_27_postgresql_conf_restart_needed.md
+│   ├── 📄 incident_28_shared_buffers_misconfiguration.md
+│   └── 📄 incident_29_max_connections_too_low.md
+│
+├── 📁 09_monitoring_alerts/
+│   ├── 📄 incident_30_monitoring_agent_down.md
+│   └── 📄 incident_31_alerts_not_firing.md
+│
+├── 📁 10_disaster_recovery/
+│   ├── 📄 incident_32_recover_dropped_table.md
+│   ├── 📄 incident_33_restore_single_corrupted_table.md
+│   └── 📄 incident_34_cross_region_failover_drill.md
+│
+├── 📁 11_change_management/
+│   ├── 📄 incident_35_explain_plan_changed.md
+│   ├── 📄 incident_36_migration_zero_downtime.md
+│   └── 📄 incident_37_major_version_upgrade.md
+│
+├── 📁 12_adjacent_systems/
+│   ├── 📄 incident_38_pgbouncer_down.md
+│   ├── 📄 incident_39_ha_proxy_marking_db_unhealthy.md
+│   └── 📄 incident_40_kubernetes_db_pod_crashlooping.md
+│
+├── 📄 README.md
+└── 📄 TEMPLATE_runbook.md

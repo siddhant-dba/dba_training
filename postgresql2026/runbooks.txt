@@ -1,71 +1,116 @@
-📁 postgres-runbooks/
+📁 postgresql-dba-runbooks/
+│
+├── 📄 README.md
+├── 📄 contributing-guide.md
+├── 📄 operating-philosophy.md
+├── 📄 runbook-template.md
 │
 ├── 📁 00_quick_reference/
 │   └── 📄 decision_tree.md
 │
-├── 📁 01_high_severity_p1_p2/
-│   ├── 📄 incident_01_connection_pool_exhaustion.md
-│   ├── 📄 incident_02_high_replication_lag.md
-│   ├── 📄 incident_03_backup_failure.md
-│   ├── 📄 incident_04_disk_usage_85_percent.md
-│   ├── 📄 incident_05_primary_process_not_responding.md
-│   └── 📄 incident_06_deadlock.md
+├── 📁 01_incident_response/ (My original P1/P2 incidents)
+│   ├── 📄 connection_pool_exhaustion.md
+│   ├── 📄 high_replication_lag.md
+│   ├── 📄 backup_failure_no_backup_25h.md
+│   ├── 📄 disk_usage_85_percent.md
+│   ├── 📄 primary_process_not_responding.md
+│   ├── 📄 deadlock.md
+│   ├── 📄 slow_queries_p95_doubled.md
+│   ├── 📄 autovacuum_not_keeping_up.md
+│   ├── 📄 long_running_query_blocking.md
+│   ├── 📄 transaction_id_wraparound_imminent.md
+│   ├── 📄 table_bloat.md
+│   ├── 📄 index_bloat.md
+│   ├── 📄 high_cpu_usage.md
+│   ├── 📄 out_of_memory_kill.md
+│   ├── 📄 io_saturation.md
+│   ├── 📄 temp_file_explosion.md
+│   ├── 📄 checkpoint_too_frequent.md
+│   ├── 📄 wal_file_accumulation.md
+│   ├── 📄 logical_replication_slot_memory.md
+│   └── 📄 standby_lag_missing_wal.md
 │
-├── 📁 02_performance_slow_queries/
-│   ├── 📄 incident_07_long_running_query_blocking.md
-│   ├── 📄 incident_08_slow_queries_p95_doubled.md
-│   ├── 📄 incident_09_query_plan_regression.md
-│   └── 📄 incident_10_high_cpu_usage.md
+├── 📁 02_high_availability/ (From repository)
+│   ├── 📄 failover-procedures.md
+│   ├── 📄 patroni-cluster-setup.md
+│   ├── 📄 replication-lag-troubleshooting.md
+│   ├── 📄 split-brain-recovery.md
+│   ├── 📄 switchover-zero-downtime.md
+│   ├── 📄 replica_out_of_sync.md (from my list)
+│   ├── 📄 failback_after_promotion.md (from my list)
+│   └── 📄 synchronous_replication_stuck.md (from my list)
 │
-├── 📁 03_maintenance_vacuum/
-│   ├── 📄 incident_11_autovacuum_not_keeping_up.md
-│   ├── 📄 incident_12_txid_wraparound_imminent.md
-│   ├── 📄 incident_13_table_bloat.md
-│   └── 📄 incident_14_autovacuum_worker_stuck.md
+├── 📁 03_backup_recovery/ (From repository)
+│   ├── 📄 backup-verification-automation.md
+│   ├── 📄 disaster-recovery-drill-checklist.md
+│   ├── 📄 pgbackrest-HA-setup.md
+│   ├── 📄 pitr-recovery-procedures.md
+│   ├── 📄 wal-g-continuous-archiving.md
+│   ├── 📄 backup_integrity_check_fails.md (from my list)
+│   ├── 📄 pitr_failure.md (from my list)
+│   ├── 📄 wal_archiving_fails.md (from my list)
+│   ├── 📄 recover_dropped_table.md (from my list)
+│   └── 📄 restore_single_corrupted_table.md (from my list)
 │
-├── 📁 04_storage_disk/
-│   ├── 📄 incident_15_disk_usage_gt_95_percent.md
-│   ├── 📄 incident_16_slow_disk_io.md
-│   └── 📄 incident_17_tablespace_full.md
+├── 📁 04_performance_tuning/ (From repository)
+│   ├── 📄 autovacuum-tuning-guide.md
+│   ├── 📄 connection-pooling-patterns.md
+│   ├── 📄 index-strategy-decision-tree.md
+│   ├── 📄 query-optimization-workflow.md
+│   ├── 📄 slow-query-investigation.md
+│   ├── 📄 query_plan_regression.md (from my list)
+│   └── 📄 unused_duplicate_indexes.md (from my list)
 │
-├── 📁 05_replication_ha/
-│   ├── 📄 incident_18_replica_out_of_sync.md
-│   ├── 📄 incident_19_logical_replication_slot_memory.md
-│   └── 📄 incident_20_failback_after_promotion.md
+├── 📁 05_migrations/ (From repository)
+│   ├── 📄 logical-replication-cutover.md
+│   ├── 📄 pglogical-migration-runbook.md
+│   ├── 📄 tablespace-migration-procedure.md
+│   ├── 📄 zero-downtime-upgrade-11to16.md
+│   ├── 📄 major_version_upgrade.md (from my list)
+│   └── 📄 migration_zero_downtime_schema.md (from my list)
 │
-├── 📁 06_backup_recovery/
-│   ├── 📄 incident_21_pitr_failure.md
-│   ├── 📄 incident_22_backup_integrity_check_fails.md
-│   └── 📄 incident_23_wal_archiving_fails.md
+├── 📁 06_monitoring_alerting/ (From repository)
+│   ├── 📄 alert-thresholds-tuning.md
+│   ├── 📄 critical-metrics-baseline.md
+│   ├── 📄 on-call-escalation-matrix.md
+│   ├── 📄 pmm-setup-best-practices.md
+│   ├── 📄 monitoring_agent_down.md (from my list)
+│   ├── 📄 alerts_not_firing.md (from my list)
+│   └── 📄 logging_rotation_failure.md (from my list)
 │
-├── 📁 07_security_access/
-│   ├── 📄 incident_24_user_cannot_connect.md
-│   ├── 📄 incident_25_role_privileges_missing.md
-│   └── 📄 incident_26_ssl_certificate_expired.md
+├── 📁 07_knowledge_base/ (From repository)
+│   ├── 📄 common-error-codes.md
+│   ├── 📄 customer-communication-templates.md
+│   ├── 📄 linux-troubleshooting-toolkit.md
+│   └── 📄 postgres-internals-quick-ref.md
 │
-├── 📁 08_configuration_parameters/
-│   ├── 📄 incident_27_postgresql_conf_restart_needed.md
-│   ├── 📄 incident_28_shared_buffers_misconfiguration.md
-│   └── 📄 incident_29_max_connections_too_low.md
+├── 📁 08_security_access/ (My original)
+│   ├── 📄 user_cannot_connect.md
+│   ├── 📄 role_privileges_missing.md
+│   ├── 📄 ssl_certificate_expired.md
+│   ├── 📄 superuser_locked_out.md
+│   └── 📄 pg_hba_conf_misconfigured.md
 │
-├── 📁 09_monitoring_alerts/
-│   ├── 📄 incident_30_monitoring_agent_down.md
-│   └── 📄 incident_31_alerts_not_firing.md
+├── 📁 09_storage_disk/ (My original)
+│   ├── 📄 disk_usage_gt_95_percent.md
+│   ├── 📄 slow_disk_io.md
+│   ├── 📄 tablespace_full.md
+│   └── 📄 uncontrolled_log_growth.md
 │
-├── 📁 10_disaster_recovery/
-│   ├── 📄 incident_32_recover_dropped_table.md
-│   ├── 📄 incident_33_restore_single_corrupted_table.md
-│   └── 📄 incident_34_cross_region_failover_drill.md
+├── 📁 10_configuration_parameters/ (My original)
+│   ├── 📄 postgresql_conf_change_restart.md
+│   ├── 📄 shared_buffers_misconfiguration.md
+│   ├── 📄 max_connections_too_low.md
+│   └── 📄 timezone_locale_misconfiguration.md
 │
-├── 📁 11_change_management/
-│   ├── 📄 incident_35_explain_plan_changed.md
-│   ├── 📄 incident_36_migration_zero_downtime.md
-│   └── 📄 incident_37_major_version_upgrade.md
+├── 📁 11_adjacent_systems/ (My original)
+│   ├── 📄 pgbouncer_down.md
+│   ├── 📄 ha_proxy_marking_db_unhealthy.md
+│   ├── 📄 kubernetes_db_pod_crashlooping.md
+│   └── 📄 cloud_snapshot_failing.md
 │
-├── 📁 12_adjacent_systems/
-│   ├── 📄 incident_38_pgbouncer_down.md
-│   ├── 📄 incident_39_ha_proxy_marking_db_unhealthy.md
-│   └── 📄 incident_40_kubernetes_db_pod_crashlooping.md
-│
-├── 📄 README.md
-└── 📄 TEMPLATE_runbook.md
+└── 📁 12_disaster_recovery/ (My original)
+    ├── 📄 recover_dropped_table.md
+    ├── 📄 restore_single_corrupted_table.md
+    ├── 📄 cross_region_failover_drill.md
+    └── 📄 restore_test_failure.md

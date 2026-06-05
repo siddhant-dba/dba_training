@@ -1,0 +1,2653 @@
+================================================================================
+         DBA TRAINING PROGRAM — ALL AREAS — LEVEL 4 (EXPERT / ARCHITECT)
+         PostgreSQL on Debian Linux
+         Complete ALL tasks before requesting L5
+================================================================================
+
+LEVEL 4 OVERVIEW
+-----------------
+At L1 you identified. At L2 you understood. At L3 you operated.
+At L4 you DESIGN and LEAD.
+
+You are no longer executing tasks handed to you — you are designing the
+systems, processes, and architectures that others will operate. You make
+technology choices, justify them commercially, mentor junior DBAs, and own
+the strategic direction of the database environment.
+
+L4 tasks are longer, ambiguous, and cross-functional. There are often no
+single right answers. You must reason from first principles, defend your
+decisions, and adapt when constraints change. You will write runbooks,
+design standards, propose architectures, and lead from the front.
+
+L4 Promotion Criteria: You will be ready for L5 when your outputs show
+original thinking, defensible architectural decisions, team-level impact,
+and commercial awareness. Correct execution alone is not enough — you must
+also be able to teach what you know and challenge what you inherit.
+
+PROGRESS DASHBOARD (L4 Start)
+------------------------------
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L4/10  ║ 0            ║ ~11           ║ 30%          ║
+║ 2. Provision ║ L4/10  ║ 0            ║ ~9            ║ 30%          ║
+║ 3. Security  ║ L4/10  ║ 0            ║ ~9            ║ 30%          ║
+║ 4. Data Mgmt ║ L4/10  ║ 0            ║ ~10           ║ 30%          ║
+║ 5. Perf/Mon  ║ L4/10  ║ 0            ║ ~11           ║ 30%          ║
+║ 6. Maint/Com ║ L4/10  ║ 0            ║ ~9            ║ 30%          ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~30%                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Total estimated L4 tasks: ~59 tasks
+Format: Scenario → Design → Justify → Deliver → Defend
+
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 1 — DATABASE SERVER / INSTANCE
+   Level 4 — Expert / Architect (~11 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~11
+TIME   : 90–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Multi-Region Active-Passive Database Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A single-region database is a single point of failure for the entire business.
+Designing multi-region means surviving data center loss. At L4 you do not
+just configure replication — you architect the topology, choose consistency
+guarantees, design the failover automation, and cost it out.
+
+SCENARIO
+The CTO asks: "Design a database architecture that can survive the complete
+loss of our primary AWS region (eu-west-1). We have users in Europe and Asia.
+The business cannot tolerate more than 60 seconds of downtime and 30 seconds
+of data loss."
+
+REQUIREMENTS
+- RTO: 60 seconds
+- RPO: 30 seconds
+- Regions: eu-west-1 (primary), ap-southeast-1 (DR)
+- Traffic: 80% EU, 20% Asia
+- Database: PostgreSQL 16, 500GB, 2000 TPS at peak
+
+YOUR TASK (Architect, document, cost, defend)
+1. Choose replication mode:
+   - Synchronous replication: RPO = 0, but adds latency to every write
+     (EU→Asia round trip = ~170ms; your write latency becomes 170ms+)
+   - Asynchronous replication: RPO = lag (could be 30 sec), writes stay fast
+   - Semi-synchronous (synchronous_commit=remote_apply): hybrid, most practical
+   Justify your choice for a 30-second RPO vs synchronous cost.
+
+2. Design the topology:
+   - Primary in eu-west-1 with synchronous_commit = remote_write to ap-southeast-1
+   - ap-southeast-1 standby with hot standby enabled (can serve reads)
+   - WAL archiving to S3 (both regions) for PITR beyond the standby
+   - Read replicas in each region for reporting workloads
+
+3. Design automatic failover:
+   - Failure detection: if primary is unreachable for 15 seconds, failover begins
+   - Tool choice: pg_auto_failover vs Patroni vs custom script — justify
+   - Automation: promote ap-southeast-1 standby, update DNS (Route 53 or similar)
+   - Total time: detection (15s) + promote (5s) + DNS TTL (30s) = ~50s — meets RTO
+
+4. Design the connection layer:
+   - Application connects to a virtual IP or DNS-based endpoint
+   - On failover, DNS updates, applications reconnect automatically
+   - Connection pooler (PgBouncer) in each region shields apps from failover
+     reconnection storms
+
+5. Design the data flow:
+   - Writes: eu-west-1 primary, replicated async to ap-southeast-1
+   - EU reads: local replica in eu-west-1
+   - Asia reads: ap-southeast-1 standby (may be slightly stale — is this acceptable?)
+
+6. Cost the architecture:
+   - 2× EC2 instances for primary + standby
+   - 2× read replicas (one per region)
+   - S3 storage for WAL archive (ongoing)
+   - Data transfer costs (WAL streaming cross-region)
+   - PgBouncer instances × 2 regions
+   Produce a rough monthly cost estimate.
+
+7. Write the architecture decision record (ADR):
+   - Context: What problem are we solving?
+   - Decision: What architecture did we choose?
+   - Consequences: What do we gain? What do we give up?
+   - Alternatives considered: What did we reject and why?
+
+SAFETY
+Risk: This is a design task — no system changes. The output is a document.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Multi-region architecture design — topology, failover automation, cost
+
+REVIEW QUESTION
+Your design uses asynchronous replication (for write latency). A total network
+partition between eu-west-1 and ap-southeast-1 lasts 90 seconds before the
+primary fails. During that 90 seconds, 3,000 transactions committed on the
+primary but never reached the standby. You failover. How does the application
+discover which transactions were lost? Is this 30-second-RPO or 90-second-RPO?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~11
+TIME   : 90–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build a PostgreSQL Runbook for On-Call Engineers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L3 you handled incidents. At L4 you make it possible for others to handle
+them without you. A runbook translates your expertise into a structured,
+followable guide for someone who may not be a DBA but is on-call at 3 AM.
+A good runbook shortens MTTR. A bad one makes things worse.
+
+SCENARIO
+Your team is growing. Junior engineers and SREs are joining the on-call
+rotation. They are not PostgreSQL experts. You must produce a runbook
+that enables them to handle the top 8 most common PostgreSQL incidents
+competently.
+
+YOUR TASK (Design and write the runbook)
+1. Identify the 8 most common incidents in your environment:
+   Based on your L3 work, you know these happen regularly:
+   - Connection pool exhaustion
+   - High replication lag (>5 minutes)
+   - Backup failure (no backup in 25+ hours)
+   - Disk usage >85%
+   - Long-running query blocking others (lock wait)
+   - Autovacuum not keeping up (dead tuples >30%)
+   - Primary PostgreSQL process not responding
+   - Slow queries (P95 latency doubled)
+
+2. For each incident, write a structured runbook section:
+
+   SECTION FORMAT:
+   ────────────────────────────────────────────────────
+   INCIDENT: [Name]
+   SEVERITY: [P1 / P2 / P3]
+   SYMPTOM: What the alert says or what the user reports
+   DETECTION: How to confirm this is actually happening
+   IMPACT: What breaks if you do nothing
+   IMMEDIATE ACTION: What to do in the first 5 minutes
+   INVESTIGATION: Step-by-step diagnostic commands
+   RESOLUTION: What to do, in order, with commands
+   ESCALATION: When to wake the senior DBA
+   ROLLBACK: How to undo your action if it makes things worse
+   POST-INCIDENT: What to do after it is resolved
+   ────────────────────────────────────────────────────
+
+3. Write the runbook for all 8 incidents using that format.
+
+4. Make it safe for non-DBAs:
+   - Every command must be copy-paste ready (no "run the appropriate query")
+   - Every destructive action must be preceded by a WARNING block
+   - Assume the reader has never used psql before (link to basics)
+
+5. Add a quick reference decision tree at the front:
+   "Users say DB is slow → check connections first (see Incident #1)
+    → if connections are fine, check locks (see Incident #5)
+    → if no locks, check slow queries (see Incident #8)"
+
+6. Review the runbook:
+   - Give it to a non-DBA colleague. Can they follow it?
+   - What was confusing? Rewrite it.
+   - Test: simulate an incident and time how long the runbook takes to follow.
+
+SAFETY
+Risk: Medium
+A runbook that gives bad commands to on-call engineers during an incident
+can cause more damage. Every command must be verified and safe. All
+destructive commands must have a warning.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Runbook design and authoring — incident documentation for non-experts
+
+REVIEW QUESTION
+A junior SRE uses your connection pool runbook and terminates 50 sessions
+to fix the connection problem. But the sessions they terminated were being
+held open by a connection pooler (PgBouncer), which immediately reconnected
+them. The problem is unchanged. What was missing from your runbook, and how
+do you fix this specific scenario documentation?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 3 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Evaluate PostgreSQL vs Alternatives and Produce a Technology Selection Report
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A senior DBA is expected to have opinions about when PostgreSQL is the right
+choice and when it is not. Technology selection reports prevent expensive
+decisions made on hype rather than evidence. A DBA at L4 can write one.
+
+SCENARIO
+Your product team asks: "We're designing a new system to process 50 million
+IoT sensor readings per day with complex time-series queries. Should we use
+PostgreSQL, TimescaleDB, InfluxDB, or ClickHouse? Give us a recommendation."
+
+YOUR TASK (Technology evaluation)
+1. Understand the requirements:
+   - Write volume: 50M rows/day ≈ 580 inserts/second sustained
+   - Query patterns: aggregate by time window, sensor ID, rolling averages
+   - Data retention: keep 2 years hot, archive older
+   - Team expertise: team knows SQL, not NoSQL
+   - Integration: existing PostgreSQL infrastructure
+
+2. Evaluate each option against requirements:
+
+   PostgreSQL (native):
+   - Strengths: team familiarity, ACID, rich SQL, existing infrastructure
+   - Weaknesses: time-series queries are not native, partition management manual
+   - Performance at 580 inserts/sec: feasible on good hardware
+   - Verdict: workable but not optimised
+
+   TimescaleDB (PostgreSQL extension):
+   - Strengths: SQL-compatible, native time-series functions, automatic partitioning
+   - Weaknesses: commercial tier for clustering, adds complexity
+   - Performance: purpose-built for this workload, 10-100x faster than raw PG
+   - Verdict: best fit if team stays in PostgreSQL ecosystem
+
+   InfluxDB:
+   - Strengths: best-in-class time-series performance, purpose-built
+   - Weaknesses: different query language (InfluxQL/Flux), no SQL joins
+   - Performance: highest write throughput of all candidates
+   - Verdict: best raw performance, worst ecosystem fit
+
+   ClickHouse:
+   - Strengths: columnar storage, excellent for OLAP aggregations
+   - Weaknesses: not designed for high-frequency inserts, eventual consistency
+   - Performance: fastest for read aggregations, but ingestion needs batching
+   - Verdict: better for analytics after ingestion, not the write path
+
+3. Apply a scoring matrix:
+   Define criteria weights (write throughput, query speed, operational complexity,
+   team expertise, cost, ecosystem fit) and score each option 1-5.
+   Show your working.
+
+4. Produce the recommendation:
+   Recommend TimescaleDB as the optimal choice, with rationale. Acknowledge
+   what is sacrificed. Define the conditions under which you would revisit.
+
+5. Write the report (2-4 pages):
+   - Executive summary (1 paragraph)
+   - Requirements analysis
+   - Candidate evaluation
+   - Scoring matrix
+   - Recommendation + rationale
+   - Risks and mitigations
+   - Decision owner and review date
+
+SAFETY
+Risk: None (design and research task)
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Technology evaluation — structured analysis, scoring matrices, commercial reports
+
+REVIEW QUESTION
+Your report recommends TimescaleDB. The engineering manager says "InfluxDB
+scored higher on performance. Why didn't you choose it?" Write a 3-paragraph
+defence of your recommendation that addresses performance while explaining
+why it is not the only factor.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 4 of ~11
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Mentor a Junior DBA Through Their First Production Incident
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Technical expertise without the ability to transfer it does not scale.
+At L4 you multiply your impact by developing others. Mentoring during a
+live incident is the most intense and effective form of knowledge transfer.
+
+SCENARIO
+A junior DBA (6 months of experience, L1/L2 level) is on-call when a
+production alert fires: "Autovacuum not running, dead tuple count critical."
+They call you. Instead of taking over, you guide them through it.
+
+YOUR TASK (Mentoring framework)
+1. Design your mentoring approach before the incident:
+   - Will you take over the keyboard or coach from the side?
+   - What is the junior DBA's actual knowledge level? (Establish this first)
+   - What do they know about VACUUM? (Ask, don't assume)
+
+2. Guide the incident (not fix it yourself):
+   - Ask them to explain what the alert means (what is a dead tuple?)
+   - Ask them what commands they would run to investigate
+   - Fill in gaps: "Have you looked at pg_stat_user_tables yet?"
+   - Let them run the commands and interpret the output
+   - Redirect if they go in the wrong direction
+
+3. Key teaching moments to hit during this incident:
+   - Why autovacuum exists and what happens without it
+   - The difference between autovacuum not running vs not keeping up
+   - How to check if a table's autovacuum is blocked (long-running transactions?)
+   - How to manually trigger vacuum safely
+   - When to escalate vs when to resolve independently
+
+4. Post-incident debrief (the most important part):
+   - Sit with them for 30 minutes after
+   - Ask: "What did you learn?"
+   - Correct misconceptions gently
+   - Ask: "What would you do differently next time?"
+   - Assign them to write up the incident and solution (their words, not yours)
+
+5. Follow-up:
+   - One week later: simulate the same incident again, without your help
+   - Did they remember? What still needed reinforcement?
+   - Document their progress (for performance reviews and your own coaching)
+
+6. Build a mentoring plan for this DBA:
+   - What are their current gaps? (Identify top 5)
+   - What incidents or tasks would build those skills?
+   - What is the timeline to get them to L3 independence?
+
+SAFETY
+Risk: Medium
+Letting a junior DBA make decisions on production requires careful oversight.
+Be ready to intervene if they are about to cause damage. Coach from the side,
+but keep your hand near the brake.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Mentoring and knowledge transfer — incident-based coaching
+
+REVIEW QUESTION
+The junior DBA makes a mistake during the incident (manually runs VACUUM FULL
+on a production table, locking it for 20 minutes). No data was lost but the
+application was blocked. How do you handle this in the debrief without
+destroying their confidence, and what process change prevents this next time?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 5 of ~11
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Database Platform Engineering Strategy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A DBA team that manually provisions every database is a bottleneck. Platform
+engineering moves the DBA from ticket-taker to platform builder — you build
+the systems that enable teams to self-serve safely and consistently.
+
+SCENARIO
+Your organisation has 12 engineering teams, 80+ databases, 3 DBAs. The DBA
+team is overwhelmed with provisioning requests, access control changes, and
+minor incident tickets. You need a platform strategy to scale the DBA impact
+without scaling the headcount.
+
+YOUR TASK (Platform strategy design)
+1. Categorise current DBA work by effort and repetition:
+   - High effort + repetitive: provisioning (target for automation)
+   - High effort + unique: incident response, architecture (keep manual)
+   - Low effort + repetitive: permission grants, size queries (self-service)
+   - Low effort + unique: ad-hoc queries (minimal investment)
+
+2. Design the platform components:
+
+   Component A: Self-service provisioning API
+   - Engineers submit a provisioning request (name, owner, size, purpose)
+   - API validates against standards (naming, disk, limits)
+   - API provisions database, roles, schemas, backups, monitoring automatically
+   - DBA is notified; reviews only edge cases
+
+   Component B: Standardised database templates
+   - OLTP template: optimised for high-concurrency transactional workloads
+   - Analytics template: optimised for batch read/aggregation
+   - Development template: minimal resources, auto-expired in 30 days
+   Engineers choose a template; platform applies known-good settings
+
+   Component C: Infrastructure-as-code (Terraform / Ansible)
+   - All database infrastructure defined in code
+   - Changes reviewed via pull request (DBA is code reviewer, not executor)
+   - Reproducible: deploy the same database config to dev/staging/prod
+
+   Component D: Centralised monitoring
+   - All databases send metrics to central platform
+   - Dashboards visible to all teams
+   - Alerts routed to the owning team, not just DBAs
+
+3. Define the DBA role in the new model:
+   - Platform builder: build and maintain the provisioning API
+   - Code reviewer: review infrastructure changes (not executor)
+   - Incident specialist: handle incidents that self-service cannot resolve
+   - Advisor: advise teams on schema design, query optimisation
+
+4. Design the transition plan:
+   - Phase 1 (Month 1-3): Build provisioning API
+   - Phase 2 (Month 4-6): Migrate existing databases to IaC
+   - Phase 3 (Month 7-9): Train teams on self-service
+   - Phase 4 (Month 10+): DBA team focuses on platform improvements
+
+5. Measure success:
+   - Metric 1: Provisioning request turnaround (from 3 days to 15 minutes)
+   - Metric 2: DBA ticket volume (reduce by 60% in 6 months)
+   - Metric 3: Database incidents (reduce by 40% — better standards prevent them)
+
+SAFETY
+Risk: Medium
+Platform automation amplifies mistakes as well as successes. Robust validation,
+testing, and audit trails are mandatory.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Platform engineering strategy — automation, self-service, DBA role evolution
+
+REVIEW QUESTION
+You build the self-service provisioning API. A team uses it to provision
+a 2TB database for what turns out to be a temporary project. 6 months later
+it sits unused. The platform has no "decommission when idle" feature. At
+what point is the platform enabling waste rather than efficiency, and how
+do you design against this?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 6 of ~11
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Lead a Post-Incident Review for a Major Outage
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A major outage leaves technical debt: broken trust, unresolved root causes,
+demoralised team. The post-incident review is your opportunity to transform
+a failure into systemic improvement. At L4 you lead this process.
+
+SCENARIO
+Three days ago, a 4-hour outage occurred. Root cause: a developer ran
+ALTER TABLE on a heavily trafficked table without a maintenance window.
+PostgreSQL held an access exclusive lock, blocking all reads and writes.
+Connection pool filled. Applications failed. $200,000 of revenue lost.
+Five engineering teams are upset. The CTO wants answers.
+
+YOUR TASK (Lead the postmortem)
+1. Prepare the review meeting:
+   - Invite: DBA team, DevOps, Engineering leads, CTO (optional)
+   - Set tone: blameless. The goal is systemic improvement, not punishment.
+   - Gather: timeline of events, all relevant logs, all actions taken
+
+2. Facilitate the review (design the agenda):
+   - 5 min: Review the timeline (factual, no opinions)
+   - 15 min: Five Whys to root cause (what could have prevented this?)
+   - 20 min: Identify contributing factors (what made this worse?)
+   - 20 min: Design action items (what changes prevent recurrence?)
+   - 10 min: Assign owners and deadlines
+
+3. Guide the root cause analysis:
+   The immediate cause was the ALTER TABLE. But the deeper causes were:
+   - No mechanism preventing schema changes during business hours
+   - No monitoring that detected the growing lock before it was catastrophic
+   - No procedure requiring DBA approval for DDL on live tables
+   - No rehearsal or canary process for DDL changes
+
+4. Design the corrective actions:
+   - Short-term (this week): document DDL change procedure
+   - Medium-term (1 month): implement DDL review approval gate
+   - Long-term (3 months): build monitoring for lock wait chains
+
+5. Write the postmortem document:
+   - Summary (3 sentences): what happened, impact, resolution
+   - Timeline (factual, timestamped)
+   - Root cause analysis (5 Whys tree)
+   - Contributing factors
+   - Action items (owner, deadline, success metric)
+   - Lessons learned (what worked in the response, what did not)
+
+6. Present to the CTO:
+   - Do not speculate about blame
+   - Do not over-promise ("this will never happen again")
+   - Present: what happened, what we learned, what we are doing about it
+   - Acknowledge the impact without defensiveness
+
+SAFETY
+Risk: Medium (organisational/people risk)
+Blameless postmortems require facilitation skill. Avoid letting the meeting
+become a blame session. If it heads that way, redirect explicitly.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Postmortem leadership — blameless analysis, action item design, executive presentation
+
+REVIEW QUESTION
+The CTO asks after the meeting: "Who is responsible for this?" How do you
+answer in a way that satisfies their need for accountability without
+assigning personal blame and destroying psychological safety on the team?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 7 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Architect a Zero-Downtime Major Version Upgrade Strategy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+pg_upgrade requires downtime. For large databases, even 30 minutes is
+unacceptable. At L4 you design a zero-downtime upgrade strategy using
+logical replication, shadow instances, and application-level versioning.
+
+SCENARIO
+You must upgrade 6 production databases (total 2TB) from PostgreSQL 14
+to PostgreSQL 16. Business requires: zero planned downtime (applications
+run 24/7 globally). You have a 5-minute maintenance window maximum.
+
+YOUR TASK (Design zero-downtime upgrade)
+1. Understand why pg_upgrade cannot be zero-downtime:
+   - pg_upgrade stops the old cluster, migrates, starts the new
+   - For 2TB at 500MB/s: 4,000 seconds (67 minutes) minimum
+   - This is categorically too long. You need a different approach.
+
+2. Design the logical replication approach:
+   Step 1: Build a new PostgreSQL 16 instance (empty)
+   Step 2: On PG14 primary, create a publication for all tables
+   Step 3: On PG16 instance, create a subscription to the PG14 publication
+   Step 4: Let replication sync (may take hours for 2TB)
+   Step 5: When lag is near zero (< 1 second), execute the cutover:
+           - Stop writes to PG14 (set to read-only or pause app)
+           - Wait for final WAL to apply on PG16 (seconds)
+           - Redirect application to PG16
+           - Resume writes
+   Total write-pause duration: 5–30 seconds
+
+3. Identify limitations of logical replication upgrade:
+   - Schema must be manually migrated first (DDL is not replicated)
+   - Sequences must be advanced on PG16 to avoid collisions
+   - Large objects (pg_largeobject) are NOT replicated
+   - Unlogged tables are NOT replicated
+   - Extension-specific objects may not replicate cleanly
+
+4. Design the migration runbook for 6 databases:
+   - Sequence: upgrade in order of criticality (least critical first)
+   - Lessons from each inform the next
+   - Build rollback step at each stage
+
+5. Design the application cutover mechanism:
+   - Application reads a config flag: "DB_HOST = pg14 or pg16"
+   - At cutover moment: flip the flag (< 1 second)
+   - New connections go to PG16; in-flight on PG14 complete then stop
+   - Connection pooler handles reconnection transparently
+
+6. Write the zero-downtime upgrade runbook including:
+   - Pre-upgrade checklist (6 items minimum)
+   - Execution steps with timing estimates
+   - Validation steps after each stage
+   - Rollback procedure at each stage
+   - Post-upgrade cleanup
+
+SAFETY
+Risk: HIGH
+Logical replication upgrade is complex and can fail silently (missing data,
+schema drift). Test the entire procedure multiple times on copies before
+executing on production.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Zero-downtime major version upgrade — logical replication strategy
+
+REVIEW QUESTION
+Three days into the logical replication sync (still syncing 2TB), you
+discover that 12 tables in the source database use GENERATED ALWAYS AS
+columns, which logical replication cannot replicate. You are already
+halfway through the sync. What are your options, and which would you choose?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 8 of ~11
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Define Database Engineering Standards for the Organisation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Standards prevent 80% of problems before they happen. An expert DBA
+codifies hard-won knowledge into standards that the whole organisation
+follows, reducing incidents, inconsistency, and rework.
+
+SCENARIO
+You are the lead DBA. No written standards exist. Databases are inconsistently
+named, security is inconsistent, backups are variable. You must write the
+official database engineering standards document.
+
+YOUR TASK (Write the standards document)
+1. Cover each domain with concrete, measurable standards:
+
+   NAMING STANDARDS
+   - Databases: {service}_{env} e.g. billing_prod, auth_staging
+   - Roles: {purpose}_{db}_{access} e.g. app_billing_rw, dba_admin
+   - Tables: singular, snake_case, no abbreviations e.g. customer_order
+   - Indexes: idx_{table}_{columns} e.g. idx_order_created_status
+   - Constraints: {type}_{table}_{column} e.g. fk_order_customer_id
+
+   SECURITY STANDARDS
+   - All production passwords: SCRAM-SHA-256 minimum
+   - No SUPERUSER roles for applications (ever)
+   - SSL required for all network connections
+   - PUBLIC schema CREATE revoked on all databases
+   - Principle of least privilege enforced (documented role matrix)
+
+   BACKUP STANDARDS
+   - Daily full backup, WAL archiving enabled
+   - Backups encrypted at rest (AES-256 minimum)
+   - Off-site copy mandatory (different region)
+   - Monthly restore test, results documented
+   - Retention: 30 days online, 7 years offline
+
+   PERFORMANCE STANDARDS
+   - shared_buffers: 25% of available RAM
+   - All production indexes created CONCURRENTLY
+   - Query P95 latency target documented per database
+   - pg_stat_statements mandatory on all production instances
+
+   CHANGE MANAGEMENT
+   - All schema changes via pull request with DBA review
+   - No DDL on production without approved change ticket
+   - All changes must have rollback procedure documented
+   - Changes executed only in approved maintenance windows
+
+2. For each standard, document:
+   - The rule (precise, testable)
+   - The rationale (why this matters)
+   - The exception process (how to get a waiver)
+   - The audit mechanism (how we check compliance)
+
+3. Write a compliance validation script:
+   - A SQL/bash script that checks each production instance against
+     the standards and produces a pass/fail report per standard
+
+4. Publish and socialise the standards:
+   - Where do they live? (wiki, git repo)
+   - How are they versioned? (version number, changelog)
+   - How are teams notified of changes?
+   - Who can propose changes? (PR process)
+
+SAFETY
+Risk: Low (standards document), Medium (when enforcing them)
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Standards authorship — precision, enforceability, exception management
+
+REVIEW QUESTION
+A team argues that your 25%-of-RAM shared_buffers standard is wrong for
+their workload (they have a large dataset and want 40% allocated). They
+have data showing their queries improve with more cache. Do you grant the
+exception? What does a well-designed exception process look like?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 9 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design an Observability Stack for Database Fleets
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L3 you monitored one database. At L4 you design the observability platform
+for a fleet of 50+ databases. This requires standardised metric collection,
+centralised dashboards, intelligent alerting, and log aggregation.
+
+SCENARIO
+You have 60 PostgreSQL instances across development, staging, and production.
+No centralised monitoring exists. DBAs rely on SSH and ad-hoc queries. You
+need to design and partially implement a production observability stack.
+
+YOUR TASK (Observability architecture)
+1. Define the three pillars of observability for databases:
+   - Metrics: numeric values over time (QPS, latency, connections, cache hit)
+   - Logs: structured events (slow queries, errors, DDL changes)
+   - Traces: request flows across services into the database (optional at L4)
+
+2. Design the metric collection layer:
+   - Choose: postgres_exporter (Prometheus) or custom pg_stat_* queries
+   - Deployment: one exporter per PostgreSQL instance (sidecar pattern)
+   - Collection interval: 15 seconds for operational metrics, 60 seconds for capacity
+   - Central aggregation: Prometheus with appropriate retention
+
+3. Design the metric taxonomy:
+   Define 20 standard metrics that ALL instances must report. For each:
+   - Metric name (prometheus-style: postgres_stat_activity_count)
+   - Description
+   - Query (which pg_stat_* view)
+   - Labels (instance, database, environment)
+   - Alert threshold (if any)
+
+4. Design the logging layer:
+   - PostgreSQL logs to local file (existing)
+   - Log shipper: filebeat or fluentd to central Elasticsearch/Loki
+   - Structured format: log_line_prefix should be JSON-parseable
+   - Index: by instance, database, log level, timestamp
+
+5. Design dashboards:
+   - Fleet overview: all 60 instances at a glance (traffic light: green/yellow/red)
+   - Instance drill-down: full metrics for one instance
+   - Slow query dashboard: top 10 worst queries across the fleet
+   - Capacity dashboard: disk growth, approaching limits
+
+6. Design alerting rules (at fleet scale):
+   - Alerts must identify which instance triggered them
+   - Alerts must route to the team owning the affected database
+   - Alerts must suppress duplicates (one alert per incident, not 60)
+   - Implement alert correlation (5 alerts firing together = one root cause)
+
+7. Write the design document (2–3 pages):
+   - Architecture diagram
+   - Component selection rationale
+   - Standard metrics list
+   - Alert routing design
+   - Estimated infrastructure cost
+
+SAFETY
+Risk: Low (design task). Medium when deploying — exporters add minor load.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Fleet observability design — metrics, logging, alerting at scale
+
+REVIEW QUESTION
+Your observability stack is querying pg_stat_activity every 15 seconds
+across 60 databases. You notice that the monitoring queries themselves
+are appearing as the top 5 queries in pg_stat_statements. How do you
+reduce monitoring overhead without sacrificing visibility?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 10 of ~11
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build the Business Case for Database Infrastructure Investment
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Technical excellence is not enough. An expert DBA must be able to translate
+database needs into business language: cost, risk, and return on investment.
+The ability to present a compelling business case gets critical infrastructure
+approved.
+
+SCENARIO
+You need board approval for £300,000 of database infrastructure investment:
+- New hardware (servers, SSD) to improve performance
+- HA/DR capability for 3 critical databases
+- Monitoring and observability platform
+- DBA tooling and training
+
+YOUR TASK (Write the business case)
+1. Quantify the current pain:
+   - Incidents last year: 3 outages totalling 8 hours
+   - Revenue impact: £8,000/hour × 8 hours = £64,000
+   - DBA time spent on manual work: 60% of DBA capacity (could be automated)
+   - At-risk databases: 3 have no HA (single point of failure)
+   - Risk: loss of the primary server = estimated £500,000 business impact
+
+2. Define the investment:
+   - Item 1: New hardware (£150,000) — upgrade 5-year-old servers
+   - Item 2: HA/DR implementation (£80,000) — standby servers + automation
+   - Item 3: Monitoring platform (£40,000) — centralised observability
+   - Item 4: Tooling and training (£30,000) — team capability
+   - Total: £300,000
+
+3. Calculate the return:
+   - Incident reduction: 70% fewer incidents → save £45,000/year
+   - DBA productivity: 40% less manual work → 1 DBA = 1.67 DBAs of output
+   - Risk reduction: HA/DR prevents £500,000 catastrophic loss (probabilistic)
+   - Payback period: Year 1 savings £45k + risk mitigation £100k = £145k/year
+   - Break-even: ~2 years on hard savings alone
+
+4. Frame the risk of NOT investing:
+   - Status quo: one major hardware failure = £500,000 loss
+   - Regulatory risk: non-compliance penalties
+   - Talent risk: DBAs leave over tooling frustration
+   - Competitive risk: slow databases → poor user experience → churn
+
+5. Write the business case (3–5 pages):
+   - Executive summary (what are we asking for and why)
+   - Current state analysis (evidence-based)
+   - Proposed investment (line items, rationale)
+   - Financial analysis (cost, savings, ROI, payback)
+   - Risk analysis (risk of investing vs not investing)
+   - Recommendation
+
+6. Prepare for challenges:
+   - "Can we do this cheaper?" — what is the minimum viable version?
+   - "What if we delay by 1 year?" — what is the cost of delay?
+   - "What about cloud instead?" — have this analysis ready
+
+SAFETY
+Risk: None (planning document)
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Business case authorship — financial analysis, risk quantification, executive communication
+
+REVIEW QUESTION
+The CFO says: "The ROI looks weak. You're spending £300k to save £45k/year.
+That's 6.7 years payback. We'd never approve that for a machine purchase."
+How do you respond, given that much of the value is risk reduction rather
+than hard savings?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 11 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Lead a Database Architecture Review for a New Application
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+An expert DBA reviews application architecture before it is built, not after
+it breaks. Architecture review catches problems (schema anti-patterns, missing
+indexes, wrong database choice) at the cheapest point — design time.
+
+SCENARIO
+A product team presents their database schema for a new e-commerce platform
+(10,000 SKUs, 50,000 orders/day, 100,000 registered users). They ask for
+your review before they begin building.
+
+YOUR TASK (Architecture review)
+1. Define what you are reviewing:
+   - Schema design: tables, relationships, normalisation
+   - Index strategy: which indexes are planned? Are they sufficient?
+   - Data volume: will this schema scale to the projected volumes?
+   - Query patterns: are the planned queries efficient?
+   - Constraints: are foreign keys, NOT NULL, UNIQUE correctly applied?
+
+2. Conduct the review (work through their schema):
+   - Identify missing indexes (querying by email but no index on email column)
+   - Identify schema anti-patterns (storing comma-separated IDs in a column)
+   - Identify missing constraints (no NOT NULL where business logic requires it)
+   - Identify performance risks (unbounded text fields that will be full-text searched)
+
+3. Assess scalability:
+   - At 50,000 orders/day × 3 years = 54M orders
+   - Does the schema support this without partitioning?
+   - Are there N+1 query risks in the planned ORM usage?
+   - Is there a plan for archiving old orders?
+
+4. Identify operational risks:
+   - Will routine maintenance (VACUUM) be effective on these access patterns?
+   - Are there long-running transactions likely (payment processing)?
+   - Is there a clear backup/restore strategy for this schema?
+
+5. Write the architecture review document:
+   - Summary: overall assessment (approved / approved with conditions / rejected)
+   - Findings: numbered list, each with severity and recommendation
+   - Must-fix before launch (Critical/High)
+   - Should-fix before scale (Medium)
+   - Nice-to-have (Low)
+
+6. Present to the team:
+   - Be constructive, not critical of individuals
+   - Prioritise your findings (they cannot fix everything at once)
+   - Offer to help (pair on the schema rework if needed)
+
+SAFETY
+Risk: Low (review task). High consequence if findings are ignored.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Architecture review leadership — schema analysis, scalability assessment
+
+REVIEW QUESTION
+The product team says: "We've already built half the application on this
+schema. Changing the orders table structure now would require rewriting
+3 months of code." One of your critical findings requires exactly this
+change. How do you navigate this?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 1 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 2 — DATABASE PROVISIONING
+   Level 4 — Expert / Architect (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Database-as-a-Service (DBaaS) Platform
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Large engineering organisations operate internal DBaaS platforms: a team
+submits a request, and a fully provisioned, monitored, backed-up database
+appears in minutes. Building this requires the full depth of DBA knowledge
+applied as a product.
+
+SCENARIO
+You are asked to design an internal DBaaS platform for your organisation
+(150 engineers, 100+ databases, 3 DBAs). The platform must:
+- Provision any database in < 15 minutes
+- Automatically apply organisational standards
+- Monitor and alert from day 1
+- Handle the full lifecycle (create, operate, retire)
+
+YOUR TASK (DBaaS platform design)
+1. Define the platform capabilities (service catalogue):
+   - OLTP database (PostgreSQL 16, standard settings)
+   - Analytics database (PostgreSQL + TimescaleDB)
+   - Development database (auto-expired in 30 days)
+   - High-availability database (primary + standby)
+   - Custom configuration (requires DBA approval)
+
+2. Design the provisioning pipeline:
+   - Input: service request form (name, type, owner, size, environment)
+   - Validation layer: check naming, quota, environment constraints
+   - Provisioning engine: Terraform/Ansible executes database creation
+   - Post-provision: backup configured, monitoring configured, access provisioned
+   - Output: connection string, credentials, documentation
+
+3. Design the operations layer:
+   - Day 2 operations: resize, backup restore, version upgrade
+   - Self-service operations: connection string retrieval, user management
+   - DBA-only operations: schema migration support, performance tuning
+   - Automation: backup, VACUUM scheduling, alerting
+
+4. Design the retirement workflow:
+   - Request retirement (who can initiate? owner, platform, DBA?)
+   - Confirmation: is this database still in use? (connection log check)
+   - Data export: offer to take a final backup before retirement
+   - Deletion: secure wipe, remove from monitoring, archive records
+
+5. Define the platform SLAs:
+   - Provisioning SLA: database available within 15 minutes of request
+   - Uptime SLA: 99.9% for standard, 99.99% for HA databases
+   - Backup SLA: daily backup within 24-hour window
+   - Support SLA: DBA response within 4 hours for platform issues
+
+6. Write the platform design document:
+   - Architecture diagram (end-to-end request to database)
+   - Technology choices (Terraform vs Crossplane? Prometheus vs Datadog?)
+   - Capacity planning (how many databases can the platform support?)
+   - Runbook for platform operations (what to do if the platform itself breaks?)
+
+SAFETY
+Risk: Medium — platform automation runs with elevated privileges.
+The provisioning engine needs robust error handling and audit logging.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : DBaaS platform design — end-to-end provisioning system architecture
+
+REVIEW QUESTION
+Your DBaaS platform provisions a database for a team who, 3 months later,
+leave the company. No one knows the database exists or what it is for. It
+is still running, consuming £200/month. How does your platform prevent or
+detect orphaned resources?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Define and Enforce Database Quotas and Cost Attribution
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Without quotas, databases grow unchecked and cost spirals. Without cost
+attribution, no team knows what their databases cost, so no one is motivated
+to optimise. An expert DBA designs both.
+
+SCENARIO
+Your organisation spends £180,000/year on database infrastructure. The CFO
+asks: "Which teams are spending the most, and are they getting value?" You
+cannot answer this question. Design a system that can.
+
+YOUR TASK (Quota and cost attribution design)
+1. Design cost attribution:
+   - Map each database to a team/cost centre
+   - Define cost components: storage, compute (CPU/RAM), backups, monitoring
+   - Calculate monthly cost per database (actual or estimated)
+   - Roll up to team level: Team A spends £X/month on databases
+
+2. Design quotas per team/environment:
+   - Production: no hard quota (availability first), but alert at £Y/month
+   - Staging: hard quota (£500/month per team)
+   - Development: hard quota (£100/month per team, auto-suspend after 30 days)
+
+3. Design the reporting:
+   - Monthly cost report per team (emailed to team lead)
+   - Trending report (month-over-month change, projected next 3 months)
+   - Efficiency report (cost per transaction, cost per active user)
+
+4. Design quota enforcement:
+   - Soft quota: alert to team lead when 80% consumed
+   - Hard quota: restrict new provisioning when 100% consumed
+   - Exception: DBA approval required to exceed quota
+
+5. Design incentives:
+   - Teams that right-size databases get credit toward future quota
+   - "Database efficiency" metric published in engineering metrics dashboard
+   - Dormant databases auto-flagged for retirement review
+
+6. Write a cost optimisation report for the current state:
+   - Which databases are overprovisioned? (large instance, low utilisation)
+   - Which are underprovisioned? (small instance, high utilisation)
+   - Immediate savings opportunity (right-sizing recommendation)
+
+SAFETY
+Risk: Medium — enforcing quotas can block critical work if designed poorly.
+Always have a fast-track exception process.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Cost attribution and quota design — FinOps applied to database infrastructure
+
+REVIEW QUESTION
+Team A has exceeded their database quota. They are building a customer-facing
+feature due in 2 weeks. They need a new staging database immediately. Your
+quota system blocks them. The team is escalating to the VP of Engineering.
+How do you design the exception process to handle this gracefully while
+preserving the integrity of the quota system?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 3 of ~9
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design Global Schema Migration Strategy for Multi-Database Environments
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Schema migrations across many databases (dev, staging, production, DR)
+require coordinated tooling. Without this, schema drift occurs — different
+tables in different environments cause application failures.
+
+SCENARIO
+You manage 4 environments × 6 applications × 2 regions = 48 PostgreSQL
+databases that all need to stay schema-synchronised. Developers deploy
+schema changes frequently (10+ per week). There is currently no centralised
+migration management — developers SSH into servers and run scripts.
+
+YOUR TASK (Schema migration system design)
+1. Evaluate migration tools:
+   - Flyway: version-numbered SQL scripts, popular in Java shops
+   - Liquibase: XML/YAML/SQL changesets, strong rollback support
+   - sqitch: git-based change tracking, good for complex environments
+   - Custom: your own migration framework
+
+   Evaluate against your needs (48 databases, frequent changes, rollback needed).
+
+2. Define migration standards:
+   - All migrations in version control (git)
+   - Each migration: forward script (apply) + rollback script (undo)
+   - Migrations must be idempotent (safe to run twice)
+   - Migrations tested on dev before staging, staging before production
+
+3. Design the promotion pipeline:
+   - Developer writes migration → commit to feature branch
+   - CI runs migration against dev database → pass/fail
+   - PR merged → staging migration runs automatically
+   - Release approved → production migration runs in maintenance window
+
+4. Design rollback capability:
+   - Flyway: undo migrations (requires Flyway Teams license)
+   - Liquibase: rollback changesets
+   - Custom: every migration has a corresponding undo.sql
+
+5. Design multi-region coordination:
+   - Production in eu-west-1: migrate first
+   - DR in ap-southeast-1: migrate within 5 minutes of primary
+   - Both must be in sync before declaring success
+
+6. Define emergency migration procedure:
+   - Critical hotfix needs to be in production in 30 minutes
+   - Cannot wait for normal pipeline
+   - Emergency path: DBA approval required, direct execution with audit trail
+
+7. Write the schema migration policy:
+   - Who can write migrations? (Any developer)
+   - Who reviews? (DBA review required for tables > 1GB or during business hours)
+   - What is the naming convention? (V20250615_001__add_order_status_column.sql)
+
+SAFETY
+Risk: High — a bad migration can lock tables, corrupt data, or break apps.
+Test every migration on a copy of production data before deploying.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Schema migration strategy — tooling, pipeline design, multi-environment coordination
+
+REVIEW QUESTION
+A developer pushes a migration that renames a column (old_name → new_name).
+The application is updated to use new_name. But during the deployment, for
+3 minutes, the old application code and new database schema coexist. Queries
+for old_name fail. This is a zero-downtime deployment failure. How do you
+design the migration policy to prevent this class of problem?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 4 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Data Classification and Governance Framework
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Not all data is equally sensitive. A governance framework classifies data
+by sensitivity and mandates the security controls appropriate to each class.
+This is the foundation of GDPR, HIPAA, and SOC 2 compliance.
+
+SCENARIO
+Your organisation processes: customer names, email addresses, medical records,
+payment card data, internal analytics. You need to classify this data and
+define what controls apply to each class.
+
+YOUR TASK (Data classification framework)
+1. Define classification tiers:
+   - TIER 1 — PUBLIC: can be freely shared (product catalogue, public content)
+   - TIER 2 — INTERNAL: internal use only (employee records, internal metrics)
+   - TIER 3 — CONFIDENTIAL: limited access (customer PII, financial data)
+   - TIER 4 — RESTRICTED: highest protection (medical records, PCI data, credentials)
+
+2. Map your database columns to tiers:
+   - customers.email → TIER 3 (PII)
+   - orders.amount → TIER 3 (financial)
+   - medical_records.diagnosis → TIER 4 (HIPAA)
+   - payment_tokens.card_number → TIER 4 (PCI-DSS)
+   - products.name → TIER 1 (public)
+
+3. Define controls per tier:
+   - TIER 1: No special controls
+   - TIER 2: Access logging, role-based access
+   - TIER 3: Encryption at rest + in transit, access logging, quarterly access review
+   - TIER 4: Encryption at rest + in transit, column-level encryption, strict access control,
+             audit logging all access, annual penetration test
+
+4. Implement data discovery:
+   - Which tables contain PII? (Build a catalogue)
+   - Are there undiscovered PII columns? (columns named email, phone, ssn, dob)
+   - Automated scan: query information_schema for suspicious column names
+
+5. Design access controls per tier:
+   - TIER 3: Only application roles can SELECT; no developer direct access
+   - TIER 4: Only dedicated service accounts; all access logged and alerted
+
+6. Write the Data Classification Policy (3-4 pages):
+   - Scope (what data is covered?)
+   - Tier definitions and examples
+   - Control requirements per tier
+   - Data catalogue maintenance (who updates it? how often?)
+   - Audit process (how do we check compliance?)
+
+SAFETY
+Risk: Medium
+Missing a TIER 4 column from the catalogue = security gap. This process must
+be thorough. Involve legal, compliance, and engineering.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Data governance — classification, controls, policy authorship
+
+REVIEW QUESTION
+Your automated column scanner finds a column called "notes" in the patients
+table that contains free-text nurse observations. The column is not in your
+data catalogue. It may contain HIPAA-protected health information. What is
+your immediate action and longer-term process?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 5 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Logical Replication Architecture for Decoupled Read Scaling
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Physical streaming replication scales reads but ties the standby to the
+primary's exact schema. Logical replication allows you to replicate a
+subset of tables to specialised databases (analytics, reporting) with
+different schemas or versions.
+
+SCENARIO
+Your OLTP database is overwhelmed by reporting queries. The product team
+runs heavy analytical queries that take 30 seconds, blocking OLTP traffic.
+You must architect a read-scaling solution that decouples analytics from OLTP.
+
+YOUR TASK (Logical replication architecture)
+1. Evaluate decoupling options:
+   - Physical standby (streaming replication): exact copy, reporting queries
+     still run the same heavy queries — does not help with query performance
+   - Logical replication to analytics replica: can have different indexes,
+     different schema, different PostgreSQL version
+   - ETL pipeline to data warehouse: most decoupled, highest latency
+   - Materialised views refreshed from replica: good for known queries
+
+2. Design the logical replication topology:
+   - Source: OLTP primary (PostgreSQL 16)
+   - Publication: all tables used in reporting (not everything)
+   - Subscription: analytics PostgreSQL instance
+   - Analytics replica: different indexes (columnar-friendly), aggregation tables
+
+3. Design the analytics schema:
+   - Denormalise for query performance (avoid joins)
+   - Add pre-aggregated summary tables (refresh via trigger or cron)
+   - Add indexes appropriate for analytical queries (not for OLTP inserts)
+   - Different retention (keep 5 years on analytics, 1 year on OLTP)
+
+4. Manage replication lag:
+   - Acceptable lag for analytics: 5 minutes (not real-time)
+   - Alert if lag > 30 minutes
+   - Application must know: "analytics data may be 5 minutes old"
+
+5. Design the failure mode:
+   - Analytics replica fails: OLTP continues unaffected (logical replication is async)
+   - OLTP primary fails: analytics goes read-only but still works
+   - Replication slot fills up (lag too large): WAL builds on primary — monitor
+
+6. Document application routing:
+   - OLTP queries (writes, real-time reads): primary connection string
+   - Analytics queries (reports, dashboards): analytics replica connection string
+   - Applications must be coded to use the correct endpoint
+
+SAFETY
+Risk: Medium
+Logical replication slots retain WAL on the primary until consumed. If the
+analytics replica falls too far behind, the primary disk fills up.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Logical replication for read scaling — publication/subscription architecture
+
+REVIEW QUESTION
+The analytics replica goes offline for 48 hours (hardware failure). When it
+comes back, it needs to replay 48 hours of WAL from the replication slot.
+But the primary has not been archiving WAL — it has been retaining it in
+pg_wal (which is now 500GB). How do you handle this, and what configuration
+would have prevented pg_wal from growing unbounded?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 6 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Secrets and Credential Management Strategy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Database credentials in plaintext config files are the most common source
+of breaches in application systems. An expert DBA designs credential
+management that eliminates hardcoded passwords and enforces rotation.
+
+SCENARIO
+An audit reveals: 40% of applications have database passwords hardcoded in
+git repositories or environment variable files. Several are production
+credentials. You must design and implement a secrets management strategy.
+
+YOUR TASK (Secrets management design)
+1. Inventory the current state:
+   - How many applications connect to databases?
+   - How are credentials stored? (git, env files, config management?)
+   - When were passwords last rotated? (never?)
+   - Who knows the production passwords?
+
+2. Choose a secrets management solution:
+   - HashiCorp Vault: enterprise-grade, dynamic secrets
+   - AWS Secrets Manager: cloud-native, auto-rotation
+   - Kubernetes Secrets: for containerised workloads (weak on its own)
+   - PostgreSQL + pgcrypto: encrypt credentials in database
+
+   For a mixed on-premise + cloud environment: Vault + AWS Secrets Manager.
+
+3. Design dynamic credentials (advanced):
+   - Vault generates a new DB username/password for each application deployment
+   - Credentials are valid for 1 hour and auto-expire
+   - Application requests credentials at startup, not at build time
+   - Old credentials are automatically revoked
+
+4. Design credential rotation:
+   - Rotation frequency: every 30 days for service accounts
+   - Rotation mechanism: Vault rotates automatically, no manual steps
+   - Zero-downtime rotation: new credential created, application reloads, old revoked
+   - Emergency rotation: procedure to rotate immediately (breach response)
+
+5. Migration plan (from hardcoded to managed secrets):
+   - Phase 1: Audit all credentials (find them all)
+   - Phase 2: Vault onboarding (deploy, configure DB secrets engine)
+   - Phase 3: Application migration (update apps to read from Vault, not files)
+   - Phase 4: Remove old credentials from git history (git filter-branch)
+   - Phase 5: Enable automatic rotation
+
+6. Write the credential policy:
+   - No credentials in git (enforced by pre-commit hook)
+   - All service account credentials managed by Vault
+   - All credentials rotated on schedule
+   - Emergency rotation procedure documented and tested
+
+SAFETY
+Risk: HIGH
+Mismanaged secrets migration can lock applications out of databases. Test
+each application individually before rotating credentials at scale.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Secrets management architecture — Vault integration, dynamic credentials, rotation
+
+REVIEW QUESTION
+You discover that the production database password has been in a public GitHub
+repository for 6 months. The repository is private within your organisation,
+but GitHub Support cannot confirm whether the secret was accessed externally.
+What is your immediate response? What do you do in the next 24 hours?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 7 of ~9
+TIME   : 90–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Blue-Green Database Deployment Strategy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Blue-green deployment is a zero-downtime release strategy. At L4 you design
+this for databases — which is harder than for stateless applications because
+databases carry state that must be consistent across both environments.
+
+SCENARIO
+Your team wants to deploy major schema changes with zero downtime. Traditional
+deployments require maintenance windows. Blue-green would allow instant
+rollback if the new schema breaks something.
+
+YOUR TASK (Blue-green database design)
+1. Understand the challenge:
+   - Blue environment: current production (schema v1)
+   - Green environment: new production (schema v2)
+   - Traffic cutover: switch from blue to green (immediate)
+   - Rollback: switch back from green to blue (within 5 minutes)
+   - Problem: writes to green during cutover cannot roll back to blue
+
+2. Design for backward-compatible schema changes:
+   - Rule: every migration must be backward-compatible
+   - New column: add as nullable first (old code ignores it, new code uses it)
+   - Renamed column: add new column, copy data, keep old column, drop old later
+   - New table: safe to add at any time
+   - Dropped table: never drop until old code is gone
+
+3. Design the traffic switching mechanism:
+   - Connection string config: blue_endpoint vs green_endpoint
+   - PgBouncer as a proxy: switch target without application restart
+   - DNS-based: update DNS TTL to redirect traffic in seconds
+
+4. Design write reconciliation for rollback:
+   - Scenario: traffic on green for 10 minutes, then rollback to blue
+   - Writes that happened on green: must be replicated to blue before rollback
+   - Use logical replication from green to blue (bidirectional)
+   - On rollback: flip replication direction, wait for sync, switch
+
+5. Define which changes CANNOT be blue-green:
+   - Non-backward-compatible changes (column type change) require a maintenance window
+   - When: document this clearly in the migration policy
+
+6. Write the blue-green deployment procedure (step-by-step):
+   - Prerequisites (what must be true before starting)
+   - Deploy to green (schema + application)
+   - Validate green (smoke tests, health checks)
+   - Traffic cutover (how, timing, communications)
+   - Monitoring (what to watch for 15 minutes post-cutover)
+   - Rollback trigger (what conditions trigger rollback?)
+   - Rollback execution (steps, timing, communications)
+
+SAFETY
+Risk: HIGH — bidirectional replication is complex and can cause conflicts.
+Test extensively. Have a clear abort criterion.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Blue-green database deployment — state management, rollback design
+
+REVIEW QUESTION
+Your blue-green deployment runs successfully for 20 minutes on green, then
+a subtle data corruption bug is discovered (wrong values being written, not
+a crash). You decide to roll back to blue. But 20 minutes of corrupted
+writes are now in green. Do you roll back to blue and lose 20 minutes of
+writes, or try to repair the corruption in green? Justify your decision.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 8 of ~9
+TIME   : 90–120 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Evaluate and Adopt New PostgreSQL Features Safely
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+PostgreSQL releases major versions annually with significant new features.
+An expert DBA evaluates these features, determines which are safe to adopt,
+and creates adoption roadmaps that capture value without creating instability.
+
+SCENARIO
+PostgreSQL 17 has just been released. You manage production PostgreSQL 15
+and 16 instances. You must evaluate whether and when to adopt PG17 and
+which new features to use.
+
+YOUR TASK (Feature evaluation and adoption roadmap)
+1. Read the PostgreSQL 17 release notes (research):
+   - What performance improvements are included?
+   - What new SQL features are available?
+   - What has been deprecated or removed?
+   - Are there breaking changes that affect existing applications?
+
+2. Assess the upgrade path from PG15/PG16 to PG17:
+   - Are there any incompatible changes between 15→17 or 16→17?
+   - Are all your extensions compatible with PG17?
+   - Is logical replication backward-compatible (PG16 primary → PG17 standby)?
+
+3. Evaluate 3-5 specific new features for adoption:
+   For each feature:
+   - What does it do?
+   - What problem does it solve in our environment?
+   - What is the adoption risk? (breaking change? performance regression possible?)
+   - What testing is required before production?
+   - When should we adopt it? (day 1, 6 months, never?)
+
+4. Define an upgrade timeline:
+   - Development: upgrade to PG17 immediately (low risk, valuable testing)
+   - Staging: upgrade 1 month after development (verifies app compatibility)
+   - Production: upgrade 3 months after staging (after stability proven)
+   - DR: upgrade within 1 week of production (keep in sync)
+
+5. Write the feature adoption policy:
+   - New major version: never in production within 3 months of release
+   - New extensions: test in staging for 2 months minimum
+   - New features: use in dev immediately, stage for 1 month, production after
+
+6. Communicate to stakeholders:
+   - Engineering teams: what new features can they use? When?
+   - Product team: does PG17 unblock any product requirements?
+   - Security team: are any PG17 changes security-relevant?
+
+SAFETY
+Risk: Medium — premature adoption of new versions can cause subtle bugs.
+PostgreSQL is stable, but new features need real-world testing.
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Version adoption strategy — evaluation, testing, phased rollout
+
+REVIEW QUESTION
+A developer argues: "PostgreSQL 17 has a 30% performance improvement for
+our query type. Why aren't we upgrading production immediately?" You say
+"not yet." Write a 2-paragraph response explaining the adoption timeline
+without dismissing their enthusiasm.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 9 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design the DBA Team Structure, Responsibilities, and Hiring Plan
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+An expert DBA is asked to define what the database team should look like.
+This is a leadership task: defining roles, responsibilities, career paths,
+and when to hire.
+
+SCENARIO
+You are the lead DBA for a company growing from 100 to 500 engineers in
+18 months. Currently: 3 DBAs, 80+ databases. At 500 engineers you expect
+200+ databases. Design the team structure.
+
+YOUR TASK (Team design)
+1. Define the DBA role levels:
+   - L1 DBA (Junior): Executes documented procedures, monitors alerts
+   - L2 DBA (Mid): Handles incidents independently, performs routine maintenance
+   - L3 DBA (Senior): Diagnoses complex issues, designs solutions
+   - L4 DBA (Principal/Architect): Designs systems, mentors, sets direction
+   Note: these map directly to the training levels you have been working through.
+
+2. Define responsibilities per level:
+   - What can an L1 DBA do independently?
+   - What requires L2 supervision?
+   - What escalates to L3?
+   - What requires L4 input?
+   Create a clear escalation matrix.
+
+3. Design the team for 200+ databases:
+   - At 200 databases, 3 DBAs is clearly insufficient
+   - Calculate: if each DBA can manage 30 databases at full attention
+   - Estimate: 7 DBAs needed (200 / 30 = 6.7, round up)
+   - Composition: 2× L1, 3× L2, 1× L3, 1× L4 (you)
+
+4. Design the hiring plan (18 months):
+   - Months 1-3: hire 1× L2 DBA (immediate capacity relief)
+   - Months 4-6: hire 1× L1 DBA (growing database count)
+   - Months 7-12: hire 1× L2 DBA (platform team growth)
+   - Months 13-18: hire 1× L3 DBA (complexity increasing)
+
+5. Define the on-call rotation:
+   - Current: 3 DBAs, 1-week rotations (on-call every 3 weeks)
+   - At 7 DBAs: on-call every 7 weeks (sustainable)
+   - Design: when does each DBA become eligible for on-call?
+
+6. Define the DBA career path:
+   - How does an L1 DBA grow to L2? (what skills must they demonstrate?)
+   - What is the expected timeline? (L1→L2: 12-18 months, L2→L3: 24-36 months)
+   - What training is provided? (this training program is one component)
+
+7. Write the team charter:
+   - Mission: what does the DBA team exist to do?
+   - Scope: what is in scope? what is not?
+   - Operating model: how does the team work with engineers?
+   - Success metrics: how do we know we are doing a good job?
+
+SAFETY
+Risk: None (planning document)
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Team design and organisational planning — structure, hiring, career development
+
+REVIEW QUESTION
+Your hiring plan assumes you can hire 4 experienced DBAs in 18 months.
+But there is a global shortage of PostgreSQL DBAs. What is your fallback
+plan: train up more L1 DBAs internally, hire L2 and develop them faster,
+or invest more in automation to extend the team's capacity?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[ AREA 2 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 3 — SECURITY (SERVER LEVEL)
+   Level 4 — Expert / Architect (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~9
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Zero-Trust Database Access Model
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Traditional network-perimeter security assumes internal users are trusted.
+Zero-trust assumes no one is trusted by default — every access request is
+verified explicitly. At L4 you design this for databases.
+
+SCENARIO
+Your organisation is moving to a zero-trust security model. The security
+team asks: "How do we implement zero-trust for database access?" You must
+design the answer.
+
+YOUR TASK (Zero-trust database architecture)
+1. Define zero-trust principles as applied to databases:
+   - Never trust network location (being inside the VPC is not enough)
+   - Verify identity explicitly (every connection authenticated, not just first)
+   - Least privilege access (rights scoped to minimum necessary, time-limited)
+   - Assume breach (monitor all access as if an attacker is present)
+
+2. Design the identity layer:
+   - All database connections identified by: individual identity (not just IP)
+   - Service accounts: unique per service, not shared
+   - Human access: via identity provider (SSO) + Vault ephemeral credentials
+   - Certificate-based: each service has a unique client certificate
+
+3. Design the access policy engine:
+   - Before a connection is allowed: identity verified, role checked, time checked
+   - Access policies: "app_billing can connect to billing_prod during business hours"
+   - Policy violations: logged, alerted, blocked
+   - Policy review: quarterly access certification (each owner confirms still needed)
+
+4. Design continuous verification:
+   - Sessions re-authenticated every hour (not just at connect time)
+   - Anomalous queries trigger step-up authentication
+   - Session terminated if behaviour deviates from baseline
+
+5. Design the audit layer:
+   - Every query logged (pg_audit extension or custom trigger)
+   - Logs immutable (sent to external SIEM immediately)
+   - Anomaly detection: query volume, data volume, unusual patterns
+
+6. Write the zero-trust database policy:
+   - What is required? (certificate + identity + Vault credentials)
+   - What is monitored? (all access, all queries)
+   - What triggers an alert? (anomalous volumes, access outside hours)
+   - What triggers a forced disconnect? (confirmed breach indicators)
+
+SAFETY
+Risk: High — zero-trust can lock out legitimate users if misconfigured.
+Phase implementation carefully. Test extensively.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Zero-trust security design for databases — identity, policy, continuous verification
+
+REVIEW QUESTION
+Zero-trust requires every database connection to be explicitly verified.
+Your current architecture uses a connection pooler (PgBouncer) that maintains
+long-lived connections to PostgreSQL. How does a connection pooler interact
+with zero-trust (every connection re-verified hourly), and how do you resolve
+the tension?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Implement Column-Level Encryption for PII
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Database-level encryption protects data at rest, but if someone gains access
+to the database, they can read all data. Column-level encryption protects
+specific fields (SSN, medical records) even from privileged database users.
+
+SCENARIO
+A GDPR audit requires that all personally identifiable information (PII) be
+encrypted such that a database superuser cannot read the raw values without
+the encryption key. Design and implement column-level encryption.
+
+YOUR TASK (Column-level encryption design)
+1. Identify which columns require column-level encryption:
+   - customers.email → PII (TIER 3)
+   - customers.phone → PII (TIER 3)
+   - patients.national_id → TIER 4
+   - employees.salary → CONFIDENTIAL (TIER 3)
+
+2. Choose the encryption approach:
+   - pgcrypto extension: AES encryption within PostgreSQL (key must be passed per query)
+   - Application-level encryption: application encrypts before INSERT (most secure)
+   - Transparent Data Encryption (TDE): coming in PostgreSQL 17 (future option)
+   Recommend: application-level for highest security, pgcrypto for simplicity.
+
+3. Implement with pgcrypto:
+   - Store encrypted values: UPDATE customers SET email =
+       pgp_sym_encrypt(email, 'encryption_key') WHERE ...;
+   - Read decrypted values: SELECT pgp_sym_decrypt(email::bytea, 'encryption_key')
+       FROM customers;
+   - The key is passed at query time — a superuser who can read queries sees the key
+
+4. Implement application-level (more secure):
+   - Application encrypts email before sending to PostgreSQL
+   - PostgreSQL stores the ciphertext (cannot decrypt without the key)
+   - Even a superuser running SELECT * sees only ciphertext
+
+5. Design key management:
+   - Encryption keys stored in Vault (not in the database)
+   - Key rotation: encrypt all existing rows with new key, update key version
+   - Emergency access: if Vault is unavailable, encrypted data is inaccessible
+
+6. Write the encryption policy:
+   - Which columns are encrypted?
+   - Where are keys stored?
+   - Who can access keys?
+   - What is the rotation schedule?
+   - How is compliance verified (spot check decryption)?
+
+SAFETY
+Risk: HIGH — if you lose the encryption key, you lose the data permanently.
+Key management is as important as the encryption itself.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Column-level encryption — pgcrypto, application-level encryption, key management
+
+REVIEW QUESTION
+Your encryption key is stored in Vault. Vault goes down for 4 hours during
+peak business hours. Applications cannot decrypt customer email addresses.
+Password reset emails cannot be sent. Users cannot log in. How do you design
+the system to avoid this single point of failure?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 3 of ~9
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Lead a Database Security Assessment and Produce a Risk Register
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A security assessment systematically identifies and quantifies every database
+security risk. A risk register tracks them with owners, severity, and
+mitigation plans. This is the foundation of a security programme.
+
+SCENARIO
+The CISO asks: "What are our top 10 database security risks?" You must conduct
+a systematic assessment and produce a risk register.
+
+YOUR TASK (Security assessment and risk register)
+1. Define the assessment scope:
+   - All production PostgreSQL instances
+   - All authentication and access controls
+   - All data at rest and in transit
+   - All backup and recovery processes
+
+2. Conduct the assessment across 8 domains:
+
+   A) Authentication: Are all users using strong authentication?
+   B) Authorisation: Are all roles using least privilege?
+   C) Network: Are databases exposed only to necessary networks?
+   D) Encryption: Is data encrypted at rest and in transit?
+   E) Audit: Are all privileged actions logged?
+   F) Backup: Are backups encrypted and tested?
+   G) Patching: Are databases running current versions?
+   H) Secrets: Are credentials managed securely?
+
+3. For each finding, produce a risk entry:
+   ────────────────────────────────────────────────────
+   RISK ID: SEC-001
+   Domain: Authentication
+   Finding: 3 service accounts using MD5 password hashing
+   Likelihood: High (MD5 is crackable; credentials may already be compromised)
+   Impact: High (compromised service account = full DB access)
+   Inherent Risk: CRITICAL
+   Current Controls: None
+   Residual Risk: CRITICAL
+   Recommended Mitigation: Migrate to SCRAM-SHA-256 within 2 weeks
+   Owner: DBA Team
+   Deadline: 2025-07-01
+   ────────────────────────────────────────────────────
+
+4. Produce the risk register (top 10 risks minimum):
+   - Rank by residual risk (after current controls)
+   - Show inherent risk vs residual risk (to demonstrate control effectiveness)
+   - Assign all risks to an owner
+
+5. Prioritise remediation:
+   - CRITICAL: fix within 2 weeks
+   - HIGH: fix within 1 month
+   - MEDIUM: fix within 3 months
+   - LOW: fix within 1 year or accept
+
+6. Present to the CISO:
+   - Risk register summary table
+   - Top 3 risks highlighted with business impact
+   - Recommended immediate actions (this week)
+   - Resource requirements (how much DBA time to remediate?)
+
+SAFETY
+Risk: None (assessment task). High consequence if risks are ignored.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Security assessment and risk register — structured risk identification and prioritisation
+
+REVIEW QUESTION
+The CISO asks: "Is our database security adequate?" You have a risk register
+with 3 critical risks, 5 high risks, and 8 medium risks. How do you answer
+this question honestly without causing panic, while still conveying urgency?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L4/10 — Expert / Architect
+TASKS  : 4-9 (REMAINING SECURITY L4 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The following L4 Security tasks follow the same Architect-level format
+(design → justify → deliver → defend) established in tasks 1-3 above:
+
+TASK 4: Design a Database Activity Monitoring (DAM) System
+  Evaluate DAM options (pg_audit, Imperva, AWS GuardDuty), design real-time
+  anomaly detection, build a threat model for insider threats vs external,
+  integrate with SIEM. Deliverable: DAM architecture document.
+
+TASK 5: Architect GDPR Compliance for Existing Systems
+  Map all PII across databases, design right-to-erasure workflow, design
+  data portability export, create DPA (Data Processing Agreement) evidence
+  package. Deliverable: GDPR compliance architecture and evidence matrix.
+
+TASK 6: Design a Penetration Testing Programme for Databases
+  Define scope and frequency, write database-specific pen test scenarios,
+  design remediation SLAs, build relationship with external pen test firm.
+  Deliverable: annual penetration testing policy and engagement scope.
+
+TASK 7: Respond to a Simulated Data Breach as Incident Commander
+  Lead a tabletop exercise (90 mins): breach discovered, evidence collected,
+  legal notified, users informed (GDPR 72-hour requirement), press statement.
+  Deliverable: breach response playbook.
+
+TASK 8: Design Row-Level Security for a Multi-Tenant SaaS
+  Design RLS policies for 1000-tenant system, test bypass attempts, measure
+  performance overhead, design tenant admin vs superadmin distinction.
+  Deliverable: RLS design document + performance test results.
+
+TASK 9: Build a Database Vulnerability Management Programme
+  CVE tracking for PostgreSQL, extension vulnerability scanning, patch
+  cadence policy, escalation from CVE discovery to production patch.
+  Deliverable: vulnerability management policy and current CVE status report.
+
+[ AREA 3 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 4 — DATA MANAGEMENT
+   Level 4 — Expert / Architect (~10 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~10
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design an Enterprise Backup and Recovery Programme
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+A backup procedure is not an enterprise programme. An enterprise programme
+covers: policy, tooling, testing cadence, DR integration, compliance reporting,
+cost optimisation, and continuous improvement. You build this end-to-end.
+
+SCENARIO
+You inherit a company with 80 databases, no backup policy, inconsistent
+backup tools (some pg_dump, some pg_basebackup, some none), and no
+documented restore procedure. You have 90 days to build an enterprise
+backup programme.
+
+YOUR TASK (Programme design and initial implementation)
+1. Assess the current state:
+   - Which databases have backups? (build the inventory)
+   - Which are backed up but untested?
+   - What is the worst-case RPO if a primary failed right now?
+
+2. Define programme objectives:
+   - All production databases backed up daily (minimum)
+   - All production databases have tested restore procedures
+   - RTO/RPO targets defined per database criticality tier
+   - Compliance: 7-year retention for financial databases, 1-year for others
+
+3. Standardise on pgBackRest:
+   - Why pgBackRest: parallel backup/restore, built-in WAL archiving,
+     delta restores, encryption, retention management
+   - Migration plan: replace pg_dump instances with pgBackRest
+   - Timeline: all production databases migrated within 30 days
+
+4. Design tiered backup schedules:
+   - CRITICAL databases: full daily, WAL archived continuously, tested weekly
+   - STANDARD databases: full weekly, differential daily, tested monthly
+   - DEVELOPMENT databases: full weekly, no WAL archiving, no restore tests
+
+5. Design the restore testing programme:
+   - Each critical database restore-tested weekly (automated, to isolated instance)
+   - Test: restore succeeds, row counts match, application queries run
+   - Failures: alert DBA, investigate within 24 hours
+   - Results: dashboard showing last test date and result for every database
+
+6. Design the compliance reporting:
+   - Monthly: backup status report for all databases
+   - Quarterly: restore test results report
+   - Annual: backup programme certification (all critical databases tested)
+
+7. Design cost optimisation:
+   - Compression: pgBackRest delta compression (typically 50-70% smaller)
+   - Tiered storage: recent backups on fast disk, older on S3 Glacier
+   - Deduplication: pgBackRest delta backup avoids re-sending unchanged blocks
+
+8. Write the Backup and Recovery Policy (formal document):
+   - Scope, objectives, responsibilities
+   - Backup schedules by tier
+   - Retention periods
+   - Restore procedures
+   - Testing cadence and success criteria
+   - Escalation process for backup failures
+
+SAFETY
+Risk: Medium — migrating from ad-hoc to pgBackRest requires careful sequencing.
+Never disable old backup before new is confirmed working.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Enterprise backup programme design — policy, tooling, testing, compliance
+
+REVIEW QUESTION
+After 30 days, 3 of 80 databases are still on ad-hoc pg_dump backups because
+the application owners have not engaged with the migration. One is a critical
+financial database. How do you escalate this without destroying relationships?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~10
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a PITR-Centric Disaster Recovery Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Point-in-Time Recovery is not just "restore from backup." In a DR context it
+is an architecture: where is WAL stored, how is it fetched during recovery,
+how is recovery orchestrated, how is the recovery target determined? You
+design all of this.
+
+SCENARIO
+You are designing the DR architecture for a financial services database.
+Requirements:
+- RPO: 0 (no data loss) or 30 seconds maximum
+- RTO: 5 minutes from declared disaster to first queries accepted
+- Retention: WAL must be available for 7 years (regulatory)
+- Geography: primary UK, DR USA (separate legal jurisdiction)
+
+YOUR TASK (PITR-centric DR design)
+1. Design the WAL pipeline:
+   - Primary writes WAL → archive_command ships to S3 (UK) every 1 segment
+   - S3 (UK) replicates to S3 (USA) via S3 Cross-Region Replication (CRR)
+   - DR PostgreSQL instance has restore_command that fetches from S3 (USA)
+   - This gives both PITR capability and geographic redundancy
+
+2. Choose RPO approach:
+   - RPO=0: synchronous replication to DR (adds ~100ms write latency trans-Atlantic)
+   - RPO=30s: asynchronous streaming replication to DR standby
+   - RPO=30s using WAL archive: no streaming, but WAL segments every 30 seconds
+   Select RPO=30s streaming replication (acceptable latency, acceptable RPO).
+
+3. Design the recovery automation:
+   - Failure detection: 15 seconds (monitoring heartbeat)
+   - Decision gate: automated (if primary unreachable for 15s) or manual (if ambiguous)
+   - Promotion: pg_promote() on DR standby (< 5 seconds)
+   - DNS failover: Route 53 health check triggers automatic DNS update (< 60 seconds)
+   - Connection pool: PgBouncer in DR region reconnects clients to new primary
+   - Total: ~80 seconds — just within 5-minute RTO
+
+4. Design PITR recovery for data errors (not hardware failure):
+   - Scenario: developer deletes wrong rows at 10:45 AM
+   - Recovery target: 10:44:59 (1 second before deletion)
+   - Recovery server: spin up isolated instance (not the live DR standby)
+   - Restore: backup from 9 AM + WAL from 9 AM → 10:44:59
+   - Export corrupted table from recovery server → import to production
+
+5. Design the 7-year WAL retention:
+   - First 30 days: S3 Standard (fast access, higher cost)
+   - Days 31–365: S3 Infrequent Access (slower, cheaper)
+   - Years 2–7: S3 Glacier Deep Archive (very slow, very cheap)
+   - Retrieval test: annually, retrieve a 3-year-old WAL segment and verify it decrypts
+
+6. Write the DR architecture document:
+   - Architecture diagram
+   - Component roles and responsibilities
+   - Recovery procedures (automated and manual paths)
+   - Cost estimate
+   - Limitations and known risks
+
+SAFETY
+Risk: HIGH — DR architecture failures have maximum business impact.
+Every component must be tested. Failure modes must be documented.
+
+SKILL BUILT
+Area  : Data Management
+Skill : PITR-centric DR architecture — WAL pipeline, automation, 7-year retention
+
+REVIEW QUESTION
+Your RPO target is 30 seconds. Your WAL segment size is 16MB and generates
+a new segment every 45 seconds (low write volume). This means WAL is only
+archived every 45 seconds — exceeding your 30-second RPO. What configuration
+change closes this gap, and what is the performance implication?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L4/10 — Expert / Architect
+TASKS  : 3-10 (REMAINING DATA MANAGEMENT L4 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Design an Archival and Cold Storage Strategy at Scale
+  Tiered storage design (hot/warm/cold/frozen), pgBackRest + S3 Glacier
+  integration, automated lifecycle policies, retrieval SLAs per tier.
+  Deliverable: data lifecycle architecture document.
+
+TASK 4: Design a Schema Versioning and History Tracking System
+  Track schema changes over time (DDL audit log), enable point-in-time
+  schema recreation, integrate with change management, support forensic
+  investigations. Deliverable: schema versioning policy and tooling design.
+
+TASK 5: Architect a Real-Time Data Replication Pipeline
+  Source-to-target logical replication for analytics, change data capture
+  (CDC) patterns, exactly-once delivery semantics, failure handling.
+  Deliverable: CDC pipeline architecture.
+
+TASK 6: Design a Partitioning Strategy for 10TB+ Tables
+  Declarative partitioning vs inheritance, partition key selection, global
+  indexes vs local, automated partition creation/dropping, cross-partition
+  query performance. Deliverable: partitioning design and implementation plan.
+
+TASK 7: Build a Data Quality Framework
+  Define data quality dimensions (completeness, accuracy, consistency),
+  implement automated checks (constraints, triggers, scheduled queries),
+  report quality scores to owners. Deliverable: DQ framework design.
+
+TASK 8: Design a Multi-Version Data Retention Architecture
+  Temporal tables (valid-time, transaction-time), slowly changing dimensions
+  (SCD Type 2), regulatory hold management, audit history at row level.
+  Deliverable: temporal data architecture document.
+
+TASK 9: Evaluate and Implement pgBackRest for Enterprise Backup
+  Full pgBackRest design: repo configuration, stanza per cluster, parallel
+  backup, delta restore, encryption, S3 repository, monitoring integration.
+  Deliverable: pgBackRest deployment and operations guide.
+
+TASK 10: Design a Cross-Cloud Data Portability Strategy
+  Design the ability to move 10TB of PostgreSQL data between AWS/GCP/Azure
+  with minimum downtime, addressing format compatibility, network costs,
+  and compliance. Deliverable: cloud portability design and cost analysis.
+
+[ AREA 4 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 5 — PERFORMANCE AND MONITORING
+   Level 4 — Expert / Architect (~11 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Query Performance Management Programme
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L3 you tuned individual queries. At L4 you design a programme that
+continuously finds, prioritises, and resolves query performance problems
+across a fleet — without waiting for users to complain.
+
+SCENARIO
+You manage 60 databases processing 10 million queries per day. There is
+no systematic approach to query performance. DBAs wait for complaints.
+Design a proactive query performance programme.
+
+YOUR TASK (Programme design)
+1. Define the programme objectives:
+   - All queries with P95 > SLA target identified within 24 hours
+   - Top 10 query performance issues across the fleet reviewed weekly
+   - No query should degrade by > 30% month-over-month without detection
+
+2. Design the data collection:
+   - pg_stat_statements on all 60 databases
+   - Central aggregation: push stats to central PostgreSQL every 15 minutes
+   - Store 90 days of history (enables trend analysis)
+   - Schema: (collected_at, instance, queryid, calls, total_time, mean_time, ...)
+
+3. Design the weekly query performance review:
+   - Automated report: top 10 worst queries by (mean_time × calls)
+   - Trend: which queries got worse this week vs last week?
+   - Assignment: DBA or team responsible for each query
+   - Resolution tracking: which issues were fixed, which are pending?
+
+4. Design escalation criteria:
+   - P95 > SLA target: owner team notified, DBA assigned
+   - 50% degradation week-over-week: automatic escalation to DBA team
+   - New query type appearing in top 10: investigate why it is now running
+
+5. Design the optimisation playbook:
+   - Missing index → create CONCURRENTLY, measure improvement
+   - Bad plan → ANALYZE, then re-examine
+   - Query rewrite → work with developer, test, measure, deploy
+   - Schema change → architecture review, zero-downtime migration
+
+6. Define success metrics:
+   - Mean query latency across fleet (trending down = success)
+   - Queries violating SLA (trending toward zero = success)
+   - Time-to-resolution for identified issues (trending down = success)
+
+SAFETY
+Risk: Low (programme design). Medium when applying optimisations.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Query performance programme design — systematic detection, prioritisation, resolution
+
+REVIEW QUESTION
+Your programme identifies a query that has degraded 80% week-over-week.
+The query is owned by Team A. You have investigated and know the fix (add
+an index). Team A is in a sprint freeze and cannot deploy changes for 2 weeks.
+What do you do? Can you add the index unilaterally?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~11
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Capacity Planning and FinOps Model for Database Infrastructure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+Cloud costs are elastic — they grow with usage and shrink with optimisation.
+A FinOps approach applies financial discipline to database infrastructure:
+right-size instances, eliminate waste, forecast accurately, and justify spend.
+
+SCENARIO
+Your PostgreSQL fleet on AWS costs £250,000/year. The CFO asks: "Are we
+using what we pay for? Where is there waste? What do we need to buy next year?"
+
+YOUR TASK (Capacity planning + FinOps model)
+1. Build a utilisation model:
+   - For each instance: average CPU %, RAM %, disk % over 90 days
+   - Classify: over-provisioned (< 30% utilisation), right-sized (30-70%), under-provisioned (> 70%)
+   - Finding: 40% of instances are over-provisioned (running on larger instances than needed)
+
+2. Calculate the optimisation opportunity:
+   - 24 over-provisioned instances, average instance size: db.r5.2xlarge (£400/month)
+   - Right-sized target: db.r5.xlarge (£200/month)
+   - Annual saving: 24 × £200 × 12 = £57,600/year
+
+3. Identify waste categories:
+   - Idle dev databases running 24/7 (should stop outside business hours → 65% saving)
+   - Unused read replicas (provisioned for peak that passed)
+   - Over-retained backups (keeping 60 days when policy says 30)
+
+4. Build the forecast model:
+   - Current growth rate: 15% per year (more databases, larger sizes)
+   - Forecast: next year's cost = £250k × 1.15 = £287k
+   - With optimisations: £250k - £57k savings = £193k × 1.15 growth = £222k
+   - Presenting: "We can grow 15% while spending 11% less than today"
+
+5. Design the rightsizing programme:
+   - Monthly: review utilisation report
+   - Downsize over-provisioned instances (during maintenance windows)
+   - Upsize under-provisioned instances (proactively, before performance degrades)
+
+6. Build the FinOps dashboard:
+   - Current month cost per team
+   - Cost trend (last 12 months)
+   - Rightsizing opportunities
+   - Forecast vs budget
+
+SAFETY
+Risk: Medium — rightsizing must be tested first. A database that appears
+idle may have weekly batch peaks. Check 90-day history, not just average.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : FinOps and capacity planning — utilisation analysis, cost optimisation, forecasting
+
+REVIEW QUESTION
+You present the £57,600 rightsizing opportunity to the engineering VP.
+They ask: "If we downsize these instances, will performance suffer?"
+How do you answer with confidence? What data would you present?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L4/10 — Expert / Architect
+TASKS  : 3-11 (REMAINING PERFORMANCE L4 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Architect a Read Scaling Solution for a 50,000 QPS OLTP System
+  Design: connection poolers, read replicas, query routing (writes to primary,
+  reads to replicas), load balancing, session vs transaction mode trade-offs.
+  Deliverable: read scaling architecture document.
+
+TASK 4: Design a Database Performance Regression Testing Framework
+  CI/CD integration: run performance tests on every schema change, compare
+  to baseline, fail the pipeline if regression detected. Deliverable: perf
+  regression framework and integration guide.
+
+TASK 5: Build an Intelligent Alerting System with Anomaly Detection
+  Move beyond threshold alerts to ML-based anomaly detection: baseline
+  query latency, flag statistically unusual values, reduce false positives.
+  Deliverable: anomaly detection design and implementation.
+
+TASK 6: Architect a Unified Observability Platform for 100+ Databases
+  Full stack: metrics (Prometheus + postgres_exporter), logs (Loki + promtail),
+  traces (OpenTelemetry), dashboards (Grafana). Service-level objectives (SLOs)
+  per database. Deliverable: observability platform architecture.
+
+TASK 7: Design and Implement pgBouncer High-Availability
+  Deploy PgBouncer in HA configuration (active-active or active-passive),
+  design failover, integrate with DNS, test failure scenarios. Deliverable:
+  PgBouncer HA design and runbook.
+
+TASK 8: Produce a Comprehensive Database Performance Report
+  Monthly performance report for stakeholders: trends, regressions, wins,
+  recommendations. Audience: engineering leads and CTO. Deliverable: report
+  template and sample report.
+
+TASK 9: Lead a Performance Engineering Engagement for a Partner Team
+  Embedded with an application team for 2 weeks: profile their queries,
+  identify top 5 improvements, implement and measure. Deliverable: engagement
+  report with before/after metrics.
+
+TASK 10: Design a Predictive Autoscaling Model for Database Resources
+  Predict when a database will need more resources (CPU, RAM, disk) based
+  on historical trends and business events (sales, campaigns). Deliverable:
+  predictive scaling design document.
+
+TASK 11: Build a Developer-Facing Database Performance Toolkit
+  Curated set of queries, EXPLAIN plan interpreters, index advisor tooling,
+  packaged for developers to self-serve performance investigation. Deliverable:
+  developer toolkit documentation and tooling.
+
+[ AREA 5 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 6 — MAINTENANCE AND COMPLIANCE
+   Level 4 — Expert / Architect (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 1 of ~9
+TIME   : 120–180 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Build a Database Compliance Programme (SOC 2 Type II)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+SOC 2 Type II certification requires that security controls have been in
+place and operating effectively for a minimum period (usually 6-12 months).
+A DBA at L4 must design the database controls that satisfy SOC 2 requirements
+and produce evidence that auditors will accept.
+
+SCENARIO
+Your company is pursuing SOC 2 Type II certification. The auditors will
+review evidence from the last 12 months. You must design the controls and
+evidence collection process for the database layer.
+
+YOUR TASK (SOC 2 database controls design)
+1. Map database practices to SOC 2 Trust Service Criteria:
+   - CC6.1 (Logical Access Controls): Role-based access, least privilege
+   - CC6.2 (Credentials): Password policies, MFA for privileged access
+   - CC6.3 (Access Provisioning): How access is granted and reviewed
+   - CC7.1 (Monitoring): Monitoring and alerting in place
+   - CC9.2 (Incident Response): Documented and tested IR procedures
+   - A1.2 (Availability): HA/DR capability and backup procedures
+
+2. Design each control with evidence requirements:
+
+   CONTROL: CC6.1 — Least Privilege Access
+   Description: All database roles have minimum necessary privileges
+   Evidence: Quarterly privilege review logs, role permission exports
+   Frequency: Quarterly review, continuous enforcement
+   Owner: DBA Team
+   Test: Auditor will attempt to access data without authorisation
+
+3. Design the evidence collection process:
+   - Quarterly: privilege review (export pg_roles, pg_auth_members, confirm with owners)
+   - Monthly: backup test results (documented restore test logs)
+   - Continuous: access logs to SIEM (cannot be tampered with)
+   - Annual: penetration test results
+
+4. Design the control testing process:
+   - Monthly: DBA tests each control is working
+   - Records the test result and evidence
+   - Any failures: incident created, tracked to resolution
+
+5. Write the control matrix:
+   SOC 2 Criterion | Control Description | Evidence | Frequency | Owner | Last Tested | Result
+
+6. Prepare for the auditor visit:
+   - What will the auditor ask for?
+   - Where is each piece of evidence?
+   - Who is the subject matter expert for each control?
+   - What is the narrative for each control?
+
+SAFETY
+Risk: Low (documentation task). Non-compliance can mean failed certification.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : SOC 2 compliance programme design — controls, evidence, auditor management
+
+REVIEW QUESTION
+The auditor finds a gap: for 3 months during the audit period, the quarterly
+privilege review was not performed (the DBA who owned it was on sick leave
+and it was not delegated). This is a control failure. How do you respond
+to the auditor? What is the likely certification outcome?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L4/10 — Expert / Architect
+TASK   : 2 of ~9
+TIME   : 90–150 minutes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design a Database Change Management Framework at Scale
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L3 you implemented change management for a small team. At L4 you design
+a framework for an organisation making 50+ database changes per week across
+80+ databases. The process must be fast enough to support agile development
+while safe enough to prevent incidents.
+
+SCENARIO
+Engineering teams make 50 database changes per week. Most are minor (adding
+a column). Some are high risk (changing a column type on a 500GB table).
+The current process: none. DBAs review nothing. Incidents happen every 2 weeks.
+
+YOUR TASK (Change management framework at scale)
+1. Define change risk tiers:
+   - LOW RISK: additive, backward-compatible (CREATE TABLE, ADD COLUMN nullable)
+     → No DBA review required, auto-approved by CI/CD
+   - MEDIUM RISK: potentially disruptive (ADD INDEX on large table, ADD NOT NULL)
+     → DBA async review within 4 hours, asynchronous approval
+   - HIGH RISK: potentially breaking (ALTER COLUMN TYPE, DROP TABLE/COLUMN)
+     → DBA synchronous review, scheduled maintenance window required
+   - CRITICAL RISK: major migration (full schema refactor, version upgrade)
+     → Architecture review board, phased rollout required
+
+2. Design the automated risk classification:
+   - Parse migration files in CI/CD pipeline
+   - Classify based on SQL content (DROP = HIGH, ALTER TYPE = HIGH, ADD COLUMN = LOW)
+   - Block high-risk changes from merging without DBA approval
+
+3. Design the DBA review workflow:
+   - DBA receives async review request with: migration SQL, table size, affected environments
+   - DBA has 4 hours to respond (approve, reject, request changes)
+   - If no response: escalate to next DBA in rotation
+   - All reviews logged (who approved, when, what they checked)
+
+4. Design the emergency change process:
+   - Production is broken, needs immediate fix (schema change required NOW)
+   - Emergency approval: 2 senior DBAs must approve within 30 minutes
+   - Executed directly (bypasses normal pipeline)
+   - Post-incident: root cause documented, normal change submission retroactively
+
+5. Design metrics for the framework:
+   - Time-to-approval by tier (target: LOW auto, MEDIUM < 4 hours, HIGH < 24 hours)
+   - Change incident rate (changes that caused incidents / total changes)
+   - Rollback rate (changes that required rollback)
+
+6. Write the change management policy:
+   - Scope (all production database changes)
+   - Tier definitions and examples
+   - Approval requirements per tier
+   - Emergency process
+   - Metrics and review cadence
+
+SAFETY
+Risk: Medium — overly strict process slows development. Overly loose process
+causes incidents. Calibrate thresholds based on actual incident history.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Change management framework design — risk tiers, automation, approval workflows
+
+REVIEW QUESTION
+Your automated risk classifier flags "ALTER TABLE orders ADD COLUMN notes TEXT"
+as LOW RISK (additive change). However, the orders table has 500 million rows
+and adding a column on PostgreSQL 14 triggers a full rewrite (it is not an
+instant operation in that version). Your risk classifier was wrong. How do
+you detect this case automatically, and what does this reveal about the limits
+of syntactic risk classification?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L4/10 — Expert / Architect
+TASKS  : 3-9 (REMAINING MAINTENANCE L4 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Design and Lead an Annual DR Readiness Assessment
+  Annual assessment of all DR capabilities: test every recovery scenario,
+  measure actual RTO/RPO achieved, gap-analyse against SLA targets, produce
+  board-level DR readiness report. Deliverable: DR readiness report.
+
+TASK 4: Build a Database Governance Committee
+  Define charter, membership, meeting cadence, decision rights, escalation
+  paths. Own: standards adoption, technology selection, risk acceptance.
+  Deliverable: governance committee charter and operating model.
+
+TASK 5: Design a Maintenance Automation Platform
+  Automate VACUUM scheduling, index maintenance, ANALYZE, bloat detection
+  and remediation across 80+ databases. Deliverable: maintenance automation
+  design and implementation plan.
+
+TASK 6: Build a Regulatory Compliance Calendar
+  Map all compliance activities (GDPR reviews, SOC 2 evidence, HIPAA audits,
+  PCI-DSS scans) to a calendar. Assign owners. Automate reminders. Deliverable:
+  compliance calendar and ownership matrix.
+
+TASK 7: Design a Database Incident Management Maturity Model
+  Define 5 levels of incident management maturity (from reactive to proactive),
+  assess current state, design roadmap to level 4. Deliverable: maturity
+  assessment and improvement roadmap.
+
+TASK 8: Lead an External Compliance Audit (GDPR Data Protection Authority)
+  Prepare for and lead a regulatory audit: evidence package, DPA engagement,
+  data mapping presentation, Q&A handling. Deliverable: audit preparation
+  documentation and debrief report.
+
+TASK 9: Produce a 3-Year Database Technology Roadmap
+  Where is the organisation's database technology going in 3 years? Version
+  upgrades, tooling investments, team growth, cost trajectory, capability
+  targets. Deliverable: 3-year roadmap for leadership review.
+
+[ AREA 6 — ALL L4 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+================================================================================
+FINAL L4 PROGRESS DASHBOARD — COMPLETE
+================================================================================
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L4/10  ║ 11           ║ 0             ║ 40%          ║
+║ 2. Provision ║ L4/10  ║ 9            ║ 0             ║ 40%          ║
+║ 3. Security  ║ L4/10  ║ 9            ║ 0             ║ 40%          ║
+║ 4. Data Mgmt ║ L4/10  ║ 10           ║ 0             ║ 40%          ║
+║ 5. Perf/Mon  ║ L4/10  ║ 11           ║ 0             ║ 40%          ║
+║ 6. Maint/Com ║ L4/10  ║ 9            ║ 0             ║ 40%          ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~40% (L4 complete across all 6 areas — 59 tasks)   ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+TOTAL L4 TASK SUMMARY
+────────────────────────────────────────────────────────────────────────
+Area 1 — Instance            : 11 tasks (fully detailed)
+Area 2 — Provisioning        : 9 tasks (fully detailed)
+Area 3 — Security            : 3 tasks fully detailed + 6 structured summaries
+Area 4 — Data Management     : 2 tasks fully detailed + 8 structured summaries
+Area 5 — Performance/Monitor : 2 tasks fully detailed + 9 structured summaries
+Area 6 — Maintenance/Comp    : 2 tasks fully detailed + 7 structured summaries
+────────────────────────────────────────────────────────────────────────
+TOTAL L4 TASKS               : ~59 Expert / Architect tasks
+────────────────────────────────────────────────────────────────────────
+
+WHAT CHANGED FROM L3 TO L4
+────────────────────────────────────────────────────────────────────────
+L3 — You operated systems and diagnosed independently.
+L4 — You DESIGN systems, LEAD teams, WRITE policy, BUILD business cases.
+
+Your outputs at L4 are documents, architectures, and frameworks — not
+just executed commands. You are accountable for decisions others depend on.
+
+L4 CAPABILITY MARKERS — You are ready for L5 when you can:
+  ✓ Write an architecture decision record and defend it under challenge
+  ✓ Produce a board-level business case for infrastructure investment
+  ✓ Lead a major incident postmortem and drive systemic improvement
+  ✓ Mentor L2/L3 DBAs through complex incidents
+  ✓ Design compliance programmes that pass external audits
+  ✓ Make technology selection decisions with commercial awareness
+  ✓ Build runbooks that non-DBAs can follow successfully
+
+WHAT L5 BRINGS (Principal / Staff Engineer Level)
+────────────────────────────────────────────────────────────────────────
+At L5 you influence the industry, not just your organisation:
+  - Contribute to PostgreSQL open-source (patches, extensions, blog posts)
+  - Define cross-company standards (working groups, RFC authorship)
+  - Architect for 10x scale beyond current systems
+  - Build and lead a DBA function from scratch
+  - Advise other organisations as a specialist
+
+────────────────────────────────────────────────────────────────────────
+WHEN READY: Return to Claude and say:
+"L4 complete. Ready for L5 across all areas."
+────────────────────────────────────────────────────────────────────────
+
+================================================================================
+                            LEVEL 4 COMPLETE
+          You have reached Expert / Architect level in PostgreSQL DBA.
+      The skills built across L1-L4 represent a complete professional DBA
+         capability stack — from installation awareness to enterprise
+              architecture, compliance, and team leadership.
+
+         Most working DBAs operate between L2 and L3. Completing L4
+           places you in the top tier of the profession. The path
+             to L5 is through contribution, not just competence.
+
+                  Go build something that outlasts the ticket.
+================================================================================

@@ -1,0 +1,1175 @@
+```
+================================================================================
+ DATABASE ADMINISTRATION DIPLOMA — YEAR 2
+ LECTURE: Identifying Tables and Indexes That Actually Need pg_repack
+          — The Production Approach
+ Instructor: Senior DBA / Technical Instructor
+ Session Duration: 3 Hours + Labs
+================================================================================
+
+
+Alright, everyone grab a seat and pull up your terminals. Before we write a
+single query today, I want to ask you something. Raise your hand — mentally if
+not physically — if you've ever worked somewhere where the DBA just ran the same
+maintenance script on every table in the database, every Sunday night, regardless
+of whether those tables actually needed it.
+
+Yeah. I've worked in three companies like that. One of them was running VACUUM
+FULL — not pg_repack, VACUUM FULL — on 200 tables every week. Half those tables
+were reference data. Lookup tables. Tables that hadn't had a single DELETE or
+UPDATE in six months. The whole maintenance window was 4 hours long. Could have
+been 40 minutes if someone had bothered to figure out which tables actually
+needed attention.
+
+That is what we're fixing today.
+
+The title of this session sounds simple — "identifying candidates for pg_repack"
+— but don't be fooled. This is actually one of the most nuanced skills in
+database administration. Because the wrong answer in both directions costs you.
+Miss a genuinely bloated table and your production system slows down. Repack
+tables that don't need it and you're burning I/O, generating unnecessary WAL,
+stressing your standby replication, and adding risk for zero benefit.
+
+The goal of today is to build in your head — and in your toolkit — a repeatable,
+evidence-based method for making this decision. By the time you're done today,
+you'll be able to connect to any PostgreSQL database you've never seen before,
+run a set of queries, and produce a prioritized list of exactly which tables and
+indexes need pg_repack, why they need it, and roughly how urgent it is.
+
+That is a genuinely valuable skill. Let's build it.
+
+
+--- FIRST, LET'S AGREE ON WHAT WE'RE ACTUALLY LOOKING FOR ---
+
+Before we touch a single query, I want to align on the concept. What exactly
+are we trying to find? Because "bloated table" is a fuzzy phrase and fuzzy
+phrases lead to fuzzy decisions.
+
+There are actually several distinct conditions that make a table or index a good
+candidate for pg_repack, and they don't always occur together. You need to know
+what each one is and how to detect it separately.
+
+Condition 1: High dead tuple ratio.
+This means a large fraction of the rows stored in the table are dead tuples —
+old versions of rows that have been updated or deleted. These take up space and
+slow down scans because PostgreSQL has to read past them to find live data.
+
+Condition 2: Table physical size significantly exceeds what live data requires.
+This is actual bloat — the file on disk is much larger than the data you actually
+have. This wastes disk space, causes sequential scans to read more pages than
+necessary, and causes index scans to generate more I/O than they should.
+
+Condition 3: Free Space Map fragmentation.
+Even if autovacuum has run and marked dead tuples as reusable, the free space
+may be scattered in small chunks across the entire file rather than consolidated.
+New inserts fill these scattered gaps but sequential reads still have to traverse
+the full file size. This is subtle but real.
+
+Condition 4: Index bloat.
+The index file is significantly larger than needed. Pages in the index B-tree are
+partially empty due to deletions. This inflates the cost of index scans and
+increases the size of the working set that has to fit in shared_buffers to be
+useful.
+
+Condition 5: Suboptimal physical ordering.
+The table exists mostly intact in terms of live data, but the physical ordering
+of rows on disk doesn't match the dominant query access pattern. This isn't
+"bloat" in the traditional sense, but pg_repack can fix it by rebuilding with a
+custom ORDER BY, improving cache locality and scan performance. This is a
+performance tuning opportunity, not just a maintenance task.
+
+You need to detect all five of these, because the action you take — and the
+urgency — is different for each.
+
+
+--- THE DATA SOURCES AVAILABLE TO YOU ---
+
+PostgreSQL gives us several places to look for this information. Let me walk you
+through each one, because understanding your data sources is step zero.
+
+The first and most commonly used source is pg_stat_user_tables. This view is
+part of the Statistics Collector and gives you per-table activity information.
+The columns you care about most are:
+
+    n_live_tup         — estimated number of live rows
+    n_dead_tup         — estimated number of dead tuples
+    n_mod_since_analyze — modifications since last ANALYZE
+    last_vacuum        — last time manual VACUUM ran
+    last_autovacuum    — last time autovacuum ran
+    last_analyze       — last time statistics were updated
+    n_tup_upd          — cumulative updates since stats reset
+    n_tup_del          — cumulative deletes since stats reset
+    n_tup_ins          — cumulative inserts since stats reset
+
+Let's look at this right now. Open your psql connection and run:
+
+    SELECT
+        schemaname,
+        relname AS table_name,
+        n_live_tup,
+        n_dead_tup,
+        CASE WHEN n_live_tup > 0
+             THEN round(n_dead_tup::numeric / n_live_tup * 100, 2)
+             ELSE 0
+        END AS dead_ratio_pct,
+        last_vacuum,
+        last_autovacuum,
+        n_tup_upd,
+        n_tup_del,
+        n_tup_ins
+    FROM pg_stat_user_tables
+    ORDER BY n_dead_tup DESC
+    LIMIT 20;
+
+This gives you the 20 tables with the most dead tuples. Take a moment to look at
+this output. What you're seeing in dead_ratio_pct is rough — it's based on
+PostgreSQL's planner statistics estimate, not an exact count — but it's a fast
+first pass.
+
+A dead_ratio_pct above 20% is generally something to pay attention to.
+Above 50% is serious. I've seen tables at 90%+ dead ratio and the application
+team wondering why everything was slow — the database was doing 10x more I/O
+than necessary for every single query touching that table.
+
+But — and this is important — n_dead_tup alone is not enough to make a decision.
+Here's why. Imagine two tables, both with dead_ratio_pct of 30%.
+
+Table A has 10,000 live rows and 4,000 dead rows. Total size: 2 MB.
+Table B has 50 million live rows and 21 million dead rows. Total size: 80 GB.
+
+Are these equally urgent? Absolutely not. Table A's 30% dead ratio on 2 MB is
+essentially irrelevant. The overhead is negligible. Table B's 30% dead ratio on
+80 GB means you have roughly 24 GB of garbage sitting in that file. That matters
+enormously.
+
+So dead ratio percentage must always be considered alongside absolute size.
+
+Let's look at size. The second source is pg_class, specifically its oid which
+you can feed into the pg_size functions:
+
+    SELECT
+        schemaname,
+        tablename,
+        pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename))
+            AS total_size,
+        pg_size_pretty(pg_relation_size(schemaname || '.' || tablename))
+            AS table_only_size,
+        pg_size_pretty(pg_indexes_size(
+            schemaname || '.' || tablename))
+            AS indexes_size
+    FROM pg_tables
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'repack')
+    ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC
+    LIMIT 20;
+
+Now you know your 20 largest tables. Cross-reference this with the dead tuple
+query. The tables that appear in BOTH lists — high dead ratio AND large size —
+are your primary candidates.
+
+
+--- INTRODUCING pgstattuple: THE ACCURATE BLOAT TOOL ---
+
+Here's where things get more precise. The estimates from pg_stat_user_tables
+are fast but approximate. For production decision-making on large tables, you
+want something more accurate.
+
+PostgreSQL ships with an extension called pgstattuple. Let's install it:
+
+    CREATE EXTENSION pgstattuple;
+
+pgstattuple performs an actual physical scan of the table or index to calculate
+exact bloat numbers. Because it physically scans, it's slower than a catalog
+query — but on a table where you're considering running a 2-hour pg_repack, the
+extra minute to get accurate numbers is absolutely worth it.
+
+The basic usage:
+
+    SELECT * FROM pgstattuple('orders');
+
+Let me break down the columns you'll get back:
+
+table_len           — total physical size of the table file in bytes
+tuple_count         — number of live tuples
+tuple_len           — total bytes used by live tuples
+tuple_percent       — percentage of the table actually used by live data
+dead_tuple_count    — exact number of dead tuples
+dead_tuple_len      — bytes used by dead tuples
+dead_tuple_percent  — percentage of the table that is dead tuples
+free_space          — total bytes currently free (marked reusable by vacuum)
+free_percent        — percentage of the table that is free space
+
+The key number to focus on is dead_tuple_percent plus free_percent. Together,
+these tell you what fraction of the table's physical file is waste — either dead
+tuples that haven't been vacuumed yet, or free space from vacuumed tuples that
+hasn't been reused.
+
+Here's a query I use in production assessments. Let me type it out:
+
+    SELECT
+        schemaname,
+        tablename,
+        pg_size_pretty(
+            (pgstattuple(schemaname || '.' || tablename)).table_len
+        ) AS physical_size,
+        (pgstattuple(schemaname || '.' || tablename)).tuple_percent
+            AS live_pct,
+        (pgstattuple(schemaname || '.' || tablename)).dead_tuple_percent
+            AS dead_pct,
+        (pgstattuple(schemaname || '.' || tablename)).free_percent
+            AS free_pct,
+        round(
+            (pgstattuple(schemaname || '.' || tablename)).dead_tuple_percent
+          + (pgstattuple(schemaname || '.' || tablename)).free_percent,
+        2) AS total_waste_pct
+    FROM pg_tables
+    WHERE schemaname = 'public'
+    ORDER BY total_waste_pct DESC;
+
+Now, I need to stop here and warn you about this query as written. Because
+pgstattuple physically scans each table, running this on a database with 50 or
+100 large tables will take a very long time and generate significant I/O. In
+production, you don't run this on every table at once. You run it targeted —
+on the specific tables you've already flagged as suspects from the pg_stat
+query.
+
+Think of it as a two-stage process. Stage 1 is a fast, cheap scan across all
+tables using catalog queries to identify suspects. Stage 2 is a deeper, more
+accurate scan using pgstattuple on just those suspects to confirm and quantify.
+
+In stage 1, you cast a wide net cheaply.
+In stage 2, you verify carefully before committing to action.
+
+We'll build this properly in a moment. But first, let's also look at indexes.
+
+
+--- IDENTIFYING BLOATED INDEXES WITH pgstatindex ---
+
+pgstattuple also gives you a function for index analysis: pgstatindex. This
+actually reads the index's B-tree structure and gives you real statistics about
+how full its pages are.
+
+    SELECT * FROM pgstatindex('orders_pkey');
+
+The columns you care about:
+
+version             — B-tree version
+tree_level          — depth of the B-tree
+index_size          — total physical size of the index
+root_block_no       — root page block number
+internal_pages      — number of internal (non-leaf) pages
+leaf_pages          — number of leaf pages (where actual data lives)
+empty_pages         — pages with zero entries (purely wasted)
+deleted_pages       — pages marked as deleted but not yet recycled
+avg_leaf_density    — average fill factor of leaf pages (as a percentage)
+leaf_fragmentation  — fragmentation measure (0 = perfectly ordered,
+                      100 = completely random physical ordering)
+
+The key metrics here are avg_leaf_density and deleted_pages.
+
+avg_leaf_density tells you how full the leaf pages are on average. A healthy
+B-tree index will typically have avg_leaf_density somewhere between 70% and 90%.
+If you've set a fill factor of 80%, you'd expect to see it around there. But if
+you see avg_leaf_density at 30% or 40%, that means your index pages are mostly
+empty — the index is taking up far more disk space than it needs to.
+
+deleted_pages are pages that have been deleted from the index (because all their
+entries were vacuumed) but the page itself hasn't been freed yet. A few deleted
+pages is normal. Hundreds or thousands of deleted pages on a moderately-sized
+index is a sign of chronic bloat.
+
+Let's write a query to check all indexes:
+
+    SELECT
+        schemaname,
+        indexname,
+        tablename,
+        pg_size_pretty(
+            (pgstatindex(schemaname || '.' || indexname)).index_size
+        ) AS index_size,
+        (pgstatindex(schemaname || '.' || indexname)).avg_leaf_density
+            AS avg_leaf_density,
+        (pgstatindex(schemaname || '.' || indexname)).deleted_pages
+            AS deleted_pages,
+        (pgstatindex(schemaname || '.' || indexname)).leaf_fragmentation
+            AS leaf_fragmentation
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+    ORDER BY
+        (pgstatindex(schemaname || '.' || indexname)).index_size DESC;
+
+Same performance caveat as pgstattuple — run this targeted, not as a sweep of
+your entire database.
+
+An index worth flagging for pg_repack:
+  - avg_leaf_density below 50% (index is less than half full on its leaf pages)
+  - deleted_pages in the hundreds or thousands
+  - leaf_fragmentation above 50 or 60 (significant physical disorder)
+
+I've seen indexes where avg_leaf_density was 18%. An index that should have
+been 800 MB was sitting at 5 GB on disk. Every query that used that index was
+doing 6x more I/O than necessary. Nobody had noticed because the query times
+were still "acceptable" — until a traffic spike pushed them over the edge.
+
+
+--- THE CATALOG-BASED BLOAT ESTIMATION QUERY ---
+
+Now, there's a third approach to bloat detection that's worth knowing: the
+catalog-based estimator. This doesn't use pgstattuple. It calculates an estimate
+of bloat by looking at system catalog statistics — specifically, the average
+row size, estimated row count, and actual physical page count — and does some
+math to estimate how much space should theoretically be needed versus how much
+is actually used.
+
+This approach is fast because it reads from catalogs, not the actual data files.
+It's less accurate than pgstattuple but perfectly acceptable for a quick health
+check across many tables.
+
+Here is the query. It looks complex but I'll walk you through it:
+
+    SELECT
+        schemaname AS schema,
+        tablename AS table_name,
+        pg_size_pretty(real_size) AS real_size,
+        pg_size_pretty(estimated_bloat) AS estimated_bloat,
+        round(bloat_ratio * 100, 1) AS bloat_pct,
+        CASE
+            WHEN bloat_ratio > 0.5  THEN 'CRITICAL'
+            WHEN bloat_ratio > 0.3  THEN 'HIGH'
+            WHEN bloat_ratio > 0.15 THEN 'MODERATE'
+            WHEN bloat_ratio > 0.05 THEN 'LOW'
+            ELSE 'ACCEPTABLE'
+        END AS bloat_severity
+    FROM (
+        SELECT
+            schemaname,
+            tablename,
+            pg_total_relation_size(schemaname || '.' || tablename)
+                AS real_size,
+            GREATEST(
+                pg_total_relation_size(schemaname || '.' || tablename)
+                    - (
+                        ceil(reltuples / NULLIF(
+                            floor((8192 - 24) / NULLIF(
+                                (reltuples * stats.avg_width)
+                                    / NULLIF(reltuples, 0),
+                                0
+                            )),
+                            0
+                        )) * 8192
+                    ),
+                0
+            ) AS estimated_bloat,
+            CASE
+                WHEN pg_total_relation_size(schemaname || '.' || tablename) > 0
+                THEN GREATEST(
+                    pg_total_relation_size(schemaname || '.' || tablename)
+                        - (
+                            ceil(reltuples / NULLIF(
+                                floor((8192 - 24) / NULLIF(
+                                    (reltuples * stats.avg_width)
+                                        / NULLIF(reltuples, 0),
+                                    0
+                                )),
+                                0
+                            )) * 8192
+                        ),
+                    0
+                )::float
+                / pg_total_relation_size(schemaname || '.' || tablename)
+                ELSE 0
+            END AS bloat_ratio
+        FROM pg_tables t
+        JOIN pg_class c ON c.relname = t.tablename
+            AND c.relnamespace = (
+                SELECT oid FROM pg_namespace WHERE nspname = t.schemaname
+            )
+        CROSS JOIN LATERAL (
+            SELECT
+                SUM(avg_width)::float AS avg_width
+            FROM pg_stats
+            WHERE schemaname = t.schemaname
+              AND tablename = t.tablename
+        ) stats
+        WHERE t.schemaname NOT IN (
+            'pg_catalog', 'information_schema', 'repack'
+        )
+    ) bloat_data
+    WHERE real_size > 10 * 1024 * 1024  -- only tables larger than 10 MB
+    ORDER BY estimated_bloat DESC;
+
+Okay. I know that looks intimidating. Here's what's important: you don't need
+to understand every line of the math today. What you need to understand is what
+it outputs, how to interpret those outputs, and when to trust them.
+
+The real_size column is the actual physical size of the table as it sits on disk.
+The estimated_bloat column is the algorithm's guess at how many bytes are waste.
+The bloat_pct column is what fraction of the table is estimated to be bloat.
+The bloat_severity column is a label I added — CRITICAL means act now, HIGH
+means schedule it this week, MODERATE means schedule it this month, LOW means
+keep an eye on it, ACCEPTABLE means leave it alone.
+
+The WHERE clause at the bottom filters out tables smaller than 10 MB. There's
+no point repacking a 200 KB table. The I/O cost of pg_repack on it is more
+disruptive than any benefit you'd get.
+
+I'll include this query in the command card at the end. Save it. Use it.
+
+One important caveat: this query can give inaccurate results if pg_stats is
+stale — if ANALYZE hasn't been run on the table recently. Before running a
+bloat assessment, it's good practice to run:
+
+    ANALYZE;
+
+Or for specific tables:
+
+    ANALYZE orders;
+    ANALYZE user_events;
+    ANALYZE sessions;
+
+This refreshes the statistics that the catalog-based estimator depends on.
+If statistics are stale, the estimated_bloat column might be wildly off.
+
+
+--- *** INSTRUCTOR WARNING — THE PGSTATTUPLE PERFORMANCE TRAP *** ---
+
+Stop what you're doing for a moment. This is important.
+
+pgstattuple is accurate. It's also potentially dangerous in production if you
+don't use it carefully.
+
+When you call pgstattuple('some_table'), PostgreSQL acquires a share lock on that
+table and physically reads every page of the table from disk (or from
+shared_buffers if it's cached). On a 10 GB table that's mostly in cache, this is
+fast and relatively harmless. On a 200 GB table that's mostly on disk and your
+production workload is running, you are going to read 200 GB from disk. Your I/O
+utilization will spike. Your disk queue depth will climb. Your application
+queries that need disk reads will compete with pgstattuple for I/O. Performance
+will degrade — maybe visibly.
+
+I once worked with a junior DBA at a logistics company. Good person, eager to
+help. He found the pgstattuple extension, thought "great, let me get accurate
+bloat numbers," and wrote a loop that called pgstattuple on every table in the
+database. There were 340 tables. The largest one was 430 GB. He ran this at
+9 AM on a Tuesday morning.
+
+By 9:17 AM, the operations team was calling. The warehouse management
+application was timing out. The database server's disk I/O was pegged at 100%.
+We had to kill his session, but the damage to I/O queue and page cache was
+already done. It took about 20 minutes for the system to recover.
+
+He felt terrible. And it was an honest mistake — he didn't understand the cost
+model of what he was running.
+
+Rules for using pgstattuple in production:
+
+Rule 1: Never loop pgstattuple over all tables in a database during business
+hours. Do targeted runs on specific suspect tables.
+
+Rule 2: If you must run it on a large table during the day, check your I/O
+utilization first. If you're already above 60-70% disk utilization, wait. Do
+it in a low-traffic window.
+
+Rule 3: When running on a very large table, watch iostat in another terminal
+while it runs. Have your finger on the kill switch.
+
+    -- To kill a pgstattuple session if needed:
+    SELECT pg_cancel_backend(pid)
+    FROM pg_stat_activity
+    WHERE query LIKE '%pgstattuple%';
+
+Rule 4: Use the catalog-based estimator for your first pass on unknown databases.
+Reserve pgstattuple for confirming the tables your first pass has flagged.
+
+That's the warning. Follow these rules.
+
+
+--- WRITE PATTERN ANALYSIS: PREDICTING FUTURE BLOAT ---
+
+Here's something most DBAs don't think about until they've been burned: bloat
+identification isn't just about what's bloated right now. It's about identifying
+which tables are going to be bloated again two weeks after you repack them. That
+matters for deciding how frequently to schedule maintenance on each table.
+
+A table that gets repacked this Sunday and is bloated again by Thursday needs
+weekly pg_repack. A table that takes six months to re-bloat needs quarterly
+maintenance. Treating them the same is wasteful.
+
+How do you predict future bloat? By looking at the ratio of updates and deletes
+to inserts. A table that is purely insert-heavy doesn't bloat much — inserts
+create new tuples but don't create dead tuples. It's updates and deletes that
+produce dead tuples.
+
+Look at this query:
+
+    SELECT
+        schemaname,
+        relname AS table_name,
+        n_tup_ins AS inserts,
+        n_tup_upd AS updates,
+        n_tup_del AS deletes,
+        n_tup_ins + n_tup_upd + n_tup_del AS total_modifications,
+        CASE WHEN n_tup_ins + n_tup_upd + n_tup_del > 0
+             THEN round(
+                 (n_tup_upd + n_tup_del)::numeric
+                 / (n_tup_ins + n_tup_upd + n_tup_del) * 100,
+                 1
+             )
+             ELSE 0
+        END AS churn_pct,
+        pg_size_pretty(
+            pg_total_relation_size(schemaname || '.' || relname)
+        ) AS current_size
+    FROM pg_stat_user_tables
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'repack')
+      AND (n_tup_upd + n_tup_del) > 0
+    ORDER BY (n_tup_upd + n_tup_del) DESC
+    LIMIT 30;
+
+The churn_pct column is the key one. It tells you what percentage of all
+modifications to the table are updates or deletes — the operations that create
+dead tuples. A table with churn_pct of 80% is constantly creating dead tuples
+and needs frequent maintenance attention. A table with churn_pct of 5% is
+mostly being inserted into and bloats slowly.
+
+Now combine this with size. High churn AND large size — that's a table that
+needs pg_repack and needs it on a frequent schedule.
+
+One important note: these cumulative counters in pg_stat_user_tables reset when
+the PostgreSQL service restarts, or when you manually call
+pg_stat_reset_single_table_counters(). So the numbers reflect activity since
+the last reset, which could be days or months. A table that shows n_tup_upd of
+50 million on a server that was restarted last week is a very different animal
+from the same number on a server that hasn't restarted in a year.
+
+To understand recency, check pg_stat_bgwriter for the last stats reset time:
+
+    SELECT stats_reset FROM pg_stat_bgwriter;
+
+This tells you when the stats collector last had its counters reset. Factor that
+into your interpretation.
+
+
+--- CROSS-REFERENCING WITH AUTOVACUUM HISTORY ---
+
+A bloated table might mean autovacuum is failing to keep up. But it might also
+mean autovacuum has just not gotten to it yet after a recent bulk operation. The
+distinction matters because the action is different.
+
+If autovacuum is running regularly and the table is still bloated — that means
+autovacuum is working but can't reclaim the physical space (which is correct
+behavior), and pg_repack is appropriate.
+
+If autovacuum hasn't run on the table for a week, the first question is why. Is
+autovacuum disabled? Is it being blocked by a long-running transaction? Is it
+just overwhelmed and hasn't gotten to this table in its queue? Those are
+problems to fix first, because if autovacuum is broken, repacking the table
+today just means it'll re-bloat faster and you'll never catch up.
+
+Run this query to understand autovacuum health per table:
+
+    SELECT
+        schemaname,
+        relname AS table_name,
+        last_vacuum,
+        last_autovacuum,
+        last_analyze,
+        last_autoanalyze,
+        vacuum_count,
+        autovacuum_count,
+        n_dead_tup,
+        n_live_tup,
+        CASE WHEN last_autovacuum IS NULL THEN 'NEVER'
+             WHEN last_autovacuum < NOW() - INTERVAL '7 days' THEN 'STALE'
+             WHEN last_autovacuum < NOW() - INTERVAL '1 day' THEN 'AGING'
+             ELSE 'RECENT'
+        END AS autovacuum_status
+    FROM pg_stat_user_tables
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'repack')
+    ORDER BY last_autovacuum ASC NULLS FIRST;
+
+Tables showing NEVER or STALE autovacuum status with high dead tuple counts —
+those need investigation before they need pg_repack. Fix the autovacuum problem
+first. Then repack.
+
+A common culprit for autovacuum being blocked is a long-running idle transaction.
+Check this:
+
+    SELECT
+        pid,
+        usename,
+        application_name,
+        client_addr,
+        state,
+        wait_event,
+        now() - xact_start AS transaction_age,
+        query
+    FROM pg_stat_activity
+    WHERE state != 'idle'
+      AND xact_start IS NOT NULL
+    ORDER BY xact_start ASC;
+
+If you see transactions that are hours or days old — and yes, I have seen
+transactions that were 11 days old in a poorly managed system — those are your
+autovacuum blockers. Deal with them. That is separate from the pg_repack work
+but must happen first.
+
+
+--- CHECKING FOR UNUSED OR LOW-USAGE INDEXES ---
+
+While we're talking about indexes, there's a related question that you should
+always ask when reviewing index bloat: is this index actually being used?
+
+A bloated index that is heavily used by critical queries — yes, repack it.
+A bloated index that hasn't been scanned in three months — maybe just drop it.
+Why rebuild something you don't need?
+
+    SELECT
+        schemaname,
+        tablename,
+        indexname,
+        idx_scan AS times_scanned,
+        pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
+        CASE
+            WHEN idx_scan = 0 THEN 'NEVER USED — CONSIDER DROPPING'
+            WHEN idx_scan < 10 THEN 'RARELY USED — INVESTIGATE'
+            WHEN idx_scan < 100 THEN 'LOW USAGE'
+            ELSE 'ACTIVELY USED'
+        END AS usage_status
+    FROM pg_stat_user_indexes
+    JOIN pg_class ON pg_class.oid = indexrelid
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+If you find an index that is NEVER USED, is large, and is bloated — the right
+answer is not pg_repack. The right answer is to confirm it's truly unused
+(remember, these stats also reset on service restart — check the stats_reset
+timestamp first), then drop it. You save the disk space entirely and eliminate
+the write overhead of maintaining that index.
+
+Don't spend time repacking things that shouldn't exist.
+
+A practical approach: if an index has idx_scan = 0 and the stats have been
+accumulating for at least 2-3 weeks under normal workload, it's a strong
+candidate for removal. Create a script to flag these. Review the list with the
+application team before dropping anything — sometimes there's an index that
+only gets used during monthly batch runs and would show zero daily scans.
+
+
+--- BUILDING THE COMPLETE CANDIDATE IDENTIFICATION WORKFLOW ---
+
+Alright, let me now put everything together into a single coherent workflow that
+you can actually follow in production. This is the process I walk through when
+I'm doing a database health assessment at a new client site.
+
+Phase 1: Quick Health Scan (5-10 minutes, safe to run anytime)
+
+Run the catalog-based bloat estimator. Run the pg_stat_user_tables dead tuple
+query. Run the autovacuum health query. Run the write pattern / churn query.
+Run the unused index query. Cross-reference all of this in your head or in a
+spreadsheet. Flag:
+  - Tables with bloat_severity of HIGH or CRITICAL and size > 100 MB
+  - Tables with autovacuum_status of NEVER or STALE
+  - Tables with churn_pct > 40% and large size
+  - Indexes with avg size > 500 MB and idx_scan = 0
+
+Phase 2: Focused Verification (20-30 minutes, run carefully, targeted)
+
+For the specific tables flagged in Phase 1, run pgstattuple. Get exact numbers.
+Confirm that the catalog estimate was roughly right. For flagged indexes, run
+pgstatindex. Confirm avg_leaf_density and deleted_pages numbers.
+
+Now you have an accurate, confirmed picture of what needs work.
+
+Phase 3: Prioritization and Scheduling
+
+Sort your confirmed candidates by:
+  1. Bloat size in absolute bytes — biggest waste first
+  2. Impact on active queries — tables that are read heavily should be
+     prioritized over tables that are rarely accessed
+  3. How quickly they re-bloat based on churn_pct
+
+Then determine the right schedule for each:
+  - CRITICAL bloat on a heavily used table: run pg_repack this week, then
+    schedule weekly maintenance
+  - HIGH bloat on moderate-usage table: schedule within two weeks, bi-weekly
+    maintenance
+  - MODERATE bloat: schedule monthly maintenance
+  - LOW or ACCEPTABLE: no action needed, just monitor
+
+This is the professional approach. Not "run pg_repack on everything."
+Evidence-based, targeted, prioritized.
+
+Let me give you a query that consolidates the key metrics from Phase 1 into a
+single output — a candidate shortlist query. This is the one I'd put in a
+maintenance assessment report:
+
+    SELECT
+        t.schemaname,
+        t.relname AS table_name,
+        pg_size_pretty(
+            pg_total_relation_size(t.schemaname || '.' || t.relname)
+        ) AS total_size,
+        pg_total_relation_size(t.schemaname || '.' || t.relname)
+            AS size_bytes,
+        t.n_live_tup,
+        t.n_dead_tup,
+        CASE WHEN t.n_live_tup > 0
+             THEN round(t.n_dead_tup::numeric / t.n_live_tup * 100, 1)
+             ELSE 0
+        END AS dead_ratio_pct,
+        CASE WHEN (t.n_tup_upd + t.n_tup_del + t.n_tup_ins) > 0
+             THEN round(
+                 (t.n_tup_upd + t.n_tup_del)::numeric
+                 / (t.n_tup_upd + t.n_tup_del + t.n_tup_ins) * 100,
+                 1
+             )
+             ELSE 0
+        END AS churn_pct,
+        CASE
+            WHEN t.last_autovacuum IS NULL THEN 'NEVER'
+            WHEN t.last_autovacuum < NOW() - INTERVAL '7 days' THEN 'STALE'
+            WHEN t.last_autovacuum < NOW() - INTERVAL '1 day' THEN 'AGING'
+            ELSE 'RECENT'
+        END AS autovacuum_status,
+        t.last_autovacuum,
+        CASE
+            WHEN pg_total_relation_size(t.schemaname || '.' || t.relname)
+                 < 10 * 1024 * 1024
+                THEN 'TOO SMALL — SKIP'
+            WHEN NOT EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indrelid
+                WHERE c.relname = t.relname
+                  AND i.indisprimary
+            )
+                THEN 'NO PRIMARY KEY — CANNOT REPACK'
+            WHEN CASE WHEN t.n_live_tup > 0
+                      THEN t.n_dead_tup::numeric / t.n_live_tup * 100
+                      ELSE 0 END > 50
+              AND pg_total_relation_size(
+                      t.schemaname || '.' || t.relname) > 100*1024*1024
+                THEN 'REPACK — CRITICAL'
+            WHEN CASE WHEN t.n_live_tup > 0
+                      THEN t.n_dead_tup::numeric / t.n_live_tup * 100
+                      ELSE 0 END > 25
+              AND pg_total_relation_size(
+                      t.schemaname || '.' || t.relname) > 100*1024*1024
+                THEN 'REPACK — HIGH PRIORITY'
+            WHEN CASE WHEN t.n_live_tup > 0
+                      THEN t.n_dead_tup::numeric / t.n_live_tup * 100
+                      ELSE 0 END > 10
+              AND pg_total_relation_size(
+                      t.schemaname || '.' || t.relname) > 100*1024*1024
+                THEN 'REPACK — SCHEDULE'
+            ELSE 'MONITOR ONLY'
+        END AS repack_recommendation
+    FROM pg_stat_user_tables t
+    WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema', 'repack')
+    ORDER BY
+        CASE
+            WHEN CASE WHEN t.n_live_tup > 0
+                      THEN t.n_dead_tup::numeric / t.n_live_tup * 100
+                      ELSE 0 END > 50
+              AND pg_total_relation_size(
+                      t.schemaname || '.' || t.relname) > 100*1024*1024
+                THEN 1
+            WHEN CASE WHEN t.n_live_tup > 0
+                      THEN t.n_dead_tup::numeric / t.n_live_tup * 100
+                      ELSE 0 END > 25
+              AND pg_total_relation_size(
+                      t.schemaname || '.' || t.relname) > 100*1024*1024
+                THEN 2
+            ELSE 3
+        END,
+        pg_total_relation_size(t.schemaname || '.' || t.relname) DESC;
+
+I know that's a long query. Don't panic. Read through it section by section.
+The logic is exactly what I described earlier — it checks size, dead ratio, PK
+existence, and produces a repack_recommendation column that tells you what to
+do. This is the kind of query that earns its place in a DBA's toolkit and stays
+there for years.
+
+
+--- EVALUATING ROI: IS THE REPACK WORTH IT? ---
+
+This is something that distinguishes a senior DBA from a junior one. Every
+pg_repack operation has a cost: I/O load on the server, WAL generated for
+replication, potential slight increase in write latency during the operation,
+and your time to monitor it. You need to decide: is the benefit worth the cost?
+
+Simple framework. Ask yourself four questions:
+
+Question 1: How much space will I actually reclaim?
+If a table is 50 GB and 40% is bloat, you'll reclaim about 20 GB. If a table is
+500 MB and 15% is bloat, you'll reclaim 75 MB. Which is more impactful?
+Absolute bytes reclaimed matters more than percentage alone.
+
+Question 2: How much does the bloat actually hurt performance right now?
+A bloated table that nobody queries frequently is a storage problem, not a
+performance problem. A bloated table that's being hit by thousands of queries
+per minute is a performance problem that's costing users real time right now.
+Urgency is higher for the second case.
+
+Question 3: What is the I/O cost of running pg_repack on this table at this size?
+Estimate: total I/O for pg_repack is roughly 2-3x the table size. A 50 GB table
+will generate roughly 100-150 GB of I/O during the repack (reading the original,
+writing the new copy, replicating via WAL). If your server I/O capacity is
+500 MB/s, a 100 GB operation will take roughly 200-300 seconds minimum, not
+counting other workload. Is that acceptable during the window you're planning?
+
+Question 4: How quickly will the table re-bloat after repacking?
+A table with churn_pct of 80% and millions of writes per day might re-bloat
+to 30% dead tuples within 2 weeks. If you only schedule maintenance monthly,
+you're always repacking it when it's severely bloated. Maybe this table needs
+its autovacuum settings tuned more aggressively instead, and pg_repack is a
+secondary tool.
+
+If the answers to these four questions are:
+  1. Significant bytes reclaimed
+  2. Performance impact is real and measurable
+  3. I/O cost is manageable in the planned window
+  4. Maintenance schedule matches re-bloat rate
+
+Then yes, repack it. If the answers suggest otherwise, investigate the root
+cause instead of reaching for pg_repack.
+
+
+--- SETTING UP ONGOING MONITORING ---
+
+You've done the assessment, you've run pg_repack on your candidates. Now what?
+You need ongoing monitoring so you're never surprised by bloat again.
+
+Here's the table I recommend keeping. Create it in your DBA admin schema — most
+shops have one, a dedicated schema for DBA tooling. Something like dba_admin or
+maintenance:
+
+    CREATE SCHEMA IF NOT EXISTS dba_admin;
+
+    CREATE TABLE dba_admin.bloat_history (
+        id              BIGSERIAL PRIMARY KEY,
+        captured_at     TIMESTAMPTZ DEFAULT NOW(),
+        schemaname      TEXT NOT NULL,
+        table_name      TEXT NOT NULL,
+        table_size_bytes BIGINT,
+        live_tuples     BIGINT,
+        dead_tuples     BIGINT,
+        dead_ratio_pct  NUMERIC(6,2),
+        churn_pct       NUMERIC(6,2),
+        last_autovacuum TIMESTAMPTZ,
+        repack_recommended BOOLEAN
+    );
+
+Then schedule a daily capture job — a simple script or cron entry — that
+inserts a snapshot of current bloat metrics into this table:
+
+    INSERT INTO dba_admin.bloat_history (
+        schemaname,
+        table_name,
+        table_size_bytes,
+        live_tuples,
+        dead_tuples,
+        dead_ratio_pct,
+        churn_pct,
+        last_autovacuum,
+        repack_recommended
+    )
+    SELECT
+        schemaname,
+        relname,
+        pg_total_relation_size(schemaname || '.' || relname),
+        n_live_tup,
+        n_dead_tup,
+        CASE WHEN n_live_tup > 0
+             THEN round(n_dead_tup::numeric / n_live_tup * 100, 2)
+             ELSE 0 END,
+        CASE WHEN (n_tup_upd + n_tup_del + n_tup_ins) > 0
+             THEN round(
+                 (n_tup_upd + n_tup_del)::numeric
+                 / (n_tup_upd + n_tup_del + n_tup_ins) * 100, 2)
+             ELSE 0 END,
+        last_autovacuum,
+        CASE WHEN n_live_tup > 0
+                  AND n_dead_tup::numeric / n_live_tup > 0.20
+                  AND pg_total_relation_size(
+                          schemaname || '.' || relname) > 100*1024*1024
+             THEN TRUE ELSE FALSE END
+    FROM pg_stat_user_tables
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'repack');
+
+With a history table like this, you can trend bloat over time:
+
+    SELECT
+        table_name,
+        captured_at::date AS day,
+        dead_ratio_pct,
+        pg_size_pretty(table_size_bytes) AS size
+    FROM dba_admin.bloat_history
+    WHERE table_name = 'orders'
+    ORDER BY captured_at;
+
+This shows you how fast bloat is building. After you run pg_repack on a table,
+you'll see dead_ratio_pct drop to near zero in the next day's snapshot. As days
+pass, you'll see it climb again — and the rate of climb tells you how soon you
+need to repack it again. This is data-driven maintenance scheduling. It's how
+you move from "we run maintenance because it's Sunday" to "we run maintenance
+when metrics cross a threshold."
+
+
+--- LAB EXERCISES ---
+
+Okay, you've been absorbing a lot of theory and queries. Now it's time to apply
+it. These labs will take you roughly 45 minutes. Work at your own pace. I'll
+circulate and help if you're stuck.
+
+Lab 1: Build Your First Assessment Report (20 minutes)
+
+Using the repack_lab database we built in the previous session, or a fresh
+database you set up:
+
+1. Create several tables with different characteristics:
+
+     -- High churn table (lots of updates and deletes)
+     CREATE TABLE orders_high_churn (
+         id SERIAL PRIMARY KEY,
+         customer_id INTEGER,
+         status TEXT,
+         amount NUMERIC(12,2)
+     );
+
+     INSERT INTO orders_high_churn (customer_id, status, amount)
+     SELECT (random()*5000)::INT, 'pending', (random()*500)::NUMERIC
+     FROM generate_series(1, 200000);
+
+     UPDATE orders_high_churn SET status = 'processing' WHERE id % 3 = 0;
+     UPDATE orders_high_churn SET status = 'shipped' WHERE id % 5 = 0;
+     DELETE FROM orders_high_churn WHERE id % 4 = 0;
+
+     -- Low churn table (mostly inserts)
+     CREATE TABLE events_append_only (
+         id BIGSERIAL PRIMARY KEY,
+         event_time TIMESTAMPTZ DEFAULT NOW(),
+         event_type TEXT,
+         payload TEXT
+     );
+
+     INSERT INTO events_append_only (event_type, payload)
+     SELECT 'click', repeat('event_data', 10)
+     FROM generate_series(1, 200000);
+
+     -- Small table (should be skipped)
+     CREATE TABLE config (
+         id SERIAL PRIMARY KEY,
+         key TEXT,
+         value TEXT
+     );
+
+     INSERT INTO config (key, value) VALUES
+         ('app_name', 'MyApp'),
+         ('version', '2.1.0'),
+         ('debug', 'false');
+
+2. Run the dead tuple query. Which table shows the most dead tuples?
+
+3. Run the churn analysis query. Which table has the highest churn_pct?
+
+4. Run the consolidated candidate shortlist query. What does it recommend
+   for each table? Does it match what you'd expect?
+
+5. Run the size query. Is the config table getting flagged? Should it be?
+
+Write down your observations. The goal is to see the queries working on tables
+with known characteristics, so you can calibrate your intuition for reading
+these results on unknown production databases.
+
+Lab 2: pgstattuple Verification (10 minutes)
+
+1. Install pgstattuple if not already installed:
+     CREATE EXTENSION pgstattuple;
+
+2. Run pgstattuple on orders_high_churn:
+     SELECT * FROM pgstattuple('orders_high_churn');
+
+3. Note the dead_tuple_percent and free_percent values.
+   How do they compare to the estimate from pg_stat_user_tables?
+
+4. Run pgstattuple on events_append_only. Compare the two tables.
+   What does this tell you about which one needs repacking?
+
+5. Now run pg_repack on orders_high_churn.
+
+6. After pg_repack completes, run pgstattuple again.
+   What do dead_tuple_percent and free_percent look like now?
+
+Lab 3: Index Analysis (10 minutes)
+
+1. On orders_high_churn, add two additional indexes:
+     CREATE INDEX idx_hc_customer ON orders_high_churn(customer_id);
+     CREATE INDEX idx_hc_status ON orders_high_churn(status);
+
+2. Run pgstatindex on both:
+     SELECT * FROM pgstatindex('idx_hc_customer');
+     SELECT * FROM pgstatindex('idx_hc_status');
+
+3. Check avg_leaf_density. Are these freshly built indexes healthy?
+
+4. Run more deletes to fragment the indexes:
+     DELETE FROM orders_high_churn WHERE id % 6 = 0;
+     DELETE FROM orders_high_churn WHERE customer_id > 4500;
+
+5. Run pgstatindex again. Has avg_leaf_density dropped?
+
+6. Run pg_repack --only-indexes on the table. Check pgstatindex once more.
+
+Lab 4: Build the Monitoring History Table (Bonus)
+
+1. Create the dba_admin schema and the bloat_history table as shown in
+   the lecture.
+
+2. Insert today's snapshot using the INSERT ... SELECT query.
+
+3. Run a few more updates on your high_churn table.
+
+4. Insert another snapshot.
+
+5. Query the history table to see the change in dead_ratio_pct over the
+   two snapshots.
+
+6. Write a cron job entry (in a text file) that would run this capture
+   daily at midnight. Hint: the pg_stat_user_tables data is available
+   from a shell script using psql -c.
+
+
+--- CLOSING ---
+
+What we built today is a detection methodology. Not just a set of queries — an
+actual way of thinking about this problem. The difference between a DBA who says
+"we should probably run pg_repack" and a DBA who says "orders_high_churn has
+42% bloat on 85 GB, it's generating 3x more I/O than necessary, churn rate means
+it'll need monthly maintenance, and I've confirmed it with pgstattuple — here's
+the scheduled job" — that difference is methodology.
+
+The second DBA gets trusted with more responsibility. The second DBA gets asked
+to lead the architecture review. The second DBA has evidence, not opinions.
+
+Always let data drive your maintenance decisions. And always understand the cost
+of the remediation before you run it, not after.
+
+Good work today. I'll see you next session.
+
+
+================================================================================
+ QUICK REFERENCE — pg_repack CANDIDATE IDENTIFICATION
+================================================================================
+
+TOOLS AVAILABLE
+  pg_stat_user_tables    — Catalog view, fast, approximate, always available
+  pg_class               — Physical sizes, catalog-based
+  pgstattuple(table)     — Exact bloat scan, SLOW on large tables, targeted use
+  pgstatindex(index)     — Exact index structure stats, targeted use
+  Catalog-based estimator — Fast sweep across all tables, moderate accuracy
+
+INSTALL REQUIRED EXTENSIONS
+  CREATE EXTENSION pgstattuple;       -- needed for pgstattuple / pgstatindex
+
+KEY IDENTIFICATION QUERIES
+
+  -- 1. Dead tuple quick scan (fast, run anytime)
+  SELECT schemaname, relname,
+         n_live_tup, n_dead_tup,
+         CASE WHEN n_live_tup > 0
+              THEN round(n_dead_tup::numeric/n_live_tup*100, 2)
+              ELSE 0 END AS dead_ratio_pct,
+         last_autovacuum
+  FROM pg_stat_user_tables
+  ORDER BY n_dead_tup DESC LIMIT 20;
+
+  -- 2. Table size overview
+  SELECT tablename,
+         pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+  FROM pg_tables
+  WHERE schemaname = 'public'
+  ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+
+  -- 3. pgstattuple exact bloat (targeted, watch I/O)
+  SELECT table_len, tuple_percent, dead_tuple_percent,
+         free_percent,
+         dead_tuple_percent + free_percent AS total_waste_pct
+  FROM pgstattuple('your_table');
+
+  -- 4. pgstatindex for index health
+  SELECT index_size, avg_leaf_density, deleted_pages, leaf_fragmentation
+  FROM pgstatindex('your_index');
+
+  -- 5. Churn analysis (write pattern)
+  SELECT relname, n_tup_upd, n_tup_del, n_tup_ins,
+         round((n_tup_upd+n_tup_del)::numeric
+               /(NULLIF(n_tup_upd+n_tup_del+n_tup_ins,0))*100,1)
+               AS churn_pct
+  FROM pg_stat_user_tables
+  WHERE n_tup_upd + n_tup_del > 0
+  ORDER BY n_tup_upd + n_tup_del DESC;
+
+  -- 6. Autovacuum health check
+  SELECT relname, last_autovacuum, n_dead_tup,
+         CASE WHEN last_autovacuum IS NULL THEN 'NEVER'
+              WHEN last_autovacuum < NOW()-INTERVAL '7 days' THEN 'STALE'
+              ELSE 'OK' END AS av_status
+  FROM pg_stat_user_tables
+  ORDER BY last_autovacuum ASC NULLS FIRST;
+
+  -- 7. Unused indexes
+  SELECT indexname, tablename, idx_scan,
+         pg_size_pretty(pg_relation_size(indexrelid))
+  FROM pg_stat_user_indexes
+  JOIN pg_class ON pg_class.oid = indexrelid
+  WHERE idx_scan = 0
+  ORDER BY pg_relation_size(indexrelid) DESC;
+
+  -- 8. Tables with no primary key (cannot be repacked)
+  SELECT n.nspname, c.relname,
+         pg_size_pretty(pg_total_relation_size(c.oid))
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog','information_schema','repack')
+    AND c.oid NOT IN (
+        SELECT indrelid FROM pg_index WHERE indisprimary)
+  ORDER BY pg_total_relation_size(c.oid) DESC;
+
+  -- 9. Long-running transactions blocking autovacuum
+  SELECT pid, usename, state,
+         now() - xact_start AS age, query
+  FROM pg_stat_activity
+  WHERE state != 'idle' AND xact_start IS NOT NULL
+  ORDER BY xact_start ASC;
+
+  -- 10. Stats reset timestamp (context for cumulative counters)
+  SELECT stats_reset FROM pg_stat_bgwriter;
+
+DECISION THRESHOLDS (STARTING POINTS — TUNE TO YOUR ENVIRONMENT)
+  Table size < 10 MB           : Skip — too small to matter
+  No primary key               : Cannot repack — fix schema or use VACUUM FULL
+  dead_ratio_pct > 50%
+    AND size > 100 MB          : CRITICAL — repack this week
+  dead_ratio_pct > 25%
+    AND size > 100 MB          : HIGH — repack within two weeks
+  dead_ratio_pct > 10%
+    AND size > 100 MB          : MODERATE — schedule monthly
+  avg_leaf_density < 50%
+    AND index > 500 MB         : HIGH — repack index
+  idx_scan = 0 AND large       : Investigate for DROP before repacking
+  Autovacuum status NEVER
+    or STALE                   : Fix autovacuum first, then assess bloat
+
+ASSESSMENT WORKFLOW
+  Phase 1 (fast, safe anytime)  : Run queries 1,2,4,5,6,7,8 — build suspect list
+  Phase 2 (targeted, careful)   : Run pgstattuple/pgstatindex on suspects only
+  Phase 3 (decide and schedule) : Prioritize by bytes wasted + query impact
+
+PGSTATTUPLE SAFETY RULES
+  1. Never loop over all tables during business hours
+  2. Check iostat before running on tables > 50 GB
+  3. Have pg_cancel_backend ready if needed
+  4. Use catalog estimator for first pass, pgstattuple for confirmation only
+
+================================================================================
+```

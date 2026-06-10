@@ -1,0 +1,1197 @@
+================================================================================
+ DATABASE ADMINISTRATION DIPLOMA — YEAR 2
+ LECTURE: pg_repack — Online Table and Index Maintenance in Production
+ Instructor: Senior DBA / Technical Instructor
+ Session Duration: 3 Hours + Labs
+================================================================================
+
+
+Alright, settle down, everyone. Go ahead and open your terminals — we're going
+to be typing a lot today. And I mean a lot. This is not a sit-back-and-listen
+lecture. By the end of this session, you will have run pg_repack against a live
+database, watched it work, understood why it's doing what it's doing, and you
+will know — genuinely know — when to use it and when NOT to use it.
+
+So. Let's talk about something that will save your job one day.
+
+I'm not being dramatic. I have seen DBAs get called into a manager's meeting on
+a Monday morning because their production database ground to a halt over the
+weekend. Not because of bad queries. Not because of missing indexes. Because of
+table bloat. And the tool they should have been running — pg_repack — was
+sitting right there, available, and nobody had bothered to learn it.
+
+You are not going to be that DBA.
+
+
+--- WHY DOES THIS PROBLEM EVEN EXIST? ---
+
+Before I show you pg_repack, I need you to understand *why* it exists. Because
+if you don't understand the problem, you're just memorizing commands like a
+parrot. And parrots don't make good DBAs.
+
+PostgreSQL uses something called MVCC — Multi-Version Concurrency Control. You
+will go much deeper into MVCC in other sessions, but here's what you need right
+now: when you UPDATE or DELETE a row in PostgreSQL, the old version of that row
+does not immediately disappear. It stays in the table. PostgreSQL keeps it
+around because some other transaction might still need to see it — maybe it
+started before your UPDATE and it's still reading the old data.
+
+So think about what happens over time. You have a table. Users are hammering it
+with updates — let's say it's an orders table in an e-commerce system. Every
+time someone updates an order status, the old row stays behind as a "dead tuple."
+Thousands of updates per hour. Millions of dead tuples piling up. Your table
+that should be 2 gigabytes on disk is now 18 gigabytes. And here's the thing
+that really hurts — PostgreSQL has to read through all of that garbage to find
+your live rows. Your sequential scans slow down. Your index scans slow down.
+Your whole database starts feeling sluggish for no apparent reason.
+
+This is bloat. This is the enemy.
+
+Now, PostgreSQL has a built-in process called VACUUM that is supposed to clean
+this up. And VACUUM does work — it marks dead tuples as reusable space. But
+here's the catch: VACUUM does NOT return that space to the operating system.
+The file on disk stays the same size. The bloat is technically "cleaned" inside
+PostgreSQL's view, but the table file is still 18 gigabytes.
+
+To actually shrink the file, you need VACUUM FULL. Go ahead and look at this
+command:
+
+    VACUUM FULL orders;
+
+Looks simple, right? Don't let that fool you. VACUUM FULL does return the disk
+space. But it acquires an ACCESS EXCLUSIVE lock on that table for the entire
+duration of the operation. That means nobody — not a single user, not a single
+query — can touch that table until VACUUM FULL is done. On an 18-gigabyte table,
+that might be 45 minutes. An hour. Maybe more.
+
+I ran VACUUM FULL on a 60-gigabyte table once, back in 2009, at a company that
+ran a financial trading platform. I was newer to this. I thought, "it's 2 AM,
+nobody's using the system." And I was right — nobody was using the database.
+But nobody told me there was a batch job that kicked off at 2:15 AM to calculate
+overnight positions. That job tried to read the orders table and waited. And
+waited. And waited. By 5 AM, the trading desk came in to find their morning
+reports were blank because the batch had timed out. My phone rang at 5:05 AM.
+
+I learned that day that "nobody is using the system" is almost never completely
+true. And VACUUM FULL is a blunt instrument. You cannot use it safely on
+anything critical during business hours, or really during any hours in a
+24/7 system.
+
+That is the gap that pg_repack fills.
+
+
+--- WHAT IS pg_repack? ---
+
+pg_repack is a PostgreSQL extension — an open-source tool — that lets you
+reclaim bloated space from tables and indexes WITHOUT holding a long lock on the
+table. Users can keep reading and writing while pg_repack is working in the
+background.
+
+Let me be precise about this: pg_repack does eventually need a very brief
+exclusive lock at the very end of the process to do the final swap. We're
+talking a few milliseconds to a second or two. That is dramatically different
+from holding a lock for 45 minutes.
+
+How does it do this? I'll explain the mechanism in a moment, but the high-level
+idea is: pg_repack builds a *new, clean copy* of your table in the background
+while your application keeps running. It logs all the changes that happen to the
+original table during that time. When the new copy is ready, it applies those
+changes, then does a fast swap. Like a pit crew doing a tire change at 60 mph —
+mostly they work alongside the moving car, and only at the very end do they
+ask it to slow down for a second.
+
+
+--- HOW pg_repack ACTUALLY WORKS INTERNALLY ---
+
+I want you to understand this at a deeper level because when something goes
+wrong — and things always go wrong in production — you need to know what
+pg_repack was trying to do so you can diagnose it.
+
+Here is what happens under the hood when you run pg_repack on a table:
+
+Step 1: pg_repack creates a trigger on your original table. This trigger logs
+every INSERT, UPDATE, and DELETE that happens on the table into a temporary log
+table. Think of it as a changelog — every modification gets recorded.
+
+Step 2: pg_repack creates a new, empty copy of your table — same schema, same
+constraints, everything. Then it starts copying rows from the original table
+into this new table. This is the bulk of the work. During this entire phase,
+your application is running normally. Users are reading, writing, doing whatever
+they do.
+
+Step 3: While copying, any new changes coming into the original table are being
+captured by that trigger into the log table. pg_repack periodically applies
+those logged changes to the new copy to keep it in sync.
+
+Step 4: When pg_repack determines the new copy is sufficiently caught up, it
+performs a final synchronization pass — applying the last batch of logged
+changes — and then, just for a brief moment, it acquires that exclusive lock,
+does the final swap (old table out, new table in), drops the old table, and
+releases the lock.
+
+Step 5: pg_repack also rebuilds all indexes on the new table, so you're not
+just getting a clean table — you're getting clean indexes too.
+
+That's it. That's the magic. It's elegant engineering.
+
+Now, one thing I want you to note: because pg_repack uses a trigger to log
+changes, it adds some overhead during the repacking process. Your write
+performance may dip slightly while pg_repack is running. On a high-write system,
+you'll feel it. On a moderate system, you usually won't. We'll come back to
+this.
+
+
+--- INSTALLATION ---
+
+Alright, enough theory. Let's get pg_repack installed. This is the part where
+you actually need to follow along on your terminal.
+
+First, check your PostgreSQL version:
+
+    psql -U postgres -c "SELECT version();"
+
+pg_repack needs to match your PostgreSQL major version. If you're on PostgreSQL
+16, you need the pg_repack build for PostgreSQL 16. If you're on 17, you need
+the 17 build. This matters. I've seen people install the wrong version and then
+spend an hour debugging errors that had nothing to do with their configuration.
+
+On Debian/Ubuntu systems, you install it like this:
+
+    sudo apt-get install postgresql-16-repack
+
+Replace 16 with your actual major version. On RHEL/CentOS/Rocky Linux:
+
+    sudo yum install pg_repack16
+
+Or if you're using PGDG repos:
+
+    sudo dnf install pg_repack_16
+
+After installation, you need to enable the extension inside your database.
+Connect to the database where you want to use it:
+
+    psql -U postgres -d your_database_name
+
+Then run:
+
+    CREATE EXTENSION pg_repack;
+
+That's it for installation. To verify it's there:
+
+    SELECT * FROM pg_extension WHERE extname = 'pg_repack';
+
+You should see a row come back. If you don't, the extension isn't installed
+correctly. Don't proceed until you see that row.
+
+Important note: you need to install the extension in each database where you
+want to use it. Extensions in PostgreSQL are per-database, not server-wide.
+If you have 10 databases and you want to use pg_repack in all of them, you run
+CREATE EXTENSION pg_repack in each one.
+
+
+--- BASIC USAGE ---
+
+pg_repack is a command-line tool. You run it from your Linux shell, not from
+inside psql. Let me show you the most basic usage first, and then we'll build
+up to the more complex options.
+
+The simplest invocation:
+
+    pg_repack -h localhost -p 5432 -U postgres -d your_database -t your_table
+
+Let me break down each flag:
+  -h : hostname or IP of your PostgreSQL server
+  -p : port (default is 5432, but always be explicit)
+  -U : the PostgreSQL user — needs superuser or at minimum pg_repack role
+  -d : the database name
+  -t : the specific table you want to repack
+
+So if I want to repack a table called "orders" in a database called "ecommerce":
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders
+
+Go ahead and try a dry run first. pg_repack has a --dry-run option that tells
+you what it WOULD do without actually doing it:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders --dry-run
+
+Always do a dry run first. Always. Make this a habit. It costs you nothing and
+it might save you from doing something you didn't intend to do.
+
+Now, if you want to repack ALL tables in a database:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce
+
+No -t flag means "do everything." Be careful with this one. In a large database,
+this can run for a very long time.
+
+If you want to repack all tables in a specific schema:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -s public
+
+The -s flag targets a schema.
+
+And if you want to repack only indexes — not the full table, just the indexes:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --only-indexes
+
+Why would you want to only repack indexes? Because index bloat is a real thing
+too. Indexes get bloated from insertions and deletions over time, just like
+tables do. Sometimes your table is fine but your indexes are bloated, and a
+full table repack is overkill. In those cases, --only-indexes is faster and
+less disruptive.
+
+
+--- ACTUALLY SETTING UP A LAB SCENARIO ---
+
+Let me walk you through creating a bloated table so you can actually see what
+pg_repack does. Type this into your psql session:
+
+First, create a test database if you haven't:
+
+    CREATE DATABASE repack_lab;
+    \c repack_lab
+    CREATE EXTENSION pg_repack;
+
+Now create a test table:
+
+    CREATE TABLE orders (
+        id          SERIAL PRIMARY KEY,
+        customer_id INTEGER NOT NULL,
+        status      VARCHAR(20) NOT NULL DEFAULT 'pending',
+        amount      NUMERIC(12, 2),
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        notes       TEXT
+    );
+
+Insert a decent chunk of data — let's do 500,000 rows:
+
+    INSERT INTO orders (customer_id, status, amount, notes)
+    SELECT
+        (random() * 10000)::INT,
+        (ARRAY['pending','processing','shipped','delivered','cancelled'])
+            [floor(random() * 5 + 1)],
+        (random() * 1000)::NUMERIC(12,2),
+        repeat('x', 50)
+    FROM generate_series(1, 500000);
+
+This might take a moment. While it's running, that's normal — we're generating
+half a million rows. Let it finish.
+
+Now let's see how big this table is:
+
+    SELECT
+        relname AS table_name,
+        pg_size_pretty(pg_total_relation_size(oid)) AS total_size,
+        pg_size_pretty(pg_relation_size(oid)) AS table_size,
+        pg_size_pretty(pg_indexes_size(oid)) AS indexes_size
+    FROM pg_class
+    WHERE relname = 'orders';
+
+Write down that size. We're going to watch it change.
+
+Now let's create the bloat. We're going to update and delete a huge chunk of
+those rows, which will leave lots of dead tuples behind:
+
+    -- Update half the rows (creates dead tuples for old versions)
+    UPDATE orders SET status = 'delivered' WHERE id % 2 = 0;
+
+    -- Delete a quarter of the rows (creates dead tuples)
+    DELETE FROM orders WHERE id % 4 = 0;
+
+This will take a little while on 500k rows. Let it run.
+
+Now check the size again with the same SELECT query. You'll see the table has
+stayed at roughly the same size or even grown, even though we deleted a bunch
+of rows. That's bloat. That's the problem we're solving.
+
+You can also check bloat stats using this query — this is a query I've had in
+my toolkit for years:
+
+    SELECT
+        schemaname,
+        tablename,
+        pg_size_pretty(real_size) AS real_size,
+        pg_size_pretty(extra_size) AS bloat_size,
+        round(extra_ratio * 100, 2) AS bloat_pct
+    FROM (
+        SELECT
+            schemaname,
+            tablename,
+            pg_total_relation_size(schemaname || '.' || tablename) AS real_size,
+            GREATEST(
+                pg_total_relation_size(schemaname || '.' || tablename)
+                    - pg_relation_size(schemaname || '.' || tablename) * 1.1,
+                0
+            ) AS extra_size,
+            CASE WHEN pg_total_relation_size(schemaname || '.' || tablename) > 0
+                THEN GREATEST(
+                    pg_total_relation_size(schemaname || '.' || tablename)
+                        - pg_relation_size(schemaname || '.' || tablename) * 1.1,
+                    0
+                )::float /
+                pg_total_relation_size(schemaname || '.' || tablename)
+                ELSE 0
+            END AS extra_ratio
+        FROM pg_tables
+        WHERE schemaname = 'public'
+    ) t
+    ORDER BY extra_size DESC;
+
+Don't worry about memorizing this query. I'll give you the full command card at
+the end. The point is to understand what you're looking at — the bloat_pct
+column tells you roughly what percentage of your table is wasted space.
+
+Now run pg_repack from your Linux terminal (not psql):
+
+    pg_repack -h localhost -p 5432 -U postgres -d repack_lab -t orders -e
+
+The -e flag means "echo" — it prints out what pg_repack is doing as it goes.
+This is extremely useful for learning and for debugging.
+
+Watch the output. You'll see it creating the log table, creating the new table,
+copying rows, applying the log, doing the final swap. Read every line. Don't
+just wait for it to finish.
+
+After it completes, go back to psql and run the size query again:
+
+    SELECT
+        relname AS table_name,
+        pg_size_pretty(pg_total_relation_size(oid)) AS total_size,
+        pg_size_pretty(pg_relation_size(oid)) AS table_size,
+        pg_size_pretty(pg_indexes_size(oid)) AS indexes_size
+    FROM pg_class
+    WHERE relname = 'orders';
+
+The table is smaller now. Significantly smaller. That's what we came here to do.
+
+
+--- IMPORTANT OPTIONS YOU WILL USE IN A REAL COMPANY ---
+
+Let me go through the options that actually matter in production. Not every
+option in the docs — the ones you'll actually use.
+
+The --jobs option:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --jobs=4
+
+This tells pg_repack to build indexes in parallel using N parallel workers. The
+default is 1. On a server with multiple CPU cores and a large table with many
+indexes, using --jobs=4 can cut your index rebuild time dramatically. On our lab
+machine you might use 2. In production on a 32-core server, you might use 8.
+
+Don't blindly crank this up to max CPUs though. More parallel workers means
+more I/O load, more CPU load. If your system is already under stress, adding
+aggressive parallelism can make things worse, not better. Test this in staging
+before deciding your production value.
+
+The --no-order option:
+
+By default, pg_repack builds the new copy of the table ordered by its primary
+key or cluster index (if one exists). This is usually a good thing — it puts
+related rows physically close together on disk, which improves sequential access
+patterns. But if you have a very specific access pattern that doesn't align with
+the primary key, or if you just want the repack to be faster and don't care
+about physical ordering, use:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --no-order
+
+The --order-by option:
+
+Speaking of ordering — you can specify your own ORDER BY clause:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --order-by "created_at DESC"
+
+This physically clusters the table by created_at in descending order. If your
+application almost always queries recent orders, this means the most-accessed
+rows are at the "front" of the table. This can improve cache hit rates and
+sequential scan performance.
+
+This is actually a performance tuning technique disguised as a maintenance tool.
+Remember that.
+
+The --tablespace option:
+
+This is one that surprises students every time. pg_repack can move a table to a
+different tablespace while it's running:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --tablespace fast_ssd_tblspc
+
+So if you have a table that's been living on slow spinning disk and you want to
+move it to a faster SSD tablespace — or if you're migrating storage — you can
+do this without downtime. This is huge in production. Moving tablespaces with
+standard PostgreSQL commands requires downtime. pg_repack does it online.
+
+Similarly for indexes:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --tablespace fast_ssd_tblspc \
+      --index-tablespace fast_ssd_tblspc
+
+The --wait-timeout option:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --wait-timeout=60
+
+This sets how long (in seconds) pg_repack will wait to acquire the brief
+exclusive lock at the end of the process. If another transaction is holding the
+table open and pg_repack can't get its lock within 60 seconds, it will abort
+rather than waiting indefinitely.
+
+In production I usually set this. The last thing you want is pg_repack sitting
+there waiting forever for a long-running transaction to finish, while it's
+holding system resources and you don't know it's stuck.
+
+The --no-kill-backend option:
+
+By default, pg_repack may kill backends that are blocking it from acquiring the
+final lock. If you don't want it to kill user connections, add:
+
+    --no-kill-backend
+
+In most production systems, you want the default behavior (allow killing), but
+in certain environments — financial systems where a long-running transaction may
+be critically important — you might prefer pg_repack to give up rather than kill
+a backend. Know your environment.
+
+
+--- *** INSTRUCTOR WARNING — DO NOT GET THIS WRONG IN PRODUCTION *** ---
+
+I need you to stop and really listen to this next part. Put down whatever else
+you're doing. This is the thing that bites people.
+
+pg_repack requires that every table you repack has a PRIMARY KEY or a UNIQUE
+NOT NULL constraint. If your table does not have one of those, pg_repack will
+refuse to run on it and will give you an error like:
+
+    ERROR: relation "your_table" must have a primary key or not-null unique keys
+
+This is not a bug. This is by design. pg_repack needs a way to uniquely identify
+each row in order to apply the logged changes from the trigger to the new copy.
+Without a unique key, it cannot safely do this.
+
+Now here's where the warning really matters: in legacy systems and poorly
+designed applications, tables WITHOUT primary keys are disturbingly common.
+I have seen enterprise applications running for years on tables with no PKs. If
+you run pg_repack against a database and some tables succeed and others don't,
+check whether the failing tables have primary keys.
+
+What do you do when a table has no primary key and it's bloated? You have a few
+options:
+
+Option 1: Add a primary key if the application allows it. This requires an
+ACCESS EXCLUSIVE lock too, but it's a one-time cost and then you can repack
+forever afterward.
+
+    ALTER TABLE legacy_table ADD COLUMN repack_id BIGSERIAL PRIMARY KEY;
+
+Note: In PostgreSQL 12+, you can use CREATE UNIQUE INDEX CONCURRENTLY followed
+by ALTER TABLE ADD CONSTRAINT ... USING INDEX, which is less disruptive. We'll
+cover index building in detail another day, but file that away.
+
+Option 2: Accept that for this specific table, you may need to schedule a
+maintenance window and run VACUUM FULL. Document it, schedule it, communicate it
+to the business.
+
+Option 3: Investigate the application. Sometimes tables without PKs are
+append-only log tables where you can just TRUNCATE old partitions. But that's
+a whole other conversation.
+
+The point is: do not show up to a production system expecting to run pg_repack
+everywhere and be surprised when it refuses half your tables. Check for primary
+keys first. Always. Make it part of your pre-flight check.
+
+Here's a query to identify tables in your database that have no primary key:
+
+    SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'r'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'repack')
+      AND c.oid NOT IN (
+          SELECT indrelid FROM pg_index WHERE indisprimary
+      )
+    ORDER BY pg_total_relation_size(c.oid) DESC;
+
+Run this before planning your maintenance. Make it a standard check. If you find
+tables there, you need a plan for them before you start.
+
+That's the warning. Now let's move on.
+
+
+--- MONITORING pg_repack WHILE IT'S RUNNING ---
+
+In production, you never just kick off a job and walk away. You need to be able
+to answer: how far along is it? Is it causing problems? Is it stuck?
+
+While pg_repack is running, open a second terminal and connect to psql. Run this
+query to see pg_repack's processes:
+
+    SELECT
+        pid,
+        application_name,
+        state,
+        wait_event_type,
+        wait_event,
+        query_start,
+        query
+    FROM pg_stat_activity
+    WHERE application_name LIKE '%repack%'
+       OR query LIKE '%repack%'
+    ORDER BY query_start;
+
+This shows you the PostgreSQL backend processes that pg_repack is using.
+
+To see how much of the table has been copied, you can watch the size of the
+working table that pg_repack creates. When pg_repack runs, it creates objects
+in the repack schema. Look for them:
+
+    SELECT
+        n.nspname AS schema,
+        c.relname AS name,
+        pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'repack'
+    ORDER BY pg_total_relation_size(c.oid) DESC;
+
+As pg_repack copies rows, the repack working table will grow. Watch it grow
+toward the size of your original table. When they're about equal, you're near
+the end.
+
+To check lock activity — specifically to see if pg_repack is waiting for a lock
+or if it's blocking something else:
+
+    SELECT
+        blocked.pid AS blocked_pid,
+        blocked.query AS blocked_query,
+        blocking.pid AS blocking_pid,
+        blocking.query AS blocking_query,
+        blocked.application_name
+    FROM pg_stat_activity blocked
+    JOIN pg_stat_activity blocking
+        ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+    WHERE blocked.application_name LIKE '%repack%'
+       OR blocking.application_name LIKE '%repack%';
+
+If you see pg_repack being blocked for a long time by another query, you need to
+decide: should you cancel pg_repack and try again later? Or should you investigate
+what's holding that lock?
+
+Also watch your system-level metrics while pg_repack runs:
+
+In another terminal:
+
+    iostat -x 1
+
+Watch disk I/O. pg_repack is doing a full table copy — it is going to read and
+write a lot of data. On a large table, you WILL see I/O spikes. If I/O is
+already saturated on your system, this is going to hurt. Plan accordingly.
+
+    vmstat 1
+
+Watch for memory pressure. If pg_repack's work_mem or shared_buffers are pushing
+you close to physical memory limits, the OS will start swapping and everything
+will slow to a crawl.
+
+
+--- DEALING WITH BLOATED INDEXES SPECIFICALLY ---
+
+Let's talk about index bloat for a moment because this is something people
+overlook.
+
+Indexes in PostgreSQL can become bloated just like tables. Every DELETE from a
+table leaves a dead entry in every index on that table. VACUUM handles these
+dead index entries, but over time — especially on highly modified tables —
+indexes can grow much larger than necessary.
+
+A bloated index slows down not just scans but also inserts and updates, because
+writing to an index with lots of empty pages is inefficient.
+
+To check index bloat, use this query:
+
+    SELECT
+        schemaname,
+        tablename,
+        indexname,
+        pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
+        idx_scan,
+        idx_tup_read,
+        idx_tup_fetch
+    FROM pg_stat_user_indexes
+    JOIN pg_class ON pg_class.oid = indexrelid
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+If you see an index that's very large relative to the table it's on, that might
+be bloat. If you also see that idx_scan is very low, that index might not even
+be worth having — but that's a separate conversation for another day.
+
+To rebuild just the indexes on a table with pg_repack:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders \
+      --only-indexes -e
+
+To rebuild a specific index:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce \
+      --index orders_customer_id_idx -e
+
+This is particularly useful when you've identified one specific bloated index
+and don't want to touch the rest.
+
+Compare this to the old approach, which was:
+
+    REINDEX INDEX CONCURRENTLY orders_customer_id_idx;
+
+REINDEX CONCURRENTLY is available in PostgreSQL 12+ and is actually a reasonable
+option too. pg_repack's index-only mode gives you more control and better
+integration with your maintenance workflow, but REINDEX CONCURRENTLY is not
+wrong if that's what you have available.
+
+
+--- SCHEDULING pg_repack IN A PRODUCTION ENVIRONMENT ---
+
+You're not going to run pg_repack by hand every time. You're going to schedule
+it. Let me walk you through how I set this up in a real company.
+
+First, create a dedicated repack script. Here's a shell script template:
+
+    #!/bin/bash
+    # /opt/dba/scripts/pg_repack_maintenance.sh
+    
+    DATABASE="ecommerce"
+    HOST="localhost"
+    PORT="5432"
+    USER="postgres"
+    LOG_DIR="/var/log/postgresql/repack"
+    DATE=$(date +%Y%m%d_%H%M%S)
+    LOG_FILE="$LOG_DIR/repack_$DATE.log"
+    
+    mkdir -p $LOG_DIR
+    
+    echo "Starting pg_repack maintenance: $(date)" >> $LOG_FILE
+    
+    # Repack the most critical bloated tables
+    TABLES=("orders" "order_items" "events" "sessions")
+    
+    for TABLE in "${TABLES[@]}"; do
+        echo "Repacking table: $TABLE at $(date)" >> $LOG_FILE
+        pg_repack \
+            -h $HOST \
+            -p $PORT \
+            -U $USER \
+            -d $DATABASE \
+            -t $TABLE \
+            --jobs=4 \
+            --wait-timeout=120 \
+            -e \
+            >> $LOG_FILE 2>&1
+    
+        if [ $? -eq 0 ]; then
+            echo "SUCCESS: $TABLE repacked at $(date)" >> $LOG_FILE
+        else
+            echo "FAILURE: $TABLE repack failed at $(date)" >> $LOG_FILE
+        fi
+    done
+    
+    echo "pg_repack maintenance complete: $(date)" >> $LOG_FILE
+
+Make that script executable:
+
+    chmod +x /opt/dba/scripts/pg_repack_maintenance.sh
+
+Then schedule it with cron. The question of WHEN to run it depends on your
+workload. On most OLTP systems, the quietest time is late night or early morning.
+For a database that has a busy day shift and slower nights:
+
+    # Run pg_repack every Sunday at 2 AM
+    0 2 * * 0 postgres /opt/dba/scripts/pg_repack_maintenance.sh
+
+You can set this with:
+
+    crontab -e -u postgres
+
+And add that line.
+
+But — and this is important — don't run pg_repack on the same schedule as your
+backups. If pg_repack and pg_basebackup are running at the same time, you're
+doubling your I/O load and potentially slowing both operations. Stagger them.
+Backups at 1 AM, pg_repack at 3 AM. Something like that.
+
+Also: don't schedule pg_repack to run every night unless you actually have that
+much bloat. On most systems, weekly is plenty. On very high-write systems, you
+might do it every few days. Let the bloat metrics guide your schedule, not
+arbitrary habit.
+
+Here's a smarter approach — only repack if bloat is above a threshold. You can
+query bloat metrics before running:
+
+    #!/bin/bash
+    # Check bloat before repacking
+    
+    BLOAT_THRESHOLD=20  # percent
+    
+    BLOAT_RESULT=$(psql -h localhost -p 5432 -U postgres -d ecommerce -t -c "
+    SELECT COUNT(*)
+    FROM (
+        SELECT
+            tablename,
+            CASE WHEN pg_total_relation_size(schemaname || '.' || tablename) > 0
+                THEN (
+                    GREATEST(
+                        pg_total_relation_size(schemaname || '.' || tablename)
+                            - pg_relation_size(schemaname || '.' || tablename) * 1.1,
+                        0
+                    )::float /
+                    pg_total_relation_size(schemaname || '.' || tablename) * 100
+                )
+                ELSE 0
+            END AS bloat_pct
+        FROM pg_tables
+        WHERE schemaname = 'public'
+    ) t
+    WHERE bloat_pct > $BLOAT_THRESHOLD;
+    ")
+    
+    if [ "$BLOAT_RESULT" -gt 0 ]; then
+        echo "Bloat detected, running pg_repack..."
+        # run repack...
+    else
+        echo "Bloat within acceptable limits, skipping repack."
+    fi
+
+This is more professional. You're not just blindly running maintenance — you're
+running it when it's needed.
+
+
+--- pg_repack AND REPLICATION ---
+
+This is a topic that trips up a lot of people. If you have a PostgreSQL setup
+with streaming replication — a primary and one or more standbys — what happens
+when you run pg_repack on the primary?
+
+The good news: pg_repack's activity on the primary replicates to standbys just
+like any other DML/DDL. The table rebuild happens on the primary, and through
+WAL streaming, the standbys catch up. So your replicas will also end up with
+the de-bloated, rebuilt table.
+
+The potential issue: the amount of WAL generated by a large table repack can be
+substantial. pg_repack is essentially writing an entire new copy of the table —
+that's a lot of WAL. If your standby has limited bandwidth or a replication lag
+already, a large pg_repack operation can push the standby further behind.
+
+Check your replication lag before and during a large repack:
+
+    -- On the primary:
+    SELECT
+        client_addr,
+        application_name,
+        state,
+        sent_lsn,
+        write_lsn,
+        flush_lsn,
+        replay_lsn,
+        (sent_lsn - replay_lsn) AS replication_lag_bytes
+    FROM pg_stat_replication;
+
+If replication_lag_bytes starts climbing significantly during pg_repack, you
+might need to throttle your repack schedule or break it into smaller chunks.
+
+Also important: do NOT run pg_repack on a standby server. Standbys are read-only.
+pg_repack needs to write to the database it's working on. You run it on the
+primary, always.
+
+
+--- pg_repack AND PARTITIONED TABLES ---
+
+A lot of modern PostgreSQL schemas use table partitioning, especially for large
+time-series data. How does pg_repack interact with partitioned tables?
+
+The honest answer is: pg_repack does not natively support repacking a partitioned
+table as a whole. If you try to run pg_repack -t on a partitioned table name,
+it will error.
+
+What you CAN do is repack individual partitions. Each partition is itself a
+regular table with its own storage. So if you have a table like:
+
+    orders_2023_01
+    orders_2023_02
+    ...
+    orders_2024_12
+
+You can run pg_repack on each partition individually:
+
+    pg_repack -h localhost -p 5432 -U postgres -d ecommerce -t orders_2024_12
+
+This is actually a nice property of partitioning — you can target just the
+partitions that are bloated without touching others. Old partitions that are
+never modified often don't bloat at all. Recent partitions that get heavy
+updates are the ones you need to watch.
+
+A practical workflow for partitioned tables: repack only the partitions that
+have been modified in the last N days. Write a script that generates the list of
+"active" partitions and only repacks those. Don't repack partitions from 2 years
+ago that nobody has touched.
+
+
+--- WHAT pg_repack CANNOT DO ---
+
+I want to spend a moment on the limitations, because knowing what a tool can't
+do is just as important as knowing what it can.
+
+pg_repack cannot run on a hot standby. Already covered this — you run it on
+the primary.
+
+pg_repack cannot repack tables used by logical replication subscribers as
+publishers without careful planning. If a table is being published through
+logical replication and you repack it, the underlying table OID changes as part
+of the swap. This can confuse logical replication slots. I'll come back to this
+if we have time, but just know: if you're running logical replication, test your
+repack procedure in staging and verify replication survives it.
+
+pg_repack cannot clean up tables that have no primary key or unique not-null key.
+We covered this in the warning section.
+
+pg_repack will not fix bad query plans caused by stale statistics. Repack gives
+you clean physical storage. If your queries are slow because autovacuum hasn't
+updated statistics, you need ANALYZE:
+
+    ANALYZE orders;
+
+Or run it after pg_repack as a good habit:
+
+    pg_repack ... && psql -c "ANALYZE orders;"
+
+pg_repack is not a substitute for autovacuum. Autovacuum should still be running
+and healthy. pg_repack handles cases where autovacuum has been unable to keep up
+or where you need to actually return disk space, not just mark dead tuples as
+reusable. Think of pg_repack as a tool you reach for when autovacuum hasn't been
+enough.
+
+
+--- A COMPLETE REAL-WORLD SCENARIO ---
+
+Let me put this all together with a scenario that could literally happen to you
+in your first job.
+
+You're the DBA at a mid-sized SaaS company. You get a call from the application
+team at 10 AM on a Tuesday: "The app is slow. Queries against the 'user_events'
+table are timing out. This table is normally fast."
+
+You start investigating.
+
+Step 1: Check table size and bloat.
+
+    SELECT
+        relname,
+        pg_size_pretty(pg_total_relation_size(oid)) AS total_size,
+        pg_size_pretty(pg_relation_size(oid)) AS heap_size
+    FROM pg_class
+    WHERE relname = 'user_events';
+
+You see the table is 45 GB. The application team says it should be about 12 GB
+based on row counts.
+
+Step 2: Check pg_stat_user_tables for dead tuples.
+
+    SELECT
+        relname,
+        n_live_tup,
+        n_dead_tup,
+        last_vacuum,
+        last_autovacuum,
+        last_analyze
+    FROM pg_stat_user_tables
+    WHERE relname = 'user_events';
+
+You see n_dead_tup is enormous — hundreds of millions of dead tuples.
+last_autovacuum was 3 days ago. Something stopped autovacuum from keeping up.
+
+Step 3: Investigate why autovacuum fell behind. Maybe a long-running transaction
+is holding an XID that prevents dead tuples from being removed. Maybe autovacuum
+is misconfigured. Maybe the table had a bulk delete that overwhelmed it. You
+check pg_stat_activity for long-running transactions. You look at autovacuum
+logs. You find the root cause and fix it — maybe you kill a stale connection
+that was holding an old transaction open.
+
+Step 4: Now autovacuum can clean up, but it's going to take a while, and the
+table is still 45 GB with massive bloat. The app is still slow. You need to
+act.
+
+Step 5: Schedule a pg_repack. You tell the application team: "I'm going to run
+pg_repack on this table. Users can keep using the app — it won't go down. It
+will complete in roughly 2 hours based on the table size and our server speed."
+
+    pg_repack -h db-primary.internal -p 5432 -U postgres -d saas_prod \
+      -t user_events \
+      --jobs=8 \
+      --wait-timeout=120 \
+      -e \
+      2>&1 | tee /var/log/postgresql/repack/user_events_$(date +%Y%m%d).log
+
+You monitor it. You check disk I/O. You check replication lag. You check that
+users can still log in and use the app. After 90 minutes, pg_repack finishes.
+
+Step 6: Verify the result.
+
+    SELECT
+        relname,
+        pg_size_pretty(pg_total_relation_size(oid)) AS total_size
+    FROM pg_class
+    WHERE relname = 'user_events';
+
+Table is back to 13 GB. Run ANALYZE for good measure:
+
+    ANALYZE user_events;
+
+Step 7: Confirm with the application team that queries are back to normal speed.
+Check pg_stat_statements for the queries that were slow.
+
+Step 8: Figure out why this happened and prevent it from recurring. Set up a
+weekly pg_repack job. Tune autovacuum for this table. Set up a bloat monitoring
+alert so you catch this early next time.
+
+That is a complete incident response using pg_repack. This happens. Not once in
+a blue moon — it happens regularly in production environments. And now you know
+how to handle it.
+
+
+--- TUNING AUTOVACUUM ALONGSIDE pg_repack ---
+
+One thing I want to touch on briefly: pg_repack is most effective when you pair
+it with properly tuned autovacuum. They complement each other.
+
+Autovacuum handles the routine, ongoing cleanup — preventing bloat from building
+up in the first place. pg_repack is your response when autovacuum hasn't been
+enough or when you need to actually shrink the file.
+
+For high-write tables, you can tune autovacuum to run more aggressively:
+
+    ALTER TABLE orders SET (
+        autovacuum_vacuum_scale_factor = 0.01,
+        autovacuum_vacuum_threshold = 1000,
+        autovacuum_analyze_scale_factor = 0.005
+    );
+
+This tells autovacuum: "For the orders table, trigger a vacuum when 1% (not the
+default 20%) of rows are dead." On a high-volume table, this means vacuum runs
+more often, keeps dead tuples under control, and reduces how often you need
+pg_repack.
+
+Set this per-table for your hottest tables. This is one of those configuration
+details that separates a good DBA from a great one.
+
+
+--- pg_repack VERSUS ALTERNATIVES ---
+
+Before we wrap up, let me put pg_repack in context with the other options you
+have:
+
+VACUUM: Marks dead tuples as reusable but doesn't return space to OS. No lock.
+Fast. Do this all the time automatically.
+
+VACUUM FULL: Returns space to OS. Requires ACCESS EXCLUSIVE lock for the full
+duration. Suitable only for scheduled maintenance windows. Avoid on 24/7 systems.
+
+CLUSTER: Rewrites the table ordered by an index. Also requires ACCESS EXCLUSIVE
+lock for the full duration. Not suitable online.
+
+REINDEX CONCURRENTLY: Rebuilds a single index without a long lock (PostgreSQL 12+).
+Good for index-only bloat. Cannot address table heap bloat.
+
+pg_repack: Rewrites the full table AND indexes online. Brief lock only at the
+final swap. The best all-around tool for online bloat management.
+
+For most production OLTP databases, the right combination is:
+  - autovacuum running properly for routine maintenance
+  - VACUUM ANALYZE after bulk loads
+  - pg_repack on a weekly or bi-weekly schedule for heavily modified tables
+  - REINDEX CONCURRENTLY for occasional index maintenance if needed
+
+That combination covers 95% of what you'll encounter.
+
+
+--- LAB EXERCISES ---
+
+Alright, here we go. You have about 45 minutes to work through these. I'll be
+walking around, so flag me down if you're stuck.
+
+Lab 1: Basic Repack (20 minutes)
+
+Using the repack_lab database we created earlier:
+
+1. Run the size query to record the current size of the orders table.
+2. Run your bloat estimation query to see the current bloat percentage.
+3. Perform another round of updates and deletes to add more bloat:
+     UPDATE orders SET status = 'processing' WHERE id % 3 = 0;
+     DELETE FROM orders WHERE id % 5 = 0;
+4. Run pg_repack with the -e flag to watch the output.
+5. After it completes, run the size query again and compare.
+6. Calculate how much disk space pg_repack recovered.
+
+Write your observations in your notes. What did you see in the output? At what
+stage did the table size start visibly changing?
+
+Lab 2: Index-Only Repack (10 minutes)
+
+On the same orders table:
+
+1. Check the current size of the indexes:
+     SELECT indexname, pg_size_pretty(pg_relation_size(indexrelid))
+     FROM pg_stat_user_indexes
+     WHERE relname = 'orders';
+2. Run pg_repack with --only-indexes.
+3. Check the index sizes again afterward.
+4. Was there a noticeable difference?
+
+Lab 3: Identifying Tables That Cannot Be Repacked (10 minutes)
+
+1. Create a table WITHOUT a primary key:
+     CREATE TABLE legacy_log (
+         event_time TIMESTAMPTZ DEFAULT NOW(),
+         event_type TEXT,
+         payload TEXT
+     );
+2. Insert some rows:
+     INSERT INTO legacy_log SELECT NOW(), 'login', repeat('data', 20)
+     FROM generate_series(1, 10000);
+3. Delete half the rows:
+     DELETE FROM legacy_log WHERE random() > 0.5;
+4. Try to run pg_repack on this table.
+5. Observe the error message.
+6. Now fix it: add a primary key using ALTER TABLE.
+7. Try pg_repack again. It should now succeed.
+
+Lab 4: (Bonus if you finish early)
+
+Write a shell script that:
+1. Connects to your database
+2. Queries for tables with more than 15% bloat
+3. Prints the names of those tables
+4. Asks the user "Run pg_repack on these tables? (y/n)"
+5. If y, runs pg_repack on each identified table and logs the output
+
+This is the kind of thing I would literally ask you to submit in a real job
+interview. Give it a shot.
+
+
+--- CLOSING ---
+
+Let me tell you something. The concepts we covered today — bloat, dead tuples,
+MVCC consequences, online maintenance — these are not just PostgreSQL concepts.
+This same problem exists in MySQL, in Oracle, in SQL Server. Every major database
+has a version of this challenge. What you learned today is the PostgreSQL-specific
+tool, but the thinking behind it? The discipline of monitoring, the habit of
+checking bloat metrics, the instinct to investigate before acting? That transfers
+everywhere.
+
+pg_repack is one of those tools that makes you look like a hero when you pull it
+out at the right moment. Not because it's magic. Because you understood the
+problem deeply enough to know when it was the right tool, you knew how to run it
+safely, and you knew how to monitor it while it ran.
+
+Most DBAs, especially early in their careers, don't know any of this. They either
+ignore bloat until the database falls over, or they schedule VACUUM FULL at 3 AM
+and pray nothing important runs. You now know a better way.
+
+Get comfortable with pg_repack. Add the bloat check queries to your standard
+monitoring toolkit. Set up scheduled repacks in your lab environment and watch
+them run. The more you practice it in safe environments, the more instinctive
+it becomes when you're dealing with it at 2 AM with angry stakeholders on the
+phone.
+
+See you next session. Good work today.
+
+
+================================================================================
+ QUICK REFERENCE COMMAND CARD — pg_repack
+================================================================================
+
+INSTALLATION
+  apt-get install postgresql-16-repack           # Debian/Ubuntu
+  dnf install pg_repack_16                       # RHEL/Rocky
+  CREATE EXTENSION pg_repack;                    # Inside each target DB
+
+VERIFICATION
+  SELECT * FROM pg_extension WHERE extname = 'pg_repack';
+
+BASIC USAGE
+  pg_repack -h HOST -p PORT -U USER -d DB -t TABLE           # Repack one table
+  pg_repack -h HOST -p PORT -U USER -d DB -s SCHEMA          # Repack schema
+  pg_repack -h HOST -p PORT -U USER -d DB                    # Repack whole DB
+  pg_repack ... --dry-run                                     # Simulate only
+  pg_repack ... -e                                            # Echo progress
+
+INDEX OPTIONS
+  pg_repack ... --only-indexes                  # Repack indexes only
+  pg_repack ... --index INDEXNAME               # Repack specific index
+
+PERFORMANCE OPTIONS
+  pg_repack ... --jobs=N                        # Parallel index rebuild workers
+  pg_repack ... --no-order                      # Skip physical ordering
+  pg_repack ... --order-by "col DESC"           # Custom physical ordering
+  pg_repack ... --tablespace TBLSPC             # Move table to tablespace
+  pg_repack ... --index-tablespace TBLSPC       # Move indexes to tablespace
+
+SAFETY OPTIONS
+  pg_repack ... --wait-timeout=SECONDS          # Max wait for final lock
+  pg_repack ... --no-kill-backend               # Don't kill blocking backends
+
+BLOAT DETECTION QUERIES
+  -- Table size overview
+  SELECT relname, pg_size_pretty(pg_total_relation_size(oid)),
+         pg_size_pretty(pg_relation_size(oid))
+  FROM pg_class WHERE relname = 'YOUR_TABLE';
+
+  -- Dead tuple check
+  SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
+  FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;
+
+  -- Tables without primary keys (cannot be repacked)
+  SELECT n.nspname, c.relname,
+         pg_size_pretty(pg_total_relation_size(c.oid))
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind = 'r'
+    AND n.nspname NOT IN ('pg_catalog','information_schema','repack')
+    AND c.oid NOT IN (SELECT indrelid FROM pg_index WHERE indisprimary)
+  ORDER BY pg_total_relation_size(c.oid) DESC;
+
+MONITORING WHILE RUNNING
+  -- pg_repack activity
+  SELECT pid, state, wait_event, query FROM pg_stat_activity
+  WHERE application_name LIKE '%repack%' OR query LIKE '%repack%';
+
+  -- Replication lag during repack (run on primary)
+  SELECT client_addr, application_name,
+         (sent_lsn - replay_lsn) AS lag_bytes
+  FROM pg_stat_replication;
+
+  -- Lock conflicts
+  SELECT blocked.pid, blocked.query, blocking.pid, blocking.query
+  FROM pg_stat_activity blocked
+  JOIN pg_stat_activity blocking
+    ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+  WHERE blocked.application_name LIKE '%repack%'
+     OR blocking.application_name LIKE '%repack%';
+
+POST-REPACK
+  ANALYZE your_table;                           -- Always run after repack
+
+KEY RULES TO NEVER FORGET
+  1. Table MUST have a PRIMARY KEY or UNIQUE NOT NULL key
+  2. Run on PRIMARY server only — never on standby
+  3. Always do --dry-run before production runs
+  4. Watch replication lag on high-WAL systems
+  5. Pair with properly tuned autovacuum — they are complementary
+  6. For partitioned tables: repack individual partitions, not the parent
+  7. Check I/O capacity before running on large tables during business hours
+
+================================================================================

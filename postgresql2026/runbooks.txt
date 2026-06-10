@@ -146,10 +146,13 @@ Based on: original 8 incidents + previous comprehensive list +
     ├── 📄 stats_reset_procedure.md
     └── 📄 pg_cron_job_setup.md
 
+📁 14_scheduled_reports/
+    ├── 📄 README.md                          # Explains report schedule and runbook mapping
+    ├── 📄 daily_bloat_report.sh
+    ├── 📄 weekly_unused_indexes_report.sh
+    ├── 📄 monthly_growth_report.sql
+    ├── 📄 daily_connection_stats.sh
+    ├── 📄 weekly_vacuum_progress_report.sh
+    └── 📄 daily_backup_status_report.sh
 ================================================================================
-NOTES:
-- The structure merges original incidents with runbooks found in public repos.
-- Files marked with (from GitLab/unskript/postgres-howtos) are direct additions.
-- Use `runbook-template.md` to create any missing file.
-- The folder `01_incident_response` is the starting point for most P1/P2 issues.
-================================================================================
+

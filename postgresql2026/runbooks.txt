@@ -1,8 +1,9 @@
 ================================================================================
-POSTGRESQL DBA RUNBOOKS – COMPLETE FOLDER & FILE STRUCTURE
+POSTGRESQL DBA RUNBOOKS – COMPLETE FOLDER & FILE STRUCTURE (CORRECTED)
 ================================================================================
 Based on: original 8 incidents + previous comprehensive list +
            public repos (Qonto, GitLab, unskript, Postgres.ai HowTos, cloudstreet-dev)
+           + Gap Analysis (June 2026) – all P0–P3 items added
 ================================================================================
 
 📁 postgresql-dba-runbooks/
@@ -13,146 +14,192 @@ Based on: original 8 incidents + previous comprehensive list +
 ├── 📄 runbook-template.md
 │
 ├── 📁 00_quick_reference/
+│   ├── 📄 critical_sql_queries.md                 ← NEW (P1)
 │   ├── 📄 decision_tree.md
-│   └── 📄 escalation_matrix.md
+│   ├── 📄 escalation_matrix.md
+│   └── 📄 maintenance_mode_procedures.md          ← NEW (P2)
 │
 ├── 📁 01_incident_response/           (Original 8 + common P1/P2)
-│   ├── 📄 connection_pool_exhaustion.md
-│   ├── 📄 high_replication_lag.md
-│   ├── 📄 backup_failure_no_backup_25h.md
-│   ├── 📄 disk_usage_85_percent.md
-│   ├── 📄 primary_process_not_responding.md
-│   ├── 📄 long_running_query_blocking.md
 │   ├── 📄 autovacuum_not_keeping_up.md
-│   ├── 📄 slow_queries_p95_doubled.md
+│   ├── 📄 backup_failure_no_backup_25h.md
+│   ├── 📄 connection_pool_exhaustion.md
+│   ├── 📄 data_corruption_suspected.md            ← NEW (P0)
 │   ├── 📄 deadlock.md
-│   ├── 📄 transaction_id_wraparound_imminent.md
+│   ├── 📄 disk_usage_85_percent.md
 │   ├── 📄 high_cpu_usage.md
-│   ├── 📄 out_of_memory_kill.md
+│   ├── 📄 high_replication_lag.md
 │   ├── 📄 io_saturation.md
-│   ├── 📄 wal_file_accumulation.md
-│   └── 📄 split_brain_recovery.md
+│   ├── 📄 long_running_query_blocking.md
+│   ├── 📄 multixact_wraparound_imminent.md        ← NEW (P0)
+│   ├── 📄 out_of_memory_kill.md
+│   ├── 📄 primary_process_not_responding.md
+│   ├── 📄 replication_slot_bloat.md               ← NEW (P0)
+│   ├── 📄 slow_queries_p95_doubled.md
+│   ├── 📄 split_brain_recovery.md
+│   ├── 📄 transaction_id_wraparound_imminent.md
+│   └── 📄 wal_file_accumulation.md
 │
 ├── 📁 02_high_availability/            (GitLab, Qonto)
+│   ├── 📄 add_standby_to_existing_cluster.md      ← NEW (P2)
+│   ├── 📄 cascading_replication_setup.md          ← NEW (P3)
+│   ├── 📄 failback_after_promotion.md
 │   ├── 📄 failover_procedures.md
 │   ├── 📄 patroni_cluster_setup.md
-│   ├── 📄 replication_lag_troubleshooting.md
-│   ├── 📄 switchover_zero_downtime.md
+│   ├── 📄 pg_auto_failover_troubleshooting.md
 │   ├── 📄 replica_out_of_sync.md
-│   ├── 📄 failback_after_promotion.md
-│   ├── 📄 synchronous_replication_stuck.md
+│   ├── 📄 replication_lag_troubleshooting.md
+│   ├── 📄 replication_slot_management.md          ← NEW (P1)
 │   ├── 📄 repmgr_failover_runbook.md
-│   └── 📄 pg_auto_failover_troubleshooting.md
+│   ├── 📄 switchover_zero_downtime.md
+│   └── 📄 synchronous_replication_stuck.md
 │
 ├── 📁 03_backup_recovery/              (Qonto, postgres-howtos)
-│   ├── 📄 pitr_recovery_procedures.md
-│   ├── 📄 wal_g_continuous_archiving.md
-│   ├── 📄 pgbackrest_ha_setup.md
+│   ├── 📄 backup_integrity_check_fails.md
 │   ├── 📄 backup_verification_automation.md
 │   ├── 📄 disaster_recovery_drill_checklist.md
-│   ├── 📄 backup_integrity_check_fails.md
-│   ├── 📄 wal_archiving_fails.md
+│   ├── 📄 pg_dump_restore_troubleshooting.md
+│   ├── 📄 pgbackrest_ha_setup.md
+│   ├── 📄 pitr_recovery_procedures.md
 │   ├── 📄 recover_dropped_table.md
 │   ├── 📄 restore_single_corrupted_table.md
-│   └── 📄 pg_dump_restore_troubleshooting.md
+│   ├── 📄 wal_archiving_fails.md
+│   └── 📄 wal_g_continuous_archiving.md
 │
 ├── 📁 04_performance_tuning/           (GitLab, unskript, postgres-howtos)
-│   ├── 📄 slow_query_investigation.md
-│   ├── 📄 query_optimization_workflow.md
-│   ├── 📄 index_strategy_decision_tree.md
 │   ├── 📄 autovacuum_tuning_guide.md
 │   ├── 📄 connection_pooling_patterns.md
-│   ├── 📄 query_plan_regression.md
-│   ├── 📄 unused_duplicate_indexes.md
-│   ├── 📄 table_bloat_analysis.md
+│   ├── 📄 display_long_running_queries.md
+│   ├── 📄 explain_analyze_interpretation_guide.md ← NEW (P1)
 │   ├── 📄 index_bloat_analysis.md
-│   ├── 📄 display_long_running_queries.md    (from unskript)
-│   ├── 📄 postgres_calculate_bloat.md         (from unskript)
-│   └── 📄 postgres_check_unused_indexes.md   (from unskript)
+│   ├── 📄 index_strategy_decision_tree.md
+│   ├── 📄 lock_contention_analysis.md             ← NEW (P1)
+│   ├── 📄 parallel_query_tuning.md                ← NEW (P3)
+│   ├── 📄 postgres_calculate_bloat.md
+│   ├── 📄 postgres_check_unused_indexes.md
+│   ├── 📄 query_optimization_workflow.md
+│   ├── 📄 query_plan_regression.md
+│   ├── 📄 slow_query_investigation.md
+│   ├── 📄 statistics_target_tuning.md             ← NEW (P3)
+│   ├── 📄 table_bloat_analysis.md
+│   └── 📄 unused_duplicate_indexes.md
 │
 ├── 📁 05_migrations/                   (GitLab, cloudstreet-dev)
-│   ├── 📄 zero_downtime_upgrade_11to16.md
+│   ├── 📄 enum_type_safe_migration.md             ← NEW (P3)
+│   ├── 📄 extensions_upgrade_runbook.md           ← NEW (P2)
+│   ├── 📄 large_table_online_migration.md         ← NEW (P2)
 │   ├── 📄 logical_replication_cutover.md
-│   ├── 📄 pglogical_migration_runbook.md
-│   ├── 📄 tablespace_migration_procedure.md
 │   ├── 📄 major_version_upgrade.md
-│   ├── 📄 minor_upgrade_pg_upgrade.md         (from GitLab)
 │   ├── 📄 migration_zero_downtime_schema.md
-│   └── 📄 rollback_schema_migration.md
+│   ├── 📄 minor_upgrade_pg_upgrade.md
+│   ├── 📄 pglogical_migration_runbook.md
+│   ├── 📄 rollback_schema_migration.md
+│   ├── 📄 tablespace_migration_procedure.md
+│   └── 📄 zero_downtime_upgrade_11to16.md
 │
 ├── 📁 06_monitoring_alerting/          (Qonto, GitLab)
-│   ├── 📄 critical_metrics_baseline.md
 │   ├── 📄 alert_thresholds_tuning.md
-│   ├── 📄 on_call_escalation_matrix.md
-│   ├── 📄 pmm_setup_best_practices.md
-│   ├── 📄 monitoring_agent_down.md
 │   ├── 📄 alerts_not_firing.md
+│   ├── 📄 critical_metrics_baseline.md
+│   ├── 📄 custom_prometheus_alert_rules.md        ← NEW (P3)
 │   ├── 📄 logging_rotation_failure.md
+│   ├── 📄 monitoring_agent_down.md
+│   ├── 📄 on_call_escalation_matrix.md
 │   ├── 📄 pg_stat_statements_analysis.md
+│   ├── 📄 pmm_setup_best_practices.md
 │   └── 📄 prometheus_postgres_exporter_troubleshooting.md
 │
 ├── 📁 07_knowledge_base/               (GitLab, postgres-howtos)
 │   ├── 📄 common_error_codes.md
 │   ├── 📄 customer_communication_templates.md
 │   ├── 📄 linux_troubleshooting_toolkit.md
+│   ├── 📄 locking_hierarchy_reference.md          ← NEW (P3)
+│   ├── 📄 log_analysis_pgbouncer_patroni.md
+│   ├── 📄 mvcc_and_visibility_internals.md        ← NEW (P2)
+│   ├── 📄 pgbadger_runbook.md
+│   ├── 📄 postgres_howtos_index.md
 │   ├── 📄 postgres_internals_quick_ref.md
-│   ├── 📄 postgres_wait_event_analysis.md    (from GitLab)
-│   ├── 📄 log_analysis_pgbouncer_patroni.md  (from GitLab)
-│   ├── 📄 pgbadger_runbook.md               (from GitLab)
-│   ├── 📄 roles_grants_permissions.md        (from GitLab)
-│   └── 📄 postgres_howtos_index.md           (from postgres-howtos)
+│   ├── 📄 postgres_wait_event_analysis.md
+│   ├── 📄 roles_grants_permissions.md
+│   ├── 📄 vacuum_internals_reference.md           ← NEW (P3)
+│   └── 📄 wal_internals_reference.md              ← NEW (P2)
 │
 ├── 📁 08_security_access/
-│   ├── 📄 user_cannot_connect.md
+│   ├── 📄 auditing_connection_failures.md
+│   ├── 📄 pgaudit_setup_and_configuration.md      ← NEW (P2)
+│   ├── 📄 pg_hba_conf_misconfigured.md
 │   ├── 📄 role_privileges_missing.md
 │   ├── 📄 ssl_certificate_expired.md
+│   ├── 📄 ssl_tls_configuration.md                ← NEW (P2)
 │   ├── 📄 superuser_locked_out.md
-│   ├── 📄 pg_hba_conf_misconfigured.md
-│   └── 📄 auditing_connection_failures.md
+│   └── 📄 user_cannot_connect.md
 │
 ├── 📁 09_storage_disk/
 │   ├── 📄 disk_usage_gt_95_percent.md
+│   ├── 📄 pg_filenode_to_object_mapping.md        ← NEW (P2)
 │   ├── 📄 slow_disk_io.md
 │   ├── 📄 tablespace_full.md
 │   └── 📄 uncontrolled_log_growth.md
 │
 ├── 📁 10_configuration_parameters/
+│   ├── 📄 checkpoint_too_frequent_or_rare.md
+│   ├── 📄 linux_kernel_tuning_for_postgres.md     ← NEW (P1)
+│   ├── 📄 max_connections_too_low.md
 │   ├── 📄 postgresql_conf_change_restart.md
 │   ├── 📄 shared_buffers_misconfiguration.md
-│   ├── 📄 max_connections_too_low.md
-│   ├── 📄 checkpoint_too_frequent_or_rare.md
-│   ├── 📄 work_mem_misconfiguration.md
-│   └── 📄 timezone_locale_misconfiguration.md
+│   ├── 📄 synchronous_commit_tradeoffs.md         ← NEW (P3)
+│   ├── 📄 timezone_locale_misconfiguration.md
+│   ├── 📄 wal_configuration_guide.md              ← NEW (P3)
+│   └── 📄 work_mem_misconfiguration.md
 │
 ├── 📁 11_adjacent_systems/
-│   ├── 📄 pgbouncer_down.md
-│   ├── 📄 ha_proxy_marking_db_unhealthy.md
-│   ├── 📄 kubernetes_db_pod_crashlooping.md
 │   ├── 📄 cloud_snapshot_failing.md
 │   ├── 📄 consul_troubleshooting.md
-│   └── 📄 etcd_cluster_issues.md
+│   ├── 📄 etcd_cluster_issues.md
+│   ├── 📄 ha_proxy_marking_db_unhealthy.md
+│   ├── 📄 kubernetes_db_pod_crashlooping.md
+│   └── 📄 pgbouncer_down.md
 │
 ├── 📁 12_disaster_recovery_drills/    (Qonto, GitLab)
 │   ├── 📄 cross_region_failover_drill.md
-│   ├── 📄 restore_test_failure.md
-│   ├── 📄 pitr_drill_quarterly.md
 │   ├── 📄 data_corruption_recovery.md
-│   └── 📄 full_cluster_rebuild_from_backup.md
+│   ├── 📄 full_cluster_rebuild_from_backup.md
+│   ├── 📄 pitr_drill_quarterly.md
+│   ├── 📄 restore_test_failure.md
+│   └── 📄 rto_rpo_measurement_drill.md            ← NEW (P3)
 │
-└── 📁 13_automation_scripts/          (unskript, cloudstreet-dev)
-    ├── 📄 vacuumdb_automation.md
-    ├── 📄 reindex_concurrently_guide.md
-    ├── 📄 partition_maintenance_runbook.md
-    ├── 📄 stats_reset_procedure.md
-    └── 📄 pg_cron_job_setup.md
+├── 📁 13_automation_scripts/          (unskript, cloudstreet-dev)
+│   ├── 📄 grant_audit_and_remediation.md          ← NEW (P3)
+│   ├── 📄 idle_connection_reaper.md               ← NEW (P2)
+│   ├── 📄 partition_maintenance_runbook.md
+│   ├── 📄 pg_cron_job_setup.md
+│   ├── 📄 reindex_concurrently_guide.md
+│   ├── 📄 stats_reset_procedure.md
+│   └── 📄 vacuumdb_automation.md
+│
+├── 📁 14_scheduled_reports/           (NEW – from earlier addition)
+│   ├── 📄 README.md
+│   ├── 📄 daily_backup_status_report.sh
+│   ├── 📄 daily_bloat_report.sh
+│   ├── 📄 daily_connection_stats.sh
+│   ├── 📄 daily_long_running_transactions_report.sh  ← NEW (P2)
+│   ├── 📄 monthly_growth_report.sql
+│   ├── 📄 monthly_security_audit_report.sql          ← NEW (P2)
+│   ├── 📄 weekly_replication_slot_health_report.sh   ← NEW (P2)
+│   ├── 📄 weekly_unused_indexes_report.sh
+│   └── 📄 weekly_vacuum_progress_report.sh
+│
+└── 📁 15_extensions/                  (NEW folder – P2)
+    ├── 📄 pg_partman_setup_and_maintenance.md     ← NEW
+    ├── 📄 pg_repack_runbook.md                    ← NEW
+    └── 📄 pgvector_operational_guide.md           ← NEW
 
-📁 14_scheduled_reports/
-    ├── 📄 README.md                          # Explains report schedule and runbook mapping
-    ├── 📄 daily_bloat_report.sh
-    ├── 📄 weekly_unused_indexes_report.sh
-    ├── 📄 monthly_growth_report.sql
-    ├── 📄 daily_connection_stats.sh
-    ├── 📄 weekly_vacuum_progress_report.sh
-    └── 📄 daily_backup_status_report.sh
 ================================================================================
-
+NOTES:
+- All files from the gap analysis (P0, P1, P2, P3) have been added.
+- No existing files were deleted or renamed.
+- The new folder `15_extensions/` consolidates extension‑specific runbooks.
+- Scheduled reports now include proactive monitoring for replication slots,
+  long transactions, and security hygiene.
+- For P3 (nice‑to‑have) items, they are included for completeness; prioritize
+  P0–P2 first when implementing.
+================================================================================

@@ -1,0 +1,990 @@
+================================================================================
+  2-YEAR DBA TECHNICAL DIPLOMA — PostgreSQL Track
+  Lecture: Patroni — High Availability Cluster Management
+  Duration: 3 hours + Labs
+  Instructor: Senior DBA / Technical Instructor
+================================================================================
+
+
+Alright, settle in everyone. Grab your coffee, open your terminals, and let's
+talk about something that's going to completely change the way you think about
+PostgreSQL in production.
+
+You've already done streaming replication by hand. You've set up primary and
+standby, you've watched the WAL segments flow across the wire, you've tested
+pgBackRest for your backups and restores. That was intentional. I made you do
+all of that manually before bringing you here, because what we're covering
+today — Patroni — does a lot of that work for you. And the worst DBAs I've ever
+met are the ones who jumped straight to automation without understanding what's
+underneath. They can run the tool, but the moment something breaks at 2 AM,
+they have no idea what to look at. You're not going to be that person.
+
+So think of everything you did with streaming replication as the foundation.
+Today we're building the house.
+
+--------------------------------------------------------------------------------
+WHAT IS PATRONI, AND WHY DOES IT EXIST?
+--------------------------------------------------------------------------------
+
+Let me tell you a quick story. Early in my career — this was around 2009 — I
+was a junior DBA at a financial services company. We had a PostgreSQL primary
+with one standby. Manual setup, everything documented in a runbook. One Friday
+evening the primary goes down. Network partition. I'm on call. I log in, I
+check the standby, it's behind by about 12 seconds of WAL. My manager is
+screaming on the phone. And I have to manually — step by step — promote the
+standby, update the application connection strings, get everyone back online.
+The whole thing took 22 minutes. We had SLAs that said 5. That was a very bad
+Friday.
+
+That's the problem Patroni solves. Not the bad Friday — I mean the manual
+failover. The human reaction time, the human error, the "what was that command
+again at 3 AM" problem. Patroni is a template for high availability PostgreSQL
+clusters. It watches your cluster, makes decisions about who's the leader,
+and promotes standbys automatically when your primary dies. It does what used to
+take a panicking DBA 22 minutes, in about 20 to 30 seconds.
+
+Now, let me be precise about what Patroni actually is, because people
+misrepresent this all the time. Patroni is not a PostgreSQL fork. It doesn't
+replace PostgreSQL. It's a Python daemon that runs alongside PostgreSQL on each
+node. It wraps your Postgres process, manages its configuration, and uses a
+distributed configuration store — usually etcd, sometimes Consul or ZooKeeper —
+to achieve consensus about who the primary is at any given moment.
+
+You're going to hear the term "consensus store" a lot today. Burn this into
+your brain: the consensus store is the source of truth for who is the leader.
+Not the database itself. Not your application. The consensus store. etcd holds
+a distributed lock. Whoever holds that lock is the primary. If they drop it,
+someone else picks it up and gets promoted. That's the whole model.
+
+--------------------------------------------------------------------------------
+THE ARCHITECTURE — LET'S DRAW THIS OUT
+--------------------------------------------------------------------------------
+
+Okay, I want you to picture three nodes. Node 1, Node 2, Node 3. On each of
+these nodes, you have two processes running: PostgreSQL itself, and the Patroni
+daemon. The Patroni daemon is what talks to etcd. PostgreSQL just does what
+Patroni tells it to do.
+
+Now, separately, you have your etcd cluster — and I strongly recommend running
+etcd on separate nodes, not on your PostgreSQL nodes, in production. For our
+lab today we'll collocate them because we're resource-constrained, but I want
+you to note that in any real environment, your etcd cluster should be
+independent. etcd runs best as a 3-node or 5-node cluster so it can tolerate
+node failures itself. If your etcd goes down, your Patroni cluster goes into a
+read-only holding pattern. We'll talk about that.
+
+So the flow looks like this. Patroni on each node is constantly doing a few
+things. First, it's doing a health check on the local PostgreSQL process. Second,
+the node that currently holds the leader lock in etcd is running as the primary
+— it's refreshing that lock every few seconds (configurable via TTL). Third, all
+the other nodes are streaming replicas, just like you set up manually before.
+
+When the primary's Patroni daemon fails to refresh the lock — maybe because the
+machine crashed, maybe because the network died — the lock expires. The other
+nodes see the lock is available. They do a race. Whoever grabs the lock first
+promotes their standby to primary. The others then reconfigure themselves to
+replicate from the new primary. That's an automated failover.
+
+And here's the thing that makes Patroni special: it does all the stuff you had
+to do manually. It runs pg_ctl promote. It writes the recovery configuration.
+It handles pg_rewind if needed to bring the old primary back as a replica. You
+configured all of that by hand. Patroni does it automatically, and it does it
+consistently every single time, which is more than I can say for a sleep-deprived
+DBA at 3 AM.
+
+--------------------------------------------------------------------------------
+HAPROXY AND PATRONI'S REST API — THE CONNECTION ROUTING PIECE
+--------------------------------------------------------------------------------
+
+Now there's one more piece of the puzzle you need to understand before we start
+typing. How does your application know which node to write to? Because after a
+failover, the primary has changed. Your app can't have a hardcoded hostname.
+
+This is where HAProxy comes in — or any load balancer, but HAProxy is the most
+common pairing. Patroni exposes a REST API on each node, port 8008 by default.
+That REST API returns HTTP 200 if the node is currently the primary, and HTTP
+503 if it's a replica. HAProxy hits that endpoint as a health check. It routes
+all write traffic to whichever node returns 200. After a failover, the new
+primary returns 200, HAProxy figures it out within a few seconds, and your
+application — pointed at HAProxy's VIP — starts writing to the new primary
+without any human intervention.
+
+You can also configure a separate HAProxy backend for read traffic that routes
+to replicas. This is how you implement read/write splitting in Patroni setups.
+We'll touch on that in the lab.
+
+Go ahead and let's look at what Patroni's REST API actually tells you, because
+you're going to use this constantly for troubleshooting. Once we have things
+running, you'll run:
+
+  curl -s http://localhost:8008/patroni | python3 -m json.pretty
+
+Actually I keep forgetting Python changed that. Let me give you the right one:
+
+  curl -s http://localhost:8008/patroni | python3 -m json.tool
+
+Read that output. You'll see state, role, timeline, WAL position. You'll see
+the cluster name, the version of Patroni running, the replication lag. That one
+endpoint tells you everything. I have this aliased on every production node I
+manage.
+
+--------------------------------------------------------------------------------
+THE PATRONICTL COMMAND — YOUR DAILY DRIVER
+--------------------------------------------------------------------------------
+
+Before we dive into setup, you need to know patronictl. This is the command-line
+client for Patroni. Think of it the way you think of pg_ctl for PostgreSQL, but
+for the whole cluster.
+
+The most important command you'll run ten times a day is:
+
+  patronictl -c /etc/patroni/patroni.yml list
+
+This gives you the cluster topology. Who's the leader, who's a replica, what's
+the replication lag, is everyone healthy. I have this on a 5-second watch loop
+on a monitor in production environments. No joke. Let me show you the output
+format — you'll see a table with columns for Member, Host, Role, State, TL
+(timeline), and Lag in MB. If your lag is growing, something's wrong. If a
+node shows "stopped", something is very wrong. If you see "creating replica",
+Patroni is bootstrapping a new standby — that's normal after a node comes back.
+
+Other patronictl commands you'll use regularly:
+
+  patronictl -c /etc/patroni/patroni.yml topology
+
+This shows you who replicates from whom in a tree format. Very useful in
+cascading replication setups.
+
+  patronictl -c /etc/patroni/patroni.yml history
+
+This shows you every failover and switchover that has ever happened in the
+cluster. Every timeline change. It's your audit log. If someone asks "when did
+the last failover happen?", this is your answer.
+
+  patronictl -c /etc/patroni/patroni.yml switchover
+
+This is how you do a planned failover — when you want to move the primary to a
+different node for maintenance. Patroni handles this gracefully. It waits for
+the target replica to catch up, promotes it, demotes the old primary to a
+replica. Zero data loss. We're going to do this in the lab today.
+
+  patronictl -c /etc/patroni/patroni.yml failover
+
+This forces a failover even if the current primary is alive. You'd use this
+when you want to test your DR procedures. Never run this on production without
+warning your team. I've seen people do this casually and then wonder why their
+monitoring system started firing alerts. Use switchover for planned work.
+
+  patronictl -c /etc/patroni/patroni.yml edit-config
+
+This is how you change Patroni's dynamic configuration — things like
+synchronous_commit, max_connections, checkpoint settings. Changes you make here
+get stored in etcd and pushed to all nodes automatically. This is huge. Instead
+of SSHing into three servers and editing postgresql.conf, you change it once
+here and Patroni handles the rest.
+
+--------------------------------------------------------------------------------
+THE PATRONI CONFIGURATION FILE — LET'S WALK THROUGH IT
+--------------------------------------------------------------------------------
+
+Okay, now we're going to actually look at a Patroni configuration file. This is
+the heart of the whole thing. On each node you'll have a YAML file — I put mine
+at /etc/patroni/patroni.yml. Let me walk you through a real production-style
+config.
+
+Go ahead and on your lab VM, create this file. We'll put Node 1 config up first.
+I'll explain each section as we go:
+
+---
+scope: postgres-cluster
+namespace: /db/
+name: pg-node1
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: 192.168.1.101:8008
+
+etcd3:
+  hosts:
+    - 192.168.1.201:2379
+    - 192.168.1.202:2379
+    - 192.168.1.203:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: on
+        wal_keep_size: 1024
+        max_wal_senders: 10
+        max_replication_slots: 10
+        synchronous_commit: on
+        archive_mode: on
+        archive_command: 'pgbackrest --stanza=main archive-push %p'
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 192.168.1.0/24 md5
+    - host all all 0.0.0.0/0 md5
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: 192.168.1.101:5432
+  data_dir: /var/lib/postgresql/14/main
+  bin_dir: /usr/lib/postgresql/14/bin
+  pgpass: /tmp/pgpass
+
+  authentication:
+    replication:
+      username: replicator
+      password: replicatorpassword
+    superuser:
+      username: postgres
+      password: postgrespassword
+    rewind:
+      username: rewind_user
+      password: rewindpassword
+
+  parameters:
+    unix_socket_directories: '/var/run/postgresql'
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonedfrom: false
+  nosync: false
+---
+
+Okay, let me walk through each section.
+
+"scope" is your cluster name. All nodes in the same cluster must use the same
+scope. This is how Patroni and etcd group nodes together. Pick something
+meaningful — I use the application name or environment.
+
+"namespace" is the etcd key prefix. Leave it as /db/ unless you have a reason
+to change it. If you're running multiple Patroni clusters against the same etcd,
+use different namespaces to keep them separate.
+
+"name" is this specific node's name in the cluster. Every node gets a unique
+name. I use the hostname.
+
+The "restapi" section is where Patroni listens for HTTP requests. The
+connect_address is how OTHER nodes reach this node's REST API. Make sure this
+is the node's actual IP, not localhost.
+
+The "etcd3" section is your etcd connection. List all your etcd nodes here.
+Patroni will try them in order and reconnect if one fails. If you're using
+etcd v2 protocol for some reason, the key is just "etcd" not "etcd3". Use etcd3.
+The v3 API is more performant and is what modern setups use.
+
+Now the "bootstrap" section is important — this only applies when you're
+creating a brand new cluster from scratch. Once the cluster is initialized,
+Patroni ignores most of this section and reads config from etcd instead. The
+"dcs" subsection here defines the distributed configuration: TTL, loop_wait,
+retry_timeout. These are timing parameters and they matter a lot.
+
+TTL is the leader lock time-to-live in seconds. The leader must refresh the lock
+before TTL expires or it loses leadership. Default 30 seconds is reasonable.
+Don't set this too low — I've seen people set it to 5 seconds trying to get
+faster failover and instead they got brain-split situations and multiple nodes
+thinking they were the leader. We'll talk about that in a moment.
+
+loop_wait is how often Patroni's main loop runs — 10 seconds by default. This
+is how long Patroni waits between health checks. Your effective failover time
+is roughly TTL plus a couple of loop_waits. With defaults, expect 40-60 seconds
+from primary death to replica promotion.
+
+maximum_lag_on_failover is in bytes — 1MB here. If a replica is lagging more
+than 1MB behind the primary when a failover happens, Patroni will not promote
+that replica. This is a safety guard against promoting a replica that's way
+behind and would cause significant data loss. If ALL replicas are lagging more
+than this threshold, Patroni will refuse to do automatic failover altogether and
+wait for human intervention. That's actually correct behavior.
+
+use_pg_rewind: true — this is critical. When the old primary comes back after a
+failover, it needs to be rewound to match the new primary's timeline before it
+can rejoin as a replica. pg_rewind does this efficiently by only copying the
+diverged blocks rather than doing a full base backup. You already have
+wal_log_hints or data-checksums enabled from your streaming replication work,
+right? pg_rewind requires one of those. Without this set to true, Patroni falls
+back to doing a full pg_basebackup to reinstate the old primary, which on a
+large database can take hours. With pg_rewind it takes seconds to minutes.
+
+The "postgresql" section is the node-specific PostgreSQL config. data_dir is
+where your PostgreSQL data lives. bin_dir is where the PostgreSQL binaries are.
+
+The "authentication" section — pay attention here. You need three users defined.
+The replication user is for streaming replication, same one you set up manually.
+The superuser is postgres. The rewind user is for pg_rewind — Patroni uses this
+user specifically to run pg_rewind on a rejoining node. This user needs the
+pg_rewind role or superuser. We'll create it shortly.
+
+The "tags" section at the bottom is where you can tell Patroni about this node's
+preferences. nofailover: true means this node will never become the primary
+during automatic failover. Useful for a replica you've put in a remote data
+center — you don't want that promoted automatically. noloadbalance: true means
+HAProxy won't send read queries here. You'd use this for a reporting replica
+that's running heavy analytical queries and you don't want additional OLTP
+reads piling on.
+
+--------------------------------------------------------------------------------
+CREATING THE REWIND USER — DO THIS BEFORE YOU START PATRONI
+--------------------------------------------------------------------------------
+
+Before you start the Patroni service, you need to make sure certain users exist
+in PostgreSQL. On your current primary node, connect to PostgreSQL and run:
+
+  psql -U postgres
+
+Then:
+
+  CREATE USER rewind_user WITH PASSWORD 'rewindpassword' SUPERUSER;
+
+In newer PostgreSQL versions you can use the more granular role:
+
+  CREATE USER rewind_user WITH PASSWORD 'rewindpassword'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE;
+
+  GRANT EXECUTE ON function pg_catalog.pg_ls_dir(text, boolean, boolean)
+    TO rewind_user;
+  GRANT EXECUTE ON function pg_catalog.pg_stat_file(text, boolean)
+    TO rewind_user;
+  GRANT EXECUTE ON function pg_catalog.pg_read_binary_file(text)
+    TO rewind_user;
+  GRANT EXECUTE ON function pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean)
+    TO rewind_user;
+
+I personally just make rewind_user a superuser in dev/test. In production, use
+the granular grants. Your security team will thank you.
+
+Also make sure your replication user exists with the right permissions:
+
+  CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD 'replicatorpassword';
+
+And confirm your pg_hba.conf allows these connections. Patroni will manage
+pg_hba.conf going forward — but the initial state needs to be correct.
+
+--------------------------------------------------------------------------------
+>>>  INSTRUCTOR WARNING — READ THIS TWICE  <<<
+--------------------------------------------------------------------------------
+
+I need to stop here and tell you something that has burned people badly in
+production. It burned me once, early in my career with a Patroni setup, and I
+have watched it burn others many times since.
+
+DO NOT run patroni as the root user. And more importantly: DO NOT start
+PostgreSQL manually outside of Patroni once Patroni is managing that node.
+
+Here's what happens. Patroni is the process manager for PostgreSQL. It starts
+PostgreSQL, it stops PostgreSQL, it owns the lifecycle. The moment you go to a
+node and run "pg_ctl start" or "systemctl start postgresql" directly, you have
+created a split-brain situation. You now have a PostgreSQL process running that
+Patroni doesn't know about, and Patroni's idea of cluster state is wrong.
+
+I watched this happen at a bank. A junior ops person was troubleshooting why
+one node was down. They ran "systemctl start postgresql" on what was supposed
+to be a stopped old primary. That instance came up, connected to the network,
+and started accepting writes from an application that had misconfigured
+connection pooling and was retrying against the old IP. For about 4 minutes
+we had two primaries accepting writes. The reconciliation afterward was not fun.
+
+The rule is simple: if you're managing PostgreSQL with Patroni, you ONLY manage
+PostgreSQL through Patroni. Use "patronictl restart" not "pg_ctl restart". Use
+"patronictl stop" not "systemctl stop postgresql". Use "systemctl stop patroni"
+to take a node out of the cluster for maintenance, and let Patroni handle
+stopping PostgreSQL as part of its own shutdown.
+
+The one exception: if you need to completely decommission a node and remove it
+from the cluster permanently. But even then, do it via patronictl first, then
+clean up. We'll cover that procedure in the lab.
+
+I'm serious about this. Write it on a sticky note and put it on your monitor
+if you have to.
+
+--------------------------------------------------------------------------------
+INSTALLING AND STARTING PATRONI — THE ACTUAL COMMANDS
+--------------------------------------------------------------------------------
+
+Alright, let's actually get this running. I'm going to assume you have three
+Ubuntu 22.04 nodes with PostgreSQL 14 already installed. On each node, run:
+
+  sudo apt update
+  sudo apt install -y python3-pip python3-etcd3 python3-yaml
+
+  sudo pip3 install patroni[etcd3]
+
+That installs Patroni with etcd3 support. If you're using a virtual environment
+in production, that's cleaner — pip install patroni[etcd3] in a venv. For our
+lab, system-level is fine.
+
+Check that it installed correctly:
+
+  patroni --version
+
+You should see something like "patroni 3.x.x". 
+
+Now, on your etcd nodes (or collocated on each node for our lab), make sure
+etcd is running:
+
+  sudo systemctl status etcd
+
+If you're setting up etcd fresh for this lab, install it:
+
+  sudo apt install -y etcd-server etcd-client
+
+And configure /etc/default/etcd with the cluster peer settings. I'll give you
+the etcd config at the end of this section.
+
+Once etcd is healthy across your 3 nodes, check cluster health:
+
+  etcdctl endpoint health --endpoints=http://192.168.1.201:2379,http://192.168.1.202:2379,http://192.168.1.203:2379
+
+All three should say "is healthy". If any one says "failed", fix etcd first.
+Do not proceed with Patroni setup until etcd is healthy. This is non-negotiable.
+Patroni on a broken etcd is like trying to build a building on a cracked
+foundation.
+
+Now, create the Patroni config directory and drop in your config file:
+
+  sudo mkdir -p /etc/patroni
+  sudo chown postgres:postgres /etc/patroni
+  sudo vi /etc/patroni/patroni.yml
+
+Paste in the configuration I showed you earlier, adjusting the IPs and node
+name for each respective node.
+
+Create the systemd service file so Patroni starts on boot. Create
+/etc/systemd/system/patroni.service:
+
+  [Unit]
+  Description=Patroni PostgreSQL HA
+  Documentation=https://patroni.readthedocs.io
+  After=syslog.target network.target etcd.service
+
+  [Service]
+  Type=simple
+  User=postgres
+  Group=postgres
+  ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
+  ExecReload=/bin/kill -s HUP $MAINPID
+  KillMode=process
+  TimeoutSec=30
+  Restart=no
+
+  [Install]
+  WantedBy=multi-user.target
+
+Note Restart=no. I do NOT want systemd automatically restarting Patroni if it
+crashes. I want the human to look at why it crashed before it comes back up.
+Some people use Restart=on-failure. That's a philosophical choice. My philosophy
+is: understand before you retry.
+
+Now reload systemd and start Patroni on Node 1 first:
+
+  sudo systemctl daemon-reload
+  sudo systemctl start patroni
+  sudo systemctl status patroni
+
+Watch the logs:
+
+  sudo journalctl -u patroni -f
+
+On Node 1 you should see Patroni initializing, bootstrapping the cluster,
+creating a new cluster in etcd, and starting PostgreSQL as the primary. You'll
+see lines like "I am the leader" in the log. That's a good sign.
+
+Once Node 1 is stable and the primary, start Patroni on Node 2:
+
+  sudo systemctl start patroni
+
+Watch its logs. You'll see it connect to etcd, see that there's already a
+leader, and start cloning from the primary using pg_basebackup. You'll see
+"creating replica" in the patronictl list output. Wait for it to finish cloning
+and reach "running" state before starting Node 3.
+
+Once all three nodes are up, run:
+
+  patronictl -c /etc/patroni/patroni.yml list
+
+You should see something like this:
+
+  + Cluster: postgres-cluster ----+----+-----------+
+  | Member    | Host          | Role    | State   | TL | Lag in MB |
+  +-----------+---------------+---------+---------+----+-----------+
+  | pg-node1  | 192.168.1.101 | Leader  | running |  1 |           |
+  | pg-node2  | 192.168.1.102 | Replica | running |  1 |         0 |
+  | pg-node3  | 192.168.1.103 | Replica | running |  1 |         0 |
+  +-----------+---------------+---------+---------+----+-----------+
+
+Lag in MB is 0. All nodes on timeline 1. You have a working Patroni cluster.
+Let that sink in. What used to take a day of manual configuration — streaming
+replication, pg_hba, recovery.conf on each standby — Patroni just did in a few
+minutes, and it'll maintain it going forward.
+
+--------------------------------------------------------------------------------
+TESTING AUTOMATIC FAILOVER — THE FUN PART
+--------------------------------------------------------------------------------
+
+Now let's break something. This is my favorite part of teaching Patroni.
+
+Before we do anything destructive, let's start a quick write workload on the
+primary so we can observe what happens to transactions during failover. On
+Node 1, open a psql session:
+
+  psql -U postgres -h localhost
+
+  CREATE TABLE failover_test (id serial, ts timestamptz, msg text);
+
+  -- Insert a row every second in a loop in your terminal:
+  -- We'll simulate this with a simple script
+
+In a new terminal on your workstation, run:
+
+  while true; do
+    psql -U postgres -h 192.168.1.101 -c \
+      "INSERT INTO failover_test (ts, msg) VALUES (now(), 'test');"
+    sleep 1
+  done
+
+You'll see inserts succeeding. Now, simulate a primary crash. On Node 1:
+
+  sudo systemctl stop patroni
+
+Watch the magic happen. In your patronictl terminal:
+
+  watch -n 2 patronictl -c /etc/patroni/patroni.yml list
+
+You'll see Node 1 disappear. You'll see one of the replicas transition from
+"running" to "promoted", and then the cluster will show a new Leader with TL 2.
+Timeline 2. Every failover increments the timeline.
+
+Your insert loop will throw errors for maybe 20-30 seconds — the time it takes
+for Patroni to detect the failure, do the election, promote the replica, and for
+your HAProxy (if configured) to notice. Then the new primary starts accepting
+writes.
+
+Now check your failover test table on the new primary:
+
+  psql -U postgres -h 192.168.1.102 -c \
+    "SELECT count(*), max(ts) FROM failover_test;"
+
+You'll see data. Whatever was committed on the old primary and replicated is
+there. Any transactions that were in-flight when the primary died — those are
+gone. That's expected. That's how crash recovery works. The replicas only have
+what was committed and shipped via WAL before the crash.
+
+Now bring Node 1 back:
+
+  sudo systemctl start patroni
+
+Watch the logs. Patroni on Node 1 sees it's no longer the leader. It connects
+to the new primary. It runs pg_rewind to align Node 1's data directory with the
+new primary's timeline. Then it starts replicating as a normal standby. The
+former primary is now a replica. Automatic. No manual intervention.
+
+Run patronictl list again:
+
+  patronictl -c /etc/patroni/patroni.yml list
+
+All three nodes, all running, the old primary is now a replica on TL 2 with 0
+lag. Your cluster healed itself.
+
+I want you to pause and appreciate what just happened. Before Patroni, that
+recovery involved manually running pg_rewind, manually creating recovery.conf
+or standby.signal, manually starting the old primary back up as a standby,
+and manually verifying it caught up. We just watched Patroni do all of it
+automatically. That's the value.
+
+--------------------------------------------------------------------------------
+SYNCHRONOUS REPLICATION IN PATRONI — DATA SAFETY TRADEOFFS
+--------------------------------------------------------------------------------
+
+Let me talk about something that comes up in every production Patroni deployment:
+synchronous vs asynchronous replication, and how Patroni handles it.
+
+By default, Patroni uses asynchronous replication — just like the streaming
+replication you set up manually. The primary doesn't wait for replicas to
+confirm they received WAL before committing. Faster writes, but in the event of
+a crash, you can lose the last few milliseconds of committed transactions that
+haven't been shipped yet.
+
+Patroni has a concept of synchronous mode. You can configure this in the DCS
+config:
+
+  patronictl -c /etc/patroni/patroni.yml edit-config
+
+In the editor, add:
+
+  synchronous_mode: true
+  synchronous_mode_strict: false
+
+With synchronous_mode: true, Patroni manages the synchronous_standby_names
+parameter for you. It picks one synchronous standby and ensures commits wait for
+that standby to confirm receipt. If the synchronous standby fails, by default
+Patroni will fall back to async (that's synchronous_mode_strict: false). If you
+set synchronous_mode_strict: true, the cluster will refuse writes rather than
+commit without a synchronous replica confirming. For financial or transactional
+systems where data loss is completely unacceptable, you'd consider strict mode.
+Just know the tradeoff: you're trading availability for durability.
+
+In practice, most of my production setups use synchronous_mode: true with
+strict: false. You get sync replication when everything is healthy, and you
+gracefully degrade to async when you lose a replica, rather than your entire
+database refusing writes.
+
+--------------------------------------------------------------------------------
+PATRONI AND PGBACKREST — YOUR BACKUP INTEGRATION
+--------------------------------------------------------------------------------
+
+Since you've already worked with pgBackRest, I want to show you how cleanly
+these two integrate. You saw in the config I included the archive_command:
+
+  archive_command: 'pgbackrest --stanza=main archive-push %p'
+
+Patroni manages this for you. On the primary, archive_mode is on and WAL
+archives to pgBackRest. On replicas, archive_mode is typically off (or at least
+archive_command points to a no-op), because you don't want replicas also trying
+to archive WAL — that's the primary's job.
+
+One thing Patroni handles that catches people off guard: when there's a failover
+and the new primary is on a new timeline, the WAL archive now has WAL from
+multiple timelines. pgBackRest handles this fine — it understands timeline
+history files. But make sure your pgBackRest stanza configuration has the
+correct pg1-path pointing to wherever PostgreSQL data lives on the new primary.
+If you're using pgBackRest with a repository host, and your PostgreSQL data_dir
+is the same path on all nodes, you're fine. If nodes have different paths for
+some reason, you need to handle that.
+
+Also — and this is a newer feature — you can use pgBackRest for the initial
+replica clone instead of pg_basebackup. This is much faster on large databases
+because pgBackRest uses its own delta restore algorithm. In the Patroni config,
+in the postgresql section:
+
+  create_replica_methods:
+    - pgbackrest
+    - basebackup
+
+  pgbackrest:
+    command: /usr/bin/pgbackrest --stanza=main --delta restore
+    keep_data: true
+    no_params: true
+
+With this, when Patroni needs to create a new replica from scratch, it tries
+pgBackRest delta restore first. On a 500GB database, basebackup might take
+2 hours. pgBackRest delta restore might take 5 minutes because it only copies
+blocks that have changed. For your lab today we'll leave this as optional, but
+I want you to know it exists.
+
+--------------------------------------------------------------------------------
+COMMON PATRONI PROBLEMS AND HOW TO DIAGNOSE THEM
+--------------------------------------------------------------------------------
+
+Let me spend a few minutes on problems you WILL encounter in production, because
+I want you prepared.
+
+Problem 1: Node stuck in "start failed" state.
+
+Run patronictl list and you see a node showing state "start failed". This usually
+means PostgreSQL couldn't start on that node. SSH to that node and look at the
+PostgreSQL logs — not the Patroni logs, the actual PostgreSQL logs in your log
+directory. Nine times out of ten it's a configuration error, a missing directory,
+or a permissions problem. Fix the underlying PostgreSQL issue, then run:
+
+  patronictl -c /etc/patroni/patroni.yml restart <cluster> <node>
+
+Problem 2: Node stuck in "creating replica" for too long.
+
+This happens when pg_basebackup is slow or the network is saturated. Check the
+Patroni logs on that node to see the pg_basebackup progress. If it's a large
+database, it just takes time. Don't interfere. If it's been running for what
+seems unreasonably long, check if pg_basebackup is even running:
+
+  ps aux | grep basebackup
+
+If it's not running but the node is still showing "creating replica", Patroni
+might have failed and be retrying. Look at the journalctl logs.
+
+Problem 3: Patroni won't start because etcd is unreachable.
+
+This is usually a network issue or etcd is down. Patroni will log connection
+errors. Fix etcd first. Run etcdctl endpoint health to verify etcd is healthy.
+Check firewall rules on port 2379. Check that the etcd hostnames in your Patroni
+config are correct IPs.
+
+Problem 4: Cluster in "pause" mode.
+
+Sometimes Patroni puts the cluster in pause mode — usually because a DBA ran
+"patronictl pause" for maintenance. In pause mode, automatic failover is
+disabled. Check with:
+
+  patronictl -c /etc/patroni/patroni.yml list
+
+You'll see "Maintenance mode: on" if it's paused. To resume:
+
+  patronictl -c /etc/patroni/patroni.yml resume
+
+Pause mode is useful — use it during maintenance windows, database upgrades, or
+when you're about to do something risky and you don't want auto-failover
+triggering while you work.
+
+Problem 5: Split-brain concerns.
+
+This is the nightmare scenario. Two nodes both think they're the primary. In a
+properly configured Patroni cluster with a healthy etcd, this shouldn't happen
+because the distributed lock in etcd prevents it. But network partitions can
+create bizarre situations. This is exactly why Patroni uses etcd — it provides
+the consensus guarantee that prevents split-brain.
+
+If you ever see two nodes showing as Leader in patronictl list — which should
+be extremely rare if etcd is healthy — treat it as a production emergency. Stop
+ALL writes immediately. Determine which node has the most recent committed data
+by comparing pg_current_wal_lsn() on both. The node with the higher LSN is
+the one with more data. Stop the other one immediately with:
+
+  patronictl -c /etc/patroni/patroni.yml stop <cluster> <node>
+
+Then carefully examine what transactions, if any, exist on the stopped node
+that don't exist on the surviving primary. This is a data reconciliation problem
+and it's painful. Avoiding it is why we don't mess with TTL values carelessly,
+and why we keep etcd healthy.
+
+--------------------------------------------------------------------------------
+PERFORMING A PLANNED SWITCHOVER — THE RIGHT WAY
+--------------------------------------------------------------------------------
+
+Let's talk about a very common operational task: you need to do maintenance on
+your primary node. Maybe apply OS patches, maybe replace a disk. You want to
+gracefully move the primary role to another node first.
+
+With Patroni, this is easy:
+
+  patronictl -c /etc/patroni/patroni.yml switchover
+
+Patroni will ask you which cluster, the current primary, the candidate to switch
+to, and when (now or scheduled time). You can also do it non-interactively:
+
+  patronictl -c /etc/patroni/patroni.yml switchover \
+    --master pg-node1 \
+    --candidate pg-node2 \
+    --scheduled now \
+    --force
+
+What happens: Patroni tells the primary to stop accepting new transactions,
+waits for the target replica to fully catch up (0 lag), promotes the target,
+demotes the old primary to replica. The whole process takes a few seconds.
+Your application experiences a very brief blip — usually 1-5 seconds depending
+on your HAProxy health check interval.
+
+This is completely different from a crash failover. A switchover is clean,
+controlled, zero data loss. Do this before maintenance every time. Do not
+just take down your primary node for patching without doing a switchover first.
+I've worked with teams that thought "oh it'll just auto-failover anyway". Yes,
+it will — but an automatic failover is slower and noisier than a planned
+switchover. Always switchover first.
+
+After maintenance is done on the old primary node, bring Patroni back up and
+it will rejoin as a replica. If you want to make it the primary again, do
+another switchover. Or just leave it as a replica — there's no requirement that
+any particular node must be the primary.
+
+--------------------------------------------------------------------------------
+UPGRADING POSTGRESQL WITH PATRONI IN PLACE
+--------------------------------------------------------------------------------
+
+I'll keep this brief because we don't have a lab for it today, but you need to
+know it's possible. There are two approaches.
+
+For minor version upgrades (14.x to 14.y), it's straightforward. Update the
+PostgreSQL packages on all nodes, then do a rolling restart using patronictl:
+
+  patronictl -c /etc/patroni/patroni.yml restart postgres-cluster
+
+Patroni will restart nodes one at a time, replicas first, then the primary last.
+Zero downtime. The primary only restarts after replicas are back up and caught up.
+
+For major version upgrades (14 to 15), it's more complex. You typically need to
+do an offline upgrade using pg_upgrade, or use logical replication to build a
+new cluster on the new version and cutover. There are community tools like
+pg_upgrade-patroni that help with this. Not something to tackle during a 3-hour
+class, but bookmark that topic for when you need it.
+
+--------------------------------------------------------------------------------
+LAB EXERCISES
+--------------------------------------------------------------------------------
+
+Alright, you've been listening to me for a while. Time for you to do the work.
+I'll be walking around to help.
+
+LAB 1 — CLUSTER SETUP (30 minutes)
+
+On your three-node lab environment, get a full Patroni + etcd cluster running.
+Requirements:
+  - Three PostgreSQL nodes, one Leader and two replicas
+  - etcd running on all three nodes in a healthy cluster
+  - patronictl list showing all nodes in "running" state with 0 lag
+  - HAProxy configured to route port 5000 to the primary (I've provided the
+    HAProxy config template on the shared drive)
+
+When you're done, verify by connecting through HAProxy:
+
+  psql -U postgres -h 192.168.1.50 -p 5000 -c "SELECT pg_is_in_recovery();"
+
+You should get "f" (false), meaning you're connected to the primary.
+
+LAB 2 — AUTOMATIC FAILOVER (20 minutes)
+
+With your cluster running, simulate a primary crash:
+
+  sudo systemctl stop patroni   (on the current leader node)
+
+While the failover is happening, watch:
+
+  watch -n 1 patronictl -c /etc/patroni/patroni.yml list
+
+Record: how many seconds did it take from stopping the primary to a new leader
+being elected? Write this down — it's your cluster's effective RTO under
+current configuration.
+
+After failover, check that HAProxy is routing to the new primary:
+
+  psql -U postgres -h 192.168.1.50 -p 5000 -c \
+    "SELECT inet_server_addr(), pg_is_in_recovery();"
+
+Bring the old primary back as a replica. Verify in patronictl list.
+
+LAB 3 — PLANNED SWITCHOVER (15 minutes)
+
+Do a planned switchover to move the primary to the node that is currently a
+replica. Use patronictl switchover. Verify with patronictl list and via the
+HAProxy connection that your writes are now going to the new node.
+
+Check patronictl history to see the switchover event recorded.
+
+LAB 4 — DYNAMIC CONFIGURATION CHANGE (15 minutes)
+
+Using patronictl edit-config, change the following parameters and observe what
+happens across all nodes:
+
+  max_connections: 150  (from whatever your current value is)
+  wal_keep_size: 2048
+
+After saving, watch patronictl list. You may see nodes restart if the parameter
+requires a restart. Verify the change took effect on all nodes:
+
+  psql -U postgres -h <each node> -c "SHOW max_connections;"
+
+BONUS LAB — PAUSE AND RESUME (if time allows)
+
+Pause the cluster, then attempt to kill the primary's Patroni process. Verify
+that Patroni does NOT automatically failover while paused. Then resume and
+observe that normal operation resumes.
+
+  patronictl -c /etc/patroni/patroni.yml pause
+  sudo kill -9 $(pgrep patroni)   (on the primary node)
+
+Wait 60 seconds. Nothing should be promoted. Now fix Patroni:
+
+  sudo systemctl start patroni
+
+Resume the cluster:
+
+  patronictl -c /etc/patroni/patroni.yml resume
+
+This teaches you that pause mode is your safety net during planned maintenance.
+
+--------------------------------------------------------------------------------
+CLOSING THOUGHTS
+--------------------------------------------------------------------------------
+
+Look — when I started my career, high availability PostgreSQL meant writing your
+own shell scripts to check if the primary was alive, and praying that your
+failover runbook was up to date and that the person on call had actually read it.
+I have lived through every generation of this problem. Patroni is genuinely the
+best solution we have right now for PostgreSQL HA. It's battle-tested, it's used
+at scale by companies like Zalando — who wrote it and run it on massive
+infrastructure — by Citus, by hundreds of serious PostgreSQL deployments.
+
+But here's the thing. Patroni is a tool. And like any tool, it's only as good as
+the person using it. You came into this session knowing how streaming replication
+works at the byte level. You know what WAL is, you know how standbys apply it,
+you know what timelines mean. That knowledge is what lets you actually understand
+what Patroni is doing when you read those logs. When a replica says "pg_rewind
+required", you know what that means. When you see a timeline change, you know
+what happened. That's the difference between a DBA who can maintain a Patroni
+cluster and one who can truly own it.
+
+Keep reading the Patroni source on GitHub. The Patroni documentation at
+patroni.readthedocs.io is genuinely good — read it end to end when you have
+time. And break things in your lab constantly. The more times you cause a
+failover on purpose, in an environment where it doesn't matter, the calmer you
+will be when it happens at 3 AM on a production system.
+
+Good work today. See you next session.
+
+================================================================================
+  QUICK REFERENCE — PATRONI COMMAND CARD
+================================================================================
+
+CLUSTER STATUS
+  patronictl -c /etc/patroni/patroni.yml list              # Cluster overview
+  patronictl -c /etc/patroni/patroni.yml topology          # Replication tree
+  patronictl -c /etc/patroni/patroni.yml history           # Failover/TL history
+  curl -s http://localhost:8008/patroni | python3 -m json.tool  # Node REST info
+  curl -s http://localhost:8008/health                     # Simple health: 200=primary
+
+FAILOVER / SWITCHOVER
+  patronictl -c /etc/patroni/patroni.yml switchover        # Planned failover (interactive)
+  patronictl -c /etc/patroni/patroni.yml switchover \
+    --master <node> --candidate <node> --scheduled now --force
+  patronictl -c /etc/patroni/patroni.yml failover          # Forced failover
+
+NODE MANAGEMENT
+  patronictl -c /etc/patroni/patroni.yml restart <cluster> <node>
+  patronictl -c /etc/patroni/patroni.yml stop   <cluster> <node>
+  patronictl -c /etc/patroni/patroni.yml reinit <cluster> <node>  # Wipe & reclone
+
+CLUSTER CONFIGURATION
+  patronictl -c /etc/patroni/patroni.yml edit-config       # Edit DCS config
+  patronictl -c /etc/patroni/patroni.yml show-config       # Print current DCS config
+
+MAINTENANCE MODE
+  patronictl -c /etc/patroni/patroni.yml pause             # Disable auto-failover
+  patronictl -c /etc/patroni/patroni.yml resume            # Re-enable auto-failover
+
+SERVICE MANAGEMENT
+  sudo systemctl start/stop/restart/status patroni
+  sudo journalctl -u patroni -f                            # Follow Patroni logs
+
+ETCD HEALTH (etcd3)
+  etcdctl endpoint health --endpoints=<ip1>:2379,<ip2>:2379,<ip3>:2379
+  etcdctl get --prefix /db/ --endpoints=<ip>:2379          # See all Patroni keys
+
+KEY CONFIG PARAMETERS TO REMEMBER
+  ttl: 30                    # Lock TTL in seconds (default 30)
+  loop_wait: 10              # Main loop interval in seconds
+  retry_timeout: 10          # Retry timeout for DCS operations
+  maximum_lag_on_failover:   # Bytes; skip replica if lagging more than this
+  use_pg_rewind: true        # Use pg_rewind to reinstate old primary
+  synchronous_mode: true     # Enable sync replication management
+  synchronous_mode_strict:   # true = refuse writes if no sync replica
+
+PATRONI CONFIG FILE LOCATION (default in this course)
+  /etc/patroni/patroni.yml
+
+PATRONI LOG LOCATIONS
+  journalctl -u patroni      # Patroni daemon logs
+  /var/log/postgresql/       # PostgreSQL logs (separate from Patroni)
+
+================================================================================
+  END OF LECTURE NOTES
+================================================================================

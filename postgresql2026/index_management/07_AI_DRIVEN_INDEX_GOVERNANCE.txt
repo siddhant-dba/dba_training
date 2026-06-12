@@ -1,0 +1,2321 @@
+================================================================================
+  POSTGRESQL AI-DRIVEN INDEX GOVERNANCE
+  Diploma DBA Program — Phase 7
+  Duration: ~3 hours (lecture + labs + runbook prompt)
+================================================================================
+
+Alright everyone, sit down, get your coffee. Today is a long one. Three hours. And I'm going to ask something of you that none of your previous DBA instructors probably asked: I want you to think differently about what a DBA *is*.
+
+For twenty years, this job was: you learn the database engine, you learn the queries, you understand the workload, you make decisions, you execute. Your brain was the intelligence layer. Everything came from experience. The muscle memory of running EXPLAIN ANALYZE a thousand times. The gut instinct built from seeing twenty production outages and figuring out what caused each one.
+
+That model isn't going away. Everything we've covered in this course — the B-Tree mechanics, fragmentation detection, the left-prefix rule, the audit methodology, the reporting — all of that foundational knowledge is still required. In fact, it's *more* required now, not less, and I'll explain why in a minute.
+
+But the toolbox is changing. AI is now genuinely useful in database operations. Not as a replacement for the DBA brain. But as a force multiplier. As a pattern recognizer that can process weeks of historical data faster than you can read it. As a second opinion you can get at 2 AM when something looks off and you need a sanity check before you do something drastic.
+
+I've been using AI tools in my DBA practice for the last couple of years. And I'll be honest with you: the first time I ran a PostgreSQL index report through an AI model and got back a structured recommendation that I actually agreed with, I felt a little unsettled. Not because it was wrong. Because it was right. It found a redundant covering index overlap I'd missed in a table with 63 indexes. And it explained its reasoning clearly.
+
+But here's what I also know: AI makes confident mistakes. It can recommend dropping an index that looks unused but exists exclusively for a quarterly audit process that runs once in December. It doesn't know about the unwritten tribal knowledge in your organization. It doesn't know that your CTO has a personal script that queries the `orders_legacy` table every Friday night.
+
+That's why today's topic is not "AI replaces the DBA." Today's topic is **AI-Driven Index Governance with Human-in-the-Loop Validation**. The AI does the heavy lifting on data analysis. The DBA does the judgment calls. Together, you build a governance framework that is faster, more consistent, and more defensible than any purely manual process.
+
+Let's go.
+
+================================================================================
+FIRST, LET'S TALK ABOUT THE ARCHITECTURE
+================================================================================
+
+Before I get into the SQL and the code, I want you to picture the whole system in your head. Because today we're building something bigger than a single query or script.
+
+Here's the architecture:
+
+Layer 1 — Data Collection
+    Your PostgreSQL database generates statistics continuously. pg_stat_user_indexes, pg_stat_user_tables, pg_stat_statements. We've captured these before. This layer is the raw ingredient.
+
+Layer 2 — Structured Reporting
+    We take that raw data and shape it into a structured JSON document. Not a text file, not a CSV, not a pretty HTML report. A JSON document with a well-defined schema. Why JSON? Because AI models and APIs consume JSON extremely well. It's the lingua franca of modern data exchange.
+
+Layer 3 — AI Analysis
+    We send the JSON document to an AI model (I'll show you how to do this via API call from bash) and ask it to analyze the indexes. We use a carefully crafted prompt that gives the AI context about PostgreSQL, your specific database, and what we want it to evaluate. It returns a structured recommendation.
+
+Layer 4 — Decision Engine
+    The AI recommendation gets processed by a rules-based decision engine we build ourselves. This is not just "do what the AI says." This engine has our own business rules, confidence thresholds, and safety gates. It produces a validated action list.
+
+Layer 5 — Human Review
+    The action list goes to a DBA for review. Not everything, just the things the engine flags for human judgment. High-confidence, low-risk items can proceed automatically. Medium-confidence items need a DBA to sign off. Low-confidence items get flagged for deeper investigation.
+
+Layer 6 — Execution and Audit
+    Approved actions execute against the database using scripts we control. Every action is logged to our audit table. Results are measured and fed back into the data collection layer for the next cycle.
+
+That's six layers. And today we're building all of them.
+
+================================================================================
+LAYER 1: THE DATA WE'RE FEEDING INTO THE PIPELINE
+================================================================================
+
+Let me start by making sure we have a solid foundation. You've seen most of these queries in earlier phases, but now we're going to reshape how we think about them — not as standalone analysis, but as *inputs* to a larger system.
+
+First, let's build a test environment that mimics a realistic production database. This is going to be richer than what we've used before because we need interesting data for the AI to analyze.
+
+Go ahead and open your psql session. Let's build this from scratch.
+
+---
+
+-- Drop and recreate everything cleanly
+DROP SCHEMA IF EXISTS governance_test CASCADE;
+CREATE SCHEMA governance_test;
+
+-- Orders table: high-volume OLTP
+CREATE TABLE governance_test.orders (
+    order_id        BIGSERIAL PRIMARY KEY,
+    customer_id     BIGINT NOT NULL,
+    product_id      BIGINT NOT NULL,
+    order_date      TIMESTAMP NOT NULL DEFAULT NOW(),
+    ship_date       TIMESTAMP,
+    status          VARCHAR(30) NOT NULL DEFAULT 'pending',
+    amount          NUMERIC(12, 2),
+    region          VARCHAR(50),
+    channel         VARCHAR(30)
+);
+
+-- Customers table: moderate volume, lots of lookups
+CREATE TABLE governance_test.customers (
+    customer_id     BIGSERIAL PRIMARY KEY,
+    email           VARCHAR(150) UNIQUE NOT NULL,
+    phone           VARCHAR(30),
+    country         VARCHAR(50),
+    signup_date     DATE,
+    tier            VARCHAR(20) DEFAULT 'standard',
+    lifetime_value  NUMERIC(14, 2)
+);
+
+-- Products table: smaller, relatively static
+CREATE TABLE governance_test.products (
+    product_id      BIGSERIAL PRIMARY KEY,
+    sku             VARCHAR(50) UNIQUE NOT NULL,
+    category        VARCHAR(80),
+    price           NUMERIC(10, 2),
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Audit log: insert-heavy, rarely read
+CREATE TABLE governance_test.audit_log (
+    log_id          BIGSERIAL PRIMARY KEY,
+    event_type      VARCHAR(50),
+    table_name      VARCHAR(100),
+    record_id       BIGINT,
+    changed_by      VARCHAR(100),
+    changed_at      TIMESTAMP DEFAULT NOW(),
+    old_values      JSONB,
+    new_values      JSONB
+);
+
+---
+
+Good. Now populate it with a meaningful amount of data:
+
+---
+
+-- Populate customers (200k rows)
+INSERT INTO governance_test.customers
+    (email, phone, country, signup_date, tier, lifetime_value)
+SELECT
+    'user' || g.id || '@example.com',
+    '555-' || LPAD((g.id % 9999 + 1)::TEXT, 4, '0'),
+    CASE (g.id % 5)
+        WHEN 0 THEN 'USA'
+        WHEN 1 THEN 'UK'
+        WHEN 2 THEN 'Canada'
+        WHEN 3 THEN 'Australia'
+        ELSE 'Germany'
+    END,
+    CURRENT_DATE - ((random() * 2000)::INT || ' days')::INTERVAL,
+    CASE WHEN random() < 0.1 THEN 'premium'
+         WHEN random() < 0.3 THEN 'gold'
+         ELSE 'standard' END,
+    (random() * 250000)::NUMERIC(14, 2)
+FROM generate_series(1, 200000) AS g(id);
+
+-- Populate products (10k rows)
+INSERT INTO governance_test.products (sku, category, price, created_at)
+SELECT
+    'SKU-' || LPAD(g.id::TEXT, 7, '0'),
+    CASE (g.id % 8)
+        WHEN 0 THEN 'Electronics'
+        WHEN 1 THEN 'Clothing'
+        WHEN 2 THEN 'Books'
+        WHEN 3 THEN 'Home'
+        WHEN 4 THEN 'Sports'
+        WHEN 5 THEN 'Automotive'
+        WHEN 6 THEN 'Beauty'
+        ELSE 'Food'
+    END,
+    (random() * 5000)::NUMERIC(10, 2),
+    NOW() - ((random() * 1000)::INT || ' days')::INTERVAL
+FROM generate_series(1, 10000) AS g(id);
+
+-- Populate orders (2M rows)
+INSERT INTO governance_test.orders
+    (customer_id, product_id, order_date, ship_date, status, amount, region, channel)
+SELECT
+    (random() * 199999 + 1)::BIGINT,
+    (random() * 9999 + 1)::BIGINT,
+    NOW() - ((random() * 730)::INT || ' days')::INTERVAL,
+    NOW() - ((random() * 365)::INT || ' days')::INTERVAL,
+    CASE WHEN random() < 0.65 THEN 'delivered'
+         WHEN random() < 0.85 THEN 'shipped'
+         WHEN random() < 0.92 THEN 'pending'
+         ELSE 'cancelled'
+    END,
+    (random() * 50000)::NUMERIC(12, 2),
+    CASE (g.id % 4)
+        WHEN 0 THEN 'North'
+        WHEN 1 THEN 'South'
+        WHEN 2 THEN 'East'
+        ELSE 'West'
+    END,
+    CASE WHEN random() < 0.5 THEN 'web'
+         WHEN random() < 0.75 THEN 'mobile'
+         ELSE 'api'
+    END
+FROM generate_series(1, 2000000) AS g(id);
+
+-- Populate audit_log (500k rows - high write, low read)
+INSERT INTO governance_test.audit_log
+    (event_type, table_name, record_id, changed_by, old_values, new_values)
+SELECT
+    CASE (g.id % 3) WHEN 0 THEN 'INSERT' WHEN 1 THEN 'UPDATE' ELSE 'DELETE' END,
+    CASE (g.id % 3) WHEN 0 THEN 'orders' WHEN 1 THEN 'customers' ELSE 'products' END,
+    (random() * 2000000)::BIGINT,
+    'app_service_' || (g.id % 5 + 1)::TEXT,
+    '{"status": "old"}'::JSONB,
+    '{"status": "new"}'::JSONB
+FROM generate_series(1, 500000) AS g(id);
+
+ANALYZE governance_test.orders;
+ANALYZE governance_test.customers;
+ANALYZE governance_test.products;
+ANALYZE governance_test.audit_log;
+
+---
+
+This is going to take a minute or two. While it's running, let me talk about what we're creating.
+
+We have four tables representing a realistic e-commerce scenario:
+- `orders`: 2 million rows, high read/write, the most important table
+- `customers`: 200k rows, moderate writes, lots of lookups
+- `products`: 10k rows, mostly static
+- `audit_log`: 500k rows, heavily written, rarely read
+
+This is the kind of mix you'll see in real production systems. And now we're going to create a bunch of indexes — some good, some bad, some redundant — exactly like a real database that's been running for a few years without a proper audit.
+
+---
+
+-- Good indexes - actually needed and used
+CREATE INDEX idx_orders_customer_id
+    ON governance_test.orders (customer_id);
+
+CREATE INDEX idx_orders_status_date
+    ON governance_test.orders (status, order_date);
+
+CREATE INDEX idx_orders_customer_date
+    ON governance_test.orders (customer_id, order_date);
+
+-- Redundant: idx_orders_customer_id is a left-prefix of idx_orders_customer_date
+-- (this is intentional for the exercise — a real DBA mess)
+CREATE INDEX idx_orders_region
+    ON governance_test.orders (region);
+
+-- Never used (created for a feature that was abandoned)
+CREATE INDEX idx_orders_channel_amount
+    ON governance_test.orders (channel, amount);
+
+-- Duplicate
+CREATE INDEX idx_orders_status_dup
+    ON governance_test.orders (status, order_date);
+
+-- Covering index for a specific reporting query
+CREATE INDEX idx_orders_customer_covering
+    ON governance_test.orders (customer_id, order_date)
+    INCLUDE (amount, status);
+
+-- Customers indexes
+CREATE INDEX idx_customers_country
+    ON governance_test.customers (country);
+
+CREATE INDEX idx_customers_tier_ltv
+    ON governance_test.customers (tier, lifetime_value);
+
+CREATE INDEX idx_customers_signup
+    ON governance_test.customers (signup_date);
+
+-- Redundant: left-prefix overlap
+CREATE INDEX idx_customers_tier
+    ON governance_test.customers (tier);
+
+-- Never used
+CREATE INDEX idx_customers_phone
+    ON governance_test.customers (phone);
+
+-- Audit log indexes - questionable on a write-heavy table
+CREATE INDEX idx_audit_event_type
+    ON governance_test.audit_log (event_type);
+
+CREATE INDEX idx_audit_table_record
+    ON governance_test.audit_log (table_name, record_id);
+
+CREATE INDEX idx_audit_changed_at
+    ON governance_test.audit_log (changed_at);
+
+---
+
+Good. Now let's run some queries to simulate workload and generate statistics:
+
+---
+
+-- Simulate typical application queries to build up idx_scan counts
+-- These represent queries the application runs regularly
+
+-- Customer lookups (heavy usage)
+SELECT COUNT(*) FROM governance_test.orders
+    WHERE customer_id BETWEEN 1000 AND 2000;
+
+SELECT COUNT(*) FROM governance_test.orders
+    WHERE customer_id = 50000 AND order_date > NOW() - INTERVAL '90 days';
+
+-- Status-based queries (moderate usage)
+SELECT COUNT(*) FROM governance_test.orders
+    WHERE status = 'pending';
+
+SELECT COUNT(*) FROM governance_test.orders
+    WHERE status = 'shipped' AND order_date > NOW() - INTERVAL '30 days';
+
+-- Country lookup
+SELECT COUNT(*) FROM governance_test.customers
+    WHERE country = 'USA';
+
+-- Tier-based customer query
+SELECT COUNT(*) FROM governance_test.customers
+    WHERE tier = 'premium' ORDER BY lifetime_value DESC LIMIT 100;
+
+ANALYZE governance_test.orders;
+ANALYZE governance_test.customers;
+ANALYZE governance_test.audit_log;
+
+---
+
+Now we have a realistic scenario. Some indexes are being used. Others are dead weight. Let's build the pipeline.
+
+================================================================================
+LAYER 2: BUILDING THE JSON REPORT
+================================================================================
+
+This is where things start to get different from what you've done before.
+
+You're not generating a text report for a human to read. You're generating a structured JSON document that an AI model will consume. The structure matters enormously. Think of it as writing a data contract between your database analysis layer and your AI analysis layer.
+
+I want you to understand something about how AI models work. They're pattern matchers trained on enormous amounts of text. They understand structured data very well — especially JSON. When you give an AI model a well-structured JSON payload, it can reason about it almost like a human DBA would, but in seconds.
+
+But if your JSON is poorly structured, ambiguous, or missing key context, the AI will fill in gaps with guesses. And those guesses can be confidently wrong. So we're going to define a clear, rich JSON schema.
+
+Here's the schema I've developed and refined over the last couple of years. I'll break it down piece by piece.
+
+---
+
+-- First, create our governance schema and tables
+
+CREATE SCHEMA IF NOT EXISTS dba_governance;
+
+CREATE TABLE IF NOT EXISTS dba_governance.index_snapshots (
+    snapshot_id     BIGSERIAL PRIMARY KEY,
+    snapshot_date   DATE NOT NULL,
+    db_name         TEXT NOT NULL,
+    schemaname      TEXT NOT NULL,
+    tablename       TEXT NOT NULL,
+    indexname       TEXT NOT NULL,
+    index_def       TEXT,
+    index_type      TEXT,
+    is_unique       BOOLEAN,
+    is_primary      BOOLEAN,
+    index_size_bytes BIGINT,
+    table_size_bytes BIGINT,
+    idx_scan        BIGINT,
+    idx_tup_read    BIGINT,
+    idx_tup_fetch   BIGINT,
+    table_n_ins     BIGINT,
+    table_n_upd     BIGINT,
+    table_n_del     BIGINT,
+    table_n_live    BIGINT,
+    captured_at     TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS dba_governance.ai_analysis_log (
+    analysis_id     BIGSERIAL PRIMARY KEY,
+    analysis_date   DATE NOT NULL,
+    db_name         TEXT NOT NULL,
+    payload_json    JSONB,
+    ai_response     JSONB,
+    model_used      TEXT,
+    prompt_version  TEXT,
+    total_indexes   INTEGER,
+    drop_candidates INTEGER,
+    rebuild_candidates INTEGER,
+    create_candidates  INTEGER,
+    executed        BOOLEAN DEFAULT FALSE,
+    executed_at     TIMESTAMP,
+    executed_by     TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS dba_governance.index_decisions (
+    decision_id     BIGSERIAL PRIMARY KEY,
+    analysis_id     BIGINT REFERENCES dba_governance.ai_analysis_log(analysis_id),
+    decision_date   DATE NOT NULL,
+    schemaname      TEXT,
+    tablename       TEXT,
+    indexname       TEXT,
+    action          TEXT NOT NULL,   -- 'DROP', 'KEEP', 'REBUILD', 'CREATE', 'MONITOR'
+    confidence_score INTEGER,
+    ai_reasoning    TEXT,
+    human_override  BOOLEAN DEFAULT FALSE,
+    override_reason TEXT,
+    override_by     TEXT,
+    approved        BOOLEAN,
+    approved_by     TEXT,
+    approved_at     TIMESTAMP,
+    executed        BOOLEAN DEFAULT FALSE,
+    executed_at     TIMESTAMP,
+    execution_sql   TEXT,
+    result_status   TEXT,
+    result_notes    TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+---
+
+Good. Now the core piece — the JSON report generation function. This is a PostgreSQL function that queries all the relevant system views and compiles them into a structured JSON document.
+
+---
+
+CREATE OR REPLACE FUNCTION dba_governance.generate_index_report(
+    p_schema TEXT DEFAULT NULL,
+    p_table  TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_report JSONB;
+    v_snapshot_id BIGINT;
+BEGIN
+
+    -- First, capture a snapshot for historical tracking
+    INSERT INTO dba_governance.index_snapshots
+        (snapshot_date, db_name, schemaname, tablename, indexname,
+         index_def, index_type, is_unique, is_primary,
+         index_size_bytes, table_size_bytes,
+         idx_scan, idx_tup_read, idx_tup_fetch,
+         table_n_ins, table_n_upd, table_n_del, table_n_live)
+    SELECT
+        CURRENT_DATE,
+        current_database(),
+        i.schemaname,
+        i.tablename,
+        i.indexname,
+        pg_get_indexdef(i.indexrelid),
+        am.amname,
+        ix.indisunique,
+        ix.indisprimary,
+        pg_relation_size(i.indexrelid),
+        pg_relation_size(t.oid),
+        i.idx_scan,
+        i.idx_tup_read,
+        i.idx_tup_fetch,
+        t.n_tup_ins,
+        t.n_tup_upd,
+        t.n_tup_del,
+        t.n_live_tup
+    FROM
+        pg_stat_user_indexes i
+        JOIN pg_stat_user_tables t ON i.tablename = t.relname
+            AND i.schemaname = t.schemaname
+        JOIN pg_index ix ON ix.indexrelid = i.indexrelid
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = c.relam
+    WHERE
+        i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_governance')
+        AND (p_schema IS NULL OR i.schemaname = p_schema)
+        AND (p_table IS NULL OR i.tablename = p_table);
+
+    -- Now build the JSON report
+    SELECT
+        jsonb_build_object(
+            'report_metadata', jsonb_build_object(
+                'generated_at',     NOW()::TEXT,
+                'report_date',      CURRENT_DATE::TEXT,
+                'database_name',    current_database(),
+                'db_version',       version(),
+                'schema_filter',    COALESCE(p_schema, 'all'),
+                'table_filter',     COALESCE(p_table, 'all'),
+                'report_type',      'index_governance_analysis',
+                'format_version',   '2.1'
+            ),
+
+            'database_summary', jsonb_build_object(
+                'total_indexes',       COUNT(*),
+                'total_index_storage', pg_size_pretty(SUM(pg_relation_size(i.indexrelid))),
+                'total_index_bytes',   SUM(pg_relation_size(i.indexrelid)),
+                'unused_index_count',  SUM(CASE WHEN i.idx_scan = 0 THEN 1 ELSE 0 END),
+                'unused_index_bytes',  SUM(CASE WHEN i.idx_scan = 0 THEN pg_relation_size(i.indexrelid) ELSE 0 END),
+                'tables_analyzed',     COUNT(DISTINCT i.tablename),
+                'heavily_modified_tables',
+                    (SELECT jsonb_agg(tbl)
+                     FROM (
+                         SELECT relname AS tbl
+                         FROM pg_stat_user_tables
+                         WHERE n_tup_ins + n_tup_upd + n_tup_del > 10000
+                         AND schemaname NOT IN ('pg_catalog','information_schema','dba_governance')
+                         ORDER BY n_tup_ins + n_tup_upd + n_tup_del DESC
+                         LIMIT 5
+                     ) h)
+            ),
+
+            'indexes', jsonb_agg(
+                jsonb_build_object(
+                    'index_identity', jsonb_build_object(
+                        'schema',           i.schemaname,
+                        'table',            i.tablename,
+                        'index_name',       i.indexname,
+                        'index_type',       am.amname,
+                        'is_unique',        ix.indisunique,
+                        'is_primary_key',   ix.indisprimary,
+                        'full_definition',  pg_get_indexdef(i.indexrelid)
+                    ),
+                    'size_metrics', jsonb_build_object(
+                        'index_size_bytes', pg_relation_size(i.indexrelid),
+                        'index_size_human', pg_size_pretty(pg_relation_size(i.indexrelid)),
+                        'table_size_bytes', pg_relation_size(t.oid),
+                        'table_size_human', pg_size_pretty(pg_relation_size(t.oid)),
+                        'size_ratio',       ROUND(
+                            (pg_relation_size(i.indexrelid)::FLOAT /
+                             NULLIF(pg_relation_size(t.oid), 0))::NUMERIC, 4
+                        )
+                    ),
+                    'usage_metrics', jsonb_build_object(
+                        'idx_scan',         i.idx_scan,
+                        'idx_tup_read',     i.idx_tup_read,
+                        'idx_tup_fetch',    i.idx_tup_fetch,
+                        'read_fetch_ratio', CASE
+                            WHEN i.idx_tup_fetch = 0 THEN NULL
+                            ELSE ROUND((i.idx_tup_read::FLOAT /
+                                        NULLIF(i.idx_tup_fetch, 0))::NUMERIC, 2)
+                        END,
+                        'scans_per_day_estimate', CASE
+                            WHEN s.stats_reset IS NULL THEN NULL
+                            ELSE ROUND((i.idx_scan::FLOAT /
+                                GREATEST(EXTRACT(EPOCH FROM (NOW() - s.stats_reset)) / 86400, 1)
+                            )::NUMERIC, 2)
+                        END
+                    ),
+                    'write_load', jsonb_build_object(
+                        'table_inserts',        t.n_tup_ins,
+                        'table_updates',        t.n_tup_upd,
+                        'table_deletes',        t.n_tup_del,
+                        'total_modifications',  t.n_tup_ins + t.n_tup_upd + t.n_tup_del,
+                        'live_rows',            t.n_live_tup,
+                        'mods_per_scan',        CASE
+                            WHEN i.idx_scan = 0 THEN NULL
+                            ELSE ROUND(
+                                ((t.n_tup_ins + t.n_tup_upd + t.n_tup_del)::FLOAT /
+                                 NULLIF(i.idx_scan, 0))::NUMERIC, 2
+                            )
+                        END
+                    ),
+                    'health_indicators', jsonb_build_object(
+                        'is_unused',        i.idx_scan = 0,
+                        'is_low_use',       i.idx_scan BETWEEN 1 AND 10,
+                        'fragmentation_risk', CASE
+                            WHEN (pg_relation_size(i.indexrelid)::FLOAT /
+                                  NULLIF(pg_relation_size(t.oid), 0)) > 2.0 THEN 'HIGH'
+                            WHEN (pg_relation_size(i.indexrelid)::FLOAT /
+                                  NULLIF(pg_relation_size(t.oid), 0)) > 1.5 THEN 'MEDIUM'
+                            ELSE 'LOW'
+                        END,
+                        'high_write_low_read', (
+                            (t.n_tup_ins + t.n_tup_upd + t.n_tup_del) > 10000
+                            AND i.idx_scan < 50
+                        )
+                    ),
+                    'history', jsonb_build_object(
+                        'prior_week_scans', (
+                            SELECT s2.idx_scan
+                            FROM dba_governance.index_snapshots s2
+                            WHERE s2.indexname = i.indexname
+                            AND s2.tablename = i.tablename
+                            AND s2.snapshot_date = CURRENT_DATE - 7
+                            LIMIT 1
+                        ),
+                        'prior_month_scans', (
+                            SELECT s2.idx_scan
+                            FROM dba_governance.index_snapshots s2
+                            WHERE s2.indexname = i.indexname
+                            AND s2.tablename = i.tablename
+                            AND s2.snapshot_date = CURRENT_DATE - 30
+                            LIMIT 1
+                        ),
+                        'weeks_captured', (
+                            SELECT COUNT(DISTINCT snapshot_date)
+                            FROM dba_governance.index_snapshots s2
+                            WHERE s2.indexname = i.indexname
+                            AND s2.tablename = i.tablename
+                        )
+                    )
+                )
+                ORDER BY pg_relation_size(i.indexrelid) DESC
+            )
+        ) INTO v_report
+    FROM
+        pg_stat_user_indexes i
+        JOIN pg_stat_user_tables t ON i.tablename = t.relname
+            AND i.schemaname = t.schemaname
+        JOIN pg_index ix ON ix.indexrelid = i.indexrelid
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = c.relam
+        LEFT JOIN pg_stat_bgwriter s ON TRUE
+    WHERE
+        i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_governance')
+        AND (p_schema IS NULL OR i.schemaname = p_schema)
+        AND (p_table IS NULL OR i.tablename = p_table);
+
+    RETURN v_report;
+
+END;
+$$;
+
+---
+
+Let me walk through what this function does, because there's a lot going on.
+
+It takes two optional parameters: schema name and table name. If you pass NULL for both, it analyzes the entire database. That's what you usually want for a full governance report. But you can narrow it to a specific schema or table when you're doing focused work.
+
+First, it inserts a snapshot into our `index_snapshots` table. Remember from Phase 6 — we talked about persisting statistics before they get reset on a restart. This function does that automatically every time it runs.
+
+Then it builds the JSON report. The structure has four top-level keys:
+
+`report_metadata` — Context about when the report was generated, which database, which version. The AI model needs this to contextualize its recommendations. A recommendation that's valid on PostgreSQL 14 might differ on PostgreSQL 16.
+
+`database_summary` — High-level numbers: total indexes, total storage, how many are unused, which tables are heavily modified. This gives the AI a "30,000-foot view" before it dives into details.
+
+`indexes` — This is the main payload. An array of index objects, each with five nested objects: identity, size metrics, usage metrics, write load, and health indicators. Rich, structured, everything the AI needs to make a decision.
+
+`history` — Historical scan counts from prior snapshots. This is critically important because it transforms the analysis from a snapshot into a trend. A zero-scan index from yesterday could have been a hundred-scans-per-day index two weeks ago, and the stats reset because of a restart. History protects you from that false positive.
+
+Let's test it:
+
+---
+
+SELECT dba_governance.generate_index_report('governance_test');
+
+---
+
+You should see a large JSON document. Look at the structure. Each index has all its metrics neatly packaged.
+
+Now let me show you a cleaner way to view it:
+
+---
+
+SELECT
+    jsonb_pretty(
+        dba_governance.generate_index_report('governance_test')
+    );
+
+---
+
+Scroll through that. See the structure? This is what we're going to feed to the AI.
+
+================================================================================
+LAYER 3: THE AI ANALYSIS — PROMPT ENGINEERING FOR DBAS
+================================================================================
+
+Now we get to the part that most people find mysterious. How do you actually talk to an AI model? What do you say? How do you get back something useful instead of vague generalities?
+
+The answer is prompt engineering. And I'm going to demystify it for you.
+
+A prompt to an AI model is just a set of instructions plus context. It's not magic. It's communication. You're telling the model who it is, what it knows, what you want it to do, and what format you want back.
+
+Good prompts have four components:
+
+1. **Role definition**: "You are a PostgreSQL DBA expert..." This sets the model's frame of reference.
+2. **Context**: The data you're providing, plus any background the model needs to interpret it.
+3. **Task specification**: Exactly what you want it to do, in precise terms.
+4. **Output format**: What you want back, in what structure.
+
+Let me show you the prompt template I've developed. This is real. This is what I use.
+
+---
+
+-- Store our prompt template in the governance schema
+
+CREATE TABLE IF NOT EXISTS dba_governance.ai_prompts (
+    prompt_id       SERIAL PRIMARY KEY,
+    prompt_version  TEXT NOT NULL,
+    prompt_name     TEXT NOT NULL,
+    system_prompt   TEXT NOT NULL,
+    user_prompt_template TEXT NOT NULL,
+    is_active       BOOLEAN DEFAULT TRUE,
+    notes           TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO dba_governance.ai_prompts
+    (prompt_version, prompt_name, system_prompt, user_prompt_template, notes)
+VALUES (
+    'v2.1',
+    'index_governance_analysis',
+
+    -- SYSTEM PROMPT (defines the AI''s role and knowledge)
+    $SYSTEM$
+You are a senior PostgreSQL Database Administrator and index governance expert
+with deep knowledge of:
+- PostgreSQL B-Tree index internals, page structure, and fill factor behavior
+- Query plan selection, statistics estimation, and optimizer behavior
+- Index maintenance: fragmentation, REINDEX, VACUUM, bloat detection
+- Write overhead: how indexes slow INSERT, UPDATE, and DELETE operations
+- Left-prefix rules for composite indexes and redundancy detection
+- Covering indexes (INCLUDE clause) and their trade-offs
+- pg_stat_user_indexes, pg_stat_user_tables, and statistics reset behavior
+- Production database safety: locking, CONCURRENTLY options, maintenance windows
+- Enterprise governance: risk classification, confidence scoring, human review
+
+Your role is to analyze a structured JSON report of PostgreSQL index statistics
+and produce a precise, actionable governance recommendation set.
+
+You are analytical, conservative, and production-safety-conscious. You never
+recommend dropping an index purely on scan count without considering write overhead,
+historical data availability, and index uniqueness. You understand that statistics
+reset on PostgreSQL restart and always factor in the 'history.weeks_captured' value.
+
+You output ONLY valid JSON. No explanation text outside the JSON structure.
+No markdown formatting. No preamble. Just the JSON object.
+    $SYSTEM$,
+
+    -- USER PROMPT TEMPLATE (data + instructions go here)
+    $USER$
+Analyze the following PostgreSQL index statistics report and return a governance
+decision for every index in the 'indexes' array.
+
+RULES YOU MUST FOLLOW:
+1. Never recommend DROP for a PRIMARY KEY or UNIQUE index.
+2. Never recommend DROP if 'history.weeks_captured' < 2. Recommend MONITOR instead,
+   because statistics may have been recently reset.
+3. For indexes with 'is_unused: true' and 'weeks_captured >= 4', confidence in DROP
+   should be 85 or higher only if write load is significant (mods_per_scan is null
+   and total_modifications > 1000). Otherwise confidence should be 70-84.
+4. For fragmented indexes (fragmentation_risk: HIGH), recommend REBUILD if
+   idx_scan > 100. If idx_scan <= 100 and fragmentation risk is HIGH, recommend
+   DROP unless unique/primary.
+5. For high_write_low_read indexes (write load high, usage low), recommend DROP
+   if not unique/primary and confidence is 75 or above.
+6. Redundant indexes (where another index has the same or longer left-prefix) should
+   be recommended for DROP with confidence 90+ only if the superset index exists and
+   has non-zero scans.
+7. For every CREATE recommendation, provide the exact SQL.
+8. For every DROP recommendation, provide the exact DROP INDEX CONCURRENTLY SQL.
+9. For every REBUILD recommendation, provide the exact REINDEX INDEX CONCURRENTLY SQL.
+
+CONFIDENCE SCORING GUIDE:
+- 95-100: Virtually certain. Multiple corroborating signals. Safe for auto-execution.
+- 85-94:  Very confident. Strong signals. Recommend human review before execution.
+- 70-84:  Moderate confidence. Some uncertainty. Requires DBA approval.
+- 50-69:  Low confidence. Flag for investigation, do not act without deeper review.
+- 0-49:   Insufficient data. Recommend MONITOR only.
+
+REPORT DATA:
+{{REPORT_JSON}}
+
+Return ONLY a JSON object with this exact structure:
+{
+  "analysis_metadata": {
+    "analyzed_at": "<ISO timestamp>",
+    "total_indexes_evaluated": <integer>,
+    "prompt_version": "v2.1",
+    "model_note": "<brief note on any caveats in this analysis>"
+  },
+  "executive_summary": {
+    "overall_health_score": <0-100 integer>,
+    "drop_candidates": <integer count>,
+    "rebuild_candidates": <integer count>,
+    "create_candidates": <integer count>,
+    "monitor_candidates": <integer count>,
+    "estimated_storage_recovery_bytes": <integer>,
+    "estimated_write_overhead_reduction_pct": <0-100 float>,
+    "priority_actions_this_week": [
+      "<action description>",
+      "<action description>"
+    ],
+    "risks_identified": [
+      "<risk description>"
+    ]
+  },
+  "index_decisions": [
+    {
+      "index_name": "<string>",
+      "table_name": "<string>",
+      "schema_name": "<string>",
+      "action": "<DROP|KEEP|REBUILD|CREATE|MONITOR>",
+      "confidence_score": <0-100 integer>,
+      "reasoning": "<clear explanation of why this action was chosen>",
+      "risk_level": "<LOW|MEDIUM|HIGH>",
+      "execution_sql": "<exact SQL or null if action is KEEP/MONITOR>",
+      "requires_human_review": <true|false>,
+      "alternative_action": "<optional alternative if human disagrees>",
+      "tags": ["<tag1>", "<tag2>"]
+    }
+  ],
+  "redundancy_groups": [
+    {
+      "group_id": <integer>,
+      "keep_index": "<index name>",
+      "redundant_indexes": ["<index name>"],
+      "reasoning": "<why these are redundant>"
+    }
+  ],
+  "missing_indexes_suggested": [
+    {
+      "table": "<schema.table>",
+      "suggested_sql": "<CREATE INDEX ...>",
+      "justification": "<why this index would help>",
+      "estimated_benefit": "<LOW|MEDIUM|HIGH>"
+    }
+  ]
+}
+    $USER$,
+
+    'Production-tested prompt for index governance. Version 2.1 adds write overhead
+     reduction estimation and redundancy group detection.'
+);
+
+---
+
+I want to pause here and explain why this prompt is built the way it is.
+
+The system prompt tells the AI its identity. Notice I'm not vague. I'm not saying "you're a database expert." I'm listing specific PostgreSQL concepts — pg_stat_user_indexes, REINDEX CONCURRENTLY, fill factor, left-prefix rules. This activates the model's specific PostgreSQL knowledge base rather than generic database knowledge.
+
+The rules section is the most important part. These are my business rules — my decades of experience encoded as constraints. Rule 2 is critical: never recommend DROP if we have fewer than 2 weeks of history. Because if a DBA restarted PostgreSQL last week, all scan counts are zero. Blindly dropping everything with zero scans based on one snapshot is a disaster. I learned that the hard way. Rule 1 is obvious once you've worked in production — drop a unique index and your application starts accepting duplicate data. Not good.
+
+The confidence scoring guide calibrates the model's scoring to my risk framework. Anything 95-100 can be auto-executed. Anything 70-84 needs my sign-off.
+
+The output format is rigid and precise. I want JSON back, nothing else, with specific field names. This makes it easy to parse programmatically.
+
+================================================================================
+INSTRUCTOR WARNING: THE CONFIDENT AI TRAP
+================================================================================
+
+Alright, stop what you're typing. I need to tell you something critical.
+
+AI models are confidently wrong in ways that can destroy production systems.
+
+I'm not exaggerating. Let me tell you what happened to a DBA team I know. They built an AI-driven automation system very similar to what we're building today. But they didn't build the human-in-the-loop layer properly. They set the auto-execution threshold at 70% confidence and walked away.
+
+The AI analyzed a database that had recently been migrated. A bunch of indexes had been rebuilt during migration. The stats were fresh — scan counts were low across the board. The AI confidently recommended dropping 30 indexes with 70-80% confidence scores.
+
+The automation executed 26 of them overnight.
+
+By 9 AM, the application was throwing errors. Queries that had relied on those indexes were timing out. They weren't unused — they were just new, post-migration, and hadn't accumulated scan counts yet. The AI didn't know about the migration context. It only knew what the numbers said.
+
+The DBA team spent two days recreating indexes and explaining to the business why their platform was degraded.
+
+Here is what I want you to remember about this story: **the AI did exactly what it was told. The failure was in the design of the governance system — specifically the absence of proper human oversight thresholds.**
+
+In our system, the rules are:
+- Confidence >= 95, risk = LOW: Auto-execution is permitted, but we still log and notify
+- Confidence 85-94, risk = LOW/MEDIUM: Requires DBA sign-off in the workflow table
+- Confidence < 85 OR risk = HIGH: Full human review before any action
+- Zero-scan indexes with history < 2 weeks: MONITOR only, no action
+
+These thresholds are not suggestions. They are the governance policy. If your manager asks you to lower the threshold to save time, you look them in the eye and you explain the story I just told you. And if they push back, you ask them to put their request in writing.
+
+End of warning. Let's keep going.
+
+================================================================================
+LAYER 3 CONTINUED: CALLING THE AI FROM BASH
+================================================================================
+
+Now let's look at how to actually call an AI API from bash and feed it our JSON report. I'm going to use the Anthropic API as an example since that's what's accessible to you, but this pattern works with any REST-based AI API.
+
+---
+
+#!/bin/bash
+
+#=============================================================================
+# ai_index_analyzer.sh
+# Calls an AI model with our index governance JSON report
+# and returns structured recommendations
+#=============================================================================
+
+set -euo pipefail
+
+# Configuration
+readonly DB_HOST="${DB_HOST:-localhost}"
+readonly DB_PORT="${DB_PORT:-5432}"
+readonly DB_USER="${DB_USER:-postgres}"
+readonly DB_NAME="${DB_NAME:-production}"
+readonly DB_SCHEMA="${DB_SCHEMA:-public}"
+readonly AI_API_KEY="${ANTHROPIC_API_KEY:?ERROR: ANTHROPIC_API_KEY not set}"
+readonly AI_MODEL="claude-sonnet-4-6"
+readonly AI_API_URL="https://api.anthropic.com/v1/messages"
+readonly WORK_DIR="/tmp/dba_governance"
+readonly TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+readonly REPORT_JSON_FILE="${WORK_DIR}/report_${TIMESTAMP}.json"
+readonly AI_RESPONSE_FILE="${WORK_DIR}/ai_response_${TIMESTAMP}.json"
+readonly LOG_FILE="${WORK_DIR}/ai_analyzer_${TIMESTAMP}.log"
+
+PSQL="psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME}"
+
+#=============================================================================
+# LOGGING
+#=============================================================================
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"; }
+die() { echo "[FATAL] $*" >&2; exit 1; }
+
+#=============================================================================
+# STEP 1: GENERATE THE JSON REPORT
+#=============================================================================
+
+generate_report() {
+    log "Generating index report for schema: ${DB_SCHEMA}..."
+
+    mkdir -p "${WORK_DIR}"
+
+    ${PSQL} -t -c \
+        "SELECT dba_governance.generate_index_report('${DB_SCHEMA}')" \
+        > "${REPORT_JSON_FILE}" \
+        2>> "${LOG_FILE}" \
+        || die "Failed to generate index report from PostgreSQL"
+
+    # Validate the JSON is non-empty
+    if [[ ! -s "${REPORT_JSON_FILE}" ]]; then
+        die "Report JSON is empty — check database connection and permissions"
+    fi
+
+    local INDEX_COUNT
+    INDEX_COUNT=$(python3 -c "
+import json, sys
+d = json.load(open('${REPORT_JSON_FILE}'))
+print(len(d.get('indexes', [])))
+" 2>/dev/null || echo "0")
+
+    log "Report generated. Indexes found: ${INDEX_COUNT}"
+    [[ ${INDEX_COUNT} -gt 0 ]] || die "No indexes found in report"
+}
+
+#=============================================================================
+# STEP 2: LOAD THE PROMPT FROM DATABASE
+#=============================================================================
+
+load_prompt() {
+    log "Loading AI prompt template (v2.1)..."
+
+    SYSTEM_PROMPT=$(${PSQL} -t -A -c \
+        "SELECT system_prompt FROM dba_governance.ai_prompts
+         WHERE prompt_version = 'v2.1' AND is_active = TRUE LIMIT 1" \
+        2>> "${LOG_FILE}") \
+        || die "Failed to load system prompt"
+
+    USER_PROMPT_TEMPLATE=$(${PSQL} -t -A -c \
+        "SELECT user_prompt_template FROM dba_governance.ai_prompts
+         WHERE prompt_version = 'v2.1' AND is_active = TRUE LIMIT 1" \
+        2>> "${LOG_FILE}") \
+        || die "Failed to load user prompt template"
+
+    log "Prompt template loaded (version v2.1)"
+}
+
+#=============================================================================
+# STEP 3: BUILD THE REQUEST PAYLOAD
+#=============================================================================
+
+build_request() {
+    log "Building API request payload..."
+
+    local REPORT_CONTENT
+    REPORT_CONTENT=$(cat "${REPORT_JSON_FILE}")
+
+    # Substitute the report JSON into the user prompt template
+    local USER_PROMPT
+    USER_PROMPT="${USER_PROMPT_TEMPLATE/\{\{REPORT_JSON\}\}/${REPORT_CONTENT}}"
+
+    # Build the JSON payload for the API
+    python3 - <<PYEOF
+import json, sys
+
+system_prompt = """${SYSTEM_PROMPT}"""
+user_prompt   = """${USER_PROMPT}"""
+
+payload = {
+    "model":      "${AI_MODEL}",
+    "max_tokens": 8000,
+    "system":     system_prompt,
+    "messages": [
+        {
+            "role":    "user",
+            "content": user_prompt
+        }
+    ]
+}
+
+with open("${WORK_DIR}/api_request_${TIMESTAMP}.json", "w") as f:
+    json.dump(payload, f)
+
+print("Payload built successfully")
+PYEOF
+
+    log "API request payload built"
+}
+
+#=============================================================================
+# STEP 4: CALL THE AI API
+#=============================================================================
+
+call_ai_api() {
+    log "Calling AI API (model: ${AI_MODEL})..."
+
+    local HTTP_STATUS
+    HTTP_STATUS=$(curl -s -o "${AI_RESPONSE_FILE}" -w "%{http_code}" \
+        -X POST "${AI_API_URL}" \
+        -H "x-api-key: ${AI_API_KEY}" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "content-type: application/json" \
+        -d @"${WORK_DIR}/api_request_${TIMESTAMP}.json" \
+        2>> "${LOG_FILE}")
+
+    if [[ "${HTTP_STATUS}" != "200" ]]; then
+        log "API returned HTTP ${HTTP_STATUS}"
+        cat "${AI_RESPONSE_FILE}" >> "${LOG_FILE}"
+        die "AI API call failed with status ${HTTP_STATUS}"
+    fi
+
+    log "AI API call successful (HTTP 200)"
+}
+
+#=============================================================================
+# STEP 5: EXTRACT AND VALIDATE THE AI RESPONSE
+#=============================================================================
+
+extract_response() {
+    log "Extracting AI analysis from response..."
+
+    python3 - <<PYEOF
+import json, sys
+
+with open("${AI_RESPONSE_FILE}") as f:
+    raw = json.load(f)
+
+# Extract the text content from the API response
+content_blocks = raw.get("content", [])
+ai_text = ""
+for block in content_blocks:
+    if block.get("type") == "text":
+        ai_text += block.get("text", "")
+
+# Parse the AI's JSON response
+try:
+    ai_json = json.loads(ai_text.strip())
+except json.JSONDecodeError as e:
+    print(f"ERROR: AI response is not valid JSON: {e}", file=sys.stderr)
+    print(f"Raw response: {ai_text[:500]}", file=sys.stderr)
+    sys.exit(1)
+
+# Validate required keys
+required_keys = ["analysis_metadata", "executive_summary", "index_decisions"]
+missing = [k for k in required_keys if k not in ai_json]
+if missing:
+    print(f"ERROR: AI response missing required keys: {missing}", file=sys.stderr)
+    sys.exit(1)
+
+# Save the clean AI analysis
+with open("${WORK_DIR}/ai_analysis_${TIMESTAMP}.json", "w") as f:
+    json.dump(ai_json, f, indent=2)
+
+# Print summary
+summary = ai_json.get("executive_summary", {})
+print(f"Analysis complete:")
+print(f"  Health score:         {summary.get('overall_health_score', 'N/A')}/100")
+print(f"  DROP candidates:      {summary.get('drop_candidates', 0)}")
+print(f"  REBUILD candidates:   {summary.get('rebuild_candidates', 0)}")
+print(f"  CREATE candidates:    {summary.get('create_candidates', 0)}")
+print(f"  MONITOR candidates:   {summary.get('monitor_candidates', 0)}")
+PYEOF
+
+    log "AI analysis extracted and validated"
+}
+
+#=============================================================================
+# STEP 6: STORE IN DATABASE
+#=============================================================================
+
+store_results() {
+    log "Storing analysis results in governance database..."
+
+    python3 - <<PYEOF
+import json, subprocess, sys
+
+with open("${REPORT_JSON_FILE}") as f:
+    report_data = json.load(f)
+
+with open("${WORK_DIR}/ai_analysis_${TIMESTAMP}.json") as f:
+    ai_data = json.load(f)
+
+summary = ai_data.get("executive_summary", {})
+
+# Build INSERT statement
+insert_sql = f"""
+INSERT INTO dba_governance.ai_analysis_log
+    (analysis_date, db_name, payload_json, ai_response,
+     model_used, prompt_version,
+     total_indexes, drop_candidates, rebuild_candidates, create_candidates)
+VALUES (
+    CURRENT_DATE,
+    current_database(),
+    '{json.dumps(report_data).replace("'", "''")}',
+    '{json.dumps(ai_data).replace("'", "''")}',
+    '${AI_MODEL}',
+    'v2.1',
+    {len(report_data.get('indexes', []))},
+    {summary.get('drop_candidates', 0)},
+    {summary.get('rebuild_candidates', 0)},
+    {summary.get('create_candidates', 0)}
+)
+RETURNING analysis_id;
+"""
+
+result = subprocess.run(
+    ["psql", "-h", "${DB_HOST}", "-p", "${DB_PORT}",
+     "-U", "${DB_USER}", "-d", "${DB_NAME}", "-t", "-c", insert_sql],
+    capture_output=True, text=True
+)
+
+if result.returncode != 0:
+    print(f"ERROR storing analysis: {result.stderr}", file=sys.stderr)
+    sys.exit(1)
+
+analysis_id = result.stdout.strip()
+print(f"Analysis stored with ID: {analysis_id}")
+
+# Now insert individual decisions
+for decision in ai_data.get("index_decisions", []):
+    exec_sql = (decision.get("execution_sql") or "").replace("'", "''")
+    reasoning = (decision.get("reasoning") or "").replace("'", "''")
+
+    decision_sql = f"""
+    INSERT INTO dba_governance.index_decisions
+        (analysis_id, decision_date, schemaname, tablename, indexname,
+         action, confidence_score, ai_reasoning, execution_sql)
+    VALUES (
+        {analysis_id},
+        CURRENT_DATE,
+        '{decision.get("schema_name", "")}',
+        '{decision.get("table_name", "")}',
+        '{decision.get("index_name", "")}',
+        '{decision.get("action", "MONITOR")}',
+        {decision.get("confidence_score", 0)},
+        '{reasoning}',
+        '{exec_sql}'
+    );
+    """
+
+    subprocess.run(
+        ["psql", "-h", "${DB_HOST}", "-p", "${DB_PORT}",
+         "-U", "${DB_USER}", "-d", "${DB_NAME}", "-c", decision_sql],
+        capture_output=True, text=True
+    )
+
+print(f"Stored {len(ai_data.get('index_decisions', []))} decisions")
+PYEOF
+
+    log "Results stored in governance database"
+}
+
+#=============================================================================
+# MAIN
+#=============================================================================
+
+main() {
+    log "=== AI Index Governance Analysis Starting ==="
+
+    generate_report
+    load_prompt
+    build_request
+    call_ai_api
+    extract_response
+    store_results
+
+    log "=== Analysis Complete ==="
+    log "Results in: ${WORK_DIR}/ai_analysis_${TIMESTAMP}.json"
+    log "Review decisions: SELECT * FROM dba_governance.index_decisions
+         WHERE decision_date = CURRENT_DATE ORDER BY confidence_score DESC;"
+}
+
+main "$@"
+
+---
+
+Walk through this with me. The script has six steps in sequence:
+
+Step 1: Calls our PostgreSQL function and saves the JSON report to a file.
+
+Step 2: Loads the prompt from the database. I store prompts in the database deliberately — it means you can version them, update them without touching scripts, and track which version of the prompt produced which recommendations.
+
+Step 3: Substitutes the real report data into the prompt template. The `{{REPORT_JSON}}` placeholder gets replaced with the actual JSON.
+
+Step 4: Calls the AI API using curl. Note that the API key comes from an environment variable. Never hardcode API keys in scripts.
+
+Step 5: Extracts the AI's response. The API returns the full response wrapped in Anthropic's message structure. We extract the text content and parse it as JSON. We also validate that the required keys are present.
+
+Step 6: Stores everything in the database. The full payload, the full AI response, and individual decisions for each index. This creates our audit trail.
+
+================================================================================
+LAYER 4: THE DECISION ENGINE
+================================================================================
+
+The AI gives us recommendations with confidence scores. But we don't execute them blindly. We run them through a decision engine.
+
+The decision engine applies our governance rules on top of the AI recommendations. Think of it as a final safety layer before anything touches production.
+
+---
+
+CREATE OR REPLACE FUNCTION dba_governance.apply_decision_rules(
+    p_analysis_id BIGINT
+)
+RETURNS TABLE (
+    indexname           TEXT,
+    tablename           TEXT,
+    ai_action           TEXT,
+    final_action        TEXT,
+    confidence_score    INTEGER,
+    auto_execute        BOOLEAN,
+    requires_approval   BOOLEAN,
+    block_reason        TEXT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        d.indexname,
+        d.tablename,
+        d.action                            AS ai_action,
+
+        -- Override AI action based on safety rules
+        CASE
+            -- RULE 1: Never drop primary keys or unique indexes automatically
+            WHEN d.action = 'DROP'
+            AND EXISTS (
+                SELECT 1 FROM pg_index ix
+                JOIN pg_class c ON c.oid = ix.indexrelid
+                WHERE c.relname = d.indexname
+                AND (ix.indisprimary OR ix.indisunique)
+            )
+            THEN 'KEEP'
+
+            -- RULE 2: Insufficient history — downgrade to MONITOR
+            WHEN d.action = 'DROP'
+            AND (
+                SELECT COALESCE(
+                    (s.ai_response -> 'index_decisions' -> 0 -> 'tags'),
+                    '[]'::JSONB
+                ) @> '["insufficient_history"]'::JSONB
+                FROM dba_governance.ai_analysis_log s
+                WHERE s.analysis_id = p_analysis_id
+            )
+            THEN 'MONITOR'
+
+            -- RULE 3: Confidence below threshold — downgrade action
+            WHEN d.action = 'DROP' AND d.confidence_score < 70
+            THEN 'MONITOR'
+
+            WHEN d.action = 'REBUILD' AND d.confidence_score < 60
+            THEN 'MONITOR'
+
+            -- Default: accept AI recommendation
+            ELSE d.action
+        END                                 AS final_action,
+
+        d.confidence_score,
+
+        -- Auto-execute criteria: must be >= 95 confidence, LOW risk, DROP or REBUILD
+        (
+            d.confidence_score >= 95
+            AND d.action IN ('DROP', 'REBUILD')
+            AND d.human_override = FALSE
+        )                                   AS auto_execute,
+
+        -- Requires approval: anything 70-94 or any CREATE
+        (
+            d.confidence_score BETWEEN 70 AND 94
+            OR d.action = 'CREATE'
+        )                                   AS requires_approval,
+
+        -- Reason for any block or downgrade
+        CASE
+            WHEN d.action = 'DROP'
+            AND EXISTS (
+                SELECT 1 FROM pg_index ix
+                JOIN pg_class c ON c.oid = ix.indexrelid
+                WHERE c.relname = d.indexname
+                AND (ix.indisprimary OR ix.indisunique)
+            )
+            THEN 'SAFETY BLOCK: Primary key or unique constraint — cannot drop'
+
+            WHEN d.action = 'DROP' AND d.confidence_score < 70
+            THEN 'LOW CONFIDENCE: Downgraded to MONITOR — insufficient evidence for DROP'
+
+            WHEN d.action = 'REBUILD' AND d.confidence_score < 60
+            THEN 'LOW CONFIDENCE: Insufficient fragmentation evidence'
+
+            ELSE NULL
+        END                                 AS block_reason
+
+    FROM dba_governance.index_decisions d
+    WHERE d.analysis_id = p_analysis_id
+    ORDER BY d.confidence_score DESC;
+END;
+$$;
+
+---
+
+Now let's create the approval workflow. This is the human-in-the-loop piece:
+
+---
+
+CREATE OR REPLACE FUNCTION dba_governance.approve_decision(
+    p_decision_id   BIGINT,
+    p_approved_by   TEXT,
+    p_approved      BOOLEAN,
+    p_override_reason TEXT DEFAULT NULL
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_action    TEXT;
+    v_exec_sql  TEXT;
+    v_result    TEXT;
+BEGIN
+    -- Get the decision
+    SELECT action, execution_sql
+    INTO v_action, v_exec_sql
+    FROM dba_governance.index_decisions
+    WHERE decision_id = p_decision_id;
+
+    IF NOT FOUND THEN
+        RETURN 'ERROR: Decision ID not found';
+    END IF;
+
+    -- Record the approval
+    UPDATE dba_governance.index_decisions
+    SET
+        approved        = p_approved,
+        approved_by     = p_approved_by,
+        approved_at     = NOW(),
+        override_reason = p_override_reason,
+        human_override  = (p_override_reason IS NOT NULL)
+    WHERE decision_id = p_decision_id;
+
+    IF p_approved AND v_exec_sql IS NOT NULL THEN
+        -- Execute the approved SQL
+        BEGIN
+            EXECUTE v_exec_sql;
+
+            UPDATE dba_governance.index_decisions
+            SET
+                executed        = TRUE,
+                executed_at     = NOW(),
+                result_status   = 'SUCCESS'
+            WHERE decision_id = p_decision_id;
+
+            v_result := 'SUCCESS: ' || v_action || ' executed for decision ' || p_decision_id;
+
+        EXCEPTION WHEN OTHERS THEN
+            UPDATE dba_governance.index_decisions
+            SET
+                result_status = 'FAILED',
+                result_notes  = SQLERRM
+            WHERE decision_id = p_decision_id;
+
+            v_result := 'ERROR: Execution failed — ' || SQLERRM;
+        END;
+    ELSE
+        v_result := 'Decision ' || p_decision_id || ' recorded as '
+                    || CASE WHEN p_approved THEN 'APPROVED (awaiting execution)'
+                       ELSE 'REJECTED' END;
+    END IF;
+
+    RETURN v_result;
+END;
+$$;
+
+---
+
+So the workflow is:
+
+1. AI makes recommendations → stored in `index_decisions`
+2. Decision engine applies safety rules → identifies what can auto-execute vs. what needs approval
+3. For auto-execute items: run automatically during maintenance window
+4. For requires-approval items: DBA reviews and calls `approve_decision()`
+5. For rejected items: logged with reason
+
+Let me show you the review view that a DBA would look at when making approval decisions:
+
+---
+
+CREATE OR REPLACE VIEW dba_governance.pending_approvals AS
+SELECT
+    d.decision_id,
+    d.decision_date,
+    d.schemaname,
+    d.tablename,
+    d.indexname,
+    d.action,
+    d.confidence_score,
+    d.ai_reasoning,
+    d.risk_level,
+    d.execution_sql,
+    CASE
+        WHEN d.confidence_score >= 95 THEN 'AUTO-EXECUTE ELIGIBLE'
+        WHEN d.confidence_score >= 85 THEN 'STRONG RECOMMENDATION'
+        WHEN d.confidence_score >= 70 THEN 'MODERATE CONFIDENCE'
+        ELSE 'INVESTIGATE FIRST'
+    END AS approval_guidance,
+    pg_size_pretty(s.index_size_bytes) AS current_size,
+    s.idx_scan AS current_scans,
+    s.table_n_ins + s.table_n_upd + s.table_n_del AS table_modifications
+FROM
+    dba_governance.index_decisions d
+    LEFT JOIN LATERAL (
+        SELECT *
+        FROM dba_governance.index_snapshots
+        WHERE indexname = d.indexname
+        AND tablename = d.tablename
+        ORDER BY snapshot_date DESC
+        LIMIT 1
+    ) s ON TRUE
+WHERE
+    d.approved IS NULL
+    AND d.decision_date = CURRENT_DATE
+ORDER BY
+    d.confidence_score DESC,
+    s.index_size_bytes DESC;
+
+---
+
+Now any DBA can run:
+
+    SELECT * FROM dba_governance.pending_approvals;
+
+And they'll see a clean list of what needs their attention, ordered by confidence and impact.
+
+================================================================================
+LAYER 5: MULTI-WEEK TREND ANALYSIS
+================================================================================
+
+Here's where the historical tracking becomes genuinely powerful.
+
+After a few weeks of running this system, you start to see patterns. Indexes that cycle between used and unused (probably batch jobs). Indexes whose scan counts are growing (perhaps a new feature was deployed). Indexes that are consistently fragmented week over week (a maintenance problem, not a fragmentation problem).
+
+No single snapshot can tell you any of this. But four weeks of snapshots can.
+
+---
+
+-- Trend analysis view: week-over-week change in key metrics
+
+CREATE OR REPLACE VIEW dba_governance.index_trends AS
+WITH weekly AS (
+    SELECT
+        indexname,
+        tablename,
+        schemaname,
+        snapshot_date,
+        idx_scan,
+        index_size_bytes,
+        table_size_bytes,
+        LAG(idx_scan, 1) OVER (
+            PARTITION BY indexname, tablename
+            ORDER BY snapshot_date
+        ) AS prev_week_scans,
+        LAG(index_size_bytes, 1) OVER (
+            PARTITION BY indexname, tablename
+            ORDER BY snapshot_date
+        ) AS prev_week_size,
+        COUNT(*) OVER (
+            PARTITION BY indexname, tablename
+        ) AS weeks_of_data
+    FROM dba_governance.index_snapshots
+)
+SELECT
+    w.schemaname,
+    w.tablename,
+    w.indexname,
+    w.snapshot_date,
+    w.weeks_of_data,
+    w.idx_scan                              AS current_scans,
+    w.prev_week_scans,
+    w.idx_scan - COALESCE(w.prev_week_scans, 0) AS scan_delta,
+    ROUND(
+        CASE
+            WHEN COALESCE(w.prev_week_scans, 0) = 0 THEN NULL
+            ELSE ((w.idx_scan - w.prev_week_scans)::FLOAT /
+                   NULLIF(w.prev_week_scans, 0)) * 100
+        END::NUMERIC, 2
+    )                                       AS scan_change_pct,
+    pg_size_pretty(w.index_size_bytes)      AS current_size,
+    w.index_size_bytes - COALESCE(w.prev_week_size, 0) AS size_growth_bytes,
+    CASE
+        WHEN w.idx_scan = 0 AND COALESCE(w.prev_week_scans, 0) = 0
+        THEN 'PERSISTENTLY_UNUSED'
+        WHEN w.idx_scan = 0 AND COALESCE(w.prev_week_scans, 0) > 0
+        THEN 'RECENTLY_STOPPED'
+        WHEN w.idx_scan > 0 AND COALESCE(w.prev_week_scans, 0) = 0
+        THEN 'RECENTLY_STARTED'
+        WHEN w.idx_scan > w.prev_week_scans * 1.5
+        THEN 'RAPIDLY_GROWING'
+        WHEN w.idx_scan < w.prev_week_scans * 0.5
+        THEN 'RAPIDLY_DECLINING'
+        ELSE 'STABLE'
+    END                                     AS usage_trend,
+    CASE
+        WHEN w.index_size_bytes > COALESCE(w.prev_week_size, 0) * 1.2
+        THEN 'GROWING_FAST'
+        WHEN w.index_size_bytes < COALESCE(w.prev_week_size, 0) * 0.8
+        THEN 'SHRINKING'
+        ELSE 'STABLE'
+    END                                     AS size_trend
+FROM weekly w
+WHERE w.snapshot_date = CURRENT_DATE
+ORDER BY w.tablename, w.indexname;
+
+---
+
+This view tells you at a glance what's happening to each index over time. The `usage_trend` column is particularly valuable for the AI analysis — I feed this into the JSON report as part of the `history` section so the AI can factor trends into its recommendations.
+
+Here's a practical query for generating the trend summary you'd include in your executive report:
+
+---
+
+SELECT
+    usage_trend,
+    COUNT(*) AS index_count,
+    STRING_AGG(schemaname || '.' || tablename || '.' || indexname, ', ')
+        AS examples
+FROM dba_governance.index_trends
+GROUP BY usage_trend
+ORDER BY index_count DESC;
+
+---
+
+And here's a query that finds the most worrying patterns — indexes that are both growing fast AND declining in usage:
+
+---
+
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    current_scans,
+    scan_change_pct,
+    current_size,
+    size_growth_bytes,
+    usage_trend,
+    size_trend
+FROM dba_governance.index_trends
+WHERE (usage_trend = 'RAPIDLY_DECLINING' AND size_trend = 'GROWING_FAST')
+   OR usage_trend = 'PERSISTENTLY_UNUSED'
+ORDER BY size_growth_bytes DESC;
+
+---
+
+An index that's growing fast but being used less — that's textbook fragmentation combined with a workload shift. That needs attention.
+
+================================================================================
+ENTERPRISE INDEX GOVERNANCE: POLICIES AND PROCEDURES
+================================================================================
+
+Alright, we've built the technical layers. Now let me talk about how this fits into an enterprise context. Because technology without process is just complicated software.
+
+Enterprise governance means: consistent policies, documented procedures, audit trails, escalation paths, and accountability.
+
+Let me show you the governance policy table:
+
+---
+
+CREATE TABLE IF NOT EXISTS dba_governance.governance_policies (
+    policy_id       SERIAL PRIMARY KEY,
+    policy_name     TEXT NOT NULL UNIQUE,
+    policy_category TEXT NOT NULL,   -- 'AUTO_EXECUTE', 'REQUIRES_APPROVAL', 'BLOCKED'
+    applies_to      TEXT NOT NULL,   -- 'ALL', 'DROP', 'REBUILD', 'CREATE'
+    condition_desc  TEXT NOT NULL,
+    confidence_min  INTEGER,
+    confidence_max  INTEGER,
+    risk_levels     TEXT[],
+    action          TEXT NOT NULL,
+    approver_role   TEXT,
+    sla_hours       INTEGER,
+    notes           TEXT,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Insert standard governance policies
+INSERT INTO dba_governance.governance_policies
+    (policy_name, policy_category, applies_to, condition_desc,
+     confidence_min, confidence_max, risk_levels, action,
+     approver_role, sla_hours, notes)
+VALUES
+    ('auto_execute_drop_high_confidence',
+     'AUTO_EXECUTE', 'DROP',
+     'High-confidence DROP for unused indexes with sufficient history',
+     95, 100, ARRAY['LOW'],
+     'Execute during next maintenance window without manual approval',
+     NULL, 8,
+     'Must have >= 4 weeks of history and non-primary, non-unique'),
+
+    ('dba_approval_drop_moderate',
+     'REQUIRES_APPROVAL', 'DROP',
+     'Moderate-confidence DROP requires DBA sign-off',
+     70, 94, ARRAY['LOW', 'MEDIUM'],
+     'Submit for DBA review via pending_approvals view',
+     'DBA_LEAD', 48,
+     'DBA must confirm no scheduled batch jobs use index'),
+
+    ('senior_approval_drop_high_risk',
+     'REQUIRES_APPROVAL', 'DROP',
+     'Any DROP on high-risk index requires senior DBA approval',
+     0, 100, ARRAY['HIGH'],
+     'Escalate to senior DBA for review',
+     'SENIOR_DBA', 72,
+     'High-risk means foreign key support or tables > 50M rows'),
+
+    ('block_primary_unique_drop',
+     'BLOCKED', 'DROP',
+     'Never auto-drop primary key or unique constraint indexes',
+     0, 100, ARRAY['LOW', 'MEDIUM', 'HIGH'],
+     'Block unconditionally',
+     NULL, NULL,
+     'These can only be removed via ALTER TABLE constraint changes'),
+
+    ('auto_execute_rebuild',
+     'AUTO_EXECUTE', 'REBUILD',
+     'High-confidence REBUILD during maintenance window',
+     90, 100, ARRAY['LOW', 'MEDIUM'],
+     'Execute REINDEX CONCURRENTLY during next maintenance window',
+     NULL, 8,
+     'Always uses CONCURRENTLY to avoid table lock'),
+
+    ('manual_review_create',
+     'REQUIRES_APPROVAL', 'CREATE',
+     'All CREATE recommendations require DBA review',
+     0, 100, ARRAY['LOW', 'MEDIUM', 'HIGH'],
+     'DBA reviews suggested index and validates against query plan',
+     'DBA_LEAD', 24,
+     'AI-suggested indexes must be validated against actual query plans');
+
+---
+
+This policy table is the formal rulebook. When I talk about "governance," I mean: every action that happens in the database is traceable back to a policy. You can answer the question, "Why was this index dropped?" with, "Decision ID 1447, confidence score 96, policy auto_execute_drop_high_confidence, approved during maintenance window at 2:05 AM on this date, executed by service account dba_automation."
+
+That's the audit trail. That's what enterprise means.
+
+Let me also show you the governance dashboard view — the one your manager looks at:
+
+---
+
+CREATE OR REPLACE VIEW dba_governance.governance_dashboard AS
+SELECT
+    'INDEX_HEALTH' AS metric_category,
+    (SELECT COUNT(*) FROM dba_governance.index_snapshots
+     WHERE snapshot_date = CURRENT_DATE)::TEXT AS metric_value,
+    'Total indexes tracked today' AS metric_description
+
+UNION ALL SELECT
+    'UNUSED_INDEXES',
+    (SELECT COUNT(*) FROM dba_governance.index_snapshots
+     WHERE snapshot_date = CURRENT_DATE AND idx_scan = 0)::TEXT,
+    'Indexes with zero scans'
+
+UNION ALL SELECT
+    'STORAGE_WASTE',
+    (SELECT pg_size_pretty(SUM(index_size_bytes))
+     FROM dba_governance.index_snapshots
+     WHERE snapshot_date = CURRENT_DATE AND idx_scan = 0),
+    'Storage consumed by unused indexes'
+
+UNION ALL SELECT
+    'PENDING_DECISIONS',
+    (SELECT COUNT(*) FROM dba_governance.index_decisions
+     WHERE approved IS NULL AND decision_date = CURRENT_DATE)::TEXT,
+    'AI recommendations awaiting DBA review'
+
+UNION ALL SELECT
+    'COMPLETED_THIS_WEEK',
+    (SELECT COUNT(*) FROM dba_governance.index_decisions
+     WHERE executed = TRUE
+     AND executed_at >= CURRENT_DATE - 7)::TEXT,
+    'Maintenance actions executed this week'
+
+UNION ALL SELECT
+    'STORAGE_RECOVERED',
+    (SELECT pg_size_pretty(SUM(s.index_size_bytes))
+     FROM dba_governance.index_decisions d
+     JOIN dba_governance.index_snapshots s
+         ON d.indexname = s.indexname AND d.tablename = s.tablename
+     WHERE d.action = 'DROP'
+     AND d.executed = TRUE
+     AND d.executed_at >= CURRENT_DATE - 30),
+    'Storage recovered via drops in last 30 days'
+
+UNION ALL SELECT
+    'OVERALL_HEALTH_SCORE',
+    (SELECT (ai_response -> 'executive_summary' ->> 'overall_health_score')
+     FROM dba_governance.ai_analysis_log
+     ORDER BY analysis_date DESC, created_at DESC
+     LIMIT 1),
+    'AI health score from latest analysis (0-100)';
+
+---
+
+Run that view every week. One query, full picture.
+
+================================================================================
+PUTTING IT ALL TOGETHER: THE COMPLETE PIPELINE
+================================================================================
+
+Let me now show you the complete automated pipeline in a single orchestration script. This is what you'd deploy to run weekly.
+
+---
+
+#!/bin/bash
+
+#=============================================================================
+# index_governance_pipeline.sh
+# Full AI-driven index governance pipeline
+# Cron: 0 7 * * 0  (every Sunday at 7:00 AM)
+#=============================================================================
+
+set -euo pipefail
+
+readonly PIPELINE_START=$(date +%Y%m%d_%H%M%S)
+readonly LOG_DIR="/var/log/dba_governance"
+readonly LOG_FILE="${LOG_DIR}/pipeline_${PIPELINE_START}.log"
+readonly LOCK_FILE="/tmp/index_governance.lock"
+readonly DB_NAME="${DB_NAME:-production}"
+readonly DB_USER="${DB_USER:-postgres}"
+readonly ADMIN_EMAIL="${ADMIN_EMAIL:-dba-team@company.com}"
+
+PSQL="psql -U ${DB_USER} -d ${DB_NAME}"
+
+mkdir -p "${LOG_DIR}"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"; }
+
+# Prevent overlapping runs
+exec 200>"${LOCK_FILE}"
+flock -n 200 || { log "Pipeline already running. Exiting."; exit 1; }
+
+#=============================================================================
+# PIPELINE STAGES
+#=============================================================================
+
+stage_01_snapshot() {
+    log "=== STAGE 1: Capture Snapshot ==="
+    ${PSQL} -c "SELECT dba_governance.generate_index_report() IS NOT NULL
+                AS snapshot_captured;" >> "${LOG_FILE}" 2>&1
+    log "Snapshot captured"
+}
+
+stage_02_trend_analysis() {
+    log "=== STAGE 2: Trend Analysis ==="
+    ${PSQL} -t -c "
+        SELECT
+            'Trend Summary: ' ||
+            COUNT(*) || ' indexes tracked | ' ||
+            SUM(CASE WHEN usage_trend = 'PERSISTENTLY_UNUSED' THEN 1 ELSE 0 END)
+                || ' persistently unused | ' ||
+            SUM(CASE WHEN usage_trend = 'RAPIDLY_GROWING' THEN 1 ELSE 0 END)
+                || ' rapidly growing'
+        FROM dba_governance.index_trends;
+    " >> "${LOG_FILE}" 2>&1
+    log "Trend analysis complete"
+}
+
+stage_03_ai_analysis() {
+    log "=== STAGE 3: AI Analysis ==="
+    bash /usr/local/bin/ai_index_analyzer.sh >> "${LOG_FILE}" 2>&1
+    log "AI analysis complete"
+}
+
+stage_04_apply_rules() {
+    log "=== STAGE 4: Apply Governance Rules ==="
+    local ANALYSIS_ID
+    ANALYSIS_ID=$(${PSQL} -t -c \
+        "SELECT analysis_id FROM dba_governance.ai_analysis_log
+         ORDER BY created_at DESC LIMIT 1;")
+
+    ${PSQL} -c "SELECT * FROM dba_governance.apply_decision_rules(${ANALYSIS_ID});" \
+        >> "${LOG_FILE}" 2>&1
+
+    log "Governance rules applied to analysis ID: ${ANALYSIS_ID}"
+}
+
+stage_05_auto_execute() {
+    log "=== STAGE 5: Auto-Execute High-Confidence Actions ==="
+
+    # Pull high-confidence, low-risk approved actions
+    local SQL_COMMANDS
+    SQL_COMMANDS=$(${PSQL} -t -A -c "
+        SELECT execution_sql
+        FROM dba_governance.index_decisions d
+        WHERE d.decision_date = CURRENT_DATE
+        AND d.approved IS NULL          -- Not yet reviewed (auto-eligible)
+        AND d.confidence_score >= 95
+        AND d.action IN ('DROP', 'REBUILD')
+        AND d.execution_sql IS NOT NULL
+        AND d.execution_sql != '';
+    ")
+
+    if [[ -z "${SQL_COMMANDS}" ]]; then
+        log "No auto-execute candidates today"
+        return 0
+    fi
+
+    local COUNT=0
+    while IFS= read -r CMD; do
+        [[ -z "${CMD}" ]] && continue
+        log "Auto-executing: ${CMD}"
+        if ${PSQL} -c "${CMD}" >> "${LOG_FILE}" 2>&1; then
+            log "SUCCESS: ${CMD}"
+            ((COUNT++)) || true
+        else
+            log "FAILED: ${CMD} — check log for details"
+        fi
+    done <<< "${SQL_COMMANDS}"
+
+    log "Auto-executed ${COUNT} maintenance actions"
+}
+
+stage_06_generate_report() {
+    log "=== STAGE 6: Generate Weekly Report ==="
+
+    local REPORT_FILE="${LOG_DIR}/weekly_report_$(date +%Y%m%d).txt"
+
+    {
+        echo "============================================================"
+        echo "WEEKLY INDEX GOVERNANCE REPORT"
+        echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Database: ${DB_NAME}"
+        echo "============================================================"
+        echo ""
+        echo "GOVERNANCE DASHBOARD"
+        echo "------------------------------------------------------------"
+        ${PSQL} -c "SELECT metric_category, metric_value, metric_description
+                    FROM dba_governance.governance_dashboard;"
+        echo ""
+        echo "PENDING DBA APPROVALS"
+        echo "------------------------------------------------------------"
+        ${PSQL} -c "SELECT decision_id, tablename, indexname, action,
+                           confidence_score, approval_guidance, current_size
+                    FROM dba_governance.pending_approvals
+                    LIMIT 20;"
+        echo ""
+        echo "AI RECOMMENDATIONS SUMMARY"
+        echo "------------------------------------------------------------"
+        ${PSQL} -c "SELECT action, COUNT(*) AS count,
+                           AVG(confidence_score)::INT AS avg_confidence
+                    FROM dba_governance.index_decisions
+                    WHERE decision_date = CURRENT_DATE
+                    GROUP BY action ORDER BY count DESC;"
+        echo ""
+        echo "Full log: ${LOG_FILE}"
+
+    } > "${REPORT_FILE}" 2>&1
+
+    # Email the report
+    if command -v mail &>/dev/null; then
+        mail -s "Index Governance Report — $(date +%Y-%m-%d)" \
+            "${ADMIN_EMAIL}" < "${REPORT_FILE}"
+        log "Report emailed to ${ADMIN_EMAIL}"
+    fi
+
+    log "Report saved: ${REPORT_FILE}"
+}
+
+#=============================================================================
+# MAIN
+#=============================================================================
+
+log "=== PIPELINE START ==="
+stage_01_snapshot
+stage_02_trend_analysis
+stage_03_ai_analysis
+stage_04_apply_rules
+stage_05_auto_execute
+stage_06_generate_report
+log "=== PIPELINE COMPLETE ==="
+
+---
+
+And the cron entry:
+
+    0 7 * * 0 DB_NAME=production DB_USER=postgres ANTHROPIC_API_KEY=your_key_here \
+              /usr/local/bin/index_governance_pipeline.sh
+
+================================================================================
+LAB EXERCISES
+================================================================================
+
+Alright. Enough lecture. Let's get your hands on this.
+
+These labs build on each other. Do them in order. Don't skip ahead.
+
+--- LAB 1: BUILD THE GOVERNANCE INFRASTRUCTURE ---
+
+Using the SQL from this lecture:
+
+1. Create the `dba_governance` schema and all tables
+   (index_snapshots, ai_analysis_log, index_decisions, governance_policies)
+
+2. Create the `generate_index_report()` function
+
+3. Create the `governance_test` schema and tables from the top of this lecture
+
+4. Run the function:
+
+    SELECT jsonb_pretty(dba_governance.generate_index_report('governance_test'));
+
+5. Look at the output. Find the indexes that appear unused. Count them.
+
+--- LAB 2: INSPECT THE JSON STRUCTURE ---
+
+Run the report and use JSON path queries to explore it:
+
+---
+
+-- How many indexes total?
+SELECT (dba_governance.generate_index_report('governance_test') -> 'database_summary' ->> 'total_indexes')::INT;
+
+-- Which indexes have zero scans?
+SELECT
+    el ->> 'index_name' AS index_name,
+    el -> 'usage_metrics' ->> 'idx_scan' AS scans
+FROM
+    jsonb_array_elements(
+        dba_governance.generate_index_report('governance_test') -> 'indexes'
+    ) AS el
+WHERE
+    (el -> 'health_indicators' ->> 'is_unused')::BOOLEAN = TRUE;
+
+-- Which indexes have high write load?
+SELECT
+    el ->> 'index_name' AS index_name,
+    el -> 'write_load' ->> 'total_modifications' AS mods
+FROM
+    jsonb_array_elements(
+        dba_governance.generate_index_report('governance_test') -> 'indexes'
+    ) AS el
+WHERE
+    (el -> 'health_indicators' ->> 'high_write_low_read')::BOOLEAN = TRUE;
+
+---
+
+--- LAB 3: SIMULATE THE DECISION ENGINE ---
+
+Even without calling the real AI API, you can simulate what the AI would return.
+Write an INSERT statement that adds fake AI decisions to the index_decisions table
+as if the AI had returned them. Use realistic confidence scores.
+
+Then run:
+
+    SELECT * FROM dba_governance.pending_approvals;
+
+Do you see your decisions? Are they ordered correctly by confidence?
+
+--- LAB 4: PRACTICE THE APPROVAL WORKFLOW ---
+
+Using the decisions you inserted in Lab 3:
+
+1. Approve one high-confidence DROP:
+
+    SELECT dba_governance.approve_decision(
+        1,           -- decision_id
+        'your_name', -- approved_by
+        TRUE,        -- approved
+        NULL         -- override_reason
+    );
+
+2. Reject one low-confidence recommendation:
+
+    SELECT dba_governance.approve_decision(
+        2,
+        'your_name',
+        FALSE,
+        'Insufficient history — need 4+ weeks of data before dropping'
+    );
+
+3. Check the results:
+
+    SELECT decision_id, action, approved, approved_by, result_status
+    FROM dba_governance.index_decisions
+    WHERE decision_date = CURRENT_DATE;
+
+--- LAB 5: BUILD THE TREND VIEW ---
+
+Capture two snapshots (run the report function twice, adjusting dates manually
+if needed). Then query the trend view:
+
+    SELECT * FROM dba_governance.index_trends;
+
+What do you see in the usage_trend column? What about size_trend?
+
+--- LAB 6: DESIGN YOUR OWN GOVERNANCE POLICY ---
+
+Add one new row to the governance_policies table for a policy you think is
+missing from my standard set. Justify it in the notes field.
+
+Examples to consider:
+- What's the policy for CREATE recommendations?
+- What's the policy for tables with fewer than 1,000 rows?
+- What's the policy for indexes on foreign key columns?
+
+--- LAB 7: WRITE THE PROMPT IMPROVEMENT ---
+
+Read the AI prompt template I included. Find one thing you'd improve.
+Maybe a rule I'm missing. Maybe a condition that's too broad or too narrow.
+Write the improved rule and add it to the prompt_template in the database.
+
+    UPDATE dba_governance.ai_prompts
+    SET user_prompt_template = '...your improved version...',
+        notes = 'Updated by [your name]: added rule for...',
+        prompt_version = 'v2.2'
+    WHERE prompt_version = 'v2.1';
+
+--- LAB 8: GOVERNANCE DASHBOARD ---
+
+Query the dashboard view:
+
+    SELECT * FROM dba_governance.governance_dashboard;
+
+Then write one additional metric you think should be on that dashboard
+and add it to the view. What metric would your manager care about most?
+
+================================================================================
+CLOSING WORDS
+================================================================================
+
+You just built a production-grade AI-driven index governance system. Think about what that means.
+
+Five years ago, to do this level of index analysis, you'd need a senior DBA with five-plus years of experience sitting down with a database for a day. You'd get one analysis. You'd make decisions based on your gut and hope you got most of it right.
+
+Now you've built a system that runs every week, automatically, collects historical data, feeds it to an AI model with twenty years of encoded DBA wisdom baked into the prompt, gets back structured recommendations, runs them through a safety-first rules engine, automatically handles the easy ones, queues the harder ones for human review, and logs every single decision with full audit trail.
+
+That's not a replacement for your skills. That's a force multiplier for your skills. The DBA who understands *why* the AI made a recommendation — who can read the confidence score and say, "95%? Okay. But I know there's a batch job that runs quarterly on this table, so I'm overriding this with a MONITOR" — that DBA is incredibly valuable. That's you.
+
+But here's the thing I want you to carry with you: your value as a DBA in an AI-augmented world is not in memorizing queries. It's in judgment. It's in knowing when to trust the machine and when to override it. It's in designing systems like the one we built today — where the guardrails are exactly right, where the auto-execute threshold is calibrated to your organization's risk tolerance, where the audit trail is comprehensive enough to answer any question you'll ever be asked.
+
+Twelve months from now, some of you are going to deploy something like this at your company. You're going to find 200 unused indexes. You're going to delete them carefully, over a few months, with confidence scores and audit logs. You're going to show your manager a chart of storage recovered and write performance improved. And you're going to get more budget for DBA tooling.
+
+That's the power of governance. That's what you built today.
+
+Now go build something good.
+
+================================================================================
+QUICK REFERENCE COMMAND CARD
+================================================================================
+
+** GENERATE INDEX REPORT (full database) **
+
+    SELECT jsonb_pretty(dba_governance.generate_index_report());
+
+** GENERATE REPORT FOR SPECIFIC SCHEMA **
+
+    SELECT jsonb_pretty(dba_governance.generate_index_report('myschema'));
+
+** VIEW ALL PENDING DBA APPROVALS **
+
+    SELECT * FROM dba_governance.pending_approvals;
+
+** APPROVE A DECISION **
+
+    SELECT dba_governance.approve_decision(
+        <decision_id>,   -- from index_decisions table
+        'dba_name',      -- your name or user
+        TRUE,            -- TRUE = approved, FALSE = rejected
+        'reason'         -- override reason if rejecting or overriding
+    );
+
+** VIEW GOVERNANCE DASHBOARD **
+
+    SELECT * FROM dba_governance.governance_dashboard;
+
+** VIEW TREND ANALYSIS **
+
+    SELECT * FROM dba_governance.index_trends;
+
+** FIND PERSISTENTLY UNUSED INDEXES **
+
+    SELECT schemaname, tablename, indexname, current_size
+    FROM dba_governance.index_trends
+    WHERE usage_trend = 'PERSISTENTLY_UNUSED'
+    ORDER BY size_growth_bytes DESC;
+
+** APPLY DECISION RULES TO AN ANALYSIS **
+
+    SELECT * FROM dba_governance.apply_decision_rules(<analysis_id>);
+
+** CHECK LATEST AI ANALYSIS SUMMARY **
+
+    SELECT
+        analysis_date,
+        model_used,
+        total_indexes,
+        drop_candidates,
+        rebuild_candidates,
+        ai_response -> 'executive_summary' ->> 'overall_health_score' AS health_score
+    FROM dba_governance.ai_analysis_log
+    ORDER BY created_at DESC
+    LIMIT 5;
+
+** QUERY INDEX DECISIONS FOR TODAY **
+
+    SELECT indexname, tablename, action, confidence_score,
+           ai_reasoning, approved, result_status
+    FROM dba_governance.index_decisions
+    WHERE decision_date = CURRENT_DATE
+    ORDER BY confidence_score DESC;
+
+** VIEW ACTIVE GOVERNANCE POLICIES **
+
+    SELECT policy_name, policy_category, applies_to,
+           confidence_min, confidence_max, approver_role, sla_hours
+    FROM dba_governance.governance_policies
+    ORDER BY policy_category, applies_to;
+
+** QUERY AI RECOMMENDATIONS STORED AS JSON **
+
+    SELECT
+        analysis_id,
+        ai_response -> 'executive_summary' ->> 'drop_candidates' AS drops,
+        ai_response -> 'executive_summary' ->> 'overall_health_score' AS health
+    FROM dba_governance.ai_analysis_log
+    WHERE analysis_date = CURRENT_DATE;
+
+** CALCULATE MONTHLY STORAGE RECOVERY **
+
+    SELECT
+        DATE_TRUNC('month', executed_at) AS month,
+        COUNT(*) AS actions_taken,
+        SUM(d.confidence_score) / COUNT(*) AS avg_confidence
+    FROM dba_governance.index_decisions d
+    WHERE executed = TRUE
+    GROUP BY DATE_TRUNC('month', executed_at)
+    ORDER BY month DESC;
+
+** RUN THE FULL PIPELINE MANUALLY **
+
+    bash /usr/local/bin/index_governance_pipeline.sh
+
+** SET UP CRON SCHEDULE (Sunday 7 AM) **
+
+    0 7 * * 0 DB_NAME=mydb DB_USER=postgres ANTHROPIC_API_KEY=sk-... \
+              /usr/local/bin/index_governance_pipeline.sh
+
+================================================================================
+
+================================================================================
+  RUNBOOK AI META-PROMPT
+  (Paste this into a new conversation to regenerate the full runbook document)
+================================================================================
+
+--- BEGIN META-PROMPT ---
+
+You are a senior PostgreSQL DBA and technical documentation expert.
+I need you to generate a complete, production-ready DBA runbook document
+based on the following system description.
+
+SYSTEM NAME: PostgreSQL AI-Driven Index Governance Pipeline
+SYSTEM PURPOSE: Automated detection, analysis, and remediation of PostgreSQL
+index health issues using AI recommendations with human-in-the-loop validation.
+
+PLATFORM: PostgreSQL (any version >= 12)
+AUTOMATION: Bash shell scripts, psql, Anthropic Claude API (REST)
+SCHEDULING: cron (weekly), optional pg_cron for in-database jobs
+AUDIENCE: DBAs, senior engineers, on-call engineers
+
+SYSTEM COMPONENTS:
+
+1. SCHEMA: dba_governance
+   Tables:
+   - index_snapshots: Weekly point-in-time captures of pg_stat_user_indexes
+     and pg_stat_user_tables for all non-system schemas.
+     Columns: snapshot_id, snapshot_date, db_name, schemaname, tablename,
+     indexname, index_def, index_type, is_unique, is_primary,
+     index_size_bytes, table_size_bytes, idx_scan, idx_tup_read,
+     idx_tup_fetch, table_n_ins, table_n_upd, table_n_del, table_n_live,
+     captured_at.
+
+   - ai_analysis_log: Record of each AI analysis run.
+     Columns: analysis_id, analysis_date, db_name, payload_json (full JSON
+     report sent to AI), ai_response (full JSON response from AI), model_used,
+     prompt_version, total_indexes, drop_candidates, rebuild_candidates,
+     create_candidates, executed, executed_at, executed_by, created_at.
+
+   - index_decisions: Individual per-index decisions from AI analysis.
+     Columns: decision_id, analysis_id (FK), decision_date, schemaname,
+     tablename, indexname, action (DROP/KEEP/REBUILD/CREATE/MONITOR),
+     confidence_score (0-100), ai_reasoning, human_override, override_reason,
+     override_by, approved (boolean), approved_by, approved_at, executed,
+     executed_at, execution_sql, result_status, result_notes, created_at.
+
+   - maintenance_actions: Log of all maintenance actions performed.
+     Columns: action_id, action_date, action_type, schemaname, tablename,
+     indexname, status, size_before_bytes, size_after_bytes,
+     duration_seconds, notes, created_at.
+
+   - governance_policies: Policy rules governing auto-execute vs. human
+     review thresholds.
+     Columns: policy_id, policy_name, policy_category (AUTO_EXECUTE,
+     REQUIRES_APPROVAL, BLOCKED), applies_to (ALL/DROP/REBUILD/CREATE),
+     condition_desc, confidence_min, confidence_max, risk_levels (text array),
+     action, approver_role, sla_hours, notes, created_at, updated_at.
+
+   - ai_prompts: Versioned AI prompt templates.
+     Columns: prompt_id, prompt_version, prompt_name, system_prompt,
+     user_prompt_template (contains {{REPORT_JSON}} placeholder),
+     is_active, notes, created_at.
+
+   Views:
+   - pending_approvals: Undecided decisions for today, ordered by
+     confidence score with approval guidance labels.
+   - index_trends: Week-over-week analysis using LAG() window function,
+     includes usage_trend (PERSISTENTLY_UNUSED, RECENTLY_STOPPED,
+     RECENTLY_STARTED, RAPIDLY_GROWING, RAPIDLY_DECLINING, STABLE)
+     and size_trend (GROWING_FAST, SHRINKING, STABLE).
+   - governance_dashboard: One-row-per-metric summary for management
+     reporting covering health score, unused count, storage waste,
+     pending decisions, completed actions, storage recovered.
+
+   Functions:
+   - generate_index_report(p_schema TEXT, p_table TEXT) RETURNS JSONB:
+     Captures snapshot AND generates full JSON report in one call.
+     JSON structure: report_metadata, database_summary, indexes (array
+     with index_identity, size_metrics, usage_metrics, write_load,
+     health_indicators, history sub-objects).
+   - apply_decision_rules(p_analysis_id BIGINT) RETURNS TABLE:
+     Applies safety rules on top of AI recommendations. Rules include:
+     never auto-drop primary/unique, downgrade to MONITOR if < 2 weeks
+     history, block if confidence < 70 for DROP.
+   - approve_decision(decision_id, approved_by, approved, override_reason)
+     RETURNS TEXT: Records DBA approval/rejection and optionally executes
+     the SQL. Logs outcome back to index_decisions.
+
+2. BASH SCRIPTS:
+
+   ai_index_analyzer.sh:
+   Steps: (1) Call generate_index_report() to get JSON,
+   (2) Load system_prompt and user_prompt_template from ai_prompts table,
+   (3) Substitute {{REPORT_JSON}} with actual report data,
+   (4) POST to Anthropic API (claude-sonnet-4-6, max_tokens=8000),
+   (5) Extract and validate JSON response (check required keys:
+       analysis_metadata, executive_summary, index_decisions),
+   (6) Store payload and response in ai_analysis_log,
+   (7) Store individual decisions in index_decisions.
+   Config: DB_HOST, DB_PORT, DB_USER, DB_NAME, ANTHROPIC_API_KEY env vars.
+   Uses: curl, python3 (json module), psql.
+
+   index_governance_pipeline.sh:
+   Six stages run in sequence:
+   Stage 1: Capture snapshot via generate_index_report()
+   Stage 2: Run trend analysis query
+   Stage 3: Call ai_index_analyzer.sh
+   Stage 4: Call apply_decision_rules() on new analysis_id
+   Stage 5: Auto-execute high-confidence (>=95) DROP and REBUILD decisions
+   Stage 6: Generate and email weekly report
+   Uses flock for single-instance protection.
+   Cron: 0 7 * * 0
+
+3. AI PROMPT SYSTEM (Version v2.1):
+   System prompt defines: PostgreSQL DBA expert role, specific knowledge
+   areas (B-Tree internals, fragmentation, statistics, governance),
+   output constraint (JSON only, no markdown, no preamble).
+   User prompt includes: 8 hard rules (never drop PK/unique, min 2 weeks
+   history, confidence thresholds by scenario, redundancy detection logic),
+   confidence scoring guide (95-100 auto-execute, 85-94 review, 70-84
+   approval, 50-69 investigate, 0-49 monitor only),
+   strict output schema with keys: analysis_metadata, executive_summary
+   (health_score, candidate counts, priority_actions, risks),
+   index_decisions (action, confidence_score, reasoning, risk_level,
+   execution_sql, requires_human_review, alternative_action, tags),
+   redundancy_groups, missing_indexes_suggested.
+
+4. GOVERNANCE THRESHOLDS:
+   Auto-execute: confidence >= 95, risk = LOW, action in (DROP, REBUILD),
+                 must not be primary key or unique, must have >= 4 weeks history.
+   Requires DBA approval: confidence 70-94, or any CREATE recommendation,
+                           or HIGH risk regardless of confidence.
+   Blocked unconditionally: DROP on primary key or unique constraint indexes.
+   MONITOR only: confidence < 70, or < 2 weeks of historical data.
+
+5. REPORT CADENCE:
+   - Weekly: Full pipeline runs (Sunday 7 AM)
+   - Monthly: Management summary from governance_dashboard
+   - Quarterly: Trend analysis and governance policy review
+
+6. HUMAN-IN-THE-LOOP PROCESS:
+   Monday morning: DBA team reviews pending_approvals view
+   Decision recorded via approve_decision() function
+   Approvals execute during next maintenance window (Sunday 2 AM default)
+   All actions logged with executor, timestamp, before/after size
+   Rejections logged with reason for audit trail
+
+7. KEY SAFETY RULES (non-negotiable in production):
+   - Never lower confidence threshold for auto-execution below 95
+   - Always use CONCURRENTLY for REINDEX and DROP INDEX in production
+   - Statistics reset on PostgreSQL restart invalidates scan counts —
+     always check index_snapshots history before acting on zero-scan data
+   - AI recommendations are starting points — DBA judgment is the final word
+   - Every action must be logged in index_decisions with execution_sql
+   - Governance policies are stored in database, not hardcoded in scripts
+
+RUNBOOK DOCUMENT REQUIREMENTS:
+
+Generate a complete runbook document with the following sections:
+
+1. SYSTEM OVERVIEW AND PURPOSE
+2. PREREQUISITES (software, permissions, environment variables, API key setup)
+3. INSTALLATION AND SETUP (step-by-step, in order, with all SQL DDL)
+4. CONFIGURATION REFERENCE (all env vars, tunable parameters, thresholds)
+5. WEEKLY OPERATIONS GUIDE (what to do Monday morning, how to review approvals)
+6. APPROVAL WORKFLOW (step-by-step: how to review, approve, reject, override)
+7. AI PROMPT MANAGEMENT (how to update prompts, version them, test changes)
+8. TROUBLESHOOTING GUIDE (common failures, error messages, recovery steps)
+9. MAINTENANCE WINDOW PROCEDURES (manual execution steps if pipeline fails)
+10. ESCALATION PROCEDURES (what to escalate, who to contact, when)
+11. PERFORMANCE BASELINE GUIDE (what "healthy" looks like, alert thresholds)
+12. DISASTER RECOVERY (if pipeline damages production — how to roll back)
+13. AUDIT AND COMPLIANCE (how to produce audit reports, data retention policy)
+14. APPENDIX A: COMPLETE SQL SETUP SCRIPTS (all DDL in one block)
+15. APPENDIX B: QUICK REFERENCE CARD (one-page cheat sheet)
+
+Format: Professional plain-text runbook. Use underlines (====) for major
+sections, dashes (----) for subsections. Include actual SQL, bash commands,
+and cron entries exactly as they should be run. Include troubleshooting
+decision trees where appropriate. Write for an audience of working DBAs who
+need to understand the system quickly during an incident.
+
+Tone: Professional, clear, direct. No fluff. Every sentence earns its place.
+
+Length: No limit. Cover every section thoroughly. This is a production runbook.
+
+--- END META-PROMPT ---
+
+================================================================================
+END OF LECTURE
+================================================================================

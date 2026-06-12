@@ -1,0 +1,1332 @@
+================================================================================
+  POSTGRESQL REPORTING & AUTOMATION
+  Diploma DBA Program — Phase 6
+  Duration: ~60 minutes (including live demonstrations and lab exercises)
+================================================================================
+
+Welcome back. Today we're moving from understanding index problems to *reporting* them in a way that actually gets action.
+
+Here's the honest truth: if you find a problem but nobody knows about it, the problem doesn't get fixed.
+
+I've met DBAs who could diagnose a database issue in thirty seconds flat. Brilliant technical minds. But you know what? Their databases didn't get better. Why? Because they weren't *communicating* their findings. They'd tell the manager, "Yeah, we have fragmented indexes." The manager would nod politely and move on. No action. No budget. No change.
+
+Then I met a different DBA who created a beautiful weekly report. Simple tables. Clear numbers. Executive summary at the top that said, "This week we identified 47 MB of wasted storage in unused indexes. If we clean these up, we'll save $1,200 per month in cloud storage costs." Suddenly, the CTO wanted to know more. Suddenly, there was an appetite for action.
+
+Same technical skills. Different communication. Different outcomes.
+
+That's what we're doing today. We're building a reporting and automation framework that doesn't just find problems — it makes them *impossible* to ignore.
+
+================================================================================
+THE REPORTING MINDSET: AUDIENCE MATTERS
+================================================================================
+
+Before I teach you the mechanics, let's talk about mindset.
+
+When you create a report, you have to think about *who you're reporting to*. And adjust your message accordingly.
+
+**For your fellow DBAs (technical audience):**
+- Lots of detail
+- Specific SQL queries
+- Before/after metrics
+- Performance numbers
+
+**For management/finance (business audience):**
+- Cost impact
+- Risk mitigation
+- Storage savings
+- Performance improvement in business terms (not "query latency reduced 200ms", but "page load time improved 15%")
+
+**For executives (decision-makers):**
+- One-page summary
+- Top three action items
+- Cost savings or risk reduction
+- Nothing longer than five minutes to read
+
+I typically create a tiered report:
+
+1. **Executive Summary** (one page, high-level)
+2. **Detailed Findings** (5-10 pages, technical, for DBAs)
+3. **Appendix** (raw data and queries)
+
+The executive summary might say: "We found 5 indexes to delete, saving 2 GB of storage and reducing weekly maintenance time by 4 hours."
+
+The detailed findings might say: "The indexes idx_orders_date_old, idx_customers_legacy, idx_sales_region, idx_products_sku_dupe, and idx_transactions_backup have not been scanned in 180+ days. Index definitions [attached]. Recommendation: delete all five. Risk assessment: low, based on absence of scan activity and confirmed redundancy with newer indexes."
+
+See how the message changes based on audience? You're saying the same thing, but in a way each audience can understand and act on.
+
+================================================================================
+THE DATA COLLECTION FRAMEWORK: PERSISTENT CAPTURE
+================================================================================
+
+Before you can report, you need to collect data. And you need to collect it *consistently over time*.
+
+This is critical. A snapshot tells you what's happening *right now*. But a trend tells you what's happening *over time*. Trends are way more valuable for decision-making.
+
+Here's the framework I use:
+
+**Step 1: Create a schema for historical data**
+
+---
+
+CREATE SCHEMA IF NOT EXISTS dba_reports;
+
+CREATE TABLE IF NOT EXISTS dba_reports.index_snapshots (
+    snapshot_date DATE NOT NULL,
+    schemaname VARCHAR(100) NOT NULL,
+    tablename VARCHAR(100) NOT NULL,
+    indexname VARCHAR(100) NOT NULL,
+    index_size_bytes BIGINT NOT NULL,
+    table_size_bytes BIGINT NOT NULL,
+    idx_scan BIGINT NOT NULL,
+    idx_tup_read BIGINT NOT NULL,
+    idx_tup_fetch BIGINT NOT NULL,
+    table_inserts BIGINT NOT NULL,
+    table_updates BIGINT NOT NULL,
+    table_deletes BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dba_reports.fragmentation_analysis (
+    analysis_date DATE NOT NULL,
+    schemaname VARCHAR(100) NOT NULL,
+    tablename VARCHAR(100) NOT NULL,
+    indexname VARCHAR(100) NOT NULL,
+    index_size_bytes BIGINT NOT NULL,
+    table_size_bytes BIGINT NOT NULL,
+    size_ratio NUMERIC(10, 2) NOT NULL,
+    fragmentation_estimate VARCHAR(50) NOT NULL,
+    health_status VARCHAR(50) NOT NULL,
+    priority VARCHAR(50) NOT NULL,
+    recommended_action VARCHAR(500),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dba_reports.maintenance_actions (
+    action_id SERIAL PRIMARY KEY,
+    action_date DATE NOT NULL,
+    action_type VARCHAR(50) NOT NULL, -- 'REINDEX', 'DROP', etc.
+    schemaname VARCHAR(100),
+    tablename VARCHAR(100),
+    indexname VARCHAR(100),
+    status VARCHAR(50), -- 'COMPLETED', 'FAILED', 'PENDING'
+    size_before_bytes BIGINT,
+    size_after_bytes BIGINT,
+    duration_seconds INTEGER,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+---
+
+**Step 2: Create a data collection script**
+
+This script runs weekly (or daily, depending on your needs) and captures the current state:
+
+---
+
+-- weekly_snapshot.sql
+
+INSERT INTO dba_reports.index_snapshots 
+(snapshot_date, schemaname, tablename, indexname, index_size_bytes, 
+ table_size_bytes, idx_scan, idx_tup_read, idx_tup_fetch, 
+ table_inserts, table_updates, table_deletes)
+SELECT 
+    CURRENT_DATE,
+    i.schemaname,
+    i.tablename,
+    i.indexname,
+    pg_relation_size(i.indexrelid),
+    pg_relation_size(t.oid),
+    i.idx_scan,
+    i.idx_tup_read,
+    i.idx_tup_fetch,
+    t.n_tup_ins,
+    t.n_tup_upd,
+    t.n_tup_del
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_reports');
+
+---
+
+**Step 3: Create the analysis script**
+
+This script runs after the snapshot and does the analysis:
+
+---
+
+-- weekly_analysis.sql
+
+INSERT INTO dba_reports.fragmentation_analysis
+(analysis_date, schemaname, tablename, indexname, index_size_bytes, 
+ table_size_bytes, size_ratio, fragmentation_estimate, health_status, priority)
+SELECT 
+    CURRENT_DATE,
+    schemaname,
+    tablename,
+    indexname,
+    index_size_bytes,
+    table_size_bytes,
+    ROUND((index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) * 100, 2) as ratio,
+    CASE 
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'LIKELY FRAGMENTED'
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'POSSIBLY FRAGMENTED'
+        ELSE 'NORMAL'
+    END as fragmentation,
+    CASE 
+        WHEN idx_scan = 0 THEN 'UNUSED'
+        WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'UNHEALTHY'
+        WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'AT RISK'
+        ELSE 'HEALTHY'
+    END as health,
+    CASE 
+        WHEN idx_scan = 0 THEN 'HIGH'
+        WHEN idx_scan > 1000 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'HIGH'
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END as priority
+FROM dba_reports.index_snapshots
+WHERE snapshot_date = CURRENT_DATE;
+
+---
+
+**Step 4: Create an index for historical queries**
+
+You'll be querying this data a lot, so index it:
+
+---
+
+CREATE INDEX idx_snapshots_date_tablename 
+ON dba_reports.index_snapshots(snapshot_date, tablename);
+
+CREATE INDEX idx_analysis_date_priority 
+ON dba_reports.fragmentation_analysis(analysis_date, priority);
+
+---
+
+Now you have historical data. Let me show you what you can do with it.
+
+================================================================================
+CONFIDENCE SCORING: MAKING RECOMMENDATIONS DEFENSIBLE
+================================================================================
+
+Here's something critical: when you recommend an action (like deleting an index), you need to be confident. You need to be able to defend it if something goes wrong.
+
+A confidence score is a numerical ranking (usually 0-100) that indicates how confident you are in a recommendation.
+
+For the "unused index" scenario, here's how I calculate confidence:
+
+---
+
+-- Calculate confidence score for index deletion recommendation
+
+SELECT 
+    indexname,
+    idx_scan,
+    days_since_creation,
+    days_since_last_use,
+    CASE 
+        WHEN idx_scan = 0 AND days_since_creation >= 90 THEN 100
+        WHEN idx_scan = 0 AND days_since_creation >= 30 THEN 80
+        WHEN idx_scan = 0 AND days_since_creation >= 7 THEN 60
+        WHEN idx_scan > 0 AND days_since_last_use >= 180 THEN 95
+        WHEN idx_scan > 0 AND days_since_last_use >= 90 THEN 85
+        WHEN idx_scan > 0 AND days_since_last_use >= 30 THEN 70
+        ELSE 0
+    END as confidence_score,
+    CASE 
+        WHEN idx_scan = 0 AND days_since_creation >= 90 
+        THEN 'Very safe to delete. Index never used since creation, many days ago.'
+        WHEN idx_scan > 0 AND days_since_last_use >= 180 
+        THEN 'Likely safe. Index has not been used in 6+ months.'
+        WHEN idx_scan > 0 AND days_since_last_use >= 90 
+        THEN 'Probably safe. No scans in 3+ months. Test in non-prod first.'
+        WHEN idx_scan = 0 AND days_since_creation >= 30 
+        THEN 'Cautious recommendation. Never used, but recently created.'
+        ELSE 'Not recommended for deletion yet.'
+    END as recommendation_rationale
+FROM (
+    SELECT 
+        indexname,
+        idx_scan,
+        EXTRACT(DAY FROM (CURRENT_DATE - pg_stat_file('base/' || 
+            (SELECT oid FROM pg_database WHERE datname = current_database())::TEXT || 
+            '/' || indexrelid::TEXT)::TIMESTAMP))::INTEGER as days_since_creation,
+        EXTRACT(DAY FROM (CURRENT_DATE - to_timestamp(
+            (SELECT stats_reset FROM pg_stat_user_indexes i2 WHERE i2.indexrelid = i.indexrelid))))::INTEGER as days_since_last_use
+    FROM pg_stat_user_indexes i
+) subq
+ORDER BY confidence_score DESC;
+
+---
+
+(Note: The file modification time approach above is approximate. In practice, you might track index creation date in your metadata table.)
+
+The key insight: a confidence score lets you prioritize. High confidence (95+) items go in your "do this immediately" list. Medium confidence (70-90) items go in "plan for next month." Low confidence items you monitor but don't act on yet.
+
+In your reports, you present only high-confidence recommendations. This protects you if something goes wrong. You can say, "We had very high confidence in this recommendation based on [data]."
+
+================================================================================
+THE WEEKLY REPORT: STRUCTURE AND CONTENT
+================================================================================
+
+Alright, let me show you what a real weekly report looks like. This is a template I've used in production.
+
+---
+
+================================================================================
+WEEKLY INDEX HEALTH REPORT
+Week Ending: 2024-01-21
+Generated: 2024-01-22 08:30 AM
+Database: production_main (PostgreSQL 15.2)
+================================================================================
+
+EXECUTIVE SUMMARY
+─────────────────
+
+Index Health Status: GOOD (3 issues, all low priority)
+Action Items:      2 indexes recommended for deletion
+Estimated Impact:  512 MB storage recovery, 8 hours maintenance time saved/month
+
+Key Metrics:
+  • Total indexes analyzed:     847
+  • Unused indexes:             12 (up 2 from last week)
+  • Fragmented indexes:         3 (down 1 from last week)
+  • Healthy indexes:            832
+  • Week-over-week trend:       IMPROVING (+0.5%)
+
+DASHBOARD (This Week vs. Last Week)
+────────────────────────────────────
+
+Index Health Score:       87/100  (was 86/100)  ↑
+Total Index Storage:      24.3 GB (was 24.8 GB) ↓ (savings from Friday maintenance)
+Unused Index Storage:     1.2 GB  (was 1.1 GB)  ↑
+Average Fragmentation:    12%     (was 13%)     ↓
+
+ACTION ITEMS (Priority Order)
+──────────────────────────────
+
+[ HIGH CONFIDENCE ]
+
+1. Delete idx_sales_region_old
+   Status:       UNUSED for 187 days
+   Storage:      456 MB
+   Confidence:   95%
+   Risk:         Very low (no scans since creation 189 days ago)
+   Recommendation: DELETE
+   SQL: DROP INDEX CONCURRENTLY public.idx_sales_region_old;
+
+2. Delete idx_customers_legacy_email
+   Status:       UNUSED for 156 days
+   Storage:      205 MB
+   Confidence:   92%
+   Risk:         Very low (redundant with idx_customers_email_new)
+   Recommendation: DELETE
+   SQL: DROP INDEX CONCURRENTLY public.idx_customers_legacy_email;
+
+[ MEDIUM CONFIDENCE ]
+
+3. Rebuild idx_orders_customer_date (FRAGMENTED)
+   Status:       1.8x table size (fragmentation detected)
+   Current Size: 3.2 GB
+   Est. After:   1.8 GB
+   Confidence:   78%
+   Usage:        4,200+ scans/week (HIGH value index)
+   Recommendation: Schedule rebuild for next Sunday 2 AM
+   SQL: REINDEX INDEX CONCURRENTLY public.idx_orders_customer_date;
+
+DETAILED FINDINGS
+──────────────────
+
+UNUSED INDEXES (12 total, showing top 5 by storage)
+
+  Name                          Created    Last Scan    Storage    Days Unused
+  ─────────────────────────────────────────────────────────────────────────────
+  idx_sales_region_old          2023-11-16 Never        456 MB     189
+  idx_customers_legacy_email    2023-12-20 Never        205 MB     156
+  idx_products_category_backup   2023-10-15 2024-01-10   87 MB      11
+  idx_orders_temp_status        2024-01-02 Never        45 MB      20
+  idx_transactions_archive      2023-09-22 2023-12-15   32 MB      37
+
+[Explanation: These indexes consume storage and slow down writes, but are not queried. 
+Candidates for deletion after business validation.]
+
+FRAGMENTATION ANALYSIS (3 indexes, all "AT RISK")
+
+  Name                          Table Size  Index Size  Ratio  Health      Action
+  ────────────────────────────────────────────────────────────────────────────────
+  idx_orders_customer_date      1.8 GB      3.2 GB      1.78x  UNHEALTHY   REBUILD
+  idx_sales_product_date        890 MB      1.5 GB      1.68x  AT RISK     MONITOR
+  idx_inventory_location        342 MB      621 MB      1.81x  UNHEALTHY   REBUILD
+
+[Explanation: These indexes are larger than expected relative to their underlying tables,
+indicating page fragmentation from splits and updates. Rebuilding will recover storage
+and improve query performance.]
+
+TREND ANALYSIS (Last 4 Weeks)
+──────────────────────────────
+
+Week    Unused Indexes  Storage Used  Avg Fragmentation  Health Score
+────────────────────────────────────────────────────────────────────
+Jan 21        12           24.3 GB          12%              87
+Jan 14        10           24.8 GB          13%              86
+Jan 7         8            25.2 GB          14%              84
+Dec 31        8            25.5 GB          15%              82
+
+Trend: IMPROVING. Maintenance actions from last month are paying off. Unused index
+count is up slightly, but likely from recent deployments. Monitor next week.
+
+MAINTENANCE COMPLETED LAST WEEK
+────────────────────────────────
+
+Action Type: REINDEX
+Index:       idx_customers_email
+Before Size: 892 MB
+After Size:  523 MB
+Savings:     369 MB (41% reduction)
+Duration:    8 minutes 32 seconds
+Status:      SUCCESS ✓
+Impact:      Queries using this index now 18% faster (median). Cache efficiency improved.
+
+Action Type: DROP
+Index:       idx_sales_legacy_status
+Size Freed:  234 MB
+Status:      SUCCESS ✓
+Impact:      Inserts on sales table now 3% faster. No application errors reported.
+
+RECOMMENDATIONS
+────────────────
+
+1. IMMEDIATE (this week):
+   - Delete the 2 HIGH confidence unused indexes (total 661 MB freed)
+   - Schedule this during Friday evening window
+
+2. NEAR-TERM (next 2 weeks):
+   - Rebuild the 2 UNHEALTHY fragmented indexes
+   - Both are high-traffic indexes; expect 15-20% query improvement
+   - Schedule: Next Sunday at 2:00 AM (est. 15 min combined)
+
+3. ONGOING:
+   - Monitor idx_sales_product_date fragmentation (currently AT RISK)
+   - If ratio exceeds 2.0 next week, schedule for rebuild
+   - Investigate application deployment from last Tuesday (caused new unused index?)
+
+HISTORICAL DATA RETENTION
+──────────────────────────
+
+This report references 4 weeks of historical snapshots. Full historical data
+available for queries by DBA team. Contact: dba-team@company.com
+
+Contact Information
+───────────────────
+DBA Team Lead: Alice Chen (alice.chen@company.com)
+On-Call DBA:   Bob Martinez (bob.martinez@company.com)
+Report Issues: dba-automation@company.com
+
+---
+
+That's a real report. It has:
+- Executive summary (top of page, decision-makers can read it in 30 seconds)
+- Dashboard with metrics and trends
+- Action items with confidence scores and risk assessment
+- Detailed findings with supporting data
+- Trend analysis over time
+- Completed maintenance with results
+- Clear recommendations
+
+This is the kind of report that makes people pay attention.
+
+================================================================================
+BASH AUTOMATION: THE weekly_unused_indexes_report.sh SCRIPT
+================================================================================
+
+Now let me show you how to automate this. I'm going to build a bash script that:
+
+1. Connects to PostgreSQL
+2. Runs analysis queries
+3. Generates a report in both text and HTML formats
+4. Emails it to stakeholders
+5. Logs everything
+
+Here's the script:
+
+---
+
+#!/bin/bash
+
+#===============================================================================
+# Weekly Index Health Report Generator
+# Purpose: Analyze PostgreSQL indexes and generate actionable reports
+# Schedule: Sundays at 8:00 AM via cron
+# Author: DBA Team
+# Last Updated: 2024-01-22
+#===============================================================================
+
+set -euo pipefail
+
+# Configuration
+readonly DB_HOST="${DB_HOST:-localhost}"
+readonly DB_PORT="${DB_PORT:-5432}"
+readonly DB_USER="${DB_USER:-postgres}"
+readonly DB_NAME="${DB_NAME:-production}"
+readonly REPORT_DIR="/var/log/dba_reports"
+readonly REPORT_DATE=$(date +%Y-%m-%d)
+readonly REPORT_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+readonly REPORT_FILE="${REPORT_DIR}/index_report_${REPORT_DATE}.txt"
+readonly HTML_FILE="${REPORT_DIR}/index_report_${REPORT_DATE}.html"
+readonly LOG_FILE="${REPORT_DIR}/index_report_${REPORT_DATE}.log"
+readonly EMAIL_TO="${EMAIL_TO:-dba-team@company.com}"
+readonly PSQL_OPTS="-h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+#===============================================================================
+# LOGGING FUNCTIONS
+#===============================================================================
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $*" | tee -a "${LOG_FILE}"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $*" | tee -a "${LOG_FILE}"
+}
+
+#===============================================================================
+# MAIN FUNCTIONS
+#===============================================================================
+
+setup_environment() {
+    log "Setting up environment..."
+    
+    # Create report directory if it doesn't exist
+    mkdir -p "${REPORT_DIR}"
+    
+    # Initialize log file
+    {
+        echo "================================================================================"
+        echo "Index Health Report - Execution Log"
+        echo "Start Time: ${REPORT_TIME}"
+        echo "Database: ${DB_NAME}"
+        echo "================================================================================"
+    } > "${LOG_FILE}"
+    
+    log "Environment ready. Report directory: ${REPORT_DIR}"
+}
+
+test_database_connection() {
+    log "Testing database connection..."
+    
+    if psql ${PSQL_OPTS} -c "SELECT 1" > /dev/null 2>&1; then
+        log_success "Database connection successful"
+        return 0
+    else
+        log_error "Failed to connect to database"
+        return 1
+    fi
+}
+
+generate_text_report() {
+    log "Generating text report..."
+    
+    {
+        echo "================================================================================"
+        echo "WEEKLY INDEX HEALTH REPORT"
+        echo "Week Ending: ${REPORT_DATE}"
+        echo "Generated: ${REPORT_TIME}"
+        echo "Database: ${DB_NAME}"
+        echo "================================================================================"
+        echo ""
+        echo "EXECUTIVE SUMMARY"
+        echo "─────────────────────────────────────────────────────────────────────────────────"
+        
+        # Get summary metrics
+        psql ${PSQL_OPTS} -t -c "
+        SELECT 
+            'Total Indexes Analyzed: ' || COUNT(*) || E'\n' ||
+            'Unused Indexes: ' || SUM(CASE WHEN idx_scan = 0 THEN 1 ELSE 0 END) || E'\n' ||
+            'Possibly Fragmented: ' || 
+            SUM(CASE WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 1 ELSE 0 END) || E'\n' ||
+            'Total Index Storage: ' || pg_size_pretty(SUM(index_size_bytes)) || E'\n' ||
+            'Unused Index Storage: ' || 
+            pg_size_pretty(SUM(CASE WHEN idx_scan = 0 THEN index_size_bytes ELSE 0 END))
+        FROM dba_reports.index_snapshots
+        WHERE snapshot_date = CURRENT_DATE;
+        " >> "${REPORT_FILE}"
+        
+        echo ""
+        echo "ACTION ITEMS (High Confidence)"
+        echo "─────────────────────────────────────────────────────────────────────────────────"
+        
+        # Get unused indexes
+        psql ${PSQL_OPTS} -t -c "
+        SELECT 
+            indexname || E'\n' ||
+            '  Storage: ' || pg_size_pretty(index_size_bytes) || E'\n' ||
+            '  Scans: ' || idx_scan || E'\n' ||
+            '  Recommendation: DELETE' || E'\n'
+        FROM dba_reports.fragmentation_analysis
+        WHERE analysis_date = CURRENT_DATE
+        AND health_status = 'UNUSED'
+        AND priority = 'HIGH'
+        ORDER BY index_size_bytes DESC
+        LIMIT 5;
+        " >> "${REPORT_FILE}"
+        
+        echo ""
+        echo "DETAILED FINDINGS"
+        echo "─────────────────────────────────────────────────────────────────────────────────"
+        
+        # Get fragmentation details
+        psql ${PSQL_OPTS} -t -c "
+        SELECT 
+            'Index: ' || indexname || E'\n' ||
+            '  Table: ' || tablename || E'\n' ||
+            '  Size Ratio: ' || size_ratio::TEXT || '%' || E'\n' ||
+            '  Status: ' || health_status || E'\n' ||
+            '  Action: ' || recommended_action || E'\n'
+        FROM dba_reports.fragmentation_analysis
+        WHERE analysis_date = CURRENT_DATE
+        AND health_status IN ('UNHEALTHY', 'AT RISK')
+        ORDER BY size_ratio DESC;
+        " >> "${REPORT_FILE}"
+        
+        echo ""
+        echo "Report generated successfully"
+        
+    } > "${REPORT_FILE}" 2>&1
+    
+    log_success "Text report generated: ${REPORT_FILE}"
+}
+
+generate_html_report() {
+    log "Generating HTML report..."
+    
+    {
+        cat <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Weekly Index Health Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 900px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; border-bottom: 3px solid #0066cc; padding-bottom: 10px; }
+        h2 { color: #0066cc; margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th { background-color: #0066cc; color: white; padding: 10px; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #ddd; }
+        tr:hover { background-color: #f9f9f9; }
+        .metric { display: inline-block; margin: 10px 20px 10px 0; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #0066cc; }
+        .metric-label { color: #666; font-size: 12px; }
+        .high { color: #cc0000; }
+        .medium { color: #ff9900; }
+        .low { color: #009900; }
+        .summary-box { background-color: #f0f8ff; padding: 15px; border-left: 4px solid #0066cc; margin: 15px 0; }
+        .footer { color: #999; font-size: 11px; margin-top: 30px; border-top: 1px solid #ddd; padding-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Weekly Index Health Report</h1>
+EOF
+        echo "        <p>Generated: $(date '+%Y-%m-%d %H:%M:%S') | Database: ${DB_NAME}</p>"
+        
+        cat <<'EOF'
+        
+        <h2>Executive Summary</h2>
+        <div class="summary-box">
+            <p>Index health status and key metrics from this week's analysis.</p>
+        </div>
+EOF
+        
+        # Add metrics
+        psql ${PSQL_OPTS} -H -c "
+        SELECT 
+            'Metric' as metric,
+            'Value' as value
+        UNION ALL
+        SELECT 
+            'Total Indexes',
+            COUNT(*)::TEXT
+        FROM dba_reports.index_snapshots
+        WHERE snapshot_date = CURRENT_DATE;
+        " >> "${HTML_FILE}"
+        
+        cat <<'EOF'
+        
+        <h2>Action Items</h2>
+        <table>
+            <tr>
+                <th>Index Name</th>
+                <th>Storage</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Action</th>
+            </tr>
+EOF
+        
+        # Add action items from database
+        psql ${PSQL_OPTS} -t -c "
+        SELECT 
+            '<tr><td>' || indexname || '</td>' ||
+            '<td>' || pg_size_pretty(index_size_bytes) || '</td>' ||
+            '<td>' || health_status || '</td>' ||
+            '<td class=\"' || LOWER(priority) || '\">' || priority || '</td>' ||
+            '<td>' || COALESCE(recommended_action, 'Monitor') || '</td></tr>'
+        FROM dba_reports.fragmentation_analysis
+        WHERE analysis_date = CURRENT_DATE
+        ORDER BY priority DESC, index_size_bytes DESC
+        LIMIT 10;
+        " >> "${HTML_FILE}"
+        
+        cat <<'EOF'
+        </table>
+        
+        <div class="footer">
+            <p>This is an automated report. For questions, contact the DBA team.</p>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+    } > "${HTML_FILE}" 2>&1
+    
+    log_success "HTML report generated: ${HTML_FILE}"
+}
+
+capture_snapshot() {
+    log "Capturing database snapshot..."
+    
+    psql ${PSQL_OPTS} -f - <<'EOF'
+INSERT INTO dba_reports.index_snapshots 
+(snapshot_date, schemaname, tablename, indexname, index_size_bytes, 
+ table_size_bytes, idx_scan, idx_tup_read, idx_tup_fetch, 
+ table_inserts, table_updates, table_deletes)
+SELECT 
+    CURRENT_DATE,
+    i.schemaname,
+    i.tablename,
+    i.indexname,
+    pg_relation_size(i.indexrelid),
+    pg_relation_size(t.oid),
+    i.idx_scan,
+    i.idx_tup_read,
+    i.idx_tup_fetch,
+    t.n_tup_ins,
+    t.n_tup_upd,
+    t.n_tup_del
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_reports');
+EOF
+    
+    log_success "Snapshot captured"
+}
+
+analyze_indexes() {
+    log "Running analysis..."
+    
+    psql ${PSQL_OPTS} -f - <<'EOF'
+INSERT INTO dba_reports.fragmentation_analysis
+(analysis_date, schemaname, tablename, indexname, index_size_bytes, 
+ table_size_bytes, size_ratio, fragmentation_estimate, health_status, priority)
+SELECT 
+    CURRENT_DATE,
+    schemaname,
+    tablename,
+    indexname,
+    index_size_bytes,
+    table_size_bytes,
+    ROUND((index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) * 100, 2),
+    CASE 
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'LIKELY'
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'POSSIBLE'
+        ELSE 'NORMAL'
+    END,
+    CASE 
+        WHEN idx_scan = 0 THEN 'UNUSED'
+        WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'UNHEALTHY'
+        WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'AT RISK'
+        ELSE 'HEALTHY'
+    END,
+    CASE 
+        WHEN idx_scan = 0 THEN 'HIGH'
+        WHEN idx_scan > 1000 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'HIGH'
+        WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END
+FROM dba_reports.index_snapshots
+WHERE snapshot_date = CURRENT_DATE;
+EOF
+    
+    log_success "Analysis complete"
+}
+
+send_report() {
+    log "Sending report via email..."
+    
+    if [[ -f "${REPORT_FILE}" ]]; then
+        {
+            cat "${REPORT_FILE}"
+            echo ""
+            echo "HTML version available at: ${HTML_FILE}"
+        } | mail -s "Weekly Index Health Report - ${REPORT_DATE}" "${EMAIL_TO}"
+        
+        log_success "Report emailed to ${EMAIL_TO}"
+    else
+        log_error "Report file not found, email not sent"
+        return 1
+    fi
+}
+
+cleanup() {
+    log "Cleaning up..."
+    
+    # Archive old reports (keep last 12 weeks)
+    find "${REPORT_DIR}" -name "index_report_*.txt" -mtime +84 -delete
+    find "${REPORT_DIR}" -name "index_report_*.html" -mtime +84 -delete
+    
+    log_success "Cleanup complete"
+}
+
+#===============================================================================
+# MAIN EXECUTION
+#===============================================================================
+
+main() {
+    log "Starting Weekly Index Health Report Generation"
+    
+    setup_environment
+    
+    if ! test_database_connection; then
+        log_error "Cannot proceed without database connection"
+        exit 1
+    fi
+    
+    capture_snapshot
+    analyze_indexes
+    generate_text_report
+    generate_html_report
+    send_report
+    cleanup
+    
+    log_success "Report generation complete"
+    
+    {
+        echo "================================================================================"
+        echo "End Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "================================================================================"
+    } >> "${LOG_FILE}"
+}
+
+main "$@"
+
+---
+
+To schedule this script, add it to crontab:
+
+---
+
+# Edit crontab
+crontab -e
+
+# Add this line (runs every Sunday at 8:00 AM)
+0 8 * * 0 /usr/local/bin/weekly_unused_indexes_report.sh
+
+---
+
+This script:
+1. Tests database connectivity
+2. Captures a snapshot of current index statistics
+3. Analyzes the snapshot to identify problems
+4. Generates both text and HTML reports
+5. Emails the report
+6. Cleans up old archived reports
+7. Logs everything for auditing
+
+It's fully automated and can run unattended.
+
+================================================================================
+SCHEDULING & NOTIFICATIONS: GETTING ACTION
+================================================================================
+
+Creating a report is one thing. Getting people to act on it is another.
+
+Here's my strategy:
+
+**Step 1: Schedule for visibility**
+
+Run the report during the DBA team's working hours, so they see it in their email inbox when they're awake and working. For me, that's Sunday at 8:00 AM — early enough that the report is ready for the team's Monday morning standup.
+
+**Step 2: Segment your distribution list**
+
+Don't send the same report to everyone:
+
+- **DBAs**: Full report with technical details and SQL commands
+- **Engineering leads**: Executive summary + action items
+- **Finance/Ops**: Cost impact summary only
+- **Executives**: One-page overview only
+
+You can do this with multiple versions of the script, each outputting different information.
+
+**Step 3: Add notifications for urgent issues**
+
+If you find something really bad (an index consuming 5 GB that should be 500 MB, for example), don't wait for the weekly report. Send an immediate alert:
+
+---
+
+#!/bin/bash
+
+# Urgent alert for critical issues
+CRITICAL_ISSUES=$(psql -t -c "
+SELECT COUNT(*) FROM dba_reports.fragmentation_analysis
+WHERE analysis_date = CURRENT_DATE
+AND health_status = 'UNHEALTHY'
+AND index_size_bytes > 5368709120;  -- 5 GB threshold
+")
+
+if [[ ${CRITICAL_ISSUES} -gt 0 ]]; then
+    echo "URGENT: ${CRITICAL_ISSUES} indexes are critically fragmented" | \
+    mail -s "🚨 CRITICAL: Index Health Alert" "${DBA_ON_CALL}"
+fi
+
+---
+
+**Step 4: Track follow-up**
+
+Create a follow-up log. After you send the report, track whether the recommended actions were taken:
+
+---
+
+CREATE TABLE dba_reports.report_followup (
+    followup_id SERIAL PRIMARY KEY,
+    report_date DATE,
+    recommendation VARCHAR(500),
+    status VARCHAR(50), -- 'PENDING', 'IN PROGRESS', 'COMPLETED', 'REJECTED'
+    assigned_to VARCHAR(100),
+    due_date DATE,
+    notes TEXT,
+    completed_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+---
+
+This gives you visibility into whether recommendations are being followed, and helps you fine-tune your reporting to increase action rates.
+
+================================================================================
+HISTORICAL TREND TRACKING: THE LONG VIEW
+================================================================================
+
+The real power of reporting comes from tracking trends over time.
+
+With weeks or months of historical data, you can answer questions like:
+- Is our index fragmentation getting better or worse?
+- Are we maintaining our indexes effectively?
+- What's the total storage trend?
+- Which tables are most problematic?
+
+Here's a query to show trends:
+
+---
+
+SELECT 
+    DATE_TRUNC('week', analysis_date)::DATE as week_ending,
+    COUNT(*) as total_indexes,
+    SUM(CASE WHEN health_status = 'UNUSED' THEN 1 ELSE 0 END) as unused_count,
+    SUM(CASE WHEN health_status = 'UNHEALTHY' THEN 1 ELSE 0 END) as unhealthy_count,
+    SUM(CASE WHEN health_status = 'AT RISK' THEN 1 ELSE 0 END) as at_risk_count,
+    pg_size_pretty(SUM(index_size_bytes)) as total_storage,
+    ROUND(AVG(size_ratio), 2) as avg_fragmentation_ratio
+FROM dba_reports.fragmentation_analysis
+GROUP BY week_ending
+ORDER BY week_ending DESC
+LIMIT 12;
+
+---
+
+Run this quarterly and present it to management. Show trends. Show improvement. This is how you justify continued investment in DBA maintenance work.
+
+================================================================================
+PUTTING IT TOGETHER: THE COMPLETE WORKFLOW
+================================================================================
+
+Here's the complete workflow from data collection to action:
+
+1. **Sunday 8:00 AM**: Automated script runs, captures snapshot
+2. **Sunday 8:15 AM**: Analysis runs, generates reports
+3. **Sunday 8:30 AM**: Reports emailed to teams
+4. **Monday 9:00 AM**: DBA standup reviews recommendations
+5. **Monday 10:00 AM**: Decisions made, actions assigned (update followup table)
+6. **Week**: Assigned work happens (rebuilds, deletes, etc.)
+7. **Next Sunday 8:00 AM**: Cycle repeats, you can see results of last week's actions
+
+This feedback loop is critical. It shows the effectiveness of your recommendations and helps refine them over time.
+
+================================================================================
+LAB EXERCISE: BUILD YOUR OWN REPORTING SYSTEM
+================================================================================
+
+Alright, hands-on time. You're going to build a complete reporting system.
+
+**Part 1: Create the schema**
+
+---
+
+CREATE SCHEMA IF NOT EXISTS dba_reports;
+
+CREATE TABLE IF NOT EXISTS dba_reports.index_snapshots (
+    snapshot_date DATE NOT NULL,
+    schemaname VARCHAR(100) NOT NULL,
+    tablename VARCHAR(100) NOT NULL,
+    indexname VARCHAR(100) NOT NULL,
+    index_size_bytes BIGINT NOT NULL,
+    table_size_bytes BIGINT NOT NULL,
+    idx_scan BIGINT NOT NULL,
+    idx_tup_read BIGINT NOT NULL,
+    idx_tup_fetch BIGINT NOT NULL,
+    table_inserts BIGINT NOT NULL,
+    table_updates BIGINT NOT NULL,
+    table_deletes BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+---
+
+**Part 2: Create a test table with data**
+
+---
+
+INSERT INTO dba_reports.index_snapshots 
+VALUES (CURRENT_DATE, 'public', 'orders', 'idx_orders_customer', 
+        1073741824, 536870912, 5000, 25000000, 250000, 
+        50000, 10000, 5000);
+
+INSERT INTO dba_reports.index_snapshots 
+VALUES (CURRENT_DATE, 'public', 'customers', 'idx_customers_email', 
+        268435456, 134217728, 0, 0, 0, 
+        1000, 200, 50);
+
+---
+
+**Part 3: Write a snapshot query**
+
+Create a query that captures the current state. Run it multiple days in a row:
+
+---
+
+INSERT INTO dba_reports.index_snapshots 
+(snapshot_date, schemaname, tablename, indexname, index_size_bytes, 
+ table_size_bytes, idx_scan, idx_tup_read, idx_tup_fetch, 
+ table_inserts, table_updates, table_deletes)
+SELECT 
+    CURRENT_DATE,
+    i.schemaname,
+    i.tablename,
+    i.indexname,
+    pg_relation_size(i.indexrelid),
+    pg_relation_size(t.oid),
+    i.idx_scan,
+    i.idx_tup_read,
+    i.idx_tup_fetch,
+    t.n_tup_ins,
+    t.n_tup_upd,
+    t.n_tup_del
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_reports');
+
+---
+
+**Part 4: Create an analysis query**
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    index_size_bytes,
+    table_size_bytes,
+    ROUND((index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) * 100, 2) as ratio,
+    idx_scan,
+    CASE 
+        WHEN idx_scan = 0 THEN 'UNUSED'
+        WHEN ratio > 2.0 THEN 'UNHEALTHY'
+        WHEN ratio > 1.5 THEN 'AT RISK'
+        ELSE 'HEALTHY'
+    END as status
+FROM (
+    SELECT 
+        snapshot_date, schemaname, tablename, indexname, 
+        index_size_bytes, table_size_bytes, idx_scan,
+        ROUND((index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) * 100, 2) as ratio
+    FROM dba_reports.index_snapshots
+    WHERE snapshot_date = CURRENT_DATE
+) subq
+ORDER BY index_size_bytes DESC;
+
+---
+
+**Part 5: Generate a text report**
+
+Write out the results of your analysis query to a file:
+
+---
+
+psql -t -c "SELECT..." > /tmp/index_report_$(date +%Y-%m-%d).txt
+
+---
+
+**Part 6: Create a bash script**
+
+Wrap your queries in a bash script that:
+- Checks database connectivity
+- Captures snapshot
+- Runs analysis
+- Generates report
+- Outputs to file
+
+**Part 7: Test the complete workflow**
+
+Run the script multiple times, capturing data on different days. Then query the historical data to show trends.
+
+**Part 8: Calculate confidence scores**
+
+For each index recommendation, calculate a confidence score based on age, scan history, and fragmentation. Show this in your report.
+
+================================================================================
+CLOSING WORDS
+================================================================================
+
+Reporting and automation is where DBA work becomes *visible* to the business. It's where technical knowledge turns into action.
+
+A great DBA doesn't just find problems — they communicate problems in a way that compels action. They don't just make recommendations — they track whether recommendations were followed and report on the results.
+
+Here's what I want you to remember:
+
+1. **Tailor your message to your audience.** Technical details for DBAs. Cost impact for finance. Strategic impact for executives.
+
+2. **Collect data consistently over time.** Snapshots show the present. Trends show the future. Build your reporting on trends.
+
+3. **Use confidence scores to make recommendations defensible.** If something goes wrong, you can explain why you were confident.
+
+4. **Automate collection, not decision-making.** Let scripts gather data. Keep human judgment for deciding action.
+
+5. **Track follow-up.** If you make a recommendation and it's not followed, investigate why. Is your recommendation bad? Is the process broken? Fix it.
+
+6. **Schedule for visibility.** Reports that nobody sees don't cause action. Make sure your reports reach people when they're paying attention.
+
+When you graduate from this program and enter the real world, you're going to find databases that have been running for years without any real maintenance visibility. You're going to implement a reporting system, and suddenly, things start getting fixed. Suddenly, the DBA team gets respect and resources.
+
+That's the power of good reporting. That's what we do.
+
+You've got this.
+
+================================================================================
+QUICK REFERENCE: REPORTING & AUTOMATION COMMAND CARD
+================================================================================
+
+** CREATE PERSISTENT SNAPSHOT TABLE **
+
+    CREATE SCHEMA IF NOT EXISTS dba_reports;
+    
+    CREATE TABLE dba_reports.index_snapshots (
+        snapshot_date DATE NOT NULL,
+        schemaname VARCHAR(100) NOT NULL,
+        tablename VARCHAR(100) NOT NULL,
+        indexname VARCHAR(100) NOT NULL,
+        index_size_bytes BIGINT NOT NULL,
+        table_size_bytes BIGINT NOT NULL,
+        idx_scan BIGINT NOT NULL,
+        idx_tup_read BIGINT NOT NULL,
+        idx_tup_fetch BIGINT NOT NULL,
+        table_inserts BIGINT NOT NULL,
+        table_updates BIGINT NOT NULL,
+        table_deletes BIGINT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+** CAPTURE WEEKLY SNAPSHOT **
+
+    INSERT INTO dba_reports.index_snapshots 
+    (snapshot_date, schemaname, tablename, indexname, index_size_bytes, 
+     table_size_bytes, idx_scan, idx_tup_read, idx_tup_fetch, 
+     table_inserts, table_updates, table_deletes)
+    SELECT 
+        CURRENT_DATE,
+        i.schemaname,
+        i.tablename,
+        i.indexname,
+        pg_relation_size(i.indexrelid),
+        pg_relation_size(t.oid),
+        i.idx_scan,
+        i.idx_tup_read,
+        i.idx_tup_fetch,
+        t.n_tup_ins,
+        t.n_tup_upd,
+        t.n_tup_del
+    FROM pg_stat_user_indexes i
+    JOIN pg_stat_user_tables t ON i.tablename = t.relname
+    WHERE i.schemaname NOT IN ('pg_catalog', 'information_schema', 'dba_reports');
+
+** CREATE ANALYSIS TABLE **
+
+    CREATE TABLE dba_reports.fragmentation_analysis (
+        analysis_date DATE NOT NULL,
+        schemaname VARCHAR(100) NOT NULL,
+        tablename VARCHAR(100) NOT NULL,
+        indexname VARCHAR(100) NOT NULL,
+        index_size_bytes BIGINT NOT NULL,
+        table_size_bytes BIGINT NOT NULL,
+        size_ratio NUMERIC(10, 2) NOT NULL,
+        fragmentation_estimate VARCHAR(50) NOT NULL,
+        health_status VARCHAR(50) NOT NULL,
+        priority VARCHAR(50) NOT NULL,
+        recommended_action VARCHAR(500),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+** RUN WEEKLY ANALYSIS **
+
+    INSERT INTO dba_reports.fragmentation_analysis
+    (analysis_date, schemaname, tablename, indexname, index_size_bytes, 
+     table_size_bytes, size_ratio, fragmentation_estimate, health_status, priority)
+    SELECT 
+        CURRENT_DATE,
+        schemaname,
+        tablename,
+        indexname,
+        index_size_bytes,
+        table_size_bytes,
+        ROUND((index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) * 100, 2),
+        CASE 
+            WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'LIKELY'
+            WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'POSSIBLE'
+            ELSE 'NORMAL'
+        END,
+        CASE 
+            WHEN idx_scan = 0 THEN 'UNUSED'
+            WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'UNHEALTHY'
+            WHEN idx_scan > 0 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'AT RISK'
+            ELSE 'HEALTHY'
+        END,
+        CASE 
+            WHEN idx_scan = 0 THEN 'HIGH'
+            WHEN idx_scan > 1000 AND (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 1.5 THEN 'HIGH'
+            WHEN (index_size_bytes::FLOAT / NULLIF(table_size_bytes, 0)) > 2.0 THEN 'MEDIUM'
+            ELSE 'LOW'
+        END
+    FROM dba_reports.index_snapshots
+    WHERE snapshot_date = CURRENT_DATE;
+
+** VIEW HIGH-PRIORITY ACTION ITEMS **
+
+    SELECT 
+        indexname,
+        tablename,
+        pg_size_pretty(index_size_bytes) as size,
+        health_status,
+        priority,
+        recommended_action
+    FROM dba_reports.fragmentation_analysis
+    WHERE analysis_date = CURRENT_DATE
+    AND priority = 'HIGH'
+    ORDER BY index_size_bytes DESC;
+
+** VIEW TRENDS OVER 12 WEEKS **
+
+    SELECT 
+        DATE_TRUNC('week', analysis_date)::DATE as week,
+        COUNT(*) as total_indexes,
+        SUM(CASE WHEN health_status = 'UNUSED' THEN 1 ELSE 0 END) as unused,
+        SUM(CASE WHEN health_status = 'UNHEALTHY' THEN 1 ELSE 0 END) as unhealthy,
+        pg_size_pretty(SUM(index_size_bytes)) as total_storage,
+        ROUND(AVG(size_ratio), 2) as avg_ratio
+    FROM dba_reports.fragmentation_analysis
+    GROUP BY DATE_TRUNC('week', analysis_date)
+    ORDER BY week DESC
+    LIMIT 12;
+
+** SCHEDULE WEEKLY REPORT GENERATION (Cron) **
+
+    # Run every Sunday at 8:00 AM
+    0 8 * * 0 /usr/local/bin/weekly_unused_indexes_report.sh
+
+** TRACK MAINTENANCE ACTIONS **
+
+    CREATE TABLE dba_reports.maintenance_actions (
+        action_id SERIAL PRIMARY KEY,
+        action_date DATE NOT NULL,
+        action_type VARCHAR(50),
+        schemaname VARCHAR(100),
+        tablename VARCHAR(100),
+        indexname VARCHAR(100),
+        status VARCHAR(50),
+        size_before_bytes BIGINT,
+        size_after_bytes BIGINT,
+        duration_seconds INTEGER,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    -- Log a completed action
+    INSERT INTO dba_reports.maintenance_actions
+    VALUES (
+        DEFAULT, CURRENT_DATE, 'REINDEX', 'public', 'orders', 'idx_orders_customer',
+        'COMPLETED', 1073741824, 536870912, 512, 'Fragmented index rebuilt successfully'
+    );
+
+** GENERATE EXECUTIVE SUMMARY **
+
+    SELECT 
+        'Total indexes analyzed' as metric,
+        COUNT(*)::TEXT as value
+    FROM dba_reports.fragmentation_analysis
+    WHERE analysis_date = CURRENT_DATE
+    UNION ALL
+    SELECT 'Unused indexes', SUM(CASE WHEN health_status = 'UNUSED' THEN 1 ELSE 0 END)::TEXT
+    FROM dba_reports.fragmentation_analysis
+    WHERE analysis_date = CURRENT_DATE
+    UNION ALL
+    SELECT 'Storage to recover', pg_size_pretty(SUM(CASE WHEN health_status = 'UNUSED' THEN index_size_bytes ELSE 0 END))
+    FROM dba_reports.fragmentation_analysis
+    WHERE analysis_date = CURRENT_DATE;
+
+** SEND REPORT VIA EMAIL **
+
+    cat /path/to/report.txt | mail -s "Weekly Index Report" dba-team@company.com
+
+** CALCULATE CONFIDENCE SCORE **
+
+    SELECT 
+        indexname,
+        idx_scan,
+        CASE 
+            WHEN idx_scan = 0 AND 
+                 EXTRACT(DAY FROM CURRENT_DATE - (NOW() - INTERVAL '180 days'))::INTEGER >= 90 
+            THEN 100
+            WHEN idx_scan = 0 AND 
+                 EXTRACT(DAY FROM CURRENT_DATE - (NOW() - INTERVAL '90 days'))::INTEGER >= 30 
+            THEN 80
+            WHEN idx_scan > 0 AND health_status = 'UNHEALTHY' THEN 92
+            WHEN idx_scan > 0 AND health_status = 'AT RISK' THEN 75
+            ELSE 0
+        END as confidence_score
+    FROM dba_reports.fragmentation_analysis
+    WHERE analysis_date = CURRENT_DATE
+    ORDER BY confidence_score DESC;
+
+================================================================================
+END OF LECTURE
+================================================================================

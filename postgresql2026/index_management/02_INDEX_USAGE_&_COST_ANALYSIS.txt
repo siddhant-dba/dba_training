@@ -1,0 +1,826 @@
+================================================================================
+  POSTGRESQL INDEX USAGE & COST ANALYSIS
+  Diploma DBA Program — Phase 2
+  Duration: ~60 minutes (including live demonstrations and lab exercises)
+================================================================================
+
+Welcome back. Today we're doing something that's going to change how you think about indexes forever. We're going to answer the question: "Is this index actually *worth* keeping?"
+
+Because here's the dirty truth: about 30% of indexes in production databases do nothing. They sit there, consuming disk space, slowing down writes, and the DBA team has no idea they exist. I found one at a bank once — an index that hadn't been used in seven years. Seven years. It was costing them about five thousand dollars a month in storage and hardware overhead, and nobody even knew it was there.
+
+So today we're learning the tools and techniques to find those indexes. We're learning how to measure whether an index is pulling its weight. And we're learning how to make data-driven decisions about which indexes to keep and which to delete.
+
+This is the difference between a junior DBA who just throws indexes at problems and a senior DBA who understands *when* to throw them. Let's go.
+
+================================================================================
+THE MINDSET: YOU'RE A DATABASE JANITOR
+================================================================================
+
+Before I get into the technical details, I want to talk about mindset.
+
+When I work with a new database, especially one that's been running for a few years, I do an index audit. I check every single index. And inevitably, I find garbage. Unused indexes. Redundant indexes. Indexes that are slowing things down more than they're helping.
+
+A lot of young DBAs get frustrated with this work. They think it's beneath them. "Why am I deleting indexes? I should be building things, not cleaning up."
+
+That's wrong.
+
+The most important thing a DBA does is maintain a healthy system. That means cleaning up. It means asking hard questions about what you're keeping and why. It means being willing to delete things that aren't helping. That's not grunt work. That's the core of what we do.
+
+I think of it like this: the database is a house. Your job is to keep that house clean, safe, and efficient. That means taking out the trash regularly. If you don't, the trash piles up, and pretty soon the whole house is unusable.
+
+So when I tell you we're going to spend an hour learning how to find unused indexes, I want you to see that as valuable work. Because it is.
+
+Alright, let's get into the tools.
+
+================================================================================
+THE MISSING TOOL: PostgreSQL DMVs (SORT OF)
+================================================================================
+
+Here's something that might surprise you: PostgreSQL doesn't have DMVs.
+
+DMV stands for "Dynamic Management View." It's a SQL Server term. SQL Server has a massive set of system views that tell you everything about your database — query history, index usage, missing indexes, you name it. They're incredible.
+
+PostgreSQL... doesn't have anything like that. Not built-in. Not officially.
+
+I know. It's frustrating.
+
+But PostgreSQL *does* have something. It has the `pg_stat_*` family of system catalogs. These are system tables that track statistics about your database. They're not as comprehensive as SQL Server's DMVs, but they're good enough for what we need.
+
+The critical one is `pg_stat_user_indexes`. This table tracks how many times each index has been used — how many scans, how many tuples read, all of it.
+
+Let me show you how to use it.
+
+First, let's create a test scenario. I'm going to set up a table with some indexes and run some queries so we have something to measure.
+
+---
+
+DROP TABLE IF EXISTS sales CASCADE;
+
+CREATE TABLE sales (
+    sale_id BIGINT PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    sale_date DATE NOT NULL,
+    amount DECIMAL(10, 2),
+    region VARCHAR(50)
+);
+
+INSERT INTO sales (sale_id, customer_id, product_id, sale_date, amount, region)
+SELECT 
+    g.id,
+    (random() * 50000)::BIGINT,
+    (random() * 5000)::BIGINT,
+    CURRENT_DATE - (random() * INTERVAL '5 years'),
+    (random() * 10000)::DECIMAL,
+    CASE WHEN random() < 0.25 THEN 'North'
+         WHEN random() < 0.5 THEN 'South'
+         WHEN random() < 0.75 THEN 'East'
+         ELSE 'West' END
+FROM generate_series(1, 1000000) AS g(id);
+
+ANALYZE sales;
+
+---
+
+Now let's create a bunch of indexes. Some of them are going to be good, and some are going to be garbage. This is realistic.
+
+---
+
+CREATE INDEX idx_sales_customer ON sales(customer_id);
+CREATE INDEX idx_sales_product ON sales(product_id);
+CREATE INDEX idx_sales_date ON sales(sale_date);
+CREATE INDEX idx_sales_region ON sales(region);
+CREATE INDEX idx_sales_amount ON sales(amount);
+CREATE INDEX idx_sales_customer_date ON sales(customer_id, sale_date);
+
+---
+
+Now, here's what we're going to do. We're going to run some realistic queries — some of them will use indexes, some won't. And then we're going to check which indexes were actually used.
+
+---
+
+-- This query will use the customer index
+SELECT COUNT(*) FROM sales WHERE customer_id = 12345;
+
+-- This query will use the customer_date composite index
+SELECT SUM(amount) FROM sales 
+WHERE customer_id = 12345 AND sale_date > '2023-01-01';
+
+-- This query will use the date index
+SELECT COUNT(*) FROM sales WHERE sale_date = '2024-01-15';
+
+-- This query won't use any index (we'll see why in a moment)
+SELECT * FROM sales WHERE amount > 5000;
+
+---
+
+Okay. Now let's look at what actually happened. Let's query `pg_stat_user_indexes`:
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    idx_tup_fetch,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size
+FROM pg_stat_user_indexes
+WHERE tablename = 'sales'
+ORDER BY idx_scan DESC;
+
+---
+
+Look at this output carefully. You're seeing:
+
+- **idx_scan**: How many times this index was scanned (used by a query)
+- **idx_tup_read**: How many tuples (rows) were examined while scanning the index
+- **idx_tup_fetch**: How many tuples were actually fetched from the table using this index
+- **index_size**: How much disk space the index consumes
+
+This is the information you need to answer the question: "Is this index worth keeping?"
+
+For example, let's say you have an index that's been scanned zero times but is 500 MB. That's dead weight. You should delete it.
+
+Or you have an index that's been scanned 10,000 times, but every single scan examined the entire index and then had to look up 10,000 rows in the table. That's expensive. That index might be hurting performance, not helping it.
+
+But here's something critical: **these statistics reset when PostgreSQL restarts**. Poof. Gone. All that data you've been collecting just vanishes.
+
+This is a real problem in production. You might restart PostgreSQL for maintenance, and suddenly you've lost all your usage history. So in production, you need a strategy to capture this data regularly.
+
+================================================================================
+INSTRUCTOR WARNING: THE RESTART TRAP
+================================================================================
+
+Okay, I'm going to tell you about a mistake I made that cost me a month of work.
+
+I was at a company with about a hundred databases. Hundreds of thousands of indexes across all of them. And I was planning to do an audit — find all the unused indexes and delete them. It was going to save us a fortune in maintenance cost.
+
+So I wrote a script that collected all the `pg_stat_user_indexes` data to a table. Every morning, it would query the system views and store the results. Perfect. I had six months of data. I was ready to start analyzing.
+
+But then the infrastructure team did a rolling restart of all the servers to apply security patches. It was fine — they restarted PostgreSQL on each box during the maintenance window. Totally normal.
+
+And suddenly, every single `pg_stat_user_indexes` row showed zero uses. Because the stats had been reset. I lost six months of data in a morning.
+
+**Lesson: If you're going to rely on `pg_stat_user_indexes` for production decisions, you need to persist this data before restarts happen. Build a permanent table. Store the data there. Don't rely on the in-memory statistics.**
+
+Here's a quick example of how to do this:
+
+---
+
+CREATE TABLE index_usage_history (
+    capture_date TIMESTAMP,
+    schemaname VARCHAR(100),
+    tablename VARCHAR(100),
+    indexname VARCHAR(100),
+    idx_scan BIGINT,
+    idx_tup_read BIGINT,
+    idx_tup_fetch BIGINT,
+    index_size_bytes BIGINT
+);
+
+-- Run this regularly (daily in a cron job, or via pg_cron)
+INSERT INTO index_usage_history
+SELECT 
+    CURRENT_TIMESTAMP,
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    idx_tup_fetch,
+    pg_relation_size(indexrelid)
+FROM pg_stat_user_indexes;
+
+---
+
+Now, even if PostgreSQL restarts, you have historical data. You can see trends over time.
+
+This is best practice. Do this in production. Don't get burned like I did.
+
+================================================================================
+THE FOUR TYPES OF PROBLEMATIC INDEXES
+================================================================================
+
+Okay, so you've captured your index usage data. Now what? How do you decide which indexes are problems?
+
+I break it down into four categories. Let me walk through each one.
+
+**TYPE 1: NEVER USED SINCE CREATION**
+
+This is the easiest one to spot. An index that was created but has never been used even once.
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+AND indexname NOT LIKE 'pg_toast%'
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+---
+
+Any index with `idx_scan = 0` is completely unused. You should strongly consider deleting it. The exception is if you *know* it was just created and the query that uses it hasn't run yet. But if it's been weeks or months with zero uses, it's dead.
+
+A couple of years ago, I found an index at a company that was 2.3 gigabytes and had never been used since the day it was created — eight months earlier. Eight months! The team had forgotten it existed. Deleting it freed up 2.3 GB of storage and made every write operation on that table significantly faster. And it didn't break anything, because nothing was using it.
+
+**TYPE 2: RARELY USED, HIGH MAINTENANCE COST**
+
+This one is more nuanced. An index might have a few scans, but if it's expensive to maintain relative to how often it's used, it's a candidate for deletion.
+
+Here's a query that finds these:
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
+    ROUND(pg_relation_size(indexrelid) / NULLIF(idx_scan, 0) / 1024, 2) as kb_per_scan
+FROM pg_stat_user_indexes
+WHERE idx_scan > 0
+AND idx_scan < 10  -- Rarely used
+AND pg_relation_size(indexrelid) > 1024 * 1024  -- Larger than 1 MB
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+---
+
+This finds indexes that:
+- Have been scanned fewer than 10 times (rarely used)
+- Are larger than 1 MB (expensive to store and maintain)
+
+The `kb_per_scan` column tells you how many kilobytes of index space you're using per scan. If that number is huge, the index is not efficient.
+
+**TYPE 3: HIGH SCANS, LOW SELECTIVITY**
+
+This is subtle. An index might be scanned a lot, but if it's reading the entire index every time, it's not helping much.
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    idx_tup_fetch,
+    ROUND((idx_tup_read::FLOAT / NULLIF(idx_tup_fetch, 0))::NUMERIC, 2) as read_fetch_ratio,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan > 100
+AND idx_tup_read > 0
+ORDER BY (idx_tup_read::FLOAT / NULLIF(idx_tup_fetch, 0)) DESC;
+
+---
+
+Look at the `read_fetch_ratio`. This is important. It tells you: "For every row we actually fetched, how many rows did we have to read?"
+
+If the ratio is 1, that's perfect. We read exactly the rows we needed.
+
+If the ratio is 100, that means for every row we fetched, we read a hundred rows. That index is *not helping*. PostgreSQL is using the index to scan a huge range and then filtering out most of what it finds. You'd be better off with no index.
+
+A high ratio usually means one of two things:
+1. The index isn't selective enough for the queries using it. You need a different, better index.
+2. The index is being used for a query it wasn't designed for, and a table scan would actually be faster.
+
+**TYPE 4: REDUNDANT INDEXES**
+
+This is also common. You have two indexes that do essentially the same thing. One of them is redundant and can be deleted.
+
+This one is trickier to find with a query, because you have to think about the column ordering. But a simple heuristic is:
+
+---
+
+SELECT 
+    a.tablename,
+    a.indexname as index1,
+    b.indexname as index2,
+    pg_size_pretty(pg_relation_size(a.indexrelid)) as size1,
+    pg_size_pretty(pg_relation_size(b.indexrelid)) as size2,
+    a.idx_scan as scans1,
+    b.idx_scan as scans2
+FROM pg_stat_user_indexes a
+JOIN pg_stat_user_indexes b 
+    ON a.tablename = b.tablename 
+    AND a.indexname < b.indexname
+    AND a.idx_scan > 0 
+    AND b.idx_scan = 0
+ORDER BY a.tablename, pg_relation_size(b.indexrelid) DESC;
+
+---
+
+This finds pairs of indexes on the same table where one is used and the other isn't. That's a good candidate for deletion — the unused one is probably redundant.
+
+But you have to be careful. Sometimes you have indexes for different purposes. Index A is used for online queries. Index B is used for nightly batch jobs. Both are necessary. So you have to understand *why* each index exists, not just rely on statistics.
+
+================================================================================
+READ/WRITE RATIO: THE HIDDEN COST
+================================================================================
+
+Here's something a lot of DBAs miss: an index might be used for reads, but those reads might be rare compared to the writes happening on the table.
+
+Let me explain what I mean. Let's say you have a table where:
+- 10,000 rows are inserted per day
+- 100 rows are updated per day
+- 50 rows are deleted per day
+- But only 2 queries use a particular index, each one scanning it once a day
+
+That index is being *written* 10,100 times per day and *read* 2 times per day. That's a terrible ratio. The maintenance cost far exceeds the benefit.
+
+How do you measure this? You need to look at inserts, updates, and deletes on the table, and compare them to index usage.
+
+PostgreSQL has the `pg_stat_user_tables` view. Let me show you:
+
+---
+
+SELECT 
+    schemaname,
+    relname as tablename,
+    n_tup_ins + n_tup_upd + n_tup_del as total_modifications,
+    seq_scan,
+    idx_scan,
+    ROUND((idx_scan::FLOAT / (seq_scan + idx_scan + 1)) * 100, 2) as index_scan_pct
+FROM pg_stat_user_tables
+WHERE relname = 'sales'
+ORDER BY total_modifications DESC;
+
+---
+
+This shows you:
+- **total_modifications**: How many inserts, updates, and deletes have happened
+- **seq_scan**: How many sequential table scans
+- **idx_scan**: How many index scans
+- **index_scan_pct**: What percentage of scans are using indexes vs. full table scans
+
+Now, combine this with index usage data:
+
+---
+
+SELECT 
+    t.schemaname,
+    t.relname as tablename,
+    i.indexname,
+    t.n_tup_ins + t.n_tup_upd + t.n_tup_del as table_modifications,
+    i.idx_scan as index_scans,
+    i.idx_tup_fetch as rows_fetched,
+    CASE 
+        WHEN i.idx_scan = 0 THEN 0
+        ELSE ROUND((table_modifications::FLOAT / NULLIF(i.idx_scan, 0)), 2)
+    END as modifications_per_scan,
+    pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size
+FROM pg_stat_user_tables t
+JOIN pg_stat_user_indexes i ON t.relname = i.tablename
+WHERE t.relname = 'sales'
+ORDER BY pg_relation_size(i.indexrelid) DESC;
+
+---
+
+Look at the `modifications_per_scan` column. If that number is high, you're doing a lot of maintenance work for very little benefit.
+
+For example, if `modifications_per_scan` is 5,000, that means the table has been modified 5,000 times for every scan of this index. That's expensive.
+
+In a write-heavy system, you want that number to be low — ideally single digits. If it's in the hundreds or thousands, the index is probably not worth keeping.
+
+================================================================================
+STORAGE CONSUMPTION: THE REAL COST
+================================================================================
+
+Here's something that makes business people wake up: the cost of storage.
+
+It's easy for a DBA to say, "This index is 500 MB, so it doesn't matter." But storage isn't free. A large SSD might cost you ten thousand dollars. If you're wasting half of it on useless indexes, you're throwing away five grand.
+
+And that's just the initial cost. You also pay for replication — if that 500 MB index is replicated to a standby, you're paying for 1 GB of storage total. If you're in the cloud and paying per gigabyte per month, that adds up.
+
+Here's a query to show you the total size of all indexes on a table:
+
+---
+
+SELECT 
+    t.schemaname,
+    t.relname as tablename,
+    pg_size_pretty(pg_total_relation_size(t.oid) - pg_relation_size(t.oid)) as total_index_size,
+    pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+    ROUND(((pg_total_relation_size(t.oid) - pg_relation_size(t.oid))::FLOAT / 
+           pg_total_relation_size(t.oid)) * 100, 2) as index_pct_of_total
+FROM pg_stat_user_tables t
+ORDER BY (pg_total_relation_size(t.oid) - pg_relation_size(t.oid)) DESC;
+
+---
+
+This shows you:
+- **total_index_size**: All the index storage on this table combined
+- **table_size**: The actual table data
+- **index_pct_of_total**: What percentage of the total space is indexes vs. table
+
+In a well-maintained system, indexes usually make up 20-30% of the table's total size. If it's more than that, you probably have redundant or unused indexes.
+
+At that financial services company I mentioned at the beginning? With the 247 indexes? Indexes made up 78% of the total table size. Seventy-eight percent. I deleted a hundred indexes, and suddenly the table size dropped by half. Same data, less storage, faster queries, faster writes.
+
+================================================================================
+PUTTING IT TOGETHER: A REAL AUDIT
+================================================================================
+
+Let me walk you through a real index audit from start to finish. This is the process I use in production.
+
+**Step 1: Capture a baseline**
+
+First, I capture the current state of index usage. I run this query and save the output to a CSV or table:
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    idx_tup_read,
+    idx_tup_fetch,
+    pg_relation_size(indexrelid) as index_bytes,
+    CURRENT_TIMESTAMP as capture_time
+INTO index_audit_baseline
+FROM pg_stat_user_indexes;
+
+---
+
+**Step 2: Wait for normal traffic**
+
+I wait a couple of weeks. I let the system run normally. All the queries run, all the usual operations happen. I need enough data to make good decisions.
+
+**Step 3: Identify candidates for deletion**
+
+After two weeks, I run a query to find suspects:
+
+---
+
+-- Unused indexes
+SELECT 
+    'UNUSED' as reason,
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid)) as size,
+    'DROP INDEX CONCURRENTLY ' || schemaname || '.' || indexname || ';' as drop_command
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+AND indexname NOT LIKE 'pg_toast%'
+AND indexname NOT LIKE 'pg_constraint%'
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+---
+
+**Step 4: Talk to the application team**
+
+This is crucial. Before I delete any index, I talk to the application team. I say, "I found this index that nobody's using. Can you think of a reason we'd need it? Is there a nightly job I don't know about? A scheduled report?"
+
+Often, they'll say, "Oh yeah, we need that for the monthly reconciliation process." And I don't delete it. Or they'll say, "No idea. Delete it." And I move forward.
+
+A DBA who just starts deleting indexes without talking to the application team is asking for trouble.
+
+**Step 5: Test in non-production first**
+
+I never delete an index in production without testing it in a non-prod environment first. I delete it and run the application's test suite. If anything breaks, I'll know.
+
+**Step 6: Delete with CONCURRENTLY**
+
+When I do delete in production, I use CONCURRENTLY:
+
+---
+
+DROP INDEX CONCURRENTLY schema.indexname;
+
+---
+
+This allows queries to keep running while the index is being dropped. It's slower than a normal DROP INDEX, but it doesn't lock the table.
+
+**Step 7: Monitor**
+
+After I delete an index, I monitor the system for a week. I watch query performance, CPU, disk I/O, everything. If something suddenly gets slow, I know the index I deleted was actually helping for something I didn't realize. Then I recreate it.
+
+This process takes time, but it's worth it. You end up with a clean, efficient set of indexes.
+
+================================================================================
+THE SPECIAL CASE: PARTIAL INDEXES
+================================================================================
+
+Before I move to the labs, I want to talk about a special case: partial indexes.
+
+A partial index is an index that only covers part of a table. You define it with a WHERE clause. Here's an example:
+
+---
+
+CREATE INDEX idx_sales_recent 
+ON sales(customer_id) 
+WHERE sale_date > CURRENT_DATE - INTERVAL '1 year';
+
+---
+
+This index only includes rows from the past year. It's smaller, faster to maintain, and focused on current data.
+
+Partial indexes are brilliant for reducing index overhead. You build small, focused indexes instead of large ones.
+
+When you're doing your audit, partial indexes will often show up as "unused." That's because the WHERE clause is very selective. The optimizer might decide a table scan is faster than the index. But that doesn't mean the index is wasted. It's just that the condition is so selective that the index doesn't help for *the queries you're measuring*.
+
+So when you're identifying candidates for deletion, don't blindly delete partial indexes with zero scans. Think about whether they might help for future queries or specific use cases.
+
+================================================================================
+LAB EXERCISE: CONDUCT A REAL INDEX AUDIT
+================================================================================
+
+Alright, time to get hands-on. You're going to conduct a full index audit on a test database.
+
+**Part 1: Create the test environment**
+
+Set up a database with tables and indexes:
+
+---
+
+DROP TABLE IF EXISTS orders CASCADE;
+
+CREATE TABLE orders (
+    order_id BIGINT PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    product_id BIGINT NOT NULL,
+    order_date DATE NOT NULL,
+    ship_date DATE,
+    amount DECIMAL(10, 2),
+    status VARCHAR(20),
+    region VARCHAR(50)
+);
+
+INSERT INTO orders (order_id, customer_id, product_id, order_date, ship_date, amount, status, region)
+SELECT 
+    g.id,
+    (random() * 100000)::BIGINT,
+    (random() * 10000)::BIGINT,
+    CURRENT_DATE - (random() * INTERVAL '3 years'),
+    CURRENT_DATE - (random() * INTERVAL '2 years'),
+    (random() * 50000)::DECIMAL,
+    CASE WHEN random() < 0.7 THEN 'shipped'
+         WHEN random() < 0.2 THEN 'pending'
+         ELSE 'cancelled' END,
+    CASE WHEN random() < 0.25 THEN 'North'
+         WHEN random() < 0.5 THEN 'South'
+         WHEN random() < 0.75 THEN 'East'
+         ELSE 'West' END
+FROM generate_series(1, 2000000) AS g(id);
+
+ANALYZE orders;
+
+---
+
+**Part 2: Create a mix of good and bad indexes**
+
+---
+
+-- Good indexes - actually used
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date);
+
+-- Bad indexes - never used
+CREATE INDEX idx_orders_region ON orders(region);
+CREATE INDEX idx_orders_amount ON orders(amount);
+CREATE INDEX idx_orders_product ON orders(product_id);
+
+-- Redundant index
+CREATE INDEX idx_orders_customer_redundant ON orders(customer_id);
+
+---
+
+**Part 3: Run some realistic queries to generate usage stats**
+
+---
+
+-- These will use indexes
+SELECT COUNT(*) FROM orders WHERE customer_id = 50000;
+SELECT COUNT(*) FROM orders WHERE customer_id = 50000 AND order_date > '2023-01-01';
+SELECT COUNT(*) FROM orders WHERE status = 'shipped';
+
+-- Run them multiple times
+SELECT COUNT(*) FROM orders WHERE customer_id = 75000;
+SELECT COUNT(*) FROM orders WHERE customer_id = 75000 AND order_date > '2023-01-01';
+
+-- This won't use an index
+SELECT COUNT(*) FROM orders WHERE amount > 10000;
+
+---
+
+**Part 4: Analyze the table**
+
+---
+
+ANALYZE orders;
+
+---
+
+**Part 5: Find all unused indexes**
+
+Write a query using `pg_stat_user_indexes` to find indexes with zero scans. How many did you find?
+
+**Part 6: Find rarely-used indexes**
+
+Write a query to find indexes that have been scanned fewer than 5 times but are larger than 10 MB (in this test, adjust the size threshold down). What's the `kb_per_scan` value for these indexes?
+
+**Part 7: Find low-selectivity indexes**
+
+Write a query to find indexes with a high `read_fetch_ratio`. What does that tell you about those indexes?
+
+**Part 8: Check read/write ratios**
+
+Use `pg_stat_user_tables` and `pg_stat_user_indexes` to calculate the ratio of table modifications to index scans. Which indexes are expensive to maintain relative to their use?
+
+**Part 9: Calculate storage consumption**
+
+Use `pg_total_relation_size` to find what percentage of your table's storage is taken up by indexes. Is it reasonable?
+
+**Part 10: Make a decision**
+
+Based on your analysis, write down which indexes you would delete and why. Justify each deletion with data.
+
+Then, actually delete one of them:
+
+---
+
+DROP INDEX CONCURRENTLY idx_orders_region;
+
+---
+
+Re-run the analysis. Did anything break? Did performance change?
+
+================================================================================
+CLOSING WORDS
+================================================================================
+
+Index auditing is one of the most valuable things you can do as a DBA. It's not glamorous. It won't make you look like a hero to the business. But it will keep your databases healthy, efficient, and cost-effective.
+
+Here's what I want you to remember:
+
+1. **Use the system views.** `pg_stat_user_indexes` and `pg_stat_user_tables` are your friends. Check them regularly.
+
+2. **Don't trust short-term data.** Wait a couple of weeks before making deletion decisions. Let the system run normally.
+
+3. **Talk to your application team.** Before you delete an index, ask them if they know why it exists. You'll learn things.
+
+4. **Think about cost.** Storage costs money. Maintenance costs performance. Weigh the trade-offs.
+
+5. **Be conservative, but bold.** If an index is clearly not helping, delete it. Don't let unused indexes pile up. But don't delete something you're unsure about without testing first.
+
+6. **Persist your statistics.** Don't rely on in-memory stats. Capture them to a permanent table so you can track trends over time.
+
+In your career, you're going to find databases with hundreds of orphaned indexes. You're going to delete indexes that have been sitting there for years, unused. You're going to be shocked at how much disk space that frees up, how much faster queries get, how much smoother everything runs.
+
+That's the power of a good audit. That's what we do.
+
+================================================================================
+QUICK REFERENCE: INDEX AUDIT COMMAND CARD
+================================================================================
+
+** FIND ALL UNUSED INDEXES (ZERO SCANS) **
+
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        idx_scan,
+        pg_size_pretty(pg_relation_size(indexrelid)) as size
+    FROM pg_stat_user_indexes
+    WHERE idx_scan = 0
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+** FIND RARELY-USED, LARGE INDEXES **
+
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        idx_scan,
+        pg_size_pretty(pg_relation_size(indexrelid)) as size,
+        ROUND(pg_relation_size(indexrelid) / NULLIF(idx_scan, 0) / 1024, 2) as kb_per_scan
+    FROM pg_stat_user_indexes
+    WHERE idx_scan > 0 AND idx_scan < 10
+    AND pg_relation_size(indexrelid) > 1048576
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+** FIND LOW-SELECTIVITY INDEXES **
+
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        idx_scan,
+        idx_tup_read,
+        idx_tup_fetch,
+        ROUND((idx_tup_read::FLOAT / NULLIF(idx_tup_fetch, 0))::NUMERIC, 2) as read_fetch_ratio,
+        pg_size_pretty(pg_relation_size(indexrelid)) as size
+    FROM pg_stat_user_indexes
+    WHERE idx_scan > 100 AND idx_tup_read > 0
+    ORDER BY (idx_tup_read::FLOAT / NULLIF(idx_tup_fetch, 0)) DESC;
+
+** FIND POTENTIALLY REDUNDANT INDEXES **
+
+    SELECT 
+        a.tablename,
+        a.indexname as used_index,
+        b.indexname as unused_index,
+        pg_size_pretty(pg_relation_size(b.indexrelid)) as unused_size,
+        a.idx_scan as scans_on_used,
+        b.idx_scan as scans_on_unused
+    FROM pg_stat_user_indexes a
+    JOIN pg_stat_user_indexes b 
+        ON a.tablename = b.tablename 
+        AND a.idx_scan > 0 
+        AND b.idx_scan = 0
+    ORDER BY pg_relation_size(b.indexrelid) DESC;
+
+** VIEW TABLE MODIFICATION STATISTICS **
+
+    SELECT 
+        schemaname,
+        relname as tablename,
+        n_tup_ins + n_tup_upd + n_tup_del as total_modifications,
+        seq_scan,
+        idx_scan,
+        ROUND((idx_scan::FLOAT / (seq_scan + idx_scan + 1)) * 100, 2) as index_scan_pct
+    FROM pg_stat_user_tables
+    ORDER BY total_modifications DESC;
+
+** CALCULATE MODIFICATIONS-TO-SCANS RATIO **
+
+    SELECT 
+        t.schemaname,
+        t.relname as tablename,
+        i.indexname,
+        t.n_tup_ins + t.n_tup_upd + t.n_tup_del as modifications,
+        i.idx_scan,
+        CASE 
+            WHEN i.idx_scan = 0 THEN NULL
+            ELSE ROUND(((t.n_tup_ins + t.n_tup_upd + t.n_tup_del)::FLOAT / i.idx_scan), 2)
+        END as mods_per_scan,
+        pg_size_pretty(pg_relation_size(i.indexrelid)) as size
+    FROM pg_stat_user_tables t
+    JOIN pg_stat_user_indexes i ON t.relname = i.tablename
+    WHERE i.idx_scan > 0
+    ORDER BY mods_per_scan DESC NULLS LAST;
+
+** CHECK INDEX STORAGE CONSUMPTION **
+
+    SELECT 
+        t.schemaname,
+        t.relname as tablename,
+        pg_size_pretty(pg_total_relation_size(t.oid) - pg_relation_size(t.oid)) as index_size,
+        pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+        ROUND(((pg_total_relation_size(t.oid) - pg_relation_size(t.oid))::FLOAT / 
+               pg_total_relation_size(t.oid)) * 100, 2) as index_pct
+    FROM pg_stat_user_tables t
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY (pg_total_relation_size(t.oid) - pg_relation_size(t.oid)) DESC;
+
+** CREATE A PERSISTENT AUDIT TABLE **
+
+    CREATE TABLE index_audit_history (
+        capture_date TIMESTAMP,
+        schemaname VARCHAR(100),
+        tablename VARCHAR(100),
+        indexname VARCHAR(100),
+        idx_scan BIGINT,
+        idx_tup_read BIGINT,
+        idx_tup_fetch BIGINT,
+        index_size_bytes BIGINT
+    );
+    
+    -- Run this regularly to capture snapshots
+    INSERT INTO index_audit_history
+    SELECT 
+        CURRENT_TIMESTAMP,
+        schemaname,
+        tablename,
+        indexname,
+        idx_scan,
+        idx_tup_read,
+        idx_tup_fetch,
+        pg_relation_size(indexrelid)
+    FROM pg_stat_user_indexes;
+
+** DROP AN INDEX SAFELY (DOESN'T LOCK TABLE) **
+
+    DROP INDEX CONCURRENTLY schema_name.index_name;
+
+** VIEW INDEX DEFINITION **
+
+    SELECT pg_get_indexdef(indexrelid)
+    FROM pg_stat_user_indexes
+    WHERE indexname = 'your_index_name';
+
+================================================================================
+END OF LECTURE
+================================================================================

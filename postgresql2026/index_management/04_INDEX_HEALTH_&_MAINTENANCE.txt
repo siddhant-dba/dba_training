@@ -1,0 +1,788 @@
+================================================================================
+  POSTGRESQL INDEX HEALTH & MAINTENANCE
+  Diploma DBA Program — Phase 4
+  Duration: ~60 minutes (including live demonstrations and lab exercises)
+================================================================================
+
+Alright, welcome back. Today we're talking about something that most junior DBAs completely ignore until one day a production system grinds to a halt and they panic.
+
+Index maintenance.
+
+When you create an index, it starts out clean and efficient. The pages are organized nicely. The data is laid out optimally. But over time — as you insert rows, update them, delete them — the index degrades. It gets fragmented. It gets bloated. It consumes more space and takes longer to scan.
+
+Most people have no idea this is happening.
+
+I worked at a company once where they had an index that was 45 gigabytes. Forty-five gigs. The actual data it was indexing was only 8 gigabytes. The index was bloated to five times its optimal size because they'd never done any maintenance. When we rebuilt that index, it shrunk down to 1.2 gigabytes. Same data, one-tenth the size, and the queries using it got about 30% faster just from better cache behavior.
+
+That's the difference between a neglected index and a maintained one.
+
+So today we're learning how to keep your indexes healthy. We're learning how to detect when an index is degrading. And we're learning when and how to fix it.
+
+This is the difference between a DBA who just builds indexes and forgets about them, and a DBA who actually maintains their database.
+
+================================================================================
+THE PROBLEM: FRAGMENTATION AND BLOAT
+================================================================================
+
+Let me explain what happens to an index over time.
+
+When you first create an index, PostgreSQL allocates pages (fixed-size chunks of disk, usually 8 KB each). It organizes the index data efficiently across those pages. The fill factor — the percentage of each page that's filled with data — is whatever you set it to, typically around 90%.
+
+But then life happens. You start inserting rows. The index grows. Pages fill up. At some point, a page becomes full. When you insert another row that belongs on that full page, PostgreSQL has to split the page. It creates a new page, moves half the data to the new page, and inserts the new row.
+
+This is called a **page split**. It's expensive. It involves writing two pages instead of one. And it happens all the time in active indexes.
+
+The problem is: after the split, neither page is full anymore. Maybe one is 50% full, the other is 50% full. Over months or years, as you do thousands of page splits, your index becomes full of half-empty pages. The index grows massive even though the underlying data hasn't changed much. And when you scan the index, you're touching way more pages than you need to, so queries get slower.
+
+That's fragmentation. That's bloat.
+
+In SQL Server, you use DBCC to measure fragmentation percentage. In Oracle, you use table analysis. In PostgreSQL, it's trickier. We don't have a built-in fragmentation metric. But we can infer it from index size relative to the data it's indexing.
+
+================================================================================
+DETECTING FRAGMENTATION: THE INDIRECT METHOD
+================================================================================
+
+PostgreSQL doesn't have a direct fragmentation metric like SQL Server does. But you can estimate fragmentation by comparing the index size to the size of the data it's indexing.
+
+Here's the concept: If an index is much larger than the underlying data, it's probably fragmented. Not always — sometimes a large index is just indexing a lot of data. But if an index is disproportionately large, that's a red flag.
+
+Here's a query to find potentially fragmented indexes:
+
+---
+
+SELECT 
+    t.schemaname,
+    t.relname as table_name,
+    i.indexname,
+    pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size,
+    pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+    ROUND((pg_relation_size(i.indexrelid)::FLOAT / 
+           pg_relation_size(t.oid)) * 100, 2) as index_to_table_ratio,
+    i.idx_scan as scans,
+    CASE 
+        WHEN (pg_relation_size(i.indexrelid)::FLOAT / 
+              pg_relation_size(t.oid)) > 1.5 
+        THEN 'POSSIBLY FRAGMENTED'
+        WHEN (pg_relation_size(i.indexrelid)::FLOAT / 
+              pg_relation_size(t.oid)) > 2.0 
+        THEN 'LIKELY FRAGMENTED'
+        ELSE 'NORMAL'
+    END as health_status
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_relation_size(i.indexrelid) DESC;
+
+---
+
+This shows you the ratio of index size to table size. If an index is 1.5 times larger than the table, it might be fragmented. If it's twice as large, it probably is.
+
+But here's the thing: this is an *approximation*. It's not a definitive measurement. An index on a text column might legitimately be larger than the table, because text is compressed in the table but not in the index.
+
+So use this as a starting point. If an index looks suspiciously large, investigate further.
+
+How do you investigate? You look at whether the index is actually being used frequently. If it is, and it's large, and it's fragmented, you should rebuild it. If it's not being used, just delete it — we learned that in Phase 2.
+
+================================================================================
+INSTRUCTOR WARNING: THE MAINTENANCE WINDOW TRAP
+================================================================================
+
+Alright, I've got a horror story for you.
+
+There was a company running a production e-commerce database. Lots of activity. Lots of transactions. And the DBA decided to do index maintenance — rebuilding fragmented indexes.
+
+The problem was: the DBA decided to do it during business hours. Just one index at a time, he thought. It won't affect anything.
+
+He ran REINDEX on a single index. And that index was locked exclusively during the rebuild. No reads, no writes. Just locked.
+
+The application was waiting to query the table that index was on. It timed out. And then other queries started piling up, waiting for that lock. Within minutes, the whole application was stopped.
+
+The DBA learned a lesson that day: never do index maintenance during peak traffic without planning for it.
+
+**Lesson: Always schedule maintenance during a maintenance window or low-traffic period. And always understand what locks your maintenance operation is going to take. In PostgreSQL, REINDEX takes an exclusive lock on the table. REINDEX CONCURRENTLY does not, but it's slower. Know the difference.**
+
+This is critical. A 15-minute index rebuild during the day can cause a 2-hour production outage. Not worth it.
+
+Okay. End of warning. Let me teach you the right way.
+
+================================================================================
+REBUILD VS. REORGANIZE: THE POSTGRESQL STORY
+================================================================================
+
+In SQL Server, there's a distinction:
+- REBUILD: Drop the index and recreate it from scratch
+- REORGANIZE: Defragment in place without dropping
+
+PostgreSQL is different. We don't have a "reorganize" operation like SQL Server does. We have:
+- REINDEX: Rebuild the index from scratch, locking the table
+- REINDEX CONCURRENTLY: Rebuild the index without locking, but slower and using more disk space
+
+There's no "light" maintenance operation in PostgreSQL. You either lock the table or you don't.
+
+If you lock the table, REINDEX is fast — maybe a minute for a large index. But the table is unavailable for reads and writes.
+
+If you use CONCURRENTLY, the table stays available, but the operation takes longer (maybe 3-4 times slower) and uses more disk space (because the old and new indexes exist simultaneously).
+
+Here's how each works:
+
+**Option 1: Regular REINDEX (locks the table)**
+
+---
+
+REINDEX INDEX schema.index_name;
+
+---
+
+This acquires an exclusive lock on the table. Nothing else can access the table until the rebuild is done. Fast, but disruptive.
+
+**Option 2: REINDEX CONCURRENTLY (non-blocking)**
+
+---
+
+REINDEX INDEX CONCURRENTLY schema.index_name;
+
+---
+
+This rebuilds the index without locking the table. Queries can still run. Inserts, updates, deletes can still happen. But it's slower and uses more disk space temporarily.
+
+In production, you almost always use CONCURRENTLY. The trade-off is worth it. You sacrifice some speed and temporary disk space to keep the database available.
+
+But here's something important: REINDEX CONCURRENTLY doesn't lock the table, but it does lock the index itself for a brief moment at the end when it swaps in the new version. So there's still a tiny blip of unavailability. But it's milliseconds, not minutes.
+
+There's also a third option, which I prefer in many cases:
+
+**Option 3: Drop and recreate (if you can use CONCURRENTLY on creation)**
+
+---
+
+CREATE INDEX CONCURRENTLY schema.index_name_new 
+ON schema.table_name(columns);
+
+DROP INDEX CONCURRENTLY schema.index_name;
+
+---
+
+This builds a new index without locking the old table, then drops the old index. It's essentially the same as REINDEX CONCURRENTLY, but it gives you more control and the ability to test the new index before dropping the old one.
+
+Now, here's the strategic question: when should you rebuild an index? Is it on a schedule, or on demand?
+
+================================================================================
+MAINTENANCE PLANNING: STRATEGY OVER SCHEDULE
+================================================================================
+
+A lot of DBAs think maintenance should be on a schedule. "Every Sunday, rebuild all indexes." That's wrong.
+
+Here's why: if an index isn't fragmented, rebuilding it is wasted effort. You're using up maintenance windows, consuming resources, taking locks — all for no benefit.
+
+The right approach is: **rebuild only when needed**.
+
+How do you know when it's needed? Here are the heuristics I use:
+
+1. **The size heuristic**: If an index is more than 1.5x the size of the data it's indexing, it might be fragmented. Rebuild it.
+
+2. **The usage heuristic**: If an index is heavily used (thousands of scans) and you suspect it's fragmented, rebuild it and measure the performance improvement. If queries got faster, great. If not, don't rebuild it again.
+
+3. **The age heuristic**: Very active, write-heavy tables accumulate fragmentation quickly. But dormant tables don't. Don't rebuild indexes on inactive tables.
+
+4. **The table growth heuristic**: If a table has grown dramatically in size but you haven't rebuilt its indexes since creation, it's probably fragmented. Rebuild.
+
+5. **The workload heuristic**: If your workload shifted — suddenly you're doing a lot more deletes and inserts — fragmentation increases. Rebuild.
+
+Here's a query that helps you identify candidates for maintenance:
+
+---
+
+SELECT 
+    t.schemaname,
+    t.relname as table_name,
+    i.indexname,
+    pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size,
+    pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+    ROUND((pg_relation_size(i.indexrelid)::FLOAT / 
+           pg_relation_size(t.oid)) * 100, 2) as ratio,
+    i.idx_scan as scans,
+    t.n_tup_ins + t.n_tup_upd + t.n_tup_del as modifications,
+    CASE 
+        WHEN i.idx_scan > 1000 AND 
+             (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) > 1.5
+        THEN 'HIGH - Fragmented and heavily used'
+        WHEN (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) > 2.0
+        THEN 'MEDIUM - Very large relative to table'
+        WHEN i.idx_scan > 100 AND modifications > 100000
+        THEN 'LOW - Active but not huge'
+        ELSE 'NO ACTION'
+    END as maintenance_priority
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema')
+AND i.idx_scan > 0
+ORDER BY (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) DESC;
+
+---
+
+Run this monthly. Focus on the HIGH priority indexes. Those are the ones causing actual problems. Rebuild them. Skip the rest.
+
+================================================================================
+FILL FACTOR: PREVENTION INSTEAD OF CURE
+================================================================================
+
+Here's a secret: you can *prevent* fragmentation instead of just fixing it after the fact.
+
+The tool is called **fill factor**. It's a parameter you set when creating an index.
+
+The idea is simple: instead of filling pages to 100% when creating the index, you leave some empty space. That space acts as a buffer for future inserts and updates. When a page split would normally happen, you might still have room to add the new data without splitting.
+
+The syntax is:
+
+---
+
+CREATE INDEX idx_name ON table(columns) WITH (FILLFACTOR = 80);
+
+---
+
+This creates an index where each page is only 80% full when created. The remaining 20% is reserved for future updates.
+
+The trade-off: You use 20% more disk space initially. But you reduce page splits and fragmentation over time.
+
+When should you use a low fill factor?
+
+- **High INSERT/UPDATE/DELETE workloads**: If your table is getting a lot of writes, a low fill factor (70-80%) prevents fragmentation.
+- **Volatile tables**: If data is frequently updated, especially in ways that cause index key changes, lower fill factor helps.
+- **Index columns that are sequential**: If you're indexing an auto-incrementing ID or a timestamp that's always increasing, you don't need a low fill factor. Just use the default.
+
+When should you use a high fill factor (90-100%)?
+
+- **Read-heavy workloads**: If the table is mostly reads and few writes, maximize fill factor to minimize index size.
+- **Data warehouse tables**: Usually built once and then left alone. Fill factor doesn't matter.
+- **Indexes on unchanging data**: If the indexed columns never change, fill factor doesn't matter.
+
+The default fill factor is 90, which is reasonable for most workloads.
+
+Here's a guideline:
+- OLTP systems (lots of writes): 70-80
+- Mixed workloads: 80-90
+- OLAP/DW systems (mostly reads): 90-100
+
+Now, here's something important: you can't change the fill factor of an existing index without rebuilding it. So if you realize you chose the wrong fill factor, you have to drop and recreate.
+
+---
+
+-- Old index with wrong fill factor
+DROP INDEX CONCURRENTLY idx_name;
+
+-- New index with better fill factor
+CREATE INDEX CONCURRENTLY idx_name 
+ON table(columns) 
+WITH (FILLFACTOR = 75);
+
+---
+
+================================================================================
+PAGE SPLITS: UNDERSTANDING THE COST
+================================================================================
+
+Let me dive deeper into page splits, because understanding them really helps you appreciate why maintenance matters.
+
+A page split happens like this:
+
+1. An index page is full (100% of the 8 KB page is occupied)
+2. A new index entry needs to be added
+3. PostgreSQL cannot fit it on the existing page
+4. It allocates a new page
+5. It moves roughly half the entries to the new page
+6. It inserts the new entry
+
+This process is expensive because:
+- Two disk writes instead of one (or more if pages are not cached)
+- Tree restructuring (the parent nodes need to be updated to know about the new child)
+- CPU overhead for reorganizing data
+
+And here's the hidden cost: after a page split, both pages are only 50% full. If you insert more rows into that same area, you might cause another split shortly after. This cascading effect is what causes fragmentation.
+
+You can see page splits happening in your logs if you enable detailed statistics:
+
+---
+
+SET log_statement = 'all';
+SET log_min_duration_statement = 0;
+
+---
+
+But in production, you don't want that verbosity. Instead, you can infer page splits by looking at index size over time. If an index grows much faster than the underlying data, page splits are happening frequently.
+
+Here's a scenario to illustrate:
+
+Imagine you have a table with 1 million rows. The index is 10 MB. That's reasonable.
+
+Six months later, you still have 1 million rows (no growth), but the index is 25 MB. That's fragmentation. The index didn't grow because the data didn't grow. It grew because of inefficient page utilization from countless page splits over six months.
+
+This is why maintenance matters.
+
+================================================================================
+PRACTICAL MAINTENANCE STRATEGY
+================================================================================
+
+Alright, let me give you a practical maintenance strategy that I actually use in production.
+
+**Step 1: Monthly analysis**
+
+Once a month, I run the fragmentation detection query and identify candidates:
+
+---
+
+SELECT 
+    schemaname,
+    relname,
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as size,
+    ROUND((pg_relation_size(indexrelid)::FLOAT / pg_relation_size(oid)) * 100, 2) as ratio
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE (pg_relation_size(indexrelid)::FLOAT / pg_relation_size(t.oid)) > 1.5
+AND i.idx_scan > 100
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+---
+
+**Step 2: Prioritize by impact**
+
+From the candidates, I focus on:
+- Largest indexes (biggest benefit from rebuilding)
+- Most-used indexes (most impact on query performance)
+
+I usually pick the top 5-10 indexes to rebuild each month.
+
+**Step 3: Schedule during maintenance window**
+
+I schedule them during a low-traffic window. For most systems, that's Sunday 2 AM. For my own systems, it might be Friday after hours.
+
+**Step 4: Use CONCURRENTLY**
+
+I always use CONCURRENTLY:
+
+---
+
+REINDEX INDEX CONCURRENTLY schema.index_name;
+
+---
+
+This keeps the database available.
+
+**Step 5: Monitor the operation**
+
+I don't just fire and forget. I watch the operation:
+- Is it taking longer than expected?
+- Is the server under load?
+- Are applications complaining?
+
+If something looks off, I can cancel the operation and retry later.
+
+**Step 6: Post-maintenance verification**
+
+After the rebuild, I run the detection query again to verify the index is smaller. I also check query performance on queries using that index.
+
+---
+
+SELECT 
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as new_size
+FROM pg_stat_user_indexes
+WHERE indexname = 'idx_name';
+
+---
+
+**Step 7: Annual review**
+
+Once a year, I step back and ask: "Are there indexes that never benefit from maintenance? Unused indexes?" And I delete them.
+
+This whole process takes maybe 2-3 hours per month. In return, I keep my indexes healthy, my database fast, and my stakeholders happy.
+
+================================================================================
+AUTOMATION: WHEN AND HOW
+================================================================================
+
+A lot of DBAs want to automate maintenance. And you can, but carefully.
+
+PostgreSQL has `pg_cron`, a contrib module that lets you schedule jobs:
+
+---
+
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+-- Rebuild the top 5 largest fragmented indexes every Sunday at 2 AM
+SELECT cron.schedule('reindex_maintenance', '0 2 * * 0', $$
+    WITH candidates AS (
+        SELECT indexname
+        FROM pg_stat_user_indexes i
+        JOIN pg_stat_user_tables t ON i.tablename = t.relname
+        WHERE (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) > 1.5
+        AND i.idx_scan > 100
+        ORDER BY pg_relation_size(i.indexrelid) DESC
+        LIMIT 5
+    )
+    SELECT (
+        'REINDEX INDEX CONCURRENTLY ' || schemaname || '.' || indexname
+    ) FROM pg_stat_user_indexes
+    WHERE indexname IN (SELECT indexname FROM candidates);
+$$);
+
+---
+
+But I'm cautious about full automation. Here's why:
+
+1. **Unexpected contention**: If maintenance happens while a critical batch job is running, you'll have contention. Automation doesn't know about business context.
+
+2. **Cascading failures**: If one index rebuild fails, you want human judgment about whether to retry or investigate.
+
+3. **Disk space**: REINDEX CONCURRENTLY uses extra disk space. If the server is near capacity, automated maintenance might fail.
+
+So I use a hybrid approach:
+- Automated analysis (run the detection query nightly, store results)
+- Manual decision-making (review results weekly, decide what to rebuild)
+- Automated execution (once approved, use a script to do the rebuild)
+
+This gives you the best of both worlds: consistent analysis without surprise maintenance window collisions.
+
+================================================================================
+SPECIAL CASES: B-TREE VS. OTHER INDEX TYPES
+================================================================================
+
+Everything I've taught you applies to B-Tree indexes, which are 99% of what you'll work with.
+
+But PostgreSQL supports other index types:
+- Hash indexes (don't fragment, but rarely used)
+- GiST, GIN, BRIN (specialized for different data types)
+
+GIN indexes (Generalized Inverted Index) are interesting for fragmentation. They're commonly used for full-text search and array indexing. They can get large and fragmented faster than B-Tree because of how they're structured.
+
+For GIN indexes, REINDEX works the same way, but the fragmentation pattern is different. A GIN index might grow rapidly even without many page splits, because of how the index structure works.
+
+BRIN indexes (Block Range Index) are interesting because they're very small and don't fragment in the traditional sense. They're designed for sequential data like timestamps and time-series.
+
+For the purposes of this course, assume B-Tree. Most of what you'll maintain is B-Tree. When you encounter other types, the same principles apply: measure size relative to data, rebuild if fragmented, use CONCURRENTLY.
+
+================================================================================
+LAB EXERCISE: SIMULATE FRAGMENTATION AND MAINTENANCE
+================================================================================
+
+Alright, hands-on time. You're going to deliberately fragment an index and then fix it.
+
+**Part 1: Create a fragmentation scenario**
+
+---
+
+DROP TABLE IF EXISTS test_data CASCADE;
+
+CREATE TABLE test_data (
+    id BIGINT PRIMARY KEY,
+    value1 BIGINT,
+    value2 INTEGER,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX idx_test_value1 ON test_data(value1);
+
+-- Insert initial data
+INSERT INTO test_data (id, value1, value2, created_at)
+SELECT 
+    g.id,
+    (random() * 1000000)::BIGINT,
+    (random() * 100000)::INTEGER,
+    CURRENT_TIMESTAMP - (random() * INTERVAL '1 year')
+FROM generate_series(1, 1000000) AS g(id);
+
+ANALYZE test_data;
+
+---
+
+**Part 2: Measure the initial state**
+
+---
+
+SELECT 
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
+    pg_size_pretty(pg_relation_size(oid)) as table_size,
+    ROUND((pg_relation_size(indexrelid)::FLOAT / pg_relation_size(oid)) * 100, 2) as ratio
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE tablename = 'test_data';
+
+---
+
+Write down the index size and ratio.
+
+**Part 3: Cause fragmentation**
+
+Now simulate heavy random updates and deletes, which cause page splits:
+
+---
+
+-- Random updates to scattered rows
+UPDATE test_data SET value1 = (random() * 1000000)::BIGINT 
+WHERE id % 3 = 0;
+
+-- Random deletes
+DELETE FROM test_data WHERE id % 7 = 0;
+
+-- Re-insert some rows with random values
+INSERT INTO test_data (id, value1, value2, created_at)
+SELECT 
+    g.id + 2000000,
+    (random() * 1000000)::BIGINT,
+    (random() * 100000)::INTEGER,
+    CURRENT_TIMESTAMP
+FROM generate_series(1, 100000) AS g(id);
+
+ANALYZE test_data;
+
+---
+
+**Part 4: Measure fragmentation**
+
+---
+
+SELECT 
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
+    pg_size_pretty(pg_relation_size(oid)) as table_size,
+    ROUND((pg_relation_size(indexrelid)::FLOAT / pg_relation_size(oid)) * 100, 2) as ratio
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE tablename = 'test_data';
+
+---
+
+Did the index size increase even though the table didn't grow much? That's fragmentation.
+
+**Part 5: Rebuild the index**
+
+---
+
+REINDEX INDEX CONCURRENTLY idx_test_value1;
+
+---
+
+**Part 6: Measure again**
+
+---
+
+SELECT 
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
+    pg_size_pretty(pg_relation_size(oid)) as table_size,
+    ROUND((pg_relation_size(indexrelid)::FLOAT / pg_relation_size(oid)) * 100, 2) as ratio
+FROM pg_stat_user_indexes i
+JOIN pg_stat_user_tables t ON i.tablename = t.relname
+WHERE tablename = 'test_data';
+
+---
+
+What changed? Did the index shrink? By how much?
+
+**Part 7: Test fill factor**
+
+Create a new index with a lower fill factor and repeat the process:
+
+---
+
+CREATE INDEX idx_test_value1_lowff 
+ON test_data(value2) 
+WITH (FILLFACTOR = 70);
+
+-- Repeat the update/delete/insert process from Part 3
+-- Then measure the new index
+-- Compare the fragmentation pattern to the original index
+
+---
+
+What difference does the fill factor make?
+
+**Part 8: Calculate maintenance overhead**
+
+If you had 10 fragmented indexes in production, and each rebuild takes 5 minutes, how long would the total maintenance window be? Would you do all 10 at once or spread them out?
+
+================================================================================
+CLOSING WORDS
+================================================================================
+
+Index maintenance is unglamorous work. Nobody's going to thank you for rebuilding an index. But a well-maintained database is fast, reliable, and efficient. A neglected database slowly degrades until one day queries are crawling and nobody knows why.
+
+You now know how to prevent that. You know how to detect fragmentation. You know when to rebuild and when to leave things alone. You know about fill factor as a preventive measure.
+
+Here's what I want you to remember:
+
+1. **Fragmentation is real.** As indexes age, they accumulate inefficient page structures. This costs you performance and storage.
+
+2. **Measurement first.** Don't rebuild every index on a schedule. Measure fragmentation, identify candidates, rebuild only the ones that need it.
+
+3. **Always use CONCURRENTLY.** In production, never use regular REINDEX during business hours. Use CONCURRENTLY, or schedule maintenance during a window.
+
+4. **Fill factor is prevention.** Set appropriate fill factor when creating indexes on write-heavy tables. It prevents fragmentation instead of just fixing it after the fact.
+
+5. **Monitor after maintenance.** After rebuilding, verify that the index is actually smaller and that queries using it are faster.
+
+6. **Automate analysis, not maintenance.** Let scripts tell you what needs rebuilding, but make the decision and trigger the rebuild manually.
+
+In production, you're going to inherit databases that nobody's been maintaining. You're going to find 5-year-old indexes that are 10 times their optimal size. And you're going to clean them up. That's when all of this becomes real.
+
+You've got this. Maintenance might not be exciting, but it's essential.
+
+================================================================================
+QUICK REFERENCE: INDEX MAINTENANCE COMMAND CARD
+================================================================================
+
+** DETECT POTENTIALLY FRAGMENTED INDEXES **
+
+    SELECT 
+        t.schemaname,
+        t.relname as table_name,
+        i.indexname,
+        pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size,
+        pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+        ROUND((pg_relation_size(i.indexrelid)::FLOAT / 
+               pg_relation_size(t.oid)) * 100, 2) as index_ratio,
+        CASE 
+            WHEN (pg_relation_size(i.indexrelid)::FLOAT / 
+                  pg_relation_size(t.oid)) > 2.0 
+            THEN 'LIKELY FRAGMENTED'
+            WHEN (pg_relation_size(i.indexrelid)::FLOAT / 
+                  pg_relation_size(t.oid)) > 1.5 
+            THEN 'POSSIBLY FRAGMENTED'
+            ELSE 'NORMAL'
+        END as health
+    FROM pg_stat_user_indexes i
+    JOIN pg_stat_user_tables t ON i.tablename = t.relname
+    WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY pg_relation_size(i.indexrelid) DESC;
+
+** IDENTIFY MAINTENANCE CANDIDATES (HIGH PRIORITY) **
+
+    SELECT 
+        t.schemaname,
+        t.relname as table_name,
+        i.indexname,
+        pg_size_pretty(pg_relation_size(i.indexrelid)) as index_size,
+        ROUND((pg_relation_size(i.indexrelid)::FLOAT / 
+               pg_relation_size(t.oid)) * 100, 2) as ratio,
+        i.idx_scan as scans,
+        t.n_tup_ins + t.n_tup_upd + t.n_tup_del as modifications,
+        CASE 
+            WHEN i.idx_scan > 1000 AND 
+                 (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) > 1.5
+            THEN 'HIGH - Fragmented and heavily used'
+            WHEN (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) > 2.0
+            THEN 'MEDIUM - Very large'
+            ELSE 'LOWER'
+        END as priority
+    FROM pg_stat_user_indexes i
+    JOIN pg_stat_user_tables t ON i.tablename = t.relname
+    WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema')
+    AND i.idx_scan > 0
+    ORDER BY (pg_relation_size(i.indexrelid)::FLOAT / pg_relation_size(t.oid)) DESC;
+
+** REBUILD AN INDEX (LOCKS TABLE, FAST) **
+
+    REINDEX INDEX schema_name.index_name;
+
+** REBUILD AN INDEX (NON-BLOCKING, SLOWER) **
+
+    REINDEX INDEX CONCURRENTLY schema_name.index_name;
+
+** REBUILD ALL INDEXES ON A TABLE (BLOCKING) **
+
+    REINDEX TABLE schema_name.table_name;
+
+** REBUILD ALL INDEXES ON A TABLE (NON-BLOCKING) **
+
+    REINDEX TABLE CONCURRENTLY schema_name.table_name;
+
+** CREATE INDEX WITH CUSTOM FILL FACTOR (FOR NEW INDEXES) **
+
+    CREATE INDEX index_name 
+    ON table_name(columns) 
+    WITH (FILLFACTOR = 75);
+    
+    -- Recommended fill factors:
+    -- OLTP (lots of writes): 70-80
+    -- Mixed workload: 80-90
+    -- OLAP/Analytical (mostly reads): 90-100
+    -- Default: 90
+
+** REBUILD AND CHANGE FILL FACTOR **
+
+    -- Step 1: Create new index with better fill factor
+    CREATE INDEX CONCURRENTLY index_name_new 
+    ON schema_name.table_name(columns) 
+    WITH (FILLFACTOR = 75);
+    
+    -- Step 2: Drop old index
+    DROP INDEX CONCURRENTLY schema_name.index_name;
+    
+    -- Step 3: Rename new index (optional, for clarity)
+    ALTER INDEX index_name_new RENAME TO index_name;
+
+** CHECK INDEX SIZE BEFORE/AFTER REBUILD **
+
+    SELECT 
+        indexname,
+        pg_size_pretty(pg_relation_size(indexrelid)) as size
+    FROM pg_stat_user_indexes
+    WHERE indexname = 'index_name';
+
+** ANALYZE TABLE (UPDATES STATISTICS, HELPS QUERY PLANNER) **
+
+    ANALYZE schema_name.table_name;
+
+** VIEW INDEX FRAGMENTATION RATIO FOR SPECIFIC TABLE **
+
+    SELECT 
+        i.indexname,
+        ROUND((pg_relation_size(i.indexrelid)::FLOAT / 
+               pg_relation_size(t.oid)) * 100, 2) as index_to_table_ratio_pct
+    FROM pg_stat_user_indexes i
+    JOIN pg_stat_user_tables t ON i.tablename = t.relname
+    WHERE t.relname = 'table_name'
+    ORDER BY pg_relation_size(i.indexrelid) DESC;
+
+** SCHEDULE MAINTENANCE WITH pg_cron **
+
+    CREATE EXTENSION IF NOT EXISTS pg_cron;
+    
+    -- Schedule ANALYZE daily at 2 AM
+    SELECT cron.schedule('daily_analyze', '0 2 * * *', 
+        'ANALYZE schema_name.table_name;');
+    
+    -- List scheduled jobs
+    SELECT * FROM cron.job;
+
+** ESTIMATE PAGE UTILIZATION (ROUGH) **
+
+    SELECT 
+        indexname,
+        pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
+        (idx_tup_read + idx_tup_fetch) as total_accesses,
+        CASE 
+            WHEN (idx_tup_read + idx_tup_fetch) = 0 THEN 'Unused'
+            WHEN (pg_relation_size(indexrelid)::FLOAT / 
+                  NULLIF(idx_tup_read + idx_tup_fetch, 0) > 1000)
+            THEN 'LOW EFFICIENCY - Possibly fragmented'
+            ELSE 'NORMAL'
+        END as efficiency
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+** MONITOR REINDEX PROGRESS (IN ANOTHER SESSION) **
+
+    SELECT 
+        pid,
+        usename,
+        query,
+        state
+    FROM pg_stat_activity
+    WHERE query LIKE '%REINDEX%';
+
+================================================================================
+END OF LECTURE
+================================================================================

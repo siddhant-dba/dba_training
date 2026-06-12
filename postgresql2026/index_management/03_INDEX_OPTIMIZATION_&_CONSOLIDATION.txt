@@ -1,0 +1,953 @@
+================================================================================
+  POSTGRESQL INDEX OPTIMIZATION & CONSOLIDATION
+  Diploma DBA Program — Phase 3
+  Duration: ~60 minutes (including live demonstrations and lab exercises)
+================================================================================
+
+Welcome back. Today we're moving from *finding* bad indexes to *fixing* them.
+
+If Phase 2 was diagnosis, Phase 3 is surgery. And just like surgery, you need skill, precision, and a steady hand.
+
+I'm going to teach you how to consolidate your indexes. How to take a table with forty indexes and reduce it down to twelve without losing performance. How to identify which indexes can be merged. How to detect when you're building duplicate or near-duplicate indexes. And how to make smart decisions about index design.
+
+A few years back, I worked with a company that had a massive migration project coming up. They were moving from Oracle to PostgreSQL. And one of the things they were really worried about was whether PostgreSQL could handle their index strategy. They had thousands of indexes across hundreds of tables.
+
+My first question to them was: "Have you ever actually validated that all of these indexes are necessary?"
+
+Silence. They hadn't. They'd just built indexes whenever developers asked for them, or whenever a slow query showed up, without ever cleaning up.
+
+So I did an audit. And I found that about 40% of their indexes were redundant. Forty percent. We could achieve the same query performance with 60% of the indexes. That meant 60% faster writes, 60% less storage, 60% less maintenance.
+
+That's the power of what we're doing today.
+
+================================================================================
+THE LEFT-PREFIX RULE: THE FOUNDATION
+================================================================================
+
+Before we can detect redundancy, you have to understand something fundamental: the left-prefix rule.
+
+Remember from Phase 1 when we talked about composite indexes? The columns have an order. That order matters. Well, the left-prefix rule is about how PostgreSQL can use different parts of a composite index.
+
+Let me give you a concrete example. Say you have this index:
+
+    CREATE INDEX idx_orders_cust_date_region 
+    ON orders(customer_id, order_date, region);
+
+This is a composite index with three columns. The index is organized first by customer_id, then by order_date within each customer, then by region within each customer-date combination.
+
+Now, what queries can efficiently use this index?
+
+1. WHERE customer_id = X
+   (Uses the first column, stops there)
+
+2. WHERE customer_id = X AND order_date > '2024-01-01'
+   (Uses the first two columns)
+
+3. WHERE customer_id = X AND order_date > '2024-01-01' AND region = 'North'
+   (Uses all three columns)
+
+4. WHERE order_date > '2024-01-01'
+   (Does NOT efficiently use the index, because order_date is not the leading column)
+
+5. WHERE region = 'North'
+   (Does NOT efficiently use the index, because region is buried in the third position)
+
+This is the left-prefix rule: **A composite index can efficiently support any query that filters on the leftmost N columns, but it cannot efficiently support queries that skip columns.**
+
+So theoretically, if you have:
+- One index on (customer_id)
+- One index on (customer_id, order_date)
+- One index on (customer_id, order_date, region)
+
+The first two are *redundant*. The last index can do everything the first two can do. You only need the third one.
+
+That's consolidation. That's what we're doing today.
+
+But here's where it gets complicated: you can't just delete indexes without understanding the trade-offs.
+
+================================================================================
+INSTRUCTOR WARNING: THE CONSOLIDATION TRAP
+================================================================================
+
+Alright, I've got another war story for you. And this one's painful.
+
+I was working at a SaaS company, and we had a database with about four thousand indexes across a few hundred tables. It was a mess. And I decided to aggressively consolidate. I was going to apply the left-prefix rule and eliminate a ton of redundancy.
+
+I found an index on (customer_id) and another on (customer_id, subscription_date). According to the left-prefix rule, the second one made the first one redundant, right?
+
+So I deleted the first one.
+
+The problem was that I hadn't looked closely at the actual queries. One query was:
+
+    SELECT * FROM customers WHERE customer_id = X
+
+It was a simple lookup. It didn't need subscription_date. The optimizer could use either index, but it preferred the simpler one because it was smaller. When I deleted the simple index, the query suddenly had to use the larger index. It was still correct — it was still fast — but it was less efficient.
+
+More importantly, inserts and updates became slightly slower, because now every write had to maintain a larger index.
+
+The real problem was my next move. I found dozens of these situations and aggressively consolidated. Each individual consolidation was maybe a 1-2% performance hit. But adding them all up, I'd degraded overall write performance by about 15%.
+
+And then I had to spend two weeks rebuilding indexes and explaining to the team why consolidation wasn't an automatic win.
+
+**Lesson: Just because you *can* consolidate indexes using the left-prefix rule doesn't mean you *should*. Consolidation reduces write overhead and storage, but it can increase query cost for simpler queries. You need to measure and understand the trade-offs.**
+
+Here's what I should have done: I should have looked at the actual query patterns. If the simple query on customer_id was running thousands of times a day, keeping that index might be worth it. If it was running once a week, consolidating was fine.
+
+Okay. End of warning. Now let me teach you the right way to do this.
+
+================================================================================
+DETECTING TRUE REDUNDANCY: EXACT DUPLICATES
+================================================================================
+
+Let me start with the easy case: indexes that are exactly identical. Same columns, same order, same options. These are pure duplicates.
+
+How do you find them? You have to compare index definitions. PostgreSQL has a function for this:
+
+---
+
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    pg_get_indexdef(indexrelid) as index_definition
+FROM pg_stat_user_indexes
+WHERE tablename = 'orders'
+ORDER BY indexname;
+
+---
+
+`pg_get_indexdef()` gives you the full definition of the index. If two indexes have identical definitions, one of them is a duplicate.
+
+But manually comparing them is tedious. Let me give you a smarter query. This one finds exact duplicates:
+
+---
+
+WITH index_defs AS (
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as index_definition,
+        pg_relation_size(indexrelid) as index_size
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+)
+SELECT 
+    tablename,
+    index_definition,
+    ARRAY_AGG(indexname) as duplicate_indexes,
+    COUNT(*) as count,
+    pg_size_pretty(index_size) as size
+FROM index_defs
+GROUP BY tablename, index_definition, index_size
+HAVING COUNT(*) > 1
+ORDER BY index_size DESC;
+
+---
+
+This finds all indexes that have identical definitions. Any index appearing in a group is a duplicate, and all but one should be deleted.
+
+Let me give you a concrete example. Let's set up a test:
+
+---
+
+DROP TABLE IF EXISTS products CASCADE;
+
+CREATE TABLE products (
+    product_id BIGINT PRIMARY KEY,
+    sku VARCHAR(50),
+    category VARCHAR(100),
+    price DECIMAL(10, 2)
+);
+
+CREATE INDEX idx_products_sku_1 ON products(sku);
+CREATE INDEX idx_products_sku_2 ON products(sku);
+CREATE INDEX idx_products_sku_3 ON products(sku);
+
+---
+
+Now run the query above and filter for products. You'll see all three indexes grouped together. They're all identical. You should delete two of them.
+
+The question is: which one do you keep? Usually, you keep the one with the clearest name or the one that was created first. The others you delete.
+
+In this case:
+
+---
+
+DROP INDEX CONCURRENTLY idx_products_sku_2;
+DROP INDEX CONCURRENTLY idx_products_sku_3;
+
+---
+
+Simple. But this is probably rare in your databases. More common is *near-duplicate* or *redundant* indexes.
+
+================================================================================
+DETECTING REDUNDANCY: THE LEFT-PREFIX APPROACH
+================================================================================
+
+Okay, this is where it gets interesting. Finding indexes that are *redundant* but not identical.
+
+The left-prefix rule says that if you have:
+- Index A: (customer_id)
+- Index B: (customer_id, order_date)
+
+Then Index B is a *superset* of Index A. Index B can do everything Index A can do, plus more. So Index A is redundant.
+
+But how do you detect this automatically? You need to compare index definitions and check if one is a left-prefix of another.
+
+Here's a query for it:
+
+---
+
+WITH index_defs AS (
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as full_definition,
+        -- Extract just the column list part
+        (regexp_matches(pg_get_indexdef(indexrelid), '\((.*?)\)', 'g'))[1] as column_list,
+        pg_relation_size(indexrelid) as index_size
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+)
+SELECT DISTINCT
+    i1.tablename,
+    i1.indexname as potentially_redundant_index,
+    i2.indexname as superset_index,
+    i1.column_list as redundant_columns,
+    i2.column_list as superset_columns,
+    pg_size_pretty(i1.index_size) as redundant_size,
+    pg_size_pretty(i2.index_size) as superset_size
+FROM index_defs i1
+JOIN index_defs i2 
+    ON i1.tablename = i2.tablename
+    AND i1.indexname != i2.indexname
+WHERE i1.index_size <= i2.index_size
+AND i2.column_list LIKE i1.column_list || '%'
+ORDER BY i1.tablename, i1.index_size DESC;
+
+---
+
+This finds cases where one index is a left-prefix of another. The results tell you which indexes are candidates for deletion.
+
+But here's the critical part: **this query shows potential redundancy, not definite redundancy.** You have to verify before you delete.
+
+Let me walk through the verification process.
+
+Say the query tells you:
+- Index A on (customer_id) is potentially redundant
+- Index B on (customer_id, order_date) is the superset
+
+You would check:
+1. How often is each index used?
+2. What queries use Index A that don't use Index B?
+3. If you deleted Index A, would those queries get slower?
+
+You can find this out by looking at the actual SQL queries running against your tables. In an ideal world, PostgreSQL would have a query store like SQL Server, which tracks all running queries. But PostgreSQL doesn't have that built-in.
+
+You can work around this by:
+- Checking application logs
+- Using pgBadger to analyze PostgreSQL logs
+- Running a performance test suite
+
+But in practice, a lot of DBAs just check the column order and make a judgment call. "Does this look redundant? Probably." And they test the deletion.
+
+================================================================================
+THE SUBTLETY: INCLUDE COLUMNS
+================================================================================
+
+Now things get trickier. What if you have this:
+
+    Index A: (customer_id) INCLUDE (order_date, total)
+    Index B: (customer_id, order_date)
+
+Is Index A redundant compared to Index B?
+
+Not quite. Index A is a covering index. It can satisfy queries that need order_date and total without going back to the table. Index B can't cover those columns; it has to do a lookup.
+
+So even though Index B is a left-prefix superset of Index A, Index A serves a different purpose: it avoids lookups for specific queries.
+
+This is where you have to think strategically. You might:
+1. Keep both, if the covering benefit of Index A is important
+2. Delete Index A and rely on Index B plus table lookups
+3. Modify Index B to include the columns that Index A covers
+
+Option 3 is often the best. You'd do:
+
+    DROP INDEX idx_a;
+    CREATE INDEX idx_b_improved 
+    ON customers(customer_id, order_date) 
+    INCLUDE (total);
+
+Now you have one consolidated index that covers both use cases.
+
+Here's a query to find indexes with overlapping INCLUDE columns:
+
+---
+
+WITH index_info AS (
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as full_def,
+        -- Extract the main columns
+        (regexp_matches(pg_get_indexdef(indexrelid), 'ON \w+\(([^)]*?)\)(?:\s+INCLUDE|$)', 'i'))[1] as main_columns,
+        -- Extract INCLUDE columns if they exist
+        (regexp_matches(pg_get_indexdef(indexrelid), 'INCLUDE\s*\(([^)]*?)\)', 'i'))[1] as include_columns,
+        pg_relation_size(indexrelid) as index_size
+    FROM pg_stat_user_indexes
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+)
+SELECT 
+    tablename,
+    COUNT(*) as index_count,
+    ARRAY_AGG(indexname) as indexes,
+    ARRAY_AGG(main_columns) as main_columns_list,
+    ARRAY_AGG(include_columns) as include_columns_list
+FROM index_info
+WHERE include_columns IS NOT NULL
+GROUP BY tablename
+ORDER BY tablename;
+
+---
+
+This shows you all the indexes with INCLUDE columns. Review them. See if they're redundant. See if you can consolidate.
+
+================================================================================
+MISSING INDEX ANALYSIS: THE FLIP SIDE
+================================================================================
+
+We've been talking about deleting indexes. But sometimes the problem is the opposite: you're *missing* an index you need.
+
+PostgreSQL doesn't have SQL Server's "missing indexes" feature, which tracks queries that scan tables when an index would help. But you can approximate it by looking at your slow queries.
+
+Here's the process:
+
+1. Look at your slow queries (from logs, application profiling, etc.)
+2. Run EXPLAIN ANALYZE on them
+3. If you see a Seq Scan on a table that's being filtered by a column, that might be a missing index
+4. Create the index and test
+
+For example, if you see:
+
+    Seq Scan on orders
+    Filter: (status = 'pending' AND created_at > '2024-01-01')
+
+You're probably missing an index on (status, created_at).
+
+But here's the thing: just because a query scans a table doesn't mean you need an index. If it's a small table, or if the query is returning most of the rows, a table scan might be optimal.
+
+Use EXPLAIN to understand the cost estimate. If it's low, don't add the index. If it's high, consider it.
+
+I'm going to give you a more sophisticated query to help. This one looks at your table scans and estimates which ones might benefit from indexes:
+
+---
+
+SELECT 
+    t.schemaname,
+    t.relname as table_name,
+    pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+    t.seq_scan,
+    t.seq_tup_read,
+    t.seq_tup_returned,
+    CASE 
+        WHEN t.seq_scan = 0 THEN 'No scans'
+        WHEN t.seq_tup_read = 0 THEN 'Empty table'
+        ELSE ROUND((t.seq_tup_returned::FLOAT / t.seq_tup_read::FLOAT) * 100, 2) || '%'
+    END as selectivity,
+    CASE 
+        WHEN t.seq_scan > 1000 AND 
+             (t.seq_tup_returned::FLOAT / NULLIF(t.seq_tup_read, 0)) < 0.1 
+        THEN 'HIGH - Consider indexes'
+        WHEN t.seq_scan > 100 AND 
+             (t.seq_tup_returned::FLOAT / NULLIF(t.seq_tup_read, 0)) < 0.05 
+        THEN 'MEDIUM - Might benefit'
+        ELSE 'LOW - Probably fine'
+    END as index_candidate_priority
+FROM pg_stat_user_tables t
+WHERE t.seq_scan > 0
+AND t.schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY t.seq_scan DESC;
+
+---
+
+This shows you tables with lots of sequential scans. The "selectivity" column tells you what percentage of rows are being returned. Low selectivity (like 5%) means the query is filtering out 95% of the rows. That might benefit from an index.
+
+But again, don't blindly create indexes. Look at the actual queries. Understand what they're doing. Then decide.
+
+================================================================================
+THE CONSOLIDATION STRATEGY: A FRAMEWORK
+================================================================================
+
+Alright, let me give you a systematic approach to consolidation. This is how I do it in production.
+
+**Step 1: Understand your access patterns**
+
+First, I list all the queries that actually run against a table. I look at:
+- SELECT queries from the application
+- Batch jobs and reports
+- Maintenance queries
+
+I group them by filtering columns. For example:
+- Query A: WHERE customer_id = X
+- Query B: WHERE customer_id = X AND order_date > Y
+- Query C: WHERE order_date > Y AND amount > Z
+
+**Step 2: Build an ideal index design**
+
+Based on the access patterns, I design the ideal set of indexes. For the examples above:
+- Index 1: (customer_id, order_date) -- handles A and B
+- Index 2: (order_date, amount) -- handles C
+
+**Step 3: Compare to current state**
+
+I check what indexes currently exist and identify:
+- Which queries are already supported
+- Which are not
+- Which current indexes are redundant
+
+**Step 4: Create a consolidation plan**
+
+I write down:
+- Which indexes to keep
+- Which to delete
+- Which to add
+- Any indexes to modify (add INCLUDE columns, etc.)
+
+**Step 5: Test in non-prod**
+
+I apply the changes in a non-prod environment that mirrors production. I run:
+- The application test suite
+- Performance tests on slow queries
+- Backup and recovery tests (to make sure nothing is broken)
+
+**Step 6: Implement in production**
+
+If tests pass, I implement in production during a maintenance window or low-traffic period. I:
+- Create new indexes using CONCURRENTLY
+- Monitor for a few hours
+- Delete old indexes using DROP INDEX CONCURRENTLY
+- Verify performance
+
+**Step 7: Monitor and adjust**
+
+For a few weeks afterward, I monitor the system. If something regresses, I'm prepared to recreate an index quickly.
+
+This is methodical. It's not exciting. But it works.
+
+================================================================================
+PUTTING IT TOGETHER: A REAL CONSOLIDATION PROJECT
+================================================================================
+
+Let me walk through a real example. I'm going to create a messy database and consolidate it.
+
+**The starting point:**
+
+---
+
+DROP TABLE IF EXISTS orders CASCADE;
+
+CREATE TABLE orders (
+    order_id BIGINT PRIMARY KEY,
+    customer_id BIGINT,
+    product_id BIGINT,
+    order_date DATE,
+    ship_date DATE,
+    delivery_date DATE,
+    amount DECIMAL(10, 2),
+    status VARCHAR(20)
+);
+
+INSERT INTO orders (order_id, customer_id, product_id, order_date, ship_date, delivery_date, amount, status)
+SELECT 
+    g.id,
+    (random() * 10000)::BIGINT,
+    (random() * 5000)::BIGINT,
+    CURRENT_DATE - (random() * INTERVAL '3 years'),
+    CURRENT_DATE - (random() * INTERVAL '2 years'),
+    CURRENT_DATE - (random() * INTERVAL '1 year'),
+    (random() * 50000)::DECIMAL,
+    CASE WHEN random() < 0.7 THEN 'delivered'
+         WHEN random() < 0.2 THEN 'shipped'
+         ELSE 'pending' END
+FROM generate_series(1, 1000000) AS g(id);
+
+ANALYZE orders;
+
+---
+
+**The current (bad) index design:**
+
+---
+
+-- Exact duplicates
+CREATE INDEX idx_orders_customer_1 ON orders(customer_id);
+CREATE INDEX idx_orders_customer_2 ON orders(customer_id);
+
+-- Redundant (left-prefix)
+CREATE INDEX idx_orders_customer_only ON orders(customer_id);
+CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date);
+CREATE INDEX idx_orders_customer_date_status ON orders(customer_id, order_date, status);
+
+-- Useful indexes
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_product ON orders(product_id);
+
+---
+
+**The audit:**
+
+Now let's identify the problems:
+
+---
+
+-- Find duplicates
+WITH index_defs AS (
+    SELECT 
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as def,
+        pg_relation_size(indexrelid) as size
+    FROM pg_stat_user_indexes
+    WHERE tablename = 'orders'
+)
+SELECT 
+    def,
+    ARRAY_AGG(indexname) as indexes,
+    COUNT(*) as count
+FROM index_defs
+GROUP BY def
+HAVING COUNT(*) > 1
+ORDER BY size DESC;
+
+---
+
+This will show you the exact duplicates.
+
+**The consolidation plan:**
+
+Based on the analysis:
+1. Delete idx_orders_customer_1 and idx_orders_customer_2 (exact duplicates)
+2. Delete idx_orders_customer_only (redundant left-prefix of idx_orders_customer_date)
+3. Delete idx_orders_customer_date (redundant left-prefix of idx_orders_customer_date_status)
+4. Keep idx_orders_customer_date_status, idx_orders_status, idx_orders_product
+
+**The implementation:**
+
+---
+
+DROP INDEX CONCURRENTLY idx_orders_customer_1;
+DROP INDEX CONCURRENTLY idx_orders_customer_2;
+DROP INDEX CONCURRENTLY idx_orders_customer_only;
+DROP INDEX CONCURRENTLY idx_orders_customer_date;
+
+---
+
+**Verification:**
+
+---
+
+SELECT 
+    indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid)) as size
+FROM pg_stat_user_indexes
+WHERE tablename = 'orders'
+ORDER BY indexname;
+
+---
+
+You should see only four indexes now. Cleaner. More efficient.
+
+This is consolidation. We reduced the index footprint by 40% without losing functionality.
+
+================================================================================
+QUERY STORE VALIDATION: KNOWING WHAT QUERIES MATTER
+================================================================================
+
+Here's something PostgreSQL users often don't realize: you can enable query logging and analyze it.
+
+PostgreSQL has `pg_stat_statements`, which is a contrib module that tracks query statistics. It's similar to SQL Server's Query Store.
+
+To enable it:
+
+1. Add to postgresql.conf:
+
+    shared_preload_libraries = 'pg_stat_statements'
+    pg_stat_statements.track = all
+
+2. Restart PostgreSQL
+
+3. Create the extension:
+
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+Now you can query `pg_stat_statements` to see all your queries:
+
+---
+
+SELECT 
+    query,
+    calls,
+    mean_time,
+    total_time,
+    max_time,
+    rows
+FROM pg_stat_statements
+WHERE query NOT LIKE '%pg_stat_statements%'
+ORDER BY total_time DESC
+LIMIT 20;
+
+---
+
+This shows you the 20 slowest queries by total execution time. These are the ones you should optimize with indexes.
+
+Here's a more sophisticated query that finds candidates for index optimization:
+
+---
+
+SELECT 
+    query,
+    calls,
+    ROUND(mean_time::NUMERIC, 2) as mean_ms,
+    ROUND(total_time::NUMERIC, 2) as total_ms,
+    rows,
+    CASE 
+        WHEN mean_time > 1000 AND calls > 10 
+        THEN 'HIGH PRIORITY - slow and frequent'
+        WHEN mean_time > 100 AND calls > 100 
+        THEN 'MEDIUM PRIORITY - moderately slow, very frequent'
+        WHEN mean_time > 10 THEN 'LOW PRIORITY - slightly slow'
+        ELSE 'LIKELY OPTIMIZED'
+    END as optimization_priority
+FROM pg_stat_statements
+WHERE query NOT LIKE '%pg_stat_statements%'
+AND query NOT LIKE '%information_schema%'
+ORDER BY total_time DESC;
+
+---
+
+This prioritizes queries for optimization. Focus on the high-priority ones first.
+
+Once you've identified slow queries, run EXPLAIN ANALYZE on them to understand what's happening. Then build indexes around those queries.
+
+================================================================================
+LAB EXERCISE: CONSOLIDATE A MESSY DATABASE
+================================================================================
+
+Alright, hands-on time. You're going to take a messy database and clean it up.
+
+**Part 1: Create the starting state**
+
+---
+
+DROP TABLE IF EXISTS customers CASCADE;
+
+CREATE TABLE customers (
+    customer_id BIGINT PRIMARY KEY,
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    signup_date DATE,
+    country VARCHAR(50),
+    lifetime_value DECIMAL(12, 2)
+);
+
+INSERT INTO customers (customer_id, email, phone, signup_date, country, lifetime_value)
+SELECT 
+    g.id,
+    'customer' || g.id || '@example.com',
+    '555-' || LPAD((g.id % 10000)::TEXT, 4, '0'),
+    CURRENT_DATE - (random() * INTERVAL '5 years'),
+    CASE WHEN random() < 0.25 THEN 'USA'
+         WHEN random() < 0.5 THEN 'UK'
+         WHEN random() < 0.75 THEN 'Canada'
+         ELSE 'Australia' END,
+    (random() * 100000)::DECIMAL
+FROM generate_series(1, 500000) AS g(id);
+
+ANALYZE customers;
+
+---
+
+**Part 2: Create a bunch of redundant indexes**
+
+---
+
+-- Exact duplicates
+CREATE INDEX idx_c_email_1 ON customers(email);
+CREATE INDEX idx_c_email_2 ON customers(email);
+
+-- Left-prefix redundancy
+CREATE INDEX idx_c_country ON customers(country);
+CREATE INDEX idx_c_country_ltv ON customers(country, lifetime_value);
+CREATE INDEX idx_c_country_ltv_email ON customers(country, lifetime_value, email);
+
+-- Useful indexes
+CREATE INDEX idx_c_signup ON customers(signup_date);
+CREATE INDEX idx_c_phone ON customers(phone);
+
+---
+
+**Part 3: Identify the problems**
+
+Write queries to find:
+- Exact duplicates
+- Left-prefix redundancy
+- Overall index count and size
+
+How many indexes could you consolidate?
+
+**Part 4: Create a consolidation plan**
+
+Document which indexes you'd keep and which you'd delete. Justify each decision.
+
+**Part 5: Implement the consolidation**
+
+Delete the redundant indexes:
+
+---
+
+DROP INDEX CONCURRENTLY idx_c_email_2;
+DROP INDEX CONCURRENTLY idx_c_country;
+DROP INDEX CONCURRENTLY idx_c_country_ltv;
+
+---
+
+**Part 6: Verify**
+
+Check the remaining indexes. Do they cover the important queries?
+
+---
+
+EXPLAIN ANALYZE
+SELECT email, lifetime_value FROM customers WHERE country = 'USA' ORDER BY lifetime_value DESC LIMIT 10;
+
+---
+
+Should use the idx_c_country_ltv_email index.
+
+**Part 7: Calculate the savings**
+
+How much storage did you save by deleting three indexes? What's the percentage reduction?
+
+**Part 8: Think about missing indexes**
+
+Are there any queries that would benefit from new indexes? What would they look like?
+
+================================================================================
+CLOSING WORDS
+================================================================================
+
+Consolidation is one of the most valuable optimizations you can do. It's not flashy. You won't win an award for deleting indexes. But it has massive impact.
+
+When you consolidate a database, you achieve:
+- Faster writes (fewer indexes to maintain)
+- Faster inserts (fewer indexes to update)
+- Better cache performance (smaller index footprint)
+- Easier maintenance (fewer indexes to monitor and rebuild)
+- Lower storage costs
+- And usually, no degradation in query performance
+
+The key is to do it methodically. Don't just delete indexes willy-nilly. Understand your queries. Understand the left-prefix rule. Verify that consolidation won't break anything. Test in non-prod first.
+
+Here's what I want you to take away from this lecture:
+
+1. **Know the left-prefix rule cold.** It's the foundation of everything. If you don't understand it, you'll make mistakes.
+
+2. **Use pg_get_indexdef() to compare indexes.** It's your tool for understanding what each index actually does.
+
+3. **Verify before you delete.** Just because an index looks redundant doesn't mean it's not helping a query you haven't considered.
+
+4. **Enable pg_stat_statements in production.** It'll show you which queries actually matter. Build indexes around those.
+
+5. **Test consolidation in non-prod.** Always. You don't want surprises in production.
+
+6. **Think strategically about INCLUDE columns.** They're a way to consolidate without losing the covering index benefit.
+
+In a year from now, when you're managing a real production database, you'll encounter a table with thirty indexes that could be consolidated down to ten. And you'll know exactly how to do it. That's when this lecture will pay off.
+
+You've got this.
+
+================================================================================
+QUICK REFERENCE: INDEX CONSOLIDATION COMMAND CARD
+================================================================================
+
+** FIND EXACT DUPLICATE INDEXES **
+
+    WITH index_defs AS (
+        SELECT 
+            schemaname,
+            tablename,
+            indexname,
+            pg_get_indexdef(indexrelid) as definition,
+            pg_relation_size(indexrelid) as size
+        FROM pg_stat_user_indexes
+        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    )
+    SELECT 
+        tablename,
+        definition,
+        ARRAY_AGG(indexname) as duplicate_indexes,
+        COUNT(*) as count,
+        pg_size_pretty(size) as size
+    FROM index_defs
+    GROUP BY tablename, definition, size
+    HAVING COUNT(*) > 1
+    ORDER BY size DESC;
+
+** FIND LEFT-PREFIX REDUNDANT INDEXES **
+
+    WITH index_defs AS (
+        SELECT 
+            schemaname,
+            tablename,
+            indexname,
+            pg_get_indexdef(indexrelid) as full_definition,
+            (regexp_matches(pg_get_indexdef(indexrelid), '\((.*?)\)', 'g'))[1] as columns,
+            pg_relation_size(indexrelid) as size
+        FROM pg_stat_user_indexes
+        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+    )
+    SELECT DISTINCT
+        i1.tablename,
+        i1.indexname as potentially_redundant,
+        i2.indexname as superset_index,
+        i1.columns as redundant_cols,
+        i2.columns as superset_cols,
+        pg_size_pretty(i1.size) as redundant_size
+    FROM index_defs i1
+    JOIN index_defs i2 
+        ON i1.tablename = i2.tablename
+        AND i1.indexname != i2.indexname
+        AND i2.columns LIKE i1.columns || '%'
+    WHERE i1.size <= i2.size
+    ORDER BY i1.tablename, i1.size DESC;
+
+** VIEW INDEX DEFINITIONS FOR A TABLE **
+
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as definition
+    FROM pg_stat_user_indexes
+    WHERE tablename = 'your_table_name'
+    ORDER BY indexname;
+
+** FIND INDEXES WITH INCLUDE COLUMNS **
+
+    SELECT 
+        schemaname,
+        tablename,
+        indexname,
+        pg_get_indexdef(indexrelid) as definition,
+        pg_size_pretty(pg_relation_size(indexrelid)) as size
+    FROM pg_stat_user_indexes
+    WHERE pg_get_indexdef(indexrelid) LIKE '%INCLUDE%'
+    ORDER BY tablename, indexname;
+
+** ANALYZE SEQUENTIAL SCANS (POTENTIAL MISSING INDEXES) **
+
+    SELECT 
+        t.schemaname,
+        t.relname as table_name,
+        pg_size_pretty(pg_relation_size(t.oid)) as table_size,
+        t.seq_scan as seq_scans,
+        t.seq_tup_read,
+        t.seq_tup_returned,
+        CASE 
+            WHEN t.seq_scan = 0 THEN NULL
+            ELSE ROUND((t.seq_tup_returned::FLOAT / NULLIF(t.seq_tup_read, 0)) * 100, 2)
+        END as selectivity_pct,
+        CASE 
+            WHEN t.seq_scan > 1000 AND 
+                 (t.seq_tup_returned::FLOAT / NULLIF(t.seq_tup_read, 0)) < 0.1 
+            THEN 'HIGH - Consider indexes'
+            WHEN t.seq_scan > 100 AND 
+                 (t.seq_tup_returned::FLOAT / NULLIF(t.seq_tup_read, 0)) < 0.05 
+            THEN 'MEDIUM - Might benefit'
+            ELSE 'LOW'
+        END as priority
+    FROM pg_stat_user_tables t
+    WHERE t.seq_scan > 0
+    AND t.schemaname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY t.seq_scan DESC;
+
+** ENABLE pg_stat_statements (in postgresql.conf) **
+
+    shared_preload_libraries = 'pg_stat_statements'
+    pg_stat_statements.track = all
+
+    -- Then restart PostgreSQL and run:
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+** VIEW SLOWEST QUERIES **
+
+    SELECT 
+        query,
+        calls,
+        ROUND(mean_time::NUMERIC, 2) as mean_ms,
+        ROUND(total_time::NUMERIC, 2) as total_ms,
+        rows
+    FROM pg_stat_statements
+    WHERE query NOT LIKE '%pg_stat_statements%'
+    ORDER BY total_time DESC
+    LIMIT 20;
+
+** PRIORITIZE QUERIES FOR OPTIMIZATION **
+
+    SELECT 
+        query,
+        calls,
+        ROUND(mean_time::NUMERIC, 2) as mean_ms,
+        ROUND(total_time::NUMERIC, 2) as total_ms,
+        CASE 
+            WHEN mean_time > 1000 AND calls > 10 
+            THEN 'HIGH PRIORITY'
+            WHEN mean_time > 100 AND calls > 100 
+            THEN 'MEDIUM PRIORITY'
+            WHEN mean_time > 10 THEN 'LOW PRIORITY'
+            ELSE 'LIKELY OPTIMIZED'
+        END as priority
+    FROM pg_stat_statements
+    WHERE query NOT LIKE '%pg_stat_statements%'
+    ORDER BY total_time DESC;
+
+** COMPARE INDEX DEFINITIONS (TEXT SEARCH) **
+
+    SELECT 
+        indexname,
+        pg_get_indexdef(indexrelid) as definition
+    FROM pg_stat_user_indexes
+    WHERE tablename = 'your_table'
+    ORDER BY indexname;
+
+** CONSOLIDATE VIA INCLUDE COLUMNS **
+
+    -- Example: merge an index and a covering index
+    
+    -- Old indexes:
+    -- CREATE INDEX idx_a ON table(col1, col2);
+    -- CREATE INDEX idx_b ON table(col1) INCLUDE (col3, col4);
+    
+    -- New consolidated index:
+    CREATE INDEX idx_consolidated 
+    ON table(col1, col2) 
+    INCLUDE (col3, col4);
+    
+    DROP INDEX CONCURRENTLY idx_a;
+    DROP INDEX CONCURRENTLY idx_b;
+
+** DROP INDEX SAFELY **
+
+    DROP INDEX CONCURRENTLY schema_name.index_name;
+
+** REBUILD ALL INDEXES ON A TABLE **
+
+    REINDEX TABLE CONCURRENTLY table_name;
+
+================================================================================
+END OF LECTURE
+================================================================================

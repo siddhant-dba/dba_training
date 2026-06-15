@@ -1,0 +1,2487 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: PERFORMANCE TUNING RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+I need to warn you about something before we start.
+
+Performance tuning is the part of this job that is the most satisfying and the
+most dangerous at the same time. Satisfying because nothing feels better than
+watching a query that took 40 seconds drop to 80 milliseconds after you change
+one thing. Dangerous because performance tuning done badly is how you introduce
+regressions that take down production at midnight on a Friday.
+
+I have done both. I've had the wins. I've had the regressions.
+
+The regression I remember most vividly was in 2016. We had a slow reporting
+query. I ran EXPLAIN ANALYZE, spotted what I thought was a missing index,
+created it. Query went from 45 seconds to 0.8 seconds. I pushed it to
+production on a Thursday afternoon. By Friday morning, an unrelated INSERT-heavy
+workload had slowed down 60% because I'd added an index to a table that got
+50,000 inserts per hour and nobody had measured the write overhead. Every index
+you add is a tax on writes. Every one. Never forget that.
+
+Today we are going to go deep. Sixteen runbooks. This is the most technically
+dense session in the program. EXPLAIN ANALYZE, query plan regression, index
+strategy, bloat analysis, statistics tuning, lock contention, parallel query,
+connection pooling patterns. By the end of today you will be fluent in query
+plan language and you will have a systematic workflow for every performance
+complaint that hits your desk.
+
+Let me also say this: most performance problems in PostgreSQL are not mysterious.
+They fall into five categories, and we'll see each one today.
+
+  1. The planner doesn't have good statistics (wrong plan choice).
+  2. There's bloat eating storage and I/O bandwidth.
+  3. There's missing or wrong index coverage.
+  4. Something is blocking something else.
+  5. The query itself is badly written and no amount of tuning will save it.
+
+Category 5 is the application team's problem, but you need to identify it
+and escalate it. The other four are yours. Let's build the tools.
+
+================================================================================
+  RUNBOOK 01: AUTOVACUUM TUNING GUIDE
+  File: 04_performance_tuning/autovacuum_tuning_guide.md
+================================================================================
+
+We covered autovacuum emergencies in the Incident Response module. Today we
+cover autovacuum TUNING — the proactive work that prevents those emergencies.
+Getting autovacuum right is the single highest-leverage performance tuning
+action you can take on a PostgreSQL database. Everything else — indexes, query
+plans, connection pooling — all of it gets undermined if autovacuum is wrong.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Autovacuum activity right now:
+SELECT pid,
+       now() - pg_stat_activity.query_start AS duration,
+       query,
+       state
+FROM pg_stat_activity
+WHERE query ILIKE 'autovacuum:%'
+ORDER BY duration DESC;
+
+-- Tables where autovacuum is struggling (dead tuple ratio > 10%):
+SELECT
+    schemaname || '.' || relname                          AS table_name,
+    n_live_tup,
+    n_dead_tup,
+    round(n_dead_tup::numeric /
+          NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2)   AS dead_pct,
+    last_autovacuum,
+    last_autoanalyze,
+    autovacuum_count,
+    autoanalyze_count,
+    now() - last_autovacuum                               AS since_last_vacuum
+FROM pg_stat_user_tables
+WHERE n_live_tup + n_dead_tup > 10000   -- ignore tiny tables
+ORDER BY dead_pct DESC NULLS LAST
+LIMIT 20;
+
+-- Current autovacuum settings (all autovacuum parameters):
+SELECT name, setting, unit, short_desc
+FROM pg_settings
+WHERE name ILIKE 'autovacuum%'
+ORDER BY name;
+
+-- Table-level overrides (per-table tuning):
+SELECT relname, reloptions
+FROM pg_class
+WHERE reloptions IS NOT NULL
+  AND reloptions::text ILIKE '%autovacuum%';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Let me walk you through the mental model first, because tuning without it is
+just guessing.
+
+Autovacuum triggers when:
+  dead tuples > (autovacuum_vacuum_scale_factor × n_live_tup)
+               + autovacuum_vacuum_threshold
+
+Default: 0.20 × n_live_tup + 50. So on a 10-million-row table, autovacuum
+triggers after 2,000,050 dead tuples. That is a LOT of bloat to accumulate
+before vacuum kicks in.
+
+1. **Lower scale factors for large, write-heavy tables:**
+
+   ```sql
+   -- For a 50M-row orders table — trigger at 0.5% dead tuples, not 20%:
+   ALTER TABLE public.orders SET (
+       autovacuum_vacuum_scale_factor   = 0.005,  -- 0.5%
+       autovacuum_analyze_scale_factor  = 0.002,  -- 0.2%
+       autovacuum_vacuum_threshold      = 1000,
+       autovacuum_analyze_threshold     = 500
+   );
+   ```
+
+   *Effect:* Autovacuum triggers at ~250,000 dead rows instead of 10 million.
+   Cleaner tables, better query plans, less bloat.
+
+2. **Increase autovacuum workers for high-table-count databases:**
+
+   ```bash
+   # postgresql.conf:
+   autovacuum_max_workers = 6     # default is 3
+   # Requires restart.
+   ```
+
+   Rule of thumb: 1 worker per 100 high-churn tables, up to 8. Above 8, you
+   start fighting over I/O instead of helping each other.
+
+3. **Tune cost delay for I/O-sensitive environments:**
+
+   Autovacuum's throttle: it accumulates a "cost" score as it reads and writes
+   pages. When the score hits autovacuum_vacuum_cost_limit, it sleeps for
+   autovacuum_vacuum_cost_delay. This prevents vacuum from saturating disk I/O.
+
+   ```sql
+   -- On fast NVMe storage: tighten the throttle (let vacuum go faster):
+   ALTER SYSTEM SET autovacuum_vacuum_cost_delay = 2;     -- ms (default 2ms)
+   ALTER SYSTEM SET autovacuum_vacuum_cost_limit = 400;   -- default 200
+   SELECT pg_reload_conf();
+   ```
+
+   On busy I/O systems, raising cost_delay slows vacuum down but protects
+   application latency. On dedicated NVMe, lower cost_delay or raise cost_limit
+   to let vacuum finish faster.
+
+4. **Handle tables with extreme churn differently** — for tables that receive
+   millions of inserts/deletes per day (queue tables, event logs), standard
+   autovacuum will never keep up. Consider:
+
+   ```sql
+   -- Option A: Partition by time and DROP old partitions instead of DELETE.
+   --           Partition drop is instant and needs no vacuum.
+
+   -- Option B: UNLOGGED tables (if you can afford to lose them on crash).
+   --           No WAL, no autovacuum overhead.
+
+   -- Option C: Aggressive per-table settings:
+   ALTER TABLE public.event_queue SET (
+       autovacuum_vacuum_scale_factor  = 0.001,  -- 0.1%
+       autovacuum_vacuum_cost_delay    = 0,       -- no throttle
+       autovacuum_vacuum_cost_limit    = 10000
+   );
+   ```
+
+5. **Monitor autovacuum lap time** — how long between successive vacuums
+   on your hottest tables. If the same table appears in pg_stat_activity
+   with autovacuum running continuously, it can't finish a full cycle.
+
+   ```sql
+   -- Check how long autovacuum is taking per table:
+   SELECT relname, last_autovacuum,
+          extract(epoch from (now() - last_autovacuum)) AS seconds_ago,
+          autovacuum_count
+   FROM pg_stat_user_tables
+   WHERE autovacuum_count > 0
+   ORDER BY last_autovacuum ASC
+   LIMIT 10;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After tuning: dead_pct should stay below 5% on tuned tables:
+SELECT relname,
+       n_dead_tup,
+       round(n_dead_tup::numeric /
+             NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2) AS dead_pct,
+       last_autovacuum
+FROM pg_stat_user_tables
+WHERE relname = 'orders';
+
+-- Over 24 hours: autovacuum_count should be incrementing steadily,
+-- not in long gaps followed by bursts.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Table-level overrides:
+`ALTER TABLE public.orders RESET (autovacuum_vacuum_scale_factor, ...);`
+System-level changes:
+`ALTER SYSTEM RESET autovacuum_vacuum_cost_delay; SELECT pg_reload_conf();`
+max_workers changes require a restart to revert.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: CONNECTION POOLING PATTERNS
+  File: 04_performance_tuning/connection_pooling_patterns.md
+================================================================================
+
+Let me say something I wish someone had said to me in year three of my career:
+PostgreSQL is not designed to handle thousands of direct connections. It spawns
+a process per connection. Each process uses real memory. At 500 connections you
+are wasting gigabytes on idle processes. The answer is PgBouncer.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Connection distribution by state:
+SELECT state,
+       count(*)                                AS connections,
+       round(count(*)::numeric /
+             (SELECT count(*) FROM pg_stat_activity) * 100, 1) AS pct
+FROM pg_stat_activity
+GROUP BY state
+ORDER BY connections DESC;
+
+-- Connection use per application:
+SELECT application_name, usename, state, count(*) AS conn_count
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+GROUP BY application_name, usename, state
+ORDER BY conn_count DESC;
+
+-- What fraction of max_connections are we using?
+SELECT count(*) AS used,
+       (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max,
+       round(count(*)::numeric /
+             (SELECT setting::int FROM pg_settings WHERE name = 'max_connections')
+             * 100, 1) AS pct_used
+FROM pg_stat_activity;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+PgBouncer has THREE pooling modes. This is the decision that most people get
+wrong, so let's be clear:
+
+  SESSION mode   — one server connection per client session. Client connects,
+                   gets a server connection, keeps it until it disconnects.
+                   Safest compatibility. Least benefit. Only marginally better
+                   than direct connection.
+
+  TRANSACTION mode — server connection is held only during a transaction.
+                   Between transactions, the connection is returned to the pool.
+                   This is what you want for OLTP. 99% of PgBouncer deployments
+                   should use this. Caveat: prepared statements, advisory locks,
+                   and SET LOCAL don't work the way you expect across the pool.
+
+  STATEMENT mode — server connection is returned after each SQL statement.
+                   Most aggressive. Almost nothing works correctly in this mode.
+                   Don't use it unless you really know what you're doing.
+
+1. **Install PgBouncer:**
+
+   ```bash
+   apt-get install -y pgbouncer
+   ```
+
+2. **Configure /etc/pgbouncer/pgbouncer.ini:**
+
+   ```ini
+   [databases]
+   ; Map database aliases to actual PostgreSQL databases:
+   mydb = host=127.0.0.1 port=5432 dbname=mydb
+
+   ; Pool multiple databases with a wildcard:
+   * = host=127.0.0.1 port=5432
+
+   [pgbouncer]
+   listen_addr = 0.0.0.0
+   listen_port = 6432
+   auth_type = scram-sha-256
+   auth_file = /etc/pgbouncer/userlist.txt
+
+   ; CHOOSE YOUR MODE:
+   pool_mode = transaction       ; use this for OLTP
+
+   ; Pool sizing:
+   ; Rule: server_pool_size ≈ (CPU cores × 2) + effective_spindle_count
+   default_pool_size = 20        ; server connections per database/user pair
+   min_pool_size = 5             ; pre-warm this many connections
+   reserve_pool_size = 5         ; emergency reserve connections
+   max_client_conn = 1000        ; maximum client connections to PgBouncer
+
+   ; Connection management:
+   server_idle_timeout = 600     ; close idle server connections after 10 min
+   client_idle_timeout = 0       ; don't close idle client connections
+   server_lifetime = 3600        ; recycle server connections every 1 hour
+   server_connect_timeout = 15   ; fail fast if postgres is unreachable
+
+   ; Performance:
+   server_reset_query = DISCARD ALL    ; reset state between clients in session mode
+   ; For transaction mode — set empty (DISCARD ALL is unnecessary and slow):
+   ; server_reset_query =
+
+   ; Logging:
+   log_connections = 0
+   log_disconnections = 0
+   log_pooler_errors = 1
+   stats_period = 60
+
+   ; Admin interface:
+   admin_users = postgres
+   stats_users = monitoring
+   ```
+
+3. **Create userlist.txt** — PgBouncer needs user credentials:
+
+   ```bash
+   # Get scram-sha-256 hash from PostgreSQL:
+   psql -At -c "SELECT usename || ' \"' || passwd || '\"'
+                FROM pg_shadow WHERE usename IN ('app_user', 'readonly');"
+   > /etc/pgbouncer/userlist.txt
+   ```
+
+4. **Start PgBouncer:**
+
+   ```bash
+   systemctl enable pgbouncer
+   systemctl start pgbouncer
+   ```
+
+5. **Monitor PgBouncer:**
+
+   ```bash
+   # Connect to PgBouncer admin console:
+   psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer
+
+   -- Pool statistics:
+   SHOW POOLS;
+   -- cl_active: clients actively using a server connection
+   -- cl_waiting: clients waiting for a server connection (THIS IS THE KEY METRIC)
+   -- sv_active: server connections in use
+   -- sv_idle: server connections available
+   -- If cl_waiting > 0 regularly: increase default_pool_size.
+
+   SHOW STATS;       -- requests per second, bytes, avg wait time
+   SHOW CLIENTS;     -- who is connected to PgBouncer
+   SHOW SERVERS;     -- backend connections to PostgreSQL
+   ```
+
+6. **Sizing the pool correctly:**
+
+   ```
+   Empirical formula for OLTP:
+     default_pool_size = floor(RAM_GB × 0.5) for CPU-bound workloads
+     default_pool_size = number of CPU cores × 2 for I/O-bound workloads
+
+   Never exceed: max_connections × 0.8 across ALL pools combined.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# PgBouncer pools health:
+psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer -c "SHOW POOLS;"
+# cl_waiting should be 0 under normal load.
+
+# PostgreSQL backend connections via PgBouncer:
+psql -c "SELECT count(*) FROM pg_stat_activity
+         WHERE application_name = 'pgbouncer'
+            OR client_addr = '127.0.0.1';"
+# Should be << max_connections.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If PgBouncer causes compatibility issues (prepared statements breaking in
+transaction mode): either switch to session mode (`pool_mode = session`) and
+reload PgBouncer (`systemctl reload pgbouncer`), or route affected application
+connections directly to port 5432 while debugging. No changes to PostgreSQL
+itself are required for PgBouncer rollback.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: DISPLAY LONG-RUNNING QUERIES
+  File: 04_performance_tuning/display_long_running_queries.md
+================================================================================
+
+This is the query you will run more than almost any other in your career.
+Bookmark it. Memorise it. Put it in an alias. It's your first look at what's
+happening on a database under any kind of performance complaint.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The canonical long-running query view. This is your daily driver.
+SELECT
+    pid,
+    now() - pg_stat_activity.query_start      AS duration,
+    now() - pg_stat_activity.xact_start       AS txn_duration,
+    usename,
+    application_name,
+    client_addr,
+    wait_event_type,
+    wait_event,
+    state,
+    left(query, 200)                           AS query_snippet
+FROM pg_stat_activity
+WHERE (now() - pg_stat_activity.query_start) > interval '5 seconds'
+  AND state <> 'idle'
+  AND pid <> pg_backend_pid()
+ORDER BY duration DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Read the output systematically:**
+
+   - `state = 'active'` + long duration + `wait_event IS NULL` →
+     Query is running. CPU or I/O bound. Get the EXPLAIN plan.
+
+   - `state = 'active'` + `wait_event_type = 'Lock'` →
+     Query is waiting for a lock. See Runbook 07 (lock contention).
+
+   - `state = 'idle in transaction'` + long txn_duration →
+     Open transaction with no current query. Application bug — leaked
+     transaction. Safe to kill.
+
+   - `state = 'active'` + `wait_event_type = 'IO'` →
+     Query is waiting for disk reads. Could be a sequential scan, buffer
+     miss, or checkpoint storm. See Runbook 13 (slow query).
+
+2. **Get the full query text for a specific PID:**
+
+   ```sql
+   SELECT query FROM pg_stat_activity WHERE pid = <pid_here>;
+   ```
+
+3. **Get the query plan for a currently-running query (PG 14+):**
+
+   ```sql
+   SELECT query_plan
+   FROM pg_stat_activity
+   WHERE pid = <pid_here>;
+   -- Requires pg_monitor role or superuser.
+   -- Only shows plan if query has been running long enough to emit one.
+   ```
+
+4. **Segment long-running queries by category:**
+
+   ```sql
+   -- What are they waiting on?
+   SELECT wait_event_type, wait_event, count(*), avg(now() - query_start) AS avg_age
+   FROM pg_stat_activity
+   WHERE state <> 'idle'
+     AND pid <> pg_backend_pid()
+   GROUP BY wait_event_type, wait_event
+   ORDER BY avg_age DESC;
+   ```
+
+5. **Track the worst queries over time with pg_stat_statements:**
+
+   ```sql
+   -- Enable if not already (requires restart):
+   -- shared_preload_libraries = 'pg_stat_statements'
+   CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+   -- Top 10 queries by total time:
+   SELECT
+       left(query, 120)                              AS query,
+       calls,
+       round(total_exec_time::numeric, 0)            AS total_ms,
+       round(mean_exec_time::numeric, 2)             AS mean_ms,
+       round(stddev_exec_time::numeric, 2)           AS stddev_ms,
+       round(max_exec_time::numeric, 2)              AS max_ms,
+       rows,
+       shared_blks_hit,
+       shared_blks_read,
+       temp_blks_written
+   FROM pg_stat_statements
+   WHERE query NOT ILIKE '%pg_stat%'
+   ORDER BY total_exec_time DESC
+   LIMIT 10;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After addressing long-running queries, re-run the monitor query:
+SELECT count(*) AS long_running
+FROM pg_stat_activity
+WHERE (now() - query_start) > interval '30 seconds'
+  AND state <> 'idle';
+-- Should return 0 under normal conditions.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Monitoring queries are read-only. No rollback needed. If pg_stat_statements was
+enabled and you observe overhead (very rare, ~1-2% on high-query-rate systems):
+`DROP EXTENSION pg_stat_statements;` and remove from shared_preload_libraries.
+Requires restart to fully remove.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: EXPLAIN ANALYZE INTERPRETATION GUIDE
+  File: 04_performance_tuning/explain_analyze_interpretation_guide.md
+================================================================================
+
+This is the most important technical skill in this entire module. If you can
+read an EXPLAIN ANALYZE output confidently, you can diagnose virtually any
+query performance problem. If you can't, you are guessing. Everything else in
+this session builds on this one.
+
+I am going to teach you to read a plan the way I do — top to bottom, looking
+for five specific things. Not memorising node names. Reading the story the plan
+is telling you.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Always use this form for production diagnosis:
+EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT)
+SELECT o.id, o.status, c.email
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'pending'
+  AND o.created_at > now() - interval '7 days';
+
+-- For reading the plan as JSON (useful for tooling like explain.depesz.com):
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+<your query>;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+I'm going to walk through a realistic plan. Read every line with me.
+
+```
+Gather  (cost=1000.43..85432.11 rows=5823 width=48)
+        (actual time=12.341..4832.145 rows=5823 loops=1)
+  Workers Planned: 2
+  Workers Launched: 2
+  Buffers: shared hit=12043 read=89234
+  ->  Parallel Hash Join  (cost=0.00..84321.00 rows=5823 width=48)
+                          (actual time=11.234..4800.234 rows=1941 loops=3)
+        Hash Cond: (o.customer_id = c.id)
+        Buffers: shared hit=4014 read=29745
+        ->  Parallel Seq Scan on orders o
+                (cost=0.00..72000.00 rows=7291 width=28)
+                (actual time=0.123..4100.456 rows=2431 loops=3)
+              Filter: ((status = 'pending') AND (created_at > ...))
+              Rows Removed by Filter: 3287501
+              Buffers: shared hit=2000 read=29000
+        ->  Hash  (cost=1532.00..1532.00 rows=82000 width=24)
+                  (actual time=10.234..10.234 rows=82000 loops=1)
+              Buckets: 131072  Batches: 1  Memory Usage: 4952kB
+              Buffers: shared hit=2000 read=745
+              ->  Seq Scan on customers c  (cost=... rows=82000 ...)
+Planning Time: 1.234 ms
+Execution Time: 4834.567 ms
+```
+
+Reading this plan — here are the five things I look at:
+
+THING 1: actual vs estimated rows.
+  Parallel Seq Scan on orders: estimated 7,291 rows, actual 2,431 × 3 workers
+  = 7,293 actual. That's a good estimate. When actual is 10-100× off from
+  estimate — the statistics are stale. See Runbook 14 (statistics target).
+
+THING 2: Rows Removed by Filter.
+  "Rows Removed by Filter: 3,287,501" — the scan read 3.3 MILLION rows and
+  kept 7,293. That is a sequential scan through nearly the entire table to
+  find 0.2% of rows. THIS IS THE PROBLEM. We need an index on (status, created_at).
+
+THING 3: Buffers shared read vs hit.
+  shared hit = pages from shared_buffers (fast, RAM).
+  shared read = pages from disk (slow).
+  Here: 89,234 reads vs 12,043 hits. We're reading mostly from disk.
+  This is why execution time is 4.8 seconds.
+
+THING 4: Planning time vs execution time.
+  1.2 ms planning, 4,834 ms execution. Planning is fine. Execution is the
+  problem — all in I/O, all caused by the sequential scan.
+
+THING 5: Loops × actual rows = real rows.
+  The Parallel Hash Join shows loops=3 (3 parallel workers) and rows=1,941
+  per loop. So real rows = 1,941 × 3 = 5,823. Always multiply.
+
+Now let's fix this plan:
+
+```sql
+-- Create the compound index that the plan is screaming for:
+CREATE INDEX CONCURRENTLY idx_orders_status_created
+ON public.orders (status, created_at DESC)
+WHERE status = 'pending';   -- partial index — only pending orders
+
+-- Re-run EXPLAIN ANALYZE after index creation:
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT o.id, o.status, c.email
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'pending'
+  AND o.created_at > now() - interval '7 days';
+```
+
+After the index: plan should show Index Scan or Index Only Scan, rows read
+should drop from 3.3M to ~7K, execution time should drop from 4.8s to <50ms.
+
+Common plan node vocabulary:
+
+```
+Seq Scan             — reads every row in the table. Bad on large tables.
+Index Scan           — uses an index to find rows, then fetches heap pages.
+Index Only Scan      — uses an index and never touches the heap (covering index).
+Bitmap Heap Scan     — collects index hits, then batch-reads heap pages. Good
+                       for moderate selectivity (0.1% – 10% of table).
+Nested Loop          — for each outer row, probes the inner. Fast for small
+                       outer sets + indexed inner. Slow if outer is large.
+Hash Join            — builds a hash table of the smaller relation, probes it.
+                       Good for larger datasets. Needs work_mem.
+Merge Join           — merges two sorted inputs. Good if both sides are sorted.
+Sort (external)      — sort spilled to disk. Increase work_mem.
+Hash (Batches: N>1)  — hash table spilled to disk. Increase work_mem.
+Gather               — parallel query coordinator collects results.
+Gather Merge         — parallel merge of sorted results.
+```
+
+Reading the cost numbers:
+  `(cost=start..total rows=N width=W)`
+  start  = cost before first row returned (startup cost)
+  total  = cost to return all rows (total cost)
+  These are in arbitrary "cost units" — only meaningful in comparison.
+  Use actual times, not cost, for real performance analysis.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After optimization: compare before and after execution times:
+-- Run EXPLAIN ANALYZE three times and average — first run primes the cache.
+\timing on
+SELECT o.id, o.status, c.email
+FROM orders o JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'pending' AND o.created_at > now() - interval '7 days';
+-- Time should be 90%+ faster than baseline.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+EXPLAIN ANALYZE is read-only (it runs the query but shows the plan). If you
+created an index to fix the plan and it's making writes slower:
+`DROP INDEX CONCURRENTLY idx_orders_status_created;`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: INDEX BLOAT ANALYSIS
+  File: 04_performance_tuning/index_bloat_analysis.md
+================================================================================
+
+Indexes bloat just like tables do. Every UPDATE on an indexed column leaves
+dead index entries. Every DELETE leaves a dead index tuple. Autovacuum cleans
+these up — but imperfectly. Over time, B-tree index pages can become half-empty
+because deleted entries left holes and the pages weren't reused. A bloated
+index is larger than it needs to be, uses more RAM in shared_buffers, and
+causes more I/O per scan. The only way to fully reclaim it is REINDEX.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Index bloat estimate using pgstattuple extension:
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+
+-- Check a specific index:
+SELECT *
+FROM pgstatindex('orders_pkey');
+-- Key fields:
+-- leaf_fragmentation: % of leaf pages that are partially empty.
+--   < 10%: healthy
+--   10-30%: moderate bloat, monitor
+--   > 30%: significant bloat, consider reindex
+
+-- Estimate bloat for all indexes in the database:
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid))         AS index_size,
+    pg_size_pretty(pg_relation_size(indrelid))           AS table_size
+FROM pg_stat_user_indexes
+JOIN pg_index USING (indexrelid)
+WHERE pg_relation_size(indexrelid) > 10 * 1024 * 1024   -- only > 10MB
+ORDER BY pg_relation_size(indexrelid) DESC
+LIMIT 20;
+
+-- Full bloat report using the classic bloat estimation query:
+WITH index_bloat AS (
+    SELECT
+        schemaname,
+        tablename,
+        indexname,
+        pg_relation_size(indexrelid)                      AS index_size_bytes,
+        pg_size_pretty(pg_relation_size(indexrelid))      AS index_size,
+        idx_scan
+    FROM pg_stat_user_indexes
+    JOIN pg_index USING (indexrelid)
+)
+SELECT *
+FROM index_bloat
+WHERE index_size_bytes > 5 * 1024 * 1024
+ORDER BY index_size_bytes DESC;
+```
+
+```bash
+# For a detailed physical-level bloat check (must be offline or use pgstattuple):
+psql -c "
+SELECT indexname,
+       avg_leaf_density,
+       leaf_fragmentation
+FROM pg_indexes
+JOIN LATERAL pgstatindex(indexname) ON true
+WHERE schemaname = 'public'
+  AND tablename = 'orders'
+ORDER BY leaf_fragmentation DESC;
+"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify bloated indexes** — focus on indexes where:
+   - pgstatindex shows leaf_fragmentation > 30%
+   - The index is large (> 100 MB) relative to the table
+   - idx_scan is high (the index is actually used — worth maintaining)
+
+2. **REINDEX CONCURRENTLY to defragment** — this rebuilds the index without
+   locking the table:
+
+   ```sql
+   -- Safe for production — no table lock:
+   REINDEX INDEX CONCURRENTLY public.idx_orders_status;
+
+   -- Reindex all indexes on a table concurrently:
+   REINDEX TABLE CONCURRENTLY public.orders;
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   REINDEX CONCURRENTLY cannot run inside a transaction block. Do not wrap it
+   in BEGIN/COMMIT. Also: if REINDEX CONCURRENTLY is interrupted, it leaves
+   an INVALID index. Check for and clean these up with:
+
+   ```sql
+   SELECT schemaname, tablename, indexname, indexdef
+   FROM pg_indexes
+   WHERE indexname IN (
+       SELECT indexrelid::regclass::text
+       FROM pg_index
+       WHERE indisvalid = false
+   );
+   -- Drop invalid indexes:
+   DROP INDEX CONCURRENTLY <invalid_index_name>;
+   ```
+
+3. **For very large indexes: use pg_repack instead** — pg_repack can rebuild
+   a table AND its indexes in one operation with minimal locking:
+
+   ```bash
+   pg_repack -d mydb -t public.orders --no-order
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After REINDEX: leaf_fragmentation should be near 0:
+SELECT indexname, leaf_fragmentation, avg_leaf_density
+FROM pg_indexes
+JOIN LATERAL pgstatindex(schemaname||'.'||indexname) ON true
+WHERE schemaname = 'public'
+  AND tablename = 'orders';
+-- avg_leaf_density > 90% = well-packed index.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+REINDEX CONCURRENTLY is non-destructive — the original index remains valid
+until the new one is built. If interrupted: original index is still valid,
+the partial new index is left as INVALID and must be dropped manually.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: INDEX STRATEGY DECISION TREE
+  File: 04_performance_tuning/index_strategy_decision_tree.md
+================================================================================
+
+Not all indexes are B-trees. PostgreSQL has seven index types and each one
+has a specific use case. Using the wrong type — or using B-tree when a
+partial index would do — is the most common indexing mistake I see from
+junior DBAs. Let me give you the decision tree.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What indexes exist on a table?
+SELECT indexname, indexdef, idx_scan,
+       pg_size_pretty(pg_relation_size(indexrelid)) AS size
+FROM pg_stat_user_indexes
+JOIN pg_indexes USING (schemaname, tablename, indexname)
+WHERE schemaname = 'public'
+  AND tablename = 'orders'
+ORDER BY idx_scan DESC;
+
+-- What's the column data distribution? (guides index type choice):
+SELECT status, count(*) AS row_count,
+       round(count(*)::numeric / sum(count(*)) OVER () * 100, 2) AS pct
+FROM orders
+GROUP BY status
+ORDER BY row_count DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+THE DECISION TREE:
+
+Q1: Is the query doing equality or range comparisons on scalar values?
+    (WHERE col = X, WHERE col BETWEEN X AND Y, WHERE col > X ORDER BY col)
+    → B-TREE (default). Nothing else needed. Go build it.
+
+Q2: Is the query doing text search? (LIKE '%pattern%', full-text search)
+    → GIN index on a tsvector column. Or pg_trgm for LIKE/ILIKE:
+    ```sql
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE INDEX CONCURRENTLY idx_orders_notes_trgm
+    ON orders USING GIN (notes gin_trgm_ops);
+    -- Enables: WHERE notes ILIKE '%refund request%'
+    ```
+
+Q3: Is the query doing geometric or proximity searches?
+    (PostGIS, point-in-polygon, nearest-neighbor)
+    → GiST or SP-GiST.
+
+Q4: Is the column an array or JSONB? (WHERE col @> '{value}')
+    → GIN index:
+    ```sql
+    CREATE INDEX CONCURRENTLY idx_orders_tags
+    ON orders USING GIN (tags);   -- tags is a text[] column
+    -- Or for JSONB:
+    CREATE INDEX CONCURRENTLY idx_orders_metadata
+    ON orders USING GIN (metadata);
+    ```
+
+Q5: Is the table very large AND the query only needs approximate row-ordered
+    results? (large time-series tables, sequential writes by time)
+    → BRIN (Block Range INdex). Tiny size, fast on sequential data:
+    ```sql
+    CREATE INDEX CONCURRENTLY idx_events_created_brin
+    ON events USING BRIN (created_at) WITH (pages_per_range = 128);
+    -- Works because events are inserted in time order.
+    -- A 1TB table's BRIN index might be 1MB. A B-tree would be 30GB.
+    ```
+
+Q6: Does the query filter on a low-cardinality condition that affects a small
+    percentage of rows? (WHERE status = 'pending', WHERE is_active = true)
+    → PARTIAL INDEX:
+    ```sql
+    CREATE INDEX CONCURRENTLY idx_orders_pending
+    ON orders (created_at DESC)
+    WHERE status = 'pending';
+    -- Only indexes pending orders. If 5% of orders are pending, this index
+    -- is 5% the size of a full index. Faster scans, less bloat, less write cost.
+    ```
+
+Q7: Does the query SELECT only a few columns that are all indexed? (covering)
+    → COVERING INDEX (INCLUDE clause, PG 11+):
+    ```sql
+    CREATE INDEX CONCURRENTLY idx_orders_customer_covering
+    ON orders (customer_id)
+    INCLUDE (status, created_at);
+    -- Allows Index Only Scan for: SELECT status, created_at FROM orders
+    --                             WHERE customer_id = 123;
+    -- Never touches the heap. Much faster for read-heavy patterns.
+    ```
+
+Q8: Is the column an expression, not a raw column value?
+    → EXPRESSION INDEX:
+    ```sql
+    CREATE INDEX CONCURRENTLY idx_orders_lower_email
+    ON customers (lower(email));
+    -- Supports: WHERE lower(email) = 'user@example.com'
+    ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After creating an index: confirm the planner uses it:
+EXPLAIN (ANALYZE, BUFFERS)
+<your query>;
+-- Look for Index Scan, Index Only Scan, or Bitmap Index Scan on the new index.
+-- If Seq Scan appears: run ANALYZE on the table, then re-check.
+-- If still Seq Scan: the planner may think it's cheaper (check the selectivity).
+
+-- Check index is being used in practice after 24 hours:
+SELECT indexname, idx_scan
+FROM pg_stat_user_indexes
+WHERE indexname = 'idx_orders_pending';
+-- idx_scan > 0 after a day = the index is useful.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+`DROP INDEX CONCURRENTLY <index_name>;`
+Always use CONCURRENTLY to avoid table lock on production.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: LOCK CONTENTION ANALYSIS
+  File: 04_performance_tuning/lock_contention_analysis.md
+================================================================================
+
+Locks are how PostgreSQL guarantees consistency. When they pile up, your
+entire application can appear to freeze even though the database itself is
+running fine. The tricky part: the lock holder is usually not the one causing
+the problem. The problem is everything WAITING for the lock holder. You have
+to find the root.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The full lock chain: blocker → blocked → blocked by blocked, etc.
+-- This recursive CTE walks the entire wait chain.
+WITH RECURSIVE lock_chain AS (
+    -- Base: queries waiting on a lock
+    SELECT
+        blocked.pid                               AS blocked_pid,
+        blocked.usename                           AS blocked_user,
+        blocked.query_start                       AS blocked_since,
+        left(blocked.query, 100)                  AS blocked_query,
+        blocking.pid                              AS blocker_pid,
+        blocking.usename                          AS blocker_user,
+        blocking.query_start                      AS blocker_since,
+        left(blocking.query, 100)                 AS blocker_query,
+        1                                         AS depth
+    FROM pg_stat_activity blocked
+    JOIN pg_stat_activity blocking
+        ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+    WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0
+
+    UNION ALL
+
+    -- Recurse: is the blocker itself blocked?
+    SELECT
+        blocking2.pid,
+        blocking2.usename,
+        blocking2.query_start,
+        left(blocking2.query, 100),
+        deeper.blocker_pid,
+        deeper.blocker_user,
+        deeper.blocker_since,
+        deeper.blocker_query,
+        lc.depth + 1
+    FROM pg_stat_activity blocking2
+    JOIN lock_chain lc ON lc.blocker_pid = blocking2.pid
+    JOIN pg_stat_activity deeper
+        ON deeper.pid = ANY(pg_blocking_pids(blocking2.pid))
+    WHERE lc.depth < 10
+)
+SELECT * FROM lock_chain ORDER BY depth, blocked_since;
+
+-- Lock type breakdown (what kind of locks are being requested):
+SELECT
+    locktype,
+    relation::regclass AS relation,
+    mode,
+    granted,
+    pid,
+    left(query, 80) AS query
+FROM pg_locks
+JOIN pg_stat_activity USING (pid)
+WHERE NOT granted
+ORDER BY relation, mode;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify the root blocker** — the one PID that all others are waiting on
+   (the PID that appears in blocker_pid but NOT in blocked_pid):
+
+   ```sql
+   SELECT DISTINCT blocker_pid, blocker_user, blocker_query
+   FROM (
+       SELECT
+           blocking.pid    AS blocker_pid,
+           blocking.usename AS blocker_user,
+           left(blocking.query, 100) AS blocker_query
+       FROM pg_stat_activity blocked
+       JOIN pg_stat_activity blocking
+           ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+   ) s;
+   ```
+
+2. **Assess the root blocker:**
+
+   - Is it `state = 'idle in transaction'`? → Leaked transaction. Kill it.
+   - Is it an active DDL (ALTER TABLE, CREATE INDEX without CONCURRENTLY)?
+     → Either wait for it to finish or kill it if it's been running too long.
+   - Is it a long-running report? → Kill it and schedule it off-peak.
+
+3. **Kill the root blocker (confirm first):**
+
+   ```sql
+   SELECT pg_terminate_backend(<root_blocker_pid>);
+   -- Or soft cancel:
+   SELECT pg_cancel_backend(<root_blocker_pid>);
+   ```
+
+4. **Preventive measures:**
+
+   ```sql
+   -- Add lock_timeout to application connections:
+   -- In application connection string: options='-c lock_timeout=30s'
+
+   -- Or set globally (affects DDL too — be careful):
+   ALTER SYSTEM SET lock_timeout = '60s';
+   SELECT pg_reload_conf();
+
+   -- Kill idle-in-transaction sessions automatically:
+   ALTER SYSTEM SET idle_in_transaction_session_timeout = '5min';
+   SELECT pg_reload_conf();
+
+   -- Always create indexes with CONCURRENTLY (avoids AccessExclusiveLock):
+   -- CREATE INDEX CONCURRENTLY — requires ShareUpdateExclusiveLock only.
+   -- CREATE INDEX (without CONCURRENTLY) — requires ShareLock on the table.
+   --   This blocks all writes during index creation.
+   ```
+
+5. **Lock mode compatibility cheat sheet (memorise the top row):**
+
+   ```
+   AccessExclusiveLock (ALTER TABLE, DROP TABLE, TRUNCATE, VACUUM FULL):
+     → Conflicts with EVERYTHING. Nothing else can run concurrently.
+
+   ExclusiveLock (rare in normal SQL):
+     → Conflicts with everything except AccessShareLock.
+
+   ShareRowExclusiveLock (CREATE TRIGGER, some FK operations):
+     → Conflicts with ExclusiveLock, ShareRowExclusiveLock, ShareLock.
+
+   ShareLock (CREATE INDEX without CONCURRENTLY):
+     → Conflicts with RowExclusiveLock (INSERT, UPDATE, DELETE) and above.
+
+   ShareUpdateExclusiveLock (VACUUM, ANALYZE, CREATE INDEX CONCURRENTLY):
+     → Only conflicts with itself and stronger locks.
+
+   RowShareLock (SELECT FOR UPDATE/SHARE):
+     → Conflicts with ExclusiveLock and AccessExclusiveLock only.
+
+   RowExclusiveLock (INSERT, UPDATE, DELETE):
+     → Conflicts only with ShareLock and above.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After resolving the root blocker, wait chain should clear:
+SELECT count(*) FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0;
+-- Should return 0.
+
+-- Monitor lock wait frequency over time:
+SELECT wait_event_type, wait_event, count(*)
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+GROUP BY wait_event_type, wait_event;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Killing a session rolls back its transaction automatically. If the killed
+session was a long DDL — the DDL is rolled back and must be re-run. If
+lock_timeout was set globally and is causing unexpected DDL failures during
+migrations, temporarily reset per-session:
+`SET lock_timeout = 0;` before running the migration.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: PARALLEL QUERY TUNING
+  File: 04_performance_tuning/parallel_query_tuning.md
+================================================================================
+
+PostgreSQL has had parallel query since version 9.6. When it works well, a
+query that took 60 seconds drops to 10 seconds using 6 CPU cores. When it
+goes wrong, you have 8 parallel workers all doing I/O simultaneously and
+you've effectively created a self-inflicted I/O storm.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Is parallel query actually being used?
+-- Look for Gather or Gather Merge nodes in EXPLAIN:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*), avg(amount)
+FROM orders
+WHERE created_at > now() - interval '90 days';
+
+-- Check parallel query configuration:
+SELECT name, setting FROM pg_settings
+WHERE name IN (
+    'max_parallel_workers',
+    'max_parallel_workers_per_gather',
+    'max_parallel_maintenance_workers',
+    'parallel_setup_cost',
+    'parallel_tuple_cost',
+    'min_parallel_table_scan_size',
+    'min_parallel_index_scan_size'
+)
+ORDER BY name;
+
+-- Are parallel workers running?
+SELECT pid, query_start, left(query, 80) AS query, state, wait_event
+FROM pg_stat_activity
+WHERE backend_type = 'parallel worker';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Enable and size parallel query appropriately:**
+
+   ```sql
+   -- How many cores does this server have?
+   -- Use floor(core_count × 0.5) as a safe starting point.
+   ALTER SYSTEM SET max_parallel_workers = 8;           -- total parallel workers
+   ALTER SYSTEM SET max_parallel_workers_per_gather = 4; -- per query
+   ALTER SYSTEM SET max_parallel_maintenance_workers = 4;-- for VACUUM, CREATE INDEX
+   SELECT pg_reload_conf();
+   ```
+
+2. **Planner cost constants for parallel query:**
+
+   The planner uses parallel_setup_cost and parallel_tuple_cost to decide
+   whether parallelism is worth it. On fast hardware, lower these:
+
+   ```sql
+   ALTER SYSTEM SET parallel_setup_cost = 100;    -- default 1000 — lower = more parallel
+   ALTER SYSTEM SET parallel_tuple_cost = 0.01;   -- default 0.1
+   SELECT pg_reload_conf();
+   ```
+
+   Lower values make the planner prefer parallel plans more aggressively.
+   Too low on a high-concurrency OLTP system: you'll have workers competing.
+
+3. **Force parallel query for testing:**
+
+   ```sql
+   SET max_parallel_workers_per_gather = 4;
+   SET parallel_setup_cost = 0;
+   SET parallel_tuple_cost = 0;
+   EXPLAIN (ANALYZE, BUFFERS)
+   <your query>;
+   -- This forces the planner to choose a parallel plan for verification.
+   ```
+
+4. **Disable parallel query for specific queries that don't benefit:**
+
+   ```sql
+   -- Parallel query hurts OLTP short queries (setup overhead > benefit):
+   SET max_parallel_workers_per_gather = 0;
+   -- Only run your OLTP query in this session, then reset.
+   RESET max_parallel_workers_per_gather;
+   ```
+
+5. **Table-level parallel settings:**
+
+   ```sql
+   -- Tell the planner NOT to parallelize scans on this table:
+   ALTER TABLE public.small_lookup_table SET (parallel_workers = 0);
+
+   -- Allow more parallelism on analytics table:
+   ALTER TABLE public.events SET (parallel_workers = 8);
+   ```
+
+6. **Parallel query for CREATE INDEX** — massive speedup on large indexes:
+
+   ```sql
+   -- Tune maintenance workers before a large index build:
+   SET max_parallel_maintenance_workers = 8;
+   CREATE INDEX CONCURRENTLY idx_events_big ON events (created_at, user_id);
+   -- Without parallel: might take 4 hours. With 8 workers: might take 40 min.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Run EXPLAIN ANALYZE before and after tuning:
+-- Check: "Workers Planned" and "Workers Launched" match.
+-- If Workers Launched < Workers Planned: workers are being throttled.
+-- Check: actual time on Gather node = total wall time.
+-- Good parallel: total time ≈ single-worker time / num_workers.
+-- Bad parallel: overhead > benefit (setup time > savings).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+All parallel settings require only a reload (not restart) to revert:
+`ALTER SYSTEM RESET max_parallel_workers; SELECT pg_reload_conf();`
+Table-level overrides: `ALTER TABLE t RESET (parallel_workers);`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: POSTGRES CALCULATE BLOAT
+  File: 04_performance_tuning/postgres_calculate_bloat.md
+================================================================================
+
+Bloat is wasted space in table and index files caused by dead tuples that
+autovacuum hasn't reclaimed, or has reclaimed in place but not compacted.
+These pages are still allocated on disk. They're read during scans even
+though they hold no live data. Bloat degrades query performance silently.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The canonical bloat estimation query.
+-- Based on the pgstattuple approach, adapted for no-extension environments.
+-- Returns estimated bloat percentage for tables:
+
+SELECT
+    schemaname,
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+                                                       AS total_size,
+    pg_size_pretty(pg_relation_size(schemaname||'.'||tablename))
+                                                       AS table_size,
+    pg_size_pretty(pg_indexes_size(schemaname||'.'||tablename))
+                                                       AS indexes_size,
+    n_dead_tup,
+    n_live_tup,
+    round(n_dead_tup::numeric /
+          NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2) AS dead_pct,
+    last_vacuum,
+    last_autovacuum
+FROM pg_stat_user_tables
+WHERE n_live_tup + n_dead_tup > 10000
+ORDER BY n_dead_tup DESC
+LIMIT 20;
+
+-- More precise bloat estimate using pgstattuple (requires extension):
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+
+SELECT
+    relname,
+    pg_size_pretty(table_len)                  AS table_size,
+    pg_size_pretty(dead_tuple_len)             AS dead_tuple_size,
+    round(dead_tuple_percent::numeric, 2)      AS dead_pct,
+    round(free_percent::numeric, 2)            AS free_pct,
+    round((dead_tuple_percent + free_percent)::numeric, 2) AS total_bloat_pct
+FROM pg_class
+JOIN LATERAL pgstattuple(oid) ON true
+WHERE relkind = 'r'
+  AND relnamespace = 'public'::regnamespace
+  AND table_len > 10 * 1024 * 1024  -- > 10MB
+ORDER BY total_bloat_pct DESC
+LIMIT 20;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Bloat remediation strategy depends on severity:
+
+1. **< 20% bloat**: Normal. Autovacuum is managing it. Monitor.
+
+2. **20–40% bloat**: Elevated. Tune autovacuum for this table (Runbook 01),
+   or run a manual VACUUM:
+
+   ```sql
+   VACUUM (VERBOSE, ANALYZE) public.orders;
+   -- VACUUM reclaims space for PostgreSQL reuse but does NOT shrink the file.
+   -- The pages are now available for new rows, but disk usage stays the same.
+   ```
+
+3. **> 40% bloat**: Significant. Standard VACUUM is not enough. You need
+   to compact the table. Options:
+
+   **Option A: VACUUM FULL** — compacts in place, zero bloat, but requires
+   AccessExclusiveLock (full table lock). No reads or writes during operation.
+   Only for scheduled maintenance windows.
+
+   ```sql
+   VACUUM FULL VERBOSE public.orders;
+   -- Duration: 1 minute per GB on fast storage.
+   -- Lock: full. Plan your downtime window.
+   ```
+
+   **Option B: pg_repack** — compacts table concurrently, no long lock:
+
+   ```bash
+   # Install pg_repack extension:
+   apt-get install -y postgresql-15-repack
+
+   # On the database:
+   CREATE EXTENSION pg_repack;
+
+   # Repack the table (concurrent, no downtime):
+   pg_repack -d mydb -t public.orders --no-order
+   # --no-order: pure compaction, no sorting
+   # -o <col>: reorder by column (like CLUSTER, but concurrent)
+   ```
+
+4. **Ongoing prevention** — after dealing with existing bloat, prevent
+   recurrence with properly tuned autovacuum (Runbook 01):
+
+   ```sql
+   ALTER TABLE public.orders SET (
+       autovacuum_vacuum_scale_factor = 0.01,
+       autovacuum_vacuum_cost_delay   = 2,
+       autovacuum_vacuum_cost_limit   = 400
+   );
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After VACUUM FULL or pg_repack: compare table size:
+SELECT pg_size_pretty(pg_relation_size('public.orders'));
+
+-- Run pgstattuple again: dead_pct and free_pct should both be near 0:
+SELECT dead_tuple_percent, free_percent
+FROM pgstattuple('public.orders');
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+VACUUM FULL and pg_repack are non-destructive (they move data, not delete it).
+pg_repack can be cancelled mid-run — it uses a shadow table approach and the
+original table remains valid until the final swap, which takes a brief lock.
+If pg_repack fails: original table is always intact.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 10: POSTGRES CHECK UNUSED INDEXES
+  File: 04_performance_tuning/postgres_check_unused_indexes.md
+================================================================================
+
+Every unused index is a write tax. Every INSERT, UPDATE, and DELETE that
+touches an indexed column must also maintain that index. On tables with high
+write rates, a handful of unused indexes can add 20-30% write overhead.
+Cleaning them up is free performance.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Unused indexes (idx_scan = 0 since last stats reset):
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan                                               AS scans_since_reset,
+    pg_size_pretty(pg_relation_size(indexrelid))           AS index_size,
+    indexdef
+FROM pg_stat_user_indexes
+JOIN pg_indexes USING (schemaname, tablename, indexname)
+WHERE idx_scan = 0
+  AND NOT indisprimary        -- don't drop primary keys
+  AND NOT indisunique         -- think twice before dropping unique constraints
+  AND schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+-- Check when statistics were last reset (context for idx_scan = 0):
+SELECT stats_reset FROM pg_stat_database WHERE datname = current_database();
+-- If stats_reset was recent (< 2 weeks) — wait longer before dropping.
+
+-- Low-usage indexes (idx_scan > 0 but rarely used):
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
+    round(idx_scan::numeric /
+          NULLIF(extract(epoch from (now() - stats_reset)) / 86400, 0), 2)
+          AS scans_per_day
+FROM pg_stat_user_indexes
+JOIN pg_stat_database ON datname = current_database()
+WHERE idx_scan > 0
+  AND idx_scan < 10    -- fewer than 10 scans since stats reset
+  AND NOT indisprimary
+ORDER BY pg_relation_size(indexrelid) DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Wait for enough statistical history** — pg_stat_user_indexes accumulates
+   since the last `pg_stat_reset()`. Minimum 2 weeks; prefer 30 days.
+   An index that looks unused might be used by a monthly batch job.
+
+2. **Cross-check with pg_stat_statements** — if an index is referenced in
+   any frequently-run query's plan, don't drop it:
+
+   ```sql
+   -- Search query plans for index usage (PG 14+ with plan logging):
+   SELECT query, calls
+   FROM pg_stat_statements
+   WHERE query ILIKE '%orders%'
+     AND calls > 10
+   ORDER BY calls DESC;
+   -- Then EXPLAIN those queries to see if they reference the index.
+   ```
+
+3. **Check for hidden dependencies** — some indexes support constraints:
+
+   ```sql
+   -- Is this index backing a constraint?
+   SELECT conname, contype
+   FROM pg_constraint
+   WHERE conindid = (SELECT oid FROM pg_class WHERE relname = 'your_index_name');
+   -- If this returns rows — dropping the index drops the constraint.
+   ```
+
+4. **Drop unused indexes safely — one at a time:**
+
+   ```sql
+   -- Always CONCURRENTLY:
+   DROP INDEX CONCURRENTLY public.idx_orders_old_status;
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Never run a mass-drop script against all idx_scan = 0 indexes in one
+   transaction. Ever. Drop them one at a time. Verify application performance
+   after each one for at least 24 hours. If something breaks, you can recreate
+   it: `CREATE INDEX CONCURRENTLY`. If you dropped 30 at once and something
+   breaks, you have no idea which one it was.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After dropping: confirm no new Seq Scans appeared on queries that were
+-- previously using Index Scans:
+SELECT query, mean_exec_time, calls
+FROM pg_stat_statements
+WHERE query ILIKE '%orders%'
+ORDER BY mean_exec_time DESC;
+-- mean_exec_time should not have increased for any query.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+`CREATE INDEX CONCURRENTLY <name> ON <table> (<column>);`
+You must remember the index definition — that's why you saved the indexdef
+column from pg_indexes before dropping.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 11: QUERY OPTIMIZATION WORKFLOW
+  File: 04_performance_tuning/query_optimization_workflow.md
+================================================================================
+
+When you get a "slow query" complaint, most people's instinct is to jump
+straight to EXPLAIN ANALYZE. That's wrong. The instinct should be: follow
+the workflow. Without the workflow, you're pattern-matching instead of
+diagnosing. And pattern-matching gets you in trouble.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Step 0: Baseline the problem. What is the current runtime?
+\timing on
+<the slow query>
+
+-- Step 1: Is this a regression or has it always been slow?
+SELECT mean_exec_time, max_exec_time, calls, stddev_exec_time
+FROM pg_stat_statements
+WHERE query ILIKE '%<distinctive fragment>%';
+-- If mean_exec_time recently jumped (relative to calls count) — regression.
+-- If it's always been this slow — optimization from scratch.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+THE SEVEN-STEP OPTIMIZATION WORKFLOW:
+
+STEP 1: MEASURE the actual problem.
+  Don't optimize what wasn't broken. Get the current p95 and mean execution
+  time from pg_stat_statements. Set a target. "Under 100ms" is a target.
+  "Faster" is not.
+
+STEP 2: READ the EXPLAIN ANALYZE output.
+  Run `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)` three times. Use the second
+  or third run (warm cache). Look for the five things from Runbook 04.
+
+  ```sql
+  EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+  <slow query>;
+  ```
+
+STEP 3: CHECK for missing indexes.
+  Large Seq Scans with many "Rows Removed by Filter" → candidate for an index.
+  Check selectivity first (how many rows does the filter match?):
+
+  ```sql
+  SELECT count(*) FROM orders WHERE status = 'pending';
+  -- If this returns 5% of all rows: good candidate for partial index.
+  -- If it returns 50% of all rows: index won't help — seq scan is correct.
+  ```
+
+STEP 4: CHECK table and index statistics.
+  Wrong row estimates in EXPLAIN? Statistics are stale or coarse.
+  See Runbook 14 (statistics_target_tuning). Run:
+
+  ```sql
+  ANALYZE VERBOSE public.orders;
+  -- Then re-run EXPLAIN ANALYZE.
+  ```
+
+STEP 5: CHECK for bloat.
+  A query that was fast last month and is slow today with no code changes?
+  Bloat. Run the bloat query (Runbook 09). If bloat > 30%, compact the table.
+
+STEP 6: CHECK for lock contention.
+  Query is fast in isolation but slow under load? It's waiting for locks.
+  Run the lock chain query (Runbook 07) while the slow query is running.
+
+STEP 7: CONSIDER the query itself.
+  Sometimes no amount of index tuning fixes a badly written query. Common
+  patterns to look for and fix with developers:
+
+  ```sql
+  -- Anti-pattern 1: SELECT * when only 2 columns are needed.
+  -- Fix: SELECT id, status FROM orders WHERE ...
+  -- Enables Index Only Scan.
+
+  -- Anti-pattern 2: Functions on indexed columns in WHERE clause:
+  -- BAD:  WHERE date_trunc('day', created_at) = '2024-01-01'
+  -- GOOD: WHERE created_at >= '2024-01-01' AND created_at < '2024-01-02'
+  -- BAD:  WHERE upper(email) = 'USER@EXAMPLE.COM'
+  -- GOOD: WHERE email = lower('USER@EXAMPLE.COM')
+  --    or: create expression index on upper(email)
+
+  -- Anti-pattern 3: OR conditions preventing index use:
+  -- BAD:  WHERE status = 'pending' OR status = 'processing'
+  -- GOOD: WHERE status = ANY(ARRAY['pending', 'processing'])
+  --    or: two queries UNIONed together
+
+  -- Anti-pattern 4: N+1 queries (not a SQL problem, application architecture):
+  -- Symptom: thousands of identical queries with slightly different params.
+  -- Fix: batch query or JOIN instead of loop.
+  ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After optimization: compare against the STEP 1 baseline:
+SELECT mean_exec_time, max_exec_time, calls
+FROM pg_stat_statements
+WHERE query ILIKE '%<query fragment>%';
+-- mean_exec_time should be at or below your target.
+
+-- Also verify no regression on related queries:
+SELECT query, mean_exec_time FROM pg_stat_statements
+WHERE query ILIKE '%orders%'
+ORDER BY mean_exec_time DESC LIMIT 10;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+This is a workflow, not a single operation. Each step has its own rollback:
+- Index added: `DROP INDEX CONCURRENTLY`
+- ANALYZE run: no rollback needed (only updates statistics)
+- Bloat remediation: `pg_repack` is safe; `VACUUM FULL` cannot be undone
+- Configuration changes: `ALTER SYSTEM RESET <param>; pg_reload_conf()`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 12: QUERY PLAN REGRESSION
+  File: 04_performance_tuning/query_plan_regression.md
+================================================================================
+
+Plan regression is when a query that was fast suddenly gets a different, worse
+plan. The query didn't change. The data did. Or statistics changed. Or you
+ran ANALYZE. Or PostgreSQL was upgraded. Or a new index was added. The planner
+reconsidered.
+
+This is one of the hardest problems to diagnose because "the query is the same"
+but the performance is not. You have to go looking for what changed.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Identify queries with high variance (stddev_exec_time >> mean_exec_time):
+-- These are queries with inconsistent plans.
+SELECT
+    left(query, 120)                                     AS query,
+    calls,
+    round(mean_exec_time::numeric, 2)                    AS mean_ms,
+    round(stddev_exec_time::numeric, 2)                  AS stddev_ms,
+    round(max_exec_time::numeric, 2)                     AS max_ms,
+    round(stddev_exec_time / NULLIF(mean_exec_time, 0), 2) AS cv  -- coefficient of variation
+FROM pg_stat_statements
+WHERE calls > 50
+  AND mean_exec_time > 10   -- at least 10ms mean
+ORDER BY cv DESC
+LIMIT 15;
+-- cv > 2 means execution time is wildly variable — classic plan regression symptom.
+
+-- When did the regression start? (requires historical pg_stat_statements snapshots)
+-- This is why you should snapshot pg_stat_statements daily.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Capture the current bad plan:**
+
+   ```sql
+   EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+   <regressed query>;
+   -- Save this output. You'll need to compare it.
+   ```
+
+2. **Check if statistics changed — were ANALYZE or autovacuum run recently?**
+
+   ```sql
+   SELECT relname, last_analyze, last_autoanalyze, last_vacuum, last_autovacuum
+   FROM pg_stat_user_tables
+   WHERE relname IN ('orders', 'customers')   -- tables in the query
+   ORDER BY last_autoanalyze DESC;
+   ```
+
+   If last_autoanalyze is very recent and the regression appeared at the same
+   time — the new statistics changed the plan. This can be good or bad.
+
+3. **Check if a new index was added:**
+
+   ```sql
+   -- When was the current index on orders created?
+   -- (Approximate — creation time is not stored directly in system catalogs)
+   SELECT indexname, indexdef
+   FROM pg_indexes
+   WHERE tablename = 'orders'
+   ORDER BY indexname;
+   ```
+
+   A new index might look attractive to the planner for some queries but
+   change the plan for others. This is the regression I described at the
+   start of class.
+
+4. **Force the old plan by disabling the new access method:**
+
+   ```sql
+   -- If the bad plan uses a Seq Scan:
+   SET enable_seqscan = off;
+   EXPLAIN (ANALYZE, BUFFERS)
+   <regressed query>;
+
+   -- If the bad plan uses an Index Scan you don't want:
+   SET enable_indexscan = off;
+
+   -- If the bad plan uses a Hash Join:
+   SET enable_hashjoin = off;
+
+   -- These are SESSION-level settings. Test first, don't set globally.
+   ```
+
+5. **Use pg_hint_plan for persistent plan control** — if you need to lock
+   a plan without changing the query:
+
+   ```sql
+   -- Install extension:
+   CREATE EXTENSION IF NOT EXISTS pg_hint_plan;
+
+   -- Add hint in query comment (or via hint table):
+   /*+ IndexScan(orders idx_orders_status_created) */
+   SELECT o.id FROM orders o WHERE o.status = 'pending';
+
+   -- Hint table: lock a plan without touching application code:
+   INSERT INTO hint_plan.hints (norm_query_string, application_name, hints)
+   VALUES (
+       'SELECT o.id FROM orders o WHERE o.status = $1',
+       '%',
+       'IndexScan(orders idx_orders_status_created)'
+   );
+   ```
+
+6. **Fix root cause when possible** — the correct long-term fix is not forcing
+   a plan, it's giving the planner better information:
+
+   ```sql
+   -- Increase statistics target for columns with unusual distributions:
+   ALTER TABLE public.orders
+       ALTER COLUMN status SET STATISTICS 500;  -- default 100
+   ANALYZE public.orders (status);
+   -- Then re-check EXPLAIN — the planner may choose the right plan on its own.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After fix: run EXPLAIN ANALYZE three times and confirm:
+-- 1. The plan node types match the expected "good" plan.
+-- 2. The actual times are back to baseline.
+-- 3. Row estimates are close to actual rows (< 5× off).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If enable_seqscan or other planner hints were applied at session level — they
+reset automatically when the session ends. For ALTER SYSTEM SET settings:
+`ALTER SYSTEM RESET enable_seqscan; SELECT pg_reload_conf();`
+For pg_hint_plan hints table: `DELETE FROM hint_plan.hints WHERE ...;`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 13: SLOW QUERY INVESTIGATION
+  File: 04_performance_tuning/slow_query_investigation.md
+================================================================================
+
+"The queries are slow" is the most common performance complaint you'll receive
+and the least useful description of a problem. Slow compared to what? All
+queries or some queries? Slow since when? Under what load? Your first job is
+always to narrow the scope before touching anything.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Phase 1: Is this one query or general system slowdown?
+-- Check system-wide query latency distribution:
+SELECT
+    round(mean_exec_time::numeric, 2)  AS mean_ms,
+    round(max_exec_time::numeric, 2)   AS max_ms,
+    calls,
+    left(query, 80)                    AS query
+FROM pg_stat_statements
+WHERE calls > 100
+ORDER BY mean_exec_time DESC
+LIMIT 20;
+
+-- Phase 2: What changed recently?
+-- Check if there's unusual I/O wait:
+SELECT wait_event_type, wait_event, count(*)
+FROM pg_stat_activity
+WHERE state <> 'idle'
+GROUP BY wait_event_type, wait_event
+ORDER BY count(*) DESC;
+
+-- Phase 3: System-level indicators:
+-- (run in bash)
+```
+
+```bash
+# CPU utilisation:
+top -bn1 | grep postgres | head -10
+
+# I/O utilisation:
+iostat -x 1 5
+
+# Memory pressure:
+free -h
+
+# PostgreSQL-specific I/O:
+psql -c "SELECT blks_hit, blks_read,
+                round(blks_hit::numeric / NULLIF(blks_hit + blks_read,0) * 100, 2)
+                AS cache_hit_pct
+         FROM pg_stat_database WHERE datname = current_database();"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Triage: one slow query or global slowdown?**
+
+   - One specific query is slow → this is a query optimization problem.
+     See Runbook 11 (query optimization workflow).
+
+   - All queries across the board are slow →
+     → Is CPU at 100%? → Find the top CPU query (Runbook 07 in incident module)
+     → Is I/O at 100%? → I/O saturation (incident module Runbook 09)
+     → Is cache_hit_pct < 95%? → shared_buffers too small
+     → Is there lock contention? → See Runbook 07 (this module)
+
+2. **If shared_buffers cache hit is below 95%:**
+
+   ```sql
+   -- Check cache hit ratio:
+   SELECT
+       round(blks_hit::numeric / NULLIF(blks_hit + blks_read, 0) * 100, 2)
+           AS cache_hit_pct
+   FROM pg_stat_database
+   WHERE datname = current_database();
+
+   -- Which tables have the lowest cache hit ratio?
+   SELECT relname,
+          heap_blks_hit,
+          heap_blks_read,
+          round(heap_blks_hit::numeric /
+                NULLIF(heap_blks_hit + heap_blks_read, 0) * 100, 2) AS hit_pct
+   FROM pg_statio_user_tables
+   ORDER BY heap_blks_read DESC
+   LIMIT 10;
+   ```
+
+   If cache hit < 95%: increase shared_buffers (up to 25% of RAM for dedicated
+   servers, or 40% if the server is exclusively PostgreSQL):
+
+   ```bash
+   # postgresql.conf (requires restart):
+   shared_buffers = 8GB    # was 2GB, server has 32GB RAM
+   effective_cache_size = 24GB   # estimated available OS cache
+   ```
+
+3. **Tune effective_cache_size** — this does NOT allocate memory. It tells
+   the planner how much OS page cache is available, influencing its decisions
+   about index vs sequential scan cost:
+
+   ```sql
+   SHOW effective_cache_size;
+   -- Should be approximately: total_RAM - shared_buffers - OS_overhead (2GB)
+   -- If it's low: the planner may prefer seq scans over index scans.
+   ```
+
+4. **Log slow queries to catch intermittent slowness:**
+
+   ```bash
+   # postgresql.conf:
+   log_min_duration_statement = 1000   # log queries > 1 second
+   log_line_prefix = '%m [%p] %q%u@%d '
+   log_checkpoints = on
+   log_lock_waits = on
+   log_temp_files = 0   # log ALL temp file creation
+   ```
+
+   ```bash
+   # Analyze the slow query log:
+   pgbadger /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+       -o /tmp/slowquery_report.html
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After tuning: pg_stat_statements mean_exec_time should improve:
+-- Reset stats baseline:
+SELECT pg_stat_statements_reset();
+-- Wait 30-60 minutes, then re-evaluate top queries.
+
+-- Cache hit should be > 98% after shared_buffers tuning:
+SELECT round(blks_hit::numeric / NULLIF(blks_hit+blks_read,0)*100,2) AS cache_hit_pct
+FROM pg_stat_database WHERE datname = current_database();
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+shared_buffers increase requires restart. If the new value causes memory
+pressure (OOM kills): revert and restart:
+`shared_buffers = <old_value>` then restart PostgreSQL.
+log_min_duration_statement: reload only. Revert to -1 to disable slow query
+logging: `ALTER SYSTEM SET log_min_duration_statement = -1; pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 14: STATISTICS TARGET TUNING
+  File: 04_performance_tuning/statistics_target_tuning.md
+================================================================================
+
+The query planner makes decisions based on column statistics. These statistics
+are probability distributions collected by ANALYZE. The DEFAULT_STATISTICS_TARGET
+controls how many distinct values are sampled per column. The default is 100.
+For columns with highly skewed or complex distributions, 100 samples is not
+enough and the planner makes wrong row estimates — leading to bad plan choices.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Check where the planner's estimates are badly off:
+-- Run EXPLAIN ANALYZE and compare estimated vs actual rows.
+-- Any node where actual >> estimated (10x or more) is a statistics problem.
+
+-- Check current statistics targets per column:
+SELECT
+    attname,
+    attstattarget   -- -1 means "use default_statistics_target"
+FROM pg_attribute
+WHERE attrelid = 'public.orders'::regclass
+  AND attnum > 0
+  AND NOT attisdropped
+ORDER BY attnum;
+
+-- Check how many distinct values PostgreSQL thinks each column has:
+SELECT
+    attname,
+    n_distinct,       -- positive = absolute count, negative = fraction of rows
+    correlation,      -- 1.0 = perfectly sorted, 0 = random, -1 = reverse sorted
+    most_common_vals,
+    most_common_freqs,
+    histogram_bounds
+FROM pg_stats
+WHERE tablename = 'orders'
+  AND schemaname = 'public'
+ORDER BY attname;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify the bad estimate** — run EXPLAIN ANALYZE on the slow query.
+   Find the node where estimated rows << actual rows. Identify which column's
+   statistics are causing the bad estimate.
+
+   Example: `Filter: (status = 'pending')` with estimated 72 rows, actual
+   312,000. PostgreSQL thinks 0.07% of rows are 'pending' but actually 31%
+   are. Bad frequency estimate.
+
+2. **Increase statistics target for the problem column:**
+
+   ```sql
+   -- Raise statistics target for the status column:
+   ALTER TABLE public.orders
+       ALTER COLUMN status SET STATISTICS 500;
+
+   -- Then re-collect statistics:
+   ANALYZE public.orders;
+   -- Or just the column:
+   ANALYZE public.orders (status);
+   ```
+
+3. **Check the updated statistics:**
+
+   ```sql
+   SELECT attname, n_distinct,
+          array_length(most_common_vals, 1) AS mcv_count,
+          most_common_vals,
+          most_common_freqs
+   FROM pg_stats
+   WHERE tablename = 'orders'
+     AND attname = 'status';
+   -- more entries in most_common_vals = better frequency estimates
+   ```
+
+4. **Re-run EXPLAIN ANALYZE** — row estimates should now be much closer to
+   actual rows. If they are, the planner should choose a better plan.
+
+5. **Raise the global default for analytics-heavy databases:**
+
+   ```sql
+   -- Affects all new ANALYZE runs globally:
+   ALTER SYSTEM SET default_statistics_target = 200;  -- default 100
+   SELECT pg_reload_conf();
+   -- Then re-analyze all tables:
+   ANALYZE;   -- whole database
+   ```
+
+   Warning: higher statistics target means ANALYZE takes longer and uses
+   more memory. 200-500 is reasonable. Don't set it to 10000.
+
+6. **Special case: JOIN column with skewed distribution:**
+
+   ```sql
+   -- If customer_id has a fat-tail distribution (a few customers have
+   -- millions of orders), raise its statistics target:
+   ALTER TABLE public.orders
+       ALTER COLUMN customer_id SET STATISTICS 1000;
+   ANALYZE public.orders (customer_id);
+   ```
+
+7. **Extended statistics — for correlated columns** (PG 10+):
+   When two columns are correlated (e.g., state and zip_code),
+   the planner estimates them as independent. Extended statistics fix this.
+
+   ```sql
+   CREATE STATISTICS orders_status_created
+       (ndistinct, dependencies)
+       ON status, created_at
+       FROM orders;
+
+   ANALYZE orders;
+
+   -- The planner now knows status and created_at are correlated.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After ANALYZE with raised target: re-run EXPLAIN ANALYZE:
+EXPLAIN (ANALYZE, FORMAT TEXT)
+SELECT count(*) FROM orders WHERE status = 'pending'
+  AND created_at > now() - interval '7 days';
+-- Estimated rows should now be within 2-3x of actual rows.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If raising statistics_target caused ANALYZE to run too long and impact
+production: `ALTER TABLE orders ALTER COLUMN status SET STATISTICS -1;`
+(reverts to global default). Then run ANALYZE again.
+For global default: `ALTER SYSTEM RESET default_statistics_target; pg_reload_conf();`
+Extended statistics: `DROP STATISTICS orders_status_created;`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 15: TABLE BLOAT ANALYSIS
+  File: 04_performance_tuning/table_bloat_analysis.md
+================================================================================
+
+We covered calculating bloat in Runbook 09. Table bloat analysis goes deeper —
+it helps you understand WHY a table is bloated, which workloads are causing it,
+and whether it's growing or stable. Without that context, you might compact a
+table and have it bloat back within 48 hours.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Detailed table size and bloat picture:
+SELECT
+    schemaname,
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))  AS total,
+    pg_size_pretty(pg_relation_size(schemaname||'.'||tablename))        AS table,
+    pg_size_pretty(pg_indexes_size(schemaname||'.'||tablename))         AS indexes,
+    n_live_tup,
+    n_dead_tup,
+    n_ins_since_vacuum,
+    n_mod_since_analyze,
+    round(n_dead_tup::numeric /
+          NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2)                 AS dead_pct,
+    last_vacuum,
+    last_autovacuum,
+    last_analyze,
+    last_autoanalyze,
+    vacuum_count,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE n_live_tup + n_dead_tup > 50000
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+LIMIT 20;
+
+-- Rate of dead tuple generation (requires pg_stat_statements or monitoring):
+-- Quick approximation: n_dead_tup / hours_since_last_vacuum
+SELECT relname,
+       n_dead_tup,
+       now() - last_autovacuum AS since_last_vacuum,
+       round(n_dead_tup::numeric /
+             NULLIF(extract(epoch from (now() - last_autovacuum)) / 3600, 0),
+             0) AS dead_tuples_per_hour
+FROM pg_stat_user_tables
+WHERE last_autovacuum IS NOT NULL
+  AND n_dead_tup > 1000
+ORDER BY dead_tuples_per_hour DESC NULLS LAST
+LIMIT 10;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Understand the bloat source:**
+
+   High n_ins_since_vacuum with high dead tuples → INSERT-heavy with DELETE
+   or UPDATE. This is normal write churn. Autovacuum should handle it.
+
+   n_dead_tup >> expected from recent activity → autovacuum is not running
+   often enough. Tune scale factor (Runbook 01).
+
+   Bloat keeps returning after VACUUM → autovacuum cannot keep pace with the
+   write rate. Consider: partitioning, pg_repack on schedule, UNLOGGED tables.
+
+2. **Bloat growth rate calculation:**
+
+   ```sql
+   -- If you have two measurement points (t1, t2):
+   -- dead_pct at t1: 45%
+   -- dead_pct at t2 (24h later): 52%
+   -- Growth rate: 7% per day → within 10 days you'll need to repack again.
+   -- Schedule a weekly pg_repack job.
+   ```
+
+3. **Structural fix: partitioning** — for tables with high INSERT and DELETE
+   of time-series data, partitioning is the correct long-term solution.
+   Dropping an old partition has NO vacuum overhead:
+
+   ```sql
+   -- Convert orders to a monthly partitioned table (simplified):
+   CREATE TABLE orders_partitioned (
+       LIKE orders INCLUDING ALL
+   ) PARTITION BY RANGE (created_at);
+
+   CREATE TABLE orders_2024_06 PARTITION OF orders_partitioned
+       FOR VALUES FROM ('2024-06-01') TO ('2024-07-01');
+
+   -- Dropping a month's worth of data: instant, no bloat:
+   DROP TABLE orders_2024_01;  -- removes all January data instantly
+   ```
+
+4. **Compact the table and track over time:**
+
+   ```bash
+   # Log table size before pg_repack:
+   psql -At -c "SELECT pg_relation_size('public.orders');" > /tmp/before_repack.txt
+
+   # Compact:
+   pg_repack -d mydb -t public.orders --no-order
+
+   # Log after:
+   psql -At -c "SELECT pg_relation_size('public.orders');" > /tmp/after_repack.txt
+
+   diff /tmp/before_repack.txt /tmp/after_repack.txt
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After compaction: dead_pct and free_pct should both be near 0:
+SELECT dead_tuple_percent, free_percent
+FROM pgstattuple('public.orders');
+
+-- Table file size should have shrunk:
+SELECT pg_size_pretty(pg_relation_size('public.orders'));
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+pg_repack cannot be rolled back after completion (the original file is replaced
+by the compacted one). It can be cancelled mid-run with Ctrl+C or pg_cancel_backend
+— the original table remains intact because pg_repack works on a shadow copy.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 16: UNUSED AND DUPLICATE INDEXES
+  File: 04_performance_tuning/unused_duplicate_indexes.md
+================================================================================
+
+We covered unused indexes in Runbook 10. Duplicate indexes are a different
+category — indexes that exist in your schema that are redundant because another
+index already covers the same columns in the same or superset order. They add
+write overhead without benefit because the planner will never choose the shorter
+one when the longer one exists.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Find duplicate indexes: same table, same columns, same order.
+-- These are pure waste — exactly one should be dropped.
+SELECT
+    indrelid::regclass                                      AS table_name,
+    array_agg(indexrelid::regclass ORDER BY indexrelid)    AS duplicate_indexes,
+    array_agg(pg_size_pretty(pg_relation_size(indexrelid))
+              ORDER BY indexrelid)                         AS sizes,
+    array_agg(idx_scan ORDER BY indexrelid)                AS scan_counts
+FROM pg_index
+JOIN pg_stat_user_indexes USING (indexrelid)
+GROUP BY indrelid, indkey, indpred, indexprs
+HAVING count(*) > 1
+ORDER BY indrelid;
+
+-- Find redundant indexes: (a,b) is made redundant by (a,b,c).
+-- This query finds leading-column subsets:
+SELECT
+    idx.indexrelid::regclass                               AS redundant_index,
+    sup.indexrelid::regclass                               AS superseding_index,
+    pg_size_pretty(pg_relation_size(idx.indexrelid))       AS wasted_size,
+    s1.idx_scan                                            AS redundant_scans,
+    s2.idx_scan                                            AS superseding_scans
+FROM pg_index idx
+JOIN pg_index sup
+    ON idx.indrelid = sup.indrelid
+    AND idx.indexrelid <> sup.indexrelid
+    -- The redundant index columns are a prefix of the superseding index:
+    AND (idx.indkey::int2[] <@ sup.indkey::int2[])
+    AND cardinality(idx.indkey::int2[]) < cardinality(sup.indkey::int2[])
+JOIN pg_stat_user_indexes s1 ON s1.indexrelid = idx.indexrelid
+JOIN pg_stat_user_indexes s2 ON s2.indexrelid = sup.indexrelid
+WHERE NOT idx.indisprimary
+  AND NOT idx.indisunique
+ORDER BY pg_relation_size(idx.indexrelid) DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Duplicate indexes — drop the one with fewer scans:**
+
+   ```sql
+   -- If idx_orders_status and idx_orders_status_v2 are identical:
+   SELECT indexrelid::regclass, idx_scan
+   FROM pg_stat_user_indexes
+   WHERE indexrelid::regclass::text IN ('idx_orders_status', 'idx_orders_status_v2');
+
+   -- Keep the one with more scans (it's the one the planner prefers).
+   -- Check which was created first (name usually tells you — v2 is the dupe):
+   DROP INDEX CONCURRENTLY idx_orders_status_v2;
+   ```
+
+2. **Redundant prefix indexes — example:**
+
+   ```
+   idx_orders_customer         ON orders (customer_id)
+   idx_orders_customer_status  ON orders (customer_id, status)
+   ```
+
+   The first index is redundant. Any query that uses idx_orders_customer
+   could also use idx_orders_customer_status, because B-tree scans support
+   leading-column prefix access.
+
+   BUT — there's a nuance. The single-column index is smaller. For queries
+   that only need customer_id without status, the smaller index is cheaper
+   (less I/O). Whether to drop depends on whether customer_id-only queries
+   are in your workload.
+
+   ```sql
+   -- Check: are there queries that use customer_id without status?
+   EXPLAIN (ANALYZE, BUFFERS)
+   SELECT count(*) FROM orders WHERE customer_id = 12345;
+   -- If this uses idx_orders_customer — dropping it forces idx_orders_customer_status
+   -- which is larger. Test if performance changes.
+   ```
+
+3. **Systematic cleanup approach:**
+
+   ```sql
+   -- Step 1: Save all index definitions before dropping anything:
+   SELECT indexname, indexdef
+   FROM pg_indexes
+   WHERE schemaname = 'public'
+     AND tablename = 'orders'
+   ORDER BY indexname;
+   -- Save this to a file.
+
+   -- Step 2: Drop one at a time, test for 24 hours:
+   DROP INDEX CONCURRENTLY idx_orders_status_old;
+   -- Wait. Watch pg_stat_statements for any query performance change.
+
+   -- Step 3: Confirm the write overhead improved:
+   -- Run INSERT benchmark before and after.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After dropping duplicates: verify no identical index groups remain:
+SELECT indrelid::regclass, count(*), array_agg(indexrelid::regclass)
+FROM pg_index
+GROUP BY indrelid, indkey, indpred, indexprs
+HAVING count(*) > 1;
+-- Should return 0 rows.
+
+-- Verify write performance improved (use pgbench or application metrics):
+-- INSERT throughput on orders should increase measurably.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+`CREATE INDEX CONCURRENTLY <name> ON <table> (<columns>);`
+You saved the indexdef in step 1 — use it as the DDL for recreation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+Performance tuning lab is structured in three tracks: Diagnosis, Index Surgery,
+and Bloat Removal. Work through all three. The final lab is a full end-to-end
+investigation.
+
+── LAB 1: EXPLAIN ANALYZE FLUENCY ───────────────────────────────────────────
+
+Three query plans have been pre-loaded on the whiteboard display. For each one:
+  a) Read the plan and state in ONE sentence what the dominant performance
+     problem is.
+  b) Identify whether the issue is: missing index / wrong join type / bad
+     statistics / work_mem spill / lock wait.
+  c) Write the SQL to fix it (CREATE INDEX / SET work_mem / ANALYZE / etc.)
+  d) Show what the fixed plan SHOULD look like (describe it — you can't run
+     the fix yet, these are read-only plans).
+
+The three plans: a sequential scan with 3M rows removed by filter, a hash join
+with 8 disk batches, and a nested loop with 50,000 outer rows.
+
+── LAB 2: INDEX SURGERY ─────────────────────────────────────────────────────
+
+The lab database has a schema with:
+  - A table with 6 indexes, 2 of which are duplicates.
+  - A table with 1 index that covers (a, b) and a separate index on just (a).
+  - A table with no index that receives 10,000 page reads on every query.
+
+Your tasks:
+  a) Identify all three problems using the queries from this session.
+  b) Determine which duplicate to drop (and justify the choice from idx_scan).
+  c) Determine whether the prefix index should be dropped (justify from workload).
+  d) Identify the correct index type for the unindexed table (use the decision
+     tree from Runbook 06).
+  e) Execute all changes. Confirm plans improved with EXPLAIN ANALYZE.
+  f) Run the write-load script provided. Confirm INSERT throughput improved
+     after removing the duplicate index.
+
+── LAB 3: BLOAT INVESTIGATION ───────────────────────────────────────────────
+
+The lab database has been running a simulation that generated heavy dead-tuple
+churn on the events table. Autovacuum has been intentionally throttled.
+
+  a) Quantify the bloat using pgstattuple.
+  b) Calculate the dead tuple generation rate (dead tuples per hour).
+  c) Identify why autovacuum is not keeping up (hint: check the cost settings).
+  d) Fix the autovacuum configuration for the events table specifically.
+  e) Verify autovacuum runs within 5 minutes and reduces dead_pct.
+  f) Run pg_repack on the events table to compact the existing bloat.
+  g) Compare table size before and after. Calculate GB recovered.
+
+── LAB 4: PLAN REGRESSION ───────────────────────────────────────────────────
+
+A query has just regressed. Before the session, it ran in 45ms. Now it's
+running in 3.2 seconds. The query hasn't changed.
+
+  a) Run EXPLAIN ANALYZE and identify the plan change.
+  b) Identify what changed in the environment that caused the regression.
+     (Hint: check pg_stat_user_tables last_autoanalyze and pg_stat_statements.)
+  c) Fix the regression using the statistics approach (not a hint plan).
+  d) If statistics alone can't fix it, apply pg_hint_plan and explain why.
+
+── LAB 5: FULL INVESTIGATION (OPEN-ENDED, 20 MINUTES) ──────────────────────
+
+The lab monitoring dashboard shows that P95 query latency jumped from 18ms to
+340ms 2 hours ago. No deployments happened. The on-call developer says "nothing
+changed on our side."
+
+Run the full seven-step optimization workflow from Runbook 11. Document every
+step: what you found, what you ruled out, what you acted on. Close the lab by
+stating the root cause in one sentence and what the permanent fix is.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+You now have the most complete PostgreSQL performance tuning framework I know
+of, packaged into sixteen runbooks that you built today.
+
+But I want to leave you with the most important single idea from this session,
+and it's not technical:
+
+Always measure before and after. Always.
+
+Every change you make — index added, autovacuum tuned, bloat removed, work_mem
+raised, connection pool resized — every single one needs a before measurement
+and an after measurement. Not because you might be wrong (though you might),
+but because without measurements you cannot learn. You cannot improve your
+intuition. You cannot tell your manager what you actually achieved.
+
+"Database is faster" is not a result. "P95 query latency dropped from 340ms
+to 22ms after creating a partial index on orders(status, created_at)" — that
+is a result. Say that at your next review. Put it in your performance doc.
+
+The DBAs who advance are the ones who can measure impact. Not just fix things.
+Measure. Document. Repeat.
+
+Next session: Schema Design and Migrations. We're going to talk about zero-
+downtime schema changes, partition strategies, and why that innocent ALTER TABLE
+ADD COLUMN DEFAULT X that you ran last Tuesday caused a 3-minute lock on your
+production table. Don't run it again until you've heard that lecture.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — PERFORMANCE TUNING
+  The most-used queries in this entire module.
+================================================================================
+
+── ACTIVE SESSION TRIAGE ────────────────────────────────────────────────────
+
+  Long-running queries (> 5 seconds):
+    SELECT pid, now()-query_start AS dur, usename, wait_event_type,
+           wait_event, state, left(query,100)
+    FROM pg_stat_activity
+    WHERE now()-query_start > interval '5s' AND state <> 'idle'
+    ORDER BY dur DESC;
+
+  Lock chain (root blocker → blocked):
+    SELECT blocking.pid AS blocker, blocked.pid AS victim,
+           left(blocking.query,80) AS blocker_q, left(blocked.query,80) AS victim_q
+    FROM pg_stat_activity blocked
+    JOIN pg_stat_activity blocking ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+    WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0;
+
+  What's in the I/O wait:
+    SELECT wait_event, count(*) FROM pg_stat_activity
+    WHERE wait_event_type = 'IO' GROUP BY 1 ORDER BY 2 DESC;
+
+── PG_STAT_STATEMENTS ───────────────────────────────────────────────────────
+
+  Top queries by total time:
+    SELECT left(query,100), calls, round(mean_exec_time::numeric,2) AS mean_ms,
+           round(total_exec_time::numeric,0) AS total_ms
+    FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+
+  High variance queries (plan instability):
+    SELECT left(query,100), round(stddev_exec_time/NULLIF(mean_exec_time,0),2) AS cv
+    FROM pg_stat_statements WHERE calls > 50 ORDER BY cv DESC LIMIT 10;
+
+  Reset baseline:    SELECT pg_stat_statements_reset();
+
+── BLOAT QUICK CHECK ────────────────────────────────────────────────────────
+
+  Dead tuple hot list:
+    SELECT relname, n_dead_tup,
+           round(n_dead_tup::numeric/NULLIF(n_live_tup+n_dead_tup,0)*100,2) AS dead_pct,
+           last_autovacuum
+    FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 15;
+
+  Cache hit ratio:
+    SELECT round(blks_hit::numeric/NULLIF(blks_hit+blks_read,0)*100,2) AS cache_hit_pct
+    FROM pg_stat_database WHERE datname = current_database();
+
+── INDEX HEALTH ─────────────────────────────────────────────────────────────
+
+  Unused indexes (idx_scan = 0):
+    SELECT schemaname, tablename, indexname, idx_scan,
+           pg_size_pretty(pg_relation_size(indexrelid)) AS size
+    FROM pg_stat_user_indexes WHERE idx_scan = 0 AND NOT indisprimary
+    ORDER BY pg_relation_size(indexrelid) DESC;
+
+  Duplicate index check:
+    SELECT indrelid::regclass, array_agg(indexrelid::regclass), count(*)
+    FROM pg_index GROUP BY indrelid, indkey, indpred, indexprs HAVING count(*)>1;
+
+── EXPLAIN ANATOMY ──────────────────────────────────────────────────────────
+
+  Always run:
+    EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT) <query>;
+
+  The five things to look for:
+    1. Actual vs estimated rows (> 10x off = stale statistics)
+    2. Rows Removed by Filter (large number = missing index)
+    3. shared read vs hit (high reads = cache miss or large sequential scan)
+    4. Sort/Hash with Batches > 1 (spill to disk = need more work_mem)
+    5. Workers Planned vs Launched (launched < planned = worker starvation)
+
+── AUTOVACUUM TUNING ────────────────────────────────────────────────────────
+
+  Per-table override (most common tuning action):
+    ALTER TABLE <t> SET (
+        autovacuum_vacuum_scale_factor   = 0.005,
+        autovacuum_analyze_scale_factor  = 0.002,
+        autovacuum_vacuum_cost_delay     = 2,
+        autovacuum_vacuum_cost_limit     = 400
+    );
+
+  Check autovacuum is running:
+    SELECT pid, now()-query_start AS dur, query FROM pg_stat_activity
+    WHERE query ILIKE 'autovacuum:%';
+
+── EMERGENCY ACTIONS ────────────────────────────────────────────────────────
+
+  Kill a session:           SELECT pg_terminate_backend(<pid>);
+  Compact table (online):   pg_repack -d mydb -t public.<table> --no-order
+  Force statistics update:  ANALYZE VERBOSE public.<table>;
+  Disable bad plan:         SET enable_seqscan = off;  -- session only
+  Kill idle-in-txn:
+    SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+    WHERE state = 'idle in transaction'
+      AND state_change < now() - interval '5 minutes';
+
+── THRESHOLDS ───────────────────────────────────────────────────────────────
+
+  cache_hit_pct < 95%           → shared_buffers too small
+  dead_pct > 20%                → tune autovacuum or VACUUM manually
+  dead_pct > 40%                → pg_repack needed
+  idx_scan = 0 after 30 days    → candidate to drop
+  estimated rows off > 10x      → run ANALYZE with higher statistics target
+  Sort Batches > 1 in plan      → increase work_mem for this query
+  cl_waiting > 0 in PgBouncer   → increase default_pool_size
+
+================================================================================
+  END OF SESSION
+================================================================================

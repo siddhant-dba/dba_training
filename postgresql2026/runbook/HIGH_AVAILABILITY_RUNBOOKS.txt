@@ -1,0 +1,1900 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: HIGH AVAILABILITY RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+Close your laptops halfway. Not shut — halfway. I want you to see the screen
+but I also need you listening to me for the next ten minutes before we touch
+a keyboard.
+
+Last session was Incident Response. We learned what to do when something has
+already gone wrong. Today is different. Today is High Availability — which
+means building the systems that either prevent the incident from happening, or
+make recovery so fast that the incident barely registers.
+
+Here's the thing about HA that nobody tells you until you've worked it in
+production: it is not a single technology. It is a set of decisions. Tradeoffs.
+Commitments. When I set up my first streaming replication cluster back in 2009 —
+PostgreSQL 9.0 had just shipped it as a real feature — I thought I was done
+once the standby was running and the lag was zero. Then our primary died and I
+realised I had no tested failover process. The standby was fine. We just didn't
+know how to promote it without making things worse.
+
+That was a four-hour outage that should have been a four-minute switchover.
+
+Today you are going to know how to do it in four minutes. We will cover every
+major pattern in the PostgreSQL HA toolbox: streaming replication setup and
+management, failover, switchover, failback, replication slots, cascading
+replicas, synchronous replication, and the two most common HA management
+frameworks in production — Patroni and repmgr.
+
+Twelve runbooks. Every one with real commands you can copy into a terminal at
+3 AM and trust.
+
+Let's go.
+
+================================================================================
+  HA ARCHITECTURE — TWO MINUTES OF CONTEXT
+================================================================================
+
+Before we build anything, you need to understand the landscape. PostgreSQL HA
+sits on three foundational mechanisms:
+
+  PHYSICAL STREAMING REPLICATION — the standby receives WAL records in real
+  time from the primary and replays them continuously. The standby is a
+  byte-for-byte copy of the primary. It can be promoted to primary in seconds.
+  This is the workhorse of PostgreSQL HA.
+
+  LOGICAL REPLICATION — replicates logical changes (INSERT, UPDATE, DELETE)
+  at the row level, not WAL-level. Allows cross-version replication,
+  partial replication, and multi-master patterns. More flexible, more complex.
+
+  REPLICATION SLOTS — a mechanism that causes the primary to retain WAL until
+  a specific consumer has acknowledged receipt. We talked about slot bloat in
+  Incident Response. Today we manage slots correctly.
+
+On top of these, tooling handles automatic failover:
+
+  PATRONI — distributed consensus-based HA manager (uses etcd, Consul, or
+  ZooKeeper as DCS). Industry standard. Used at scale by companies running
+  hundreds of Postgres clusters. This is what I recommend for any serious
+  production deployment.
+
+  REPMGR — simpler, lighter HA manager. No external DCS dependency. Good for
+  teams that want managed failover without the operational overhead of etcd.
+
+  PG_AUTO_FAILOVER — Microsoft's contribution. Single extension, manages its
+  own monitor. Simple to set up, good for smaller deployments.
+
+Understand the tool before you run the runbook. Okay — let's build.
+
+================================================================================
+  RUNBOOK 01: ADD STANDBY TO EXISTING CLUSTER
+  File: 02_high_availability/add_standby_to_existing_cluster.md
+================================================================================
+
+This is where most HA journeys start. You have a running primary. It has no
+standby. Your manager has finally approved the HA infrastructure request.
+Here's how you add a streaming replica without downtime to the primary.
+
+The tool is pg_basebackup. It takes a consistent base backup of the primary
+while it's running — no BACKUP MODE required in PostgreSQL 15+ — and streams
+it to the standby over the replication protocol.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+Before you start, check these on the PRIMARY:
+
+```sql
+-- Is wal_level set correctly? Must be 'replica' or 'logical':
+SHOW wal_level;
+
+-- Is max_wal_senders high enough for an additional replica?
+SHOW max_wal_senders;
+
+-- Is max_replication_slots sufficient if you'll use slots?
+SHOW max_replication_slots;
+
+-- Does the replication user exist?
+SELECT usename, userepl FROM pg_user WHERE userepl = true;
+```
+
+```bash
+# Check network connectivity from standby to primary:
+nc -zv <primary_ip> 5432
+
+# Check pg_hba.conf allows replication connections:
+grep -i replication /etc/postgresql/*/main/pg_hba.conf
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Create the replication user on the PRIMARY (if not already):**
+
+   ```sql
+   CREATE USER replicator REPLICATION LOGIN ENCRYPTED PASSWORD 'strongpassword';
+   ```
+
+2. **Update pg_hba.conf on the PRIMARY to allow the standby:**
+
+   ```bash
+   # Add to /etc/postgresql/15/main/pg_hba.conf:
+   # TYPE   DATABASE     USER         ADDRESS            METHOD
+   host     replication  replicator   <standby_ip>/32    scram-sha-256
+   ```
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"  # reload, no restart needed
+   ```
+
+3. **Set required parameters on PRIMARY if not already set:**
+
+   ```bash
+   # postgresql.conf — only if they need changing:
+   wal_level = replica          # or logical
+   max_wal_senders = 10         # default is 10 in PG14+, usually fine
+   max_replication_slots = 10   # if using slots
+   ```
+
+   Changes to wal_level and max_wal_senders require a restart. Plan the
+   restart window ahead of time.
+
+4. **On the STANDBY server: run pg_basebackup:**
+
+   ```bash
+   # Stop postgresql on standby if it's running:
+   systemctl stop postgresql@15-main
+
+   # Wipe the data directory (it will be replaced):
+   rm -rf /var/lib/postgresql/15/main/*
+
+   # Run basebackup as postgres user:
+   sudo -u postgres pg_basebackup \
+       -h <primary_ip> \
+       -U replicator \
+       -D /var/lib/postgresql/15/main \
+       --wal-method=stream \
+       --checkpoint=fast \
+       --progress \
+       --verbose \
+       -R   # critical: writes postgresql.auto.conf with primary_conninfo
+   ```
+
+   *Expected output:* progress bar showing GB transferred. On large databases
+   this may take 30–60 minutes. Don't interrupt it.
+
+   The -R flag creates the standby.signal file AND writes primary_conninfo
+   automatically. Without -R, you do this manually.
+
+5. **Verify standby.signal exists and primary_conninfo is set:**
+
+   ```bash
+   ls -la /var/lib/postgresql/15/main/standby.signal
+   grep primary_conninfo /var/lib/postgresql/15/main/postgresql.auto.conf
+   ```
+
+6. **Start the standby:**
+
+   ```bash
+   systemctl start postgresql@15-main
+   tail -f /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+   ```
+
+   *Expected output in log:* "started streaming WAL from primary"
+
+7. **Confirm replication on PRIMARY:**
+
+   ```sql
+   SELECT application_name, state, sent_lsn, write_lsn, flush_lsn,
+          replay_lsn, sync_state
+   FROM pg_stat_replication;
+   ```
+
+   *Expected output:* One row showing the standby in 'streaming' state.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On PRIMARY: standby is visible and lag is low:
+SELECT application_name, replay_lag FROM pg_stat_replication;
+
+-- On STANDBY: confirm we're in recovery and receiving WAL:
+SELECT pg_is_in_recovery(),
+       pg_last_wal_receive_lsn(),
+       pg_last_wal_replay_lsn(),
+       now() - pg_last_xact_replay_timestamp() AS replication_delay;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If the standby fails to start or connect: stop it, re-run pg_basebackup.
+The primary is unaffected. If you had to restart the primary for wal_level
+changes and this caused downtime — that's the cost. Plan future wal_level
+changes during low-traffic windows.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: CASCADING REPLICATION SETUP
+  File: 02_high_availability/cascading_replication_setup.md
+================================================================================
+
+Cascading replication is where a replica replicates FROM another replica,
+not from the primary. You use this when:
+  - You want to offload WAL sender load from the primary (you have many replicas)
+  - You have geographically distributed standby nodes and want to route WAL
+    efficiently (datacenter A → datacenter B → datacenter C, not all from A)
+  - You need a standby for analytics that shouldn't add any load to primary
+
+The downstream replica is called a cascading standby or a replica-of-a-replica.
+It receives WAL from its upstream, not the primary directly.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Check wal_level on primary (must be 'replica' or 'logical'):
+SHOW wal_level;
+
+-- Check max_wal_senders on the UPSTREAM REPLICA — yes, the intermediate
+-- replica also needs to be a WAL sender. Make sure it's > 0:
+SHOW max_wal_senders;
+
+-- On the upstream replica: confirm it's in recovery (it should be):
+SELECT pg_is_in_recovery();
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Configure the upstream (intermediate) replica as a WAL sender:**
+
+   On the upstream replica's postgresql.conf:
+
+   ```bash
+   # This replica needs to forward WAL to cascading standbys:
+   wal_level = replica           # must be at least replica
+   max_wal_senders = 5           # how many cascading standbys it can feed
+   hot_standby = on              # allow read queries on this replica
+   ```
+
+   Also update pg_hba.conf on the upstream replica to allow the downstream:
+
+   ```bash
+   # /etc/postgresql/15/main/pg_hba.conf on UPSTREAM REPLICA:
+   host  replication  replicator  <downstream_ip>/32  scram-sha-256
+   ```
+
+   Reload:
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Changes to max_wal_senders on the upstream replica require a RESTART of
+   that replica — not just a reload. Plan this. A restart of a streaming replica
+   does NOT affect the primary, but it will cause a brief interruption to any
+   clients reading from that replica.
+
+2. **Run pg_basebackup on the DOWNSTREAM (cascading) standby — sourcing from
+   the upstream replica, NOT the primary:**
+
+   ```bash
+   sudo -u postgres pg_basebackup \
+       -h <upstream_replica_ip> \
+       -U replicator \
+       -D /var/lib/postgresql/15/main \
+       --wal-method=stream \
+       --checkpoint=fast \
+       --progress \
+       -R
+   ```
+
+   The -R flag will write the upstream replica's connection info into
+   primary_conninfo. The cascading standby will stream WAL from the replica,
+   not the primary.
+
+3. **Start the cascading standby:**
+
+   ```bash
+   systemctl start postgresql@15-main
+   ```
+
+4. **Verify the replication chain:**
+
+   ```sql
+   -- On PRIMARY: you should see only the upstream replica:
+   SELECT application_name, client_addr FROM pg_stat_replication;
+
+   -- On the UPSTREAM REPLICA: you should now see the downstream:
+   SELECT application_name, client_addr FROM pg_stat_replication;
+
+   -- On the DOWNSTREAM: confirm it sees the upstream as sender:
+   SELECT pg_last_wal_receive_lsn(), now() - pg_last_xact_replay_timestamp();
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Write something on primary:
+CREATE TABLE cascade_test AS SELECT generate_series(1,1000) AS id;
+
+-- Wait a moment, then check on DOWNSTREAM:
+SELECT count(*) FROM cascade_test;   -- should return 1000
+```
+
+```bash
+# Also check the downstream log for "streaming WAL from standby":
+grep "streaming\|recovery" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+To remove a cascading standby: stop it. The upstream replica and primary are
+unaffected. To repoint the cascading standby directly to the primary, update
+primary_conninfo in postgresql.auto.conf and restart it.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: FAILBACK AFTER PROMOTION
+  File: 02_high_availability/failback_after_promotion.md
+================================================================================
+
+You had a failover event. The old primary died. You promoted the standby.
+The old primary is now repaired or recovered. You want it back — either as
+the primary again, or as a new standby in the cluster.
+
+This is called failback. And I want to be very clear about something up front:
+"failback" does NOT mean automatically reversing what happened. The promoted
+standby is your new primary. It has new writes on it. The old primary is stale.
+You cannot simply restart the old primary and expect the cluster to merge
+gracefully. You must rebuild it.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- On the CURRENT PRIMARY (formerly the standby): what timeline are we on?
+SELECT timeline_id FROM pg_control_checkpoint();
+-- After a failover, this will be > 1.
+
+-- What LSN are we at?
+SELECT pg_current_wal_lsn();
+
+-- On the OLD PRIMARY (if it's back up — run in read-only / single-user mode):
+-- Check what LSN it was at when it died:
+pg_controldata /var/lib/postgresql/15/main | grep -i "latest checkpoint\|timeline"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+SCENARIO A: You want the OLD PRIMARY as a new standby (most common, safest).
+
+1. **Stop the old primary completely — do not start it as a primary:**
+
+   ```bash
+   systemctl stop postgresql@15-main
+   ```
+
+2. **Rebuild it from the current primary using pg_basebackup:**
+
+   ```bash
+   # Wipe the old data directory:
+   rm -rf /var/lib/postgresql/15/main/*
+
+   # Basebackup from the NEW primary:
+   sudo -u postgres pg_basebackup \
+       -h <new_primary_ip> \
+       -U replicator \
+       -D /var/lib/postgresql/15/main \
+       --wal-method=stream \
+       --checkpoint=fast \
+       --progress \
+       -R
+   ```
+
+3. **Start it as a standby:**
+
+   ```bash
+   systemctl start postgresql@15-main
+   # Confirm it joins as replica:
+   psql -h <new_primary_ip> -c "SELECT application_name, state FROM pg_stat_replication;"
+   ```
+
+SCENARIO B: You want to promote the old primary back to primary (switchover).
+Only do this if the new primary has had NO application writes and you're doing
+a controlled maintenance swap. See Runbook 11 (switchover) for this pattern.
+Do NOT attempt this if the new primary has been serving writes.
+
+SCENARIO C: pg_rewind — efficient failback without full basebackup.
+
+   If the old primary hasn't diverged too far, pg_rewind can "fast-forward"
+   it to match the new primary timeline. This is much faster than a full
+   basebackup on large databases.
+
+   ```bash
+   # Ensure wal_log_hints = on OR data checksums were enabled on the old primary.
+   # Both must have been set BEFORE the failure to use pg_rewind.
+
+   # On the OLD PRIMARY (stopped):
+   sudo -u postgres pg_rewind \
+       --target-pgdata=/var/lib/postgresql/15/main \
+       --source-server="host=<new_primary_ip> user=replicator dbname=postgres" \
+       --progress
+
+   # After pg_rewind: create standby.signal and update primary_conninfo:
+   touch /var/lib/postgresql/15/main/standby.signal
+   echo "primary_conninfo = 'host=<new_primary_ip> user=replicator'" \
+       >> /var/lib/postgresql/15/main/postgresql.auto.conf
+
+   systemctl start postgresql@15-main
+   ```
+
+   pg_rewind only copies the diverged blocks — on a 2 TB database it can be
+   the difference between a 2-minute failback and a 4-hour one.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On new primary: old server should now appear as a replica:
+SELECT application_name, state, replay_lag FROM pg_stat_replication;
+
+-- On rebuilt standby: confirm recovery and low lag:
+SELECT pg_is_in_recovery(), now() - pg_last_xact_replay_timestamp() AS lag;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If pg_rewind fails (e.g., wal_log_hints was not enabled): fall back to full
+pg_basebackup. The new primary is never touched by failback operations.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: FAILOVER PROCEDURES
+  File: 02_high_availability/failover_procedures.md
+================================================================================
+
+Failover is what happens when the primary is DEAD and you promote a standby to
+take its place. This is not a planned event. This is the fire alarm. Your job
+is to execute this correctly, quickly, and without causing a split brain.
+
+Before we dive in — let me define the difference clearly:
+
+  FAILOVER:   Unplanned. Primary is down/dead. You must promote standby.
+              Risk of data loss from in-flight transactions.
+
+  SWITCHOVER: Planned. Primary is healthy. You choose to move primary role to
+              standby. Zero data loss (see Runbook 11).
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# On the STANDBY: confirm primary is actually unreachable before promoting.
+# Do NOT promote based on a network blip alone.
+pg_isready -h <primary_ip> -p 5432
+
+# Multiple checks:
+for i in {1..5}; do
+    pg_isready -h <primary_ip> -p 5432
+    sleep 2
+done
+
+# If you use Patroni or repmgr — let THEM make the decision. Do not manually
+# promote unless automation has failed.
+```
+
+```sql
+-- On the STANDBY: check WAL receive status — is it still streaming?
+SELECT pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn(),
+       now() - pg_last_xact_replay_timestamp() AS lag_seconds;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+*** INSTRUCTOR WARNING ***
+Before you promote a standby, you MUST fence the primary. Fencing means making
+it impossible for the primary to accept writes again — even if it recovers.
+If you promote the standby AND the primary comes back up, you have split brain.
+Fencing methods: block its network interface, shut it down at the hypervisor/cloud
+level, revoke its database credentials. Do one of these FIRST.
+
+1. **FENCE the failed primary:**
+
+   ```bash
+   # AWS: stop the EC2 instance:
+   aws ec2 stop-instances --instance-ids <primary_instance_id>
+
+   # Or: block port 5432 at the firewall/security group level.
+   # Or: shut down the OS.
+   # Whatever your environment allows — DO THIS FIRST.
+   ```
+
+2. **Choose the best standby to promote** — if you have multiple standbys,
+   pick the one with the highest replay LSN (least data loss):
+
+   ```bash
+   # On each standby, check replay LSN:
+   psql -c "SELECT pg_last_wal_replay_lsn();"
+   # Promote the one with the highest value.
+   ```
+
+3. **Promote the chosen standby:**
+
+   ```bash
+   # Method 1: pg_ctl promote (cleanest):
+   sudo -u postgres pg_ctl promote -D /var/lib/postgresql/15/main
+
+   # Method 2: trigger file (old-school, still works):
+   touch /var/lib/postgresql/15/main/promote_trigger
+
+   # Method 3: SQL (PG 12+):
+   psql -c "SELECT pg_promote();"
+   ```
+
+   *Expected log output:*
+   "received fast shutdown request"
+   "redo done at X/XXXXXXXX"
+   "selected new timeline ID: 2"
+   "database system is ready to accept connections"
+
+4. **Update your application's connection string to point to the new primary.**
+   If you use a VIP (virtual IP) or HAProxy/PgBouncer, update there.
+
+5. **Update monitoring to point at the new primary.**
+
+6. **Initialize remaining standbys to follow the new primary:**
+   See Runbook 01 (add standby) or Runbook 03 (failback) for other replicas.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On promoted standby (now primary): confirm it's no longer in recovery:
+SELECT pg_is_in_recovery();   -- must return FALSE
+
+SELECT timeline_id FROM pg_control_checkpoint();  -- should be > 1
+
+-- Can we write?
+CREATE TABLE failover_test (id int);
+INSERT INTO failover_test VALUES (1);
+DROP TABLE failover_test;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+A promotion cannot be rolled back. Once promoted, the server is a primary on
+a new timeline. To revert, you must rebuild the cluster from scratch using the
+old primary (if recoverable) as a standby. This is Runbook 03.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: PATRONI CLUSTER SETUP
+  File: 02_high_availability/patroni_cluster_setup.md
+================================================================================
+
+Patroni is, in my opinion, the gold standard for PostgreSQL HA in production
+today. Kubernetes shops use it. Large SaaS companies use it. It handles leader
+election, automatic failover, and configuration management — and it does it
+based on distributed consensus, not a coin flip.
+
+The architecture: each node runs a Patroni daemon. They all communicate with
+a Distributed Configuration Store (DCS) — usually etcd. When the primary
+fails, the Patroni agents elect a new leader via DCS consensus and coordinate
+the promotion. No split brain because the DCS is the source of truth.
+
+I'm going to give you the standalone setup. Kubernetes-based setup is a whole
+other session.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```bash
+# Verify Python3 and pip:
+python3 --version
+pip3 --version
+
+# Check etcd is running and healthy (you need etcd set up separately):
+etcdctl endpoint health
+etcdctl member list
+
+# Ports needed:
+# PostgreSQL: 5432
+# Patroni REST API: 8008
+# etcd: 2379 (client), 2380 (peer)
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install Patroni on each node:**
+
+   ```bash
+   pip3 install patroni[etcd] psycopg2-binary
+   # Or via apt on Debian/Ubuntu:
+   apt-get install -y patroni
+   ```
+
+2. **Create the Patroni configuration on each node** — this is the most
+   critical step. Every field matters.
+
+   ```yaml
+   # /etc/patroni/patroni.yml — on NODE 1 (primary candidate):
+   scope: postgres-cluster          # cluster name — must match on all nodes
+   namespace: /db/                  # etcd namespace
+   name: pg-node-01                 # THIS node's name — unique per node
+
+   restapi:
+     listen: 0.0.0.0:8008
+     connect_address: <node1_ip>:8008
+
+   etcd:
+     hosts: <etcd1_ip>:2379,<etcd2_ip>:2379,<etcd3_ip>:2379
+
+   bootstrap:
+     dcs:
+       ttl: 30
+       loop_wait: 10
+       retry_timeout: 10
+       maximum_lag_on_failover: 1048576    # 1 MB — max lag to allow as candidate
+       postgresql:
+         use_pg_rewind: true
+         use_slots: true
+         parameters:
+           wal_level: replica
+           hot_standby: on
+           max_wal_senders: 10
+           max_replication_slots: 10
+           wal_log_hints: on               # required for pg_rewind
+
+     initdb:                              # only used on first cluster init
+       - encoding: UTF8
+       - data-checksums
+
+     pg_hba:
+       - host replication replicator 0.0.0.0/0 scram-sha-256
+       - host all all 0.0.0.0/0 scram-sha-256
+
+     users:
+       admin:
+         password: adminpassword
+         options:
+           - createrole
+           - createdb
+
+   postgresql:
+     listen: 0.0.0.0:5432
+     connect_address: <node1_ip>:5432
+     data_dir: /var/lib/postgresql/15/main
+     bin_dir: /usr/lib/postgresql/15/bin
+     pgpass: /tmp/pgpass
+
+     authentication:
+       replication:
+         username: replicator
+         password: replicatorpassword
+       superuser:
+         username: postgres
+         password: postgrespassword
+
+     parameters:
+       unix_socket_directories: '/var/run/postgresql'
+
+   tags:
+     nofailover: false
+     noloadbalance: false
+     clonefrom: false
+     nosync: false
+   ```
+
+   On node 2 and 3: change `name` and `connect_address` for each node.
+   Everything else stays the same.
+
+3. **Initialize the cluster — start Patroni on ALL nodes simultaneously:**
+
+   ```bash
+   # On all nodes:
+   systemctl enable patroni
+   systemctl start patroni
+
+   # Watch the logs — node 1 should initialise as primary,
+   # others should bootstrap as replicas:
+   journalctl -u patroni -f
+   ```
+
+4. **Check cluster status:**
+
+   ```bash
+   patronictl -c /etc/patroni/patroni.yml list
+
+   # Expected output:
+   # + Cluster: postgres-cluster ----+--------+----+-----------+
+   # | Member      | Host            | Role   | State | TL |
+   # |-------------|-----------------|--------|-------|----|
+   # | pg-node-01  | <ip1>:5432      | Leader | running | 1 |
+   # | pg-node-02  | <ip2>:5432      | Replica| running | 1 |
+   # | pg-node-03  | <ip3>:5432      | Replica| running | 1 |
+   ```
+
+5. **Test automatic failover:**
+
+   ```bash
+   # Kill the primary (pg-node-01):
+   patronictl -c /etc/patroni/patroni.yml failover postgres-cluster \
+       --master pg-node-01 --force
+
+   # Watch: one replica should be promoted within TTL (30 seconds):
+   patronictl -c /etc/patroni/patroni.yml list
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Cluster should show a new Leader and old leader as replica or stopped:
+patronictl -c /etc/patroni/patroni.yml list
+
+# REST API health:
+curl http://<any_node>:8008/health
+# Returns: {"state": "running", "role": "master"} for primary
+# Returns: {"state": "running", "role": "replica"} for replicas
+```
+
+```sql
+-- On the current Leader: confirm writes work:
+SELECT pg_is_in_recovery();   -- FALSE
+CREATE TABLE patroni_test AS SELECT 1 AS ok;
+DROP TABLE patroni_test;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+To dissolve the Patroni cluster and return to manual PostgreSQL:
+`systemctl stop patroni` on all nodes, then start PostgreSQL directly with
+`systemctl start postgresql`. Remove etcd keys with
+`etcdctl del /db/postgres-cluster --prefix`. Data in the PostgreSQL data
+directory is untouched.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: PG_AUTO_FAILOVER TROUBLESHOOTING
+  File: 02_high_availability/pg_auto_failover_troubleshooting.md
+================================================================================
+
+pg_auto_failover is a PostgreSQL extension developed by Microsoft. It uses a
+dedicated "monitor" node that watches all nodes in the formation and coordinates
+state transitions. It's simpler to set up than Patroni but has its own quirks.
+
+The most common issues: nodes getting stuck in a transition state, the monitor
+losing contact with nodes, and nodes being incorrectly marked as unhealthy.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check node health from the monitor:
+pg_autoctl show state --pgdata /var/lib/postgresql/monitor
+
+# Or from any node:
+pg_autoctl show state
+
+# Example output — look for nodes stuck in non-steady states:
+#  Name |  Node  |  Host:Port  |  TLI: LSN  |   Connection    |  Replication
+# ------+--------+-------------+------------+-----------------+------------------
+#  node1| primary| node1:5432  |  1: 0/5000 | reported: 1s    | PostgreSQL 15
+#  node2| standby| node2:5432  |  1: 0/5000 | reported: 1s    | streaming
+```
+
+```sql
+-- On the MONITOR node: check event history for the formation:
+SELECT formationid, nodename, reportedstate, goalstate, eventtime, description
+FROM pgautofailover.event
+ORDER BY eventtime DESC
+LIMIT 20;
+
+-- Check current node states in the monitor:
+SELECT formationid, nodename, nodehost, nodeport,
+       reportedstate, goalstate, reportedlsn
+FROM pgautofailover.node
+ORDER BY formationid, nodeid;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root Cause A: Node stuck in a transitional state (e.g., wait_primary,
+              join_standby, catching_up).
+
+1. **Check the pg_autoctl service on the stuck node:**
+
+   ```bash
+   systemctl status pg_autoctl
+   journalctl -u pg_autoctl -n 50 --no-pager
+   ```
+
+2. **If pg_autoctl is not running on the node, restart it:**
+
+   ```bash
+   systemctl restart pg_autoctl
+   # Give it 30-60 seconds to re-register with the monitor.
+   pg_autoctl show state
+   ```
+
+Root Cause B: Monitor has lost contact with a node (health check timeout).
+
+3. **Check monitor logs for the failing health check:**
+
+   ```bash
+   tail -100 /var/log/postgresql/postgresql-*-monitor.log | grep -i "error\|fail\|health"
+   ```
+
+4. **Test connectivity from monitor to the stuck node:**
+
+   ```bash
+   pg_isready -h <stuck_node_ip> -p 5432
+   psql -h <stuck_node_ip> -U autoctl_node -d pg_auto_failover -c "SELECT 1;"
+   ```
+
+Root Cause C: Node in wrong state after manual intervention.
+
+5. **Force a state reset on the monitor (use with caution):**
+
+   ```sql
+   -- On the MONITOR: force a node's goal state back to primary or standby:
+   SELECT pgautofailover.set_node_replication_quorum(
+       'default',
+       'node1',
+       false
+   );
+
+   -- Or perform a manual failover via pg_autoctl:
+   ```
+
+   ```bash
+   pg_autoctl perform failover --pgdata /var/lib/postgresql/monitor
+   ```
+
+Root Cause D: Replication quorum mismatch.
+
+6. **Check if synchronous replication quorum is blocking:**
+
+   ```sql
+   -- On the CURRENT PRIMARY:
+   SHOW synchronous_standby_names;
+   SELECT * FROM pg_stat_replication;
+   ```
+
+   If a sync standby is offline and the primary has `synchronous_commit = on`,
+   writes will block. Consider temporarily adjusting the quorum.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+pg_autoctl show state
+# All nodes should show steady states: primary, standby.
+# No node should be in a transitional state for > 2 minutes.
+```
+
+```sql
+-- On monitor: event history should show successful state transitions:
+SELECT nodename, reportedstate, goalstate
+FROM pgautofailover.node;
+-- reportedstate should equal goalstate for all nodes.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If pg_auto_failover is causing more harm than good during an incident, you
+can bypass it: stop the pg_autoctl service on all nodes and manage PostgreSQL
+directly with pg_ctl. The underlying PostgreSQL data is not affected.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: REPLICA OUT OF SYNC
+  File: 02_high_availability/replica_out_of_sync.md
+================================================================================
+
+"Out of sync" means the replica cannot apply incoming WAL from the primary.
+The WAL receiver may have stopped. The replica may have hit a conflict. The
+timeline may have diverged. This is different from lag — lag means it's behind
+but still catching up. Out of sync means it has stopped applying altogether.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# On the REPLICA: is the WAL receiver running?
+ps aux | grep walreceiver
+
+# Check replica logs for the cause:
+grep -i "error\|fatal\|conflict\|terminated\|not found" \
+    /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail -30
+```
+
+```sql
+-- On the PRIMARY: is the replica visible in pg_stat_replication?
+SELECT application_name, state, sent_lsn, replay_lsn, replay_lag
+FROM pg_stat_replication;
+-- If the replica is missing here — it's not connected at all.
+
+-- On the REPLICA: what's our receive vs replay position?
+SELECT pg_last_wal_receive_lsn() AS received,
+       pg_last_wal_replay_lsn()  AS replayed,
+       pg_is_wal_replay_paused() AS replay_paused;
+
+-- Is replay paused manually?
+SELECT pg_is_wal_replay_paused();
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root Cause A: Replay paused (manual or by recovery_min_apply_delay).
+
+1. **Resume WAL replay if it was paused:**
+
+   ```sql
+   -- On the REPLICA:
+   SELECT pg_wal_replay_resume();
+   ```
+
+Root Cause B: WAL segment missing on primary (primary recycled WAL the replica
+needed, slot was not used).
+
+2. **Check for "requested WAL segment has already been removed" in replica log.**
+   If you see this, the replica has fallen too far behind and the primary's
+   pg_wal no longer has what it needs.
+
+   Options:
+   a) If you have a WAL archive (pg_stat_archiver working), configure
+      restore_command on the replica to pull missing WAL from the archive.
+   b) If no archive: rebuild the replica from pg_basebackup (Runbook 01).
+
+   ```bash
+   # postgresql.conf on replica — if you have WAL archive:
+   restore_command = 'cp /mnt/wal_archive/%f %p'
+   # Restart the replica — it will attempt to pull missing WAL from archive.
+   ```
+
+Root Cause C: Recovery conflict — a query on the replica is holding back replay.
+
+3. **On the REPLICA: check for conflicts:**
+
+   ```sql
+   SELECT * FROM pg_stat_database_conflicts;
+   -- confl_snapshot, confl_lock, confl_deadlock columns tell you the type.
+   ```
+
+   The primary vacuumed rows that an active query on the replica still needs.
+   Resolution: let the query finish or kill it. Then replay will resume.
+
+   Long-term fix: set `hot_standby_feedback = on` on the replica (tells the
+   primary not to vacuum rows the replica needs) OR increase
+   `max_standby_streaming_delay`.
+
+Root Cause D: Timeline mismatch after a failover.
+
+4. **Check timeline IDs:**
+
+   ```bash
+   # On PRIMARY:
+   psql -c "SELECT timeline_id FROM pg_control_checkpoint();"
+
+   # On REPLICA:
+   psql -c "SELECT timeline_id FROM pg_control_checkpoint();"
+   ```
+
+   If they differ AND the replica was pointing at the old primary that's gone —
+   the replica needs to be rebuilt with pg_basebackup or repointed to the
+   current primary and recovered with pg_rewind.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On PRIMARY: replica should reappear in pg_stat_replication:
+SELECT application_name, state, replay_lag FROM pg_stat_replication;
+
+-- On REPLICA: lag should be approaching zero:
+SELECT now() - pg_last_xact_replay_timestamp() AS lag;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If restore_command doesn't work and you need to rebuild: pg_basebackup from
+the primary. No rollback is possible for a rebuild — it replaces the replica's
+data directory.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: REPLICATION LAG TROUBLESHOOTING
+  File: 02_high_availability/replication_lag_troubleshooting.md
+================================================================================
+
+We touched on lag in the Incident Response session. Today we go deeper. Lag
+has three dimensions: write lag, flush lag, and replay lag. Each one points
+to a different layer of the system. A good DBA reads all three before touching
+anything.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- PRIMARY: full lag breakdown:
+SELECT
+    application_name,
+    client_addr,
+    state,
+    write_lag,
+    flush_lag,
+    replay_lag,
+    pg_wal_lsn_diff(sent_lsn, replay_lsn) AS total_bytes_behind,
+    sync_state
+FROM pg_stat_replication
+ORDER BY total_bytes_behind DESC NULLS LAST;
+
+-- REPLICA: self-report:
+SELECT
+    now() - pg_last_xact_replay_timestamp()  AS replication_delay,
+    pg_last_wal_receive_lsn()                AS received_lsn,
+    pg_last_wal_replay_lsn()                 AS replayed_lsn,
+    pg_wal_lsn_diff(
+        pg_last_wal_receive_lsn(),
+        pg_last_wal_replay_lsn()
+    )                                        AS receive_vs_replay_gap_bytes;
+```
+
+```bash
+# Network throughput between primary and standby:
+iperf3 -s   # on one side
+iperf3 -c <other_ip>  # on the other
+
+# Disk write throughput on standby:
+iostat -x 1 5   # check %util on the data volume
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Interpreting the lag breakdown:
+
+  write_lag HIGH   → Network bottleneck. WAL is leaving the primary but the
+                     standby isn't acknowledging writes fast enough.
+
+  flush_lag HIGH   → Standby disk is slow. WAL is arriving but the standby's
+                     fsync is taking too long.
+
+  replay_lag HIGH  → Standby CPU or I/O is saturated. WAL is on disk but the
+                     recovery process can't apply it fast enough. Common cause:
+                     heavy queries running on the standby competing with replay.
+
+1. **write_lag: diagnose and fix network:**
+
+   ```bash
+   # Check network latency:
+   ping -c 100 <standby_ip> | tail -5
+
+   # Check for packet loss or MTU issues:
+   traceroute <standby_ip>
+
+   # Tune TCP settings if needed (for high-latency WAN replication):
+   # postgresql.conf on primary:
+   # wal_sender_timeout = 120s    # increase if network is flaky
+   # tcp_keepalives_interval = 10
+   # tcp_keepalives_idle = 60
+   ```
+
+2. **flush_lag: diagnose and fix standby disk I/O:**
+
+   ```bash
+   # On standby:
+   iostat -x 1 10   # look for %util on pg_wal device
+   iotop -o         # which process is doing the I/O
+
+   # If the standby disk is on spinning media and primary is SSD — lag is
+   # structural. Upgrade the standby disk or use async replication with
+   # synchronous_commit = off.
+   ```
+
+3. **replay_lag: find what's competing with WAL replay:**
+
+   ```sql
+   -- On STANDBY: long-running queries compete with recovery:
+   SELECT pid, now() - query_start AS duration, left(query, 80)
+   FROM pg_stat_activity
+   WHERE state = 'active'
+   ORDER BY duration DESC;
+
+   -- Kill long-running analytical queries that are blocking replay:
+   SELECT pg_cancel_backend(<pid>);
+
+   -- Long-term: set max_standby_streaming_delay higher to allow queries
+   -- to complete before killing them:
+   ALTER SYSTEM SET max_standby_streaming_delay = '60s';  -- default 30s
+   SELECT pg_reload_conf();
+   ```
+
+4. **Async vs Sync replication tradeoff:**
+
+   If your primary is `synchronous_commit = on` and a sync standby is lagging,
+   PRIMARY WRITES WILL BLOCK. This is by design — durability guarantee.
+
+   During a lag incident, you can temporarily drop to async:
+
+   ```sql
+   -- On PRIMARY (session-level or system-level):
+   ALTER SYSTEM SET synchronous_commit = 'local';
+   SELECT pg_reload_conf();
+   -- Remember to revert after lag catches up!
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Lag should be trending toward zero:
+SELECT application_name, write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+
+-- On REPLICA:
+SELECT now() - pg_last_xact_replay_timestamp() AS lag;
+-- Should be < 1 second for local replicas, < a few seconds for WAN.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If synchronous_commit was changed to 'local' as a temporary measure, restore
+it after lag has cleared:
+`ALTER SYSTEM SET synchronous_commit = 'on'; SELECT pg_reload_conf();`
+If max_standby_streaming_delay was increased and standby queries are now
+blocking replay for too long — reduce it or cancel the offending queries.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: REPLICATION SLOT MANAGEMENT
+  File: 02_high_availability/replication_slot_management.md
+================================================================================
+
+We covered slot BLOAT as an incident. Today we cover slot MANAGEMENT — how to
+create them correctly, monitor them properly, and decide when physical vs
+logical slots are appropriate.
+
+Physical slots: used by streaming replicas. Ensure the replica never falls too
+far behind before the primary recycles WAL.
+
+Logical slots: used by logical replication subscribers, change data capture
+tools (Debezium, pgoutput, etc.). Retain decoded WAL for the subscriber.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Full slot inventory:
+SELECT
+    slot_name,
+    slot_type,
+    database,
+    active,
+    active_pid,
+    restart_lsn,
+    confirmed_flush_lsn,
+    pg_size_pretty(
+        pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+    ) AS wal_retained,
+    invalidation_reason   -- PG 15+: why a slot was invalidated
+FROM pg_replication_slots
+ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC NULLS LAST;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Create a physical slot for a new streaming replica:**
+
+   ```sql
+   -- On PRIMARY:
+   SELECT pg_create_physical_replication_slot('replica_node_02');
+   -- Returns: (slot_name, lsn)
+   ```
+
+   Then reference it in the replica's postgresql.auto.conf or recovery.conf:
+   ```
+   primary_slot_name = 'replica_node_02'
+   ```
+
+2. **Create a logical slot for a CDC subscriber (e.g., Debezium):**
+
+   ```sql
+   -- Requires wal_level = logical on primary:
+   SELECT pg_create_logical_replication_slot(
+       'debezium_orders',      -- slot name
+       'pgoutput'              -- output plugin (or 'wal2json', 'test_decoding')
+   );
+   ```
+
+3. **Monitor slot health — run this as a scheduled query every 5 minutes:**
+
+   ```sql
+   SELECT
+       slot_name,
+       active,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS wal_bytes_retained
+   FROM pg_replication_slots
+   WHERE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 1073741824  -- 1GB
+     AND active = false;
+   -- Alert if any inactive slot is retaining > 1 GB of WAL.
+   ```
+
+4. **Set max_slot_wal_keep_size as a circuit breaker (PG 13+):**
+
+   ```sql
+   ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
+   SELECT pg_reload_conf();
+   -- Any slot that causes more than 10GB WAL retention will be invalidated
+   -- before the disk fills up. The slot consumer must then re-sync.
+   ```
+
+5. **Drop an orphaned slot (after confirming with the owner):**
+
+   ```sql
+   SELECT pg_drop_replication_slot('slot_name_here');
+   ```
+
+6. **Advance a logical slot manually** — if you need to skip past a problem
+   change without the consumer consuming it (use with extreme caution):
+
+   ```sql
+   SELECT pg_replication_slot_advance('slot_name', 'X/XXXXXXXX'::pg_lsn);
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- All active slots should have wal_retained under your alert threshold:
+SELECT slot_name, active,
+       pg_size_pretty(
+           pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+       ) AS wal_retained
+FROM pg_replication_slots
+ORDER BY wal_retained DESC;
+
+-- No slot should be inactive AND retaining significant WAL:
+SELECT slot_name FROM pg_replication_slots
+WHERE active = false
+  AND pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 104857600; -- 100MB
+-- Should return 0 rows if you're healthy.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Slot creation is reversible (just drop it). Slot deletion is NOT reversible.
+If a logical slot is dropped and the consumer was active, the consumer must
+resync from a snapshot — this can be time-consuming for large databases.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 10: REPMGR FAILOVER RUNBOOK
+  File: 02_high_availability/repmgr_failover_runbook.md
+================================================================================
+
+repmgr (Replication Manager) has been around since 2010. It's the OG PostgreSQL
+HA tool. It's lighter than Patroni — no external DCS required — and for
+simpler two or three node clusters it's still a solid choice. A lot of teams
+I've worked with use repmgr because their ops team is already stretched and
+doesn't want to maintain etcd.
+
+The tradeoff: repmgr's automatic failover (repmgrd) is less battle-hardened
+than Patroni's. I've seen edge cases where repmgrd made wrong decisions.
+Always test it.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check cluster status:
+repmgr -f /etc/repmgr.conf cluster show
+
+# Expected output:
+#  ID | Name    | Role    | Status    | Upstream | Location | Connection string
+# ----+---------+---------+-----------+----------+----------+------------------
+#  1  | node-01 | primary | * running |          | default  | host=node1 ...
+#  2  | node-02 | standby |   running | node-01  | default  | host=node2 ...
+#  3  | node-03 | standby |   running | node-01  | default  | host=node3 ...
+
+# Check repmgrd daemon status on each node:
+systemctl status repmgrd
+
+# Check repmgr event log:
+repmgr -f /etc/repmgr.conf cluster event --limit=20
+```
+
+```sql
+-- In the repmgr database (connects to repmgr schema):
+SELECT node_id, node_name, type, upstream_node_id,
+       active, last_event, last_event_type
+FROM repmgr.nodes
+ORDER BY node_id;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+MANUAL FAILOVER (primary is down, you are intervening manually):
+
+1. **Confirm primary is truly down:**
+
+   ```bash
+   pg_isready -h <primary_host> -p 5432
+   repmgr -f /etc/repmgr.conf node check --primary  # run from a standby
+   ```
+
+2. **Choose the best standby to promote:**
+
+   ```bash
+   repmgr -f /etc/repmgr.conf standby switchover --dry-run
+   # For manual failover (primary is dead):
+   repmgr -f /etc/repmgr.conf standby promote
+   ```
+
+   This promotes the current node to primary, creates a new timeline, and
+   records the event in repmgr.nodes.
+
+3. **Follow the new primary from other standbys:**
+
+   ```bash
+   # On each remaining standby — follow the newly promoted primary:
+   repmgr -f /etc/repmgr.conf standby follow \
+       --upstream-node-id <new_primary_node_id>
+   ```
+
+4. **Re-register the old primary as a standby (after recovery):**
+
+   ```bash
+   # On the RECOVERED OLD PRIMARY — do NOT start it as a primary.
+   # Rebuild with pg_basebackup (or pg_rewind if supported),
+   # then register as a standby:
+   repmgr -f /etc/repmgr.conf standby register --force
+   ```
+
+AUTOMATIC FAILOVER (repmgrd is running):
+
+5. **If repmgrd is configured and running, failover is automatic:**
+
+   ```bash
+   # repmgrd monitors the primary. If it fails:
+   # - repmgrd initiates voting among standbys
+   # - Highest-priority standby (by priority setting) is promoted
+   # - Other standbys are instructed to follow
+   # Monitor it:
+   journalctl -u repmgrd -f
+   ```
+
+6. **Configure repmgr.conf for automatic failover:**
+
+   ```ini
+   # /etc/repmgr.conf
+   failover = automatic
+   promote_command   = 'repmgr standby promote -f /etc/repmgr.conf'
+   follow_command    = 'repmgr standby follow -f /etc/repmgr.conf \
+                        --upstream-node-id=%n'
+   monitoring_history = yes
+   monitor_interval_secs = 5
+   reconnect_attempts = 4
+   reconnect_interval = 5
+   priority = 100    # higher = more likely to be promoted (set per node)
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+repmgr -f /etc/repmgr.conf cluster show
+# New primary should show role = primary with * running.
+# Former standbys should show upstream = new primary node name.
+```
+
+```sql
+SELECT node_name, type, active FROM repmgr.nodes ORDER BY node_id;
+-- type should be 'primary' for one node, 'standby' for others.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If a failover promoted the wrong node (e.g., a node with more lag than another),
+you must do a switchover (Runbook 11) to move primary role to the correct node.
+Use `repmgr standby switchover` to demote the wrong primary and promote the
+correct one — but only if the correct node is still in sync.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 11: SWITCHOVER — ZERO DOWNTIME
+  File: 02_high_availability/switchover_zero_downtime.md
+================================================================================
+
+This is the one you should be doing instead of failover whenever possible.
+A switchover is controlled. Planned. The primary is healthy. You're moving the
+primary role to a standby — maybe for maintenance, maybe for hardware refresh,
+maybe for a datacenter migration.
+
+Done correctly, your application experiences a connection reset. Not a
+full outage. Seconds, not minutes.
+
+I've run hundreds of switchovers. The ones that go badly are the ones where
+someone skipped the pre-checks. Don't skip the pre-checks.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Pre-check 1: Is replication lag zero or near-zero?
+SELECT application_name, replay_lag
+FROM pg_stat_replication
+WHERE application_name = 'target_standby';
+-- If replay_lag > 0 — wait for it to clear before switchover.
+
+-- Pre-check 2: Are there any long-running transactions?
+SELECT pid, now() - xact_start AS txn_age, left(query, 80)
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+  AND now() - xact_start > interval '1 minute'
+ORDER BY txn_age DESC;
+-- Consider killing or waiting for these to complete.
+
+-- Pre-check 3: Is the target standby fully caught up?
+-- On the STANDBY:
+SELECT pg_last_wal_replay_lsn() = pg_last_wal_receive_lsn() AS fully_caught_up;
+-- Must be TRUE.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+METHOD A: Patroni switchover (if using Patroni — this is the RIGHT way):
+
+```bash
+# One command. Patroni handles everything:
+patronictl -c /etc/patroni/patroni.yml switchover postgres-cluster \
+    --master pg-node-01 \
+    --candidate pg-node-02 \
+    --scheduled now \
+    --force
+
+# Watch cluster:
+watch -n 1 "patronictl -c /etc/patroni/patroni.yml list"
+```
+
+Expected timeline:
+  - Patroni runs pg_promote on the standby
+  - The old primary becomes a standby following the new leader
+  - Cluster is back in steady state within 10-30 seconds
+
+METHOD B: repmgr switchover:
+
+```bash
+# Run from the STANDBY that should become primary:
+repmgr -f /etc/repmgr.conf standby switchover \
+    --siblings-follow \
+    --dry-run      # always dry-run first
+
+# If dry-run looks good:
+repmgr -f /etc/repmgr.conf standby switchover --siblings-follow
+```
+
+repmgr will:
+  1. Check the target (current standby) is caught up.
+  2. Checkpoint the current primary.
+  3. Stop the current primary.
+  4. Promote the target.
+  5. Redirect other standbys to follow the new primary.
+
+METHOD C: Manual switchover (no HA manager — rare in modern environments):
+
+1. **Checkpoint and stop writes on the primary — do NOT stop postgres yet:**
+
+   ```sql
+   -- On PRIMARY: this will block new transactions briefly.
+   CHECKPOINT;
+   ```
+
+2. **Wait for the target standby to be fully caught up:**
+
+   ```sql
+   -- On PRIMARY: poll until replay_lag = 0:
+   SELECT replay_lag FROM pg_stat_replication
+   WHERE application_name = 'target_standby';
+   ```
+
+3. **Stop the primary gracefully:**
+
+   ```bash
+   pg_ctlcluster 15 main stop --mode fast
+   ```
+
+4. **Promote the standby:**
+
+   ```bash
+   sudo -u postgres pg_ctl promote -D /var/lib/postgresql/15/main
+   ```
+
+5. **Update application connection strings to point to new primary.**
+
+6. **Register old primary as a standby** — via pg_basebackup or pg_rewind
+   (see Runbook 03).
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On new PRIMARY:
+SELECT pg_is_in_recovery();   -- FALSE
+SELECT timeline_id FROM pg_control_checkpoint();  -- incremented by 1
+
+-- Test writes:
+INSERT INTO switchover_test VALUES (now());
+
+-- Check old primary is now following:
+SELECT application_name, state FROM pg_stat_replication;
+```
+
+```bash
+# Application connectivity — confirm app is connecting to new primary:
+psql <app_connection_string> -c "SELECT pg_is_in_recovery();"
+-- Should return 'f' (false)
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If switchover fails partway through:
+
+- If old primary was stopped and new one promoted → you completed the
+  switchover. There's no "undo". Bring old primary up as a standby.
+- If old primary was NOT yet stopped and the standby failed to promote →
+  restart old primary normally. Nothing changed.
+- Patroni and repmgr both have rollback logic in their switchover commands
+  that will attempt to revert if any step fails.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 12: SYNCHRONOUS REPLICATION STUCK
+  File: 02_high_availability/synchronous_replication_stuck.md
+================================================================================
+
+This one will cost you sleep if you don't understand it going in. Synchronous
+replication means the primary WAITS for at least one standby to acknowledge
+a write before returning success to the client. It is the strongest durability
+guarantee PostgreSQL offers. Zero data loss on failover.
+
+The catch: if the synchronous standby disconnects, every write on the primary
+BLOCKS. Indefinitely. Your application will appear completely hung. No errors.
+Just... waiting.
+
+I've been called into two emergencies that turned out to be this exact scenario.
+Both times, the team thought the primary had crashed. The primary was fine.
+It was waiting for a standby that had gone offline.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What is the synchronous_standby_names setting?
+SHOW synchronous_standby_names;
+-- If this is set (non-empty), you have synchronous replication.
+
+-- Which standbys are currently connected?
+SELECT application_name, state, sync_state
+FROM pg_stat_replication;
+-- Look for sync_state = 'sync'. If no rows show 'sync' and
+-- synchronous_standby_names is set — writes are blocked.
+
+-- Is the primary actually blocked? Check for waiting transactions:
+SELECT count(*) AS writes_waiting
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+   OR wait_event = 'SyncRep';
+```
+
+```bash
+# Check PostgreSQL logs for sync replication messages:
+grep -i "synchronous\|sync\|standby" /var/log/postgresql/postgresql-*.log \
+    | tail -20
+
+# On the STANDBY: is walreceiver running?
+ps aux | grep walreceiver
+pg_isready -h <standby_ip> -p 5432
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root Cause A: Synchronous standby is down. PRIMARY WRITES ARE BLOCKED.
+
+This is an emergency. Every second of blocked writes is transactions piling up.
+
+IMMEDIATE RELIEF: Drop synchronous replication requirement temporarily.
+
+   ```sql
+   -- On PRIMARY — this will immediately unblock all waiting writes:
+   ALTER SYSTEM SET synchronous_standby_names = '';
+   SELECT pg_reload_conf();
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   This is the right emergency move. But you have now lost your synchronous
+   durability guarantee. The primary is now running async. Document this.
+   Alert your team. Restore the sync standby, then re-enable as soon as
+   possible. Do NOT leave the database in this state without tracking it.
+
+Root Cause B: Synchronous standby is connected but lagging badly.
+
+1. **Check the sync standby's disk I/O and network** (see Runbook 08,
+   flush_lag troubleshooting). A sync standby with a slow fsync means every
+   primary write waits for that slow fsync.
+
+2. **Consider changing to quorum-based synchronous commit** — instead of
+   requiring a specific standby, require ANY N of your standbys:
+
+   ```sql
+   -- Require any 1 of 2 standbys to acknowledge:
+   ALTER SYSTEM SET synchronous_standby_names = 'ANY 1 (standby1, standby2)';
+   SELECT pg_reload_conf();
+   ```
+
+   This is more resilient: if standby1 is slow, standby2 can acknowledge.
+
+Root Cause C: synchronous_commit = 'remote_apply' causing more lag than expected.
+
+3. **Check synchronous_commit setting:**
+
+   ```sql
+   SHOW synchronous_commit;
+   ```
+
+   remote_apply (strongest) waits for the standby to have APPLIED the WAL,
+   not just received and flushed it. This can add significant latency. Consider
+   downgrading to 'remote_write' or 'on' if replay lag is the issue.
+
+   ```sql
+   -- remote_write: standby received + written to OS cache (not fsynced):
+   ALTER SYSTEM SET synchronous_commit = 'remote_write';
+   SELECT pg_reload_conf();
+   ```
+
+Root Cause D: Standby restarted but didn't reconnect as sync.
+
+4. **Check synchronous_standby_names matches the standby's application_name:**
+
+   ```sql
+   SHOW synchronous_standby_names;
+   -- Must include the application_name the standby connects with.
+   ```
+
+   ```bash
+   # On standby: what application_name does it send?
+   grep application_name /var/lib/postgresql/15/main/postgresql.auto.conf
+   # Must match what's in synchronous_standby_names on the primary.
+   ```
+
+5. **Restart the standby's walreceiver** — stop and start the standby
+   PostgreSQL to force a reconnect:
+
+   ```bash
+   pg_ctlcluster 15 main restart
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On PRIMARY: sync standby should appear with sync_state = 'sync':
+SELECT application_name, state, sync_state FROM pg_stat_replication;
+-- Expected: sync_state = 'sync' for the synchronous standby.
+
+-- Writes should unblock. Test:
+BEGIN;
+INSERT INTO sync_test VALUES (now());
+COMMIT;
+-- This should complete immediately (not hang).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If synchronous_standby_names was cleared as emergency relief and you've now
+restored the sync standby:
+
+```sql
+-- Re-enable synchronous replication:
+ALTER SYSTEM SET synchronous_standby_names = 'standby1';
+-- Or quorum-based:
+ALTER SYSTEM SET synchronous_standby_names = 'ANY 1 (standby1, standby2)';
+SELECT pg_reload_conf();
+```
+
+Verify the standby appears as sync_state = 'sync' in pg_stat_replication
+BEFORE re-enabling, or writes will block again.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+Okay. Enough talk. Your turn.
+
+The lab environment has a three-node Patroni cluster already running. It is
+slightly broken in a few ways. Your job is to find out how and fix it.
+
+── LAB 1: BROKEN REPLICA ─────────────────────────────────────────────────────
+
+One of the replicas is out of sync. The walreceiver process stopped 20 minutes
+ago. Diagnose why. It may be a WAL segment issue, a recovery conflict, or a
+timeline mismatch. Identify the root cause from the logs and the system views,
+then rebuild or repair the replica.
+
+Deliverable: replica back in streaming state, replay_lag < 5 seconds.
+
+── LAB 2: SYNCHRONOUS REPLICATION EMERGENCY ─────────────────────────────────
+
+Your instructor (that's me) will, at some point during this lab, stop the
+synchronous standby without warning. Your monitoring will fire — application
+writes are blocked. Your job:
+
+  a) Identify that the sync standby is offline using pg_stat_replication.
+  b) Take the emergency action to unblock writes.
+  c) Document WHY you took that action and what you gave up.
+  d) Restore the sync standby and re-enable synchronous replication.
+  e) Verify the sync_state is 'sync' before you consider this closed.
+
+── LAB 3: PATRONI SWITCHOVER ─────────────────────────────────────────────────
+
+Perform a zero-downtime switchover from node-01 to node-02 as the primary.
+
+  a) Run the pre-flight checks. Is lag zero? Any long-running transactions?
+  b) Execute the switchover using patronictl.
+  c) Verify node-01 is now a replica.
+  d) Write an AFTER ACTION REPORT: what happened to in-flight transactions
+     during the switchover window? Use pg_stat_activity logs.
+
+── LAB 4: REPLICATION SLOT AUDIT ────────────────────────────────────────────
+
+Your instructor has deliberately created three orphaned replication slots.
+Two are physical. One is logical. All three are inactive.
+
+  a) Identify them using pg_replication_slots.
+  b) Determine which one is retaining the most WAL.
+  c) Drop the correct ones in the correct order (there is a right order —
+     figure out why).
+  d) Set max_slot_wal_keep_size to prevent this from happening again.
+
+── LAB 5: BUILD THE RUNBOOK (OPEN-ENDED) ────────────────────────────────────
+
+Your team is planning a cross-datacenter DR setup. They want a cascading
+replication topology:
+
+  Primary (DC-A) → Replica1 (DC-A) → Replica2 (DC-B)
+
+  DC-A is your production datacenter.
+  DC-B is your disaster recovery site.
+  Replica2 in DC-B should NOT add WAL sender load to the primary.
+
+Write the full runbook for setting up this topology from scratch, using the
+four-section template. Include all pre-flight checks, all commands, and the
+verification steps. Include a section on what happens during a DR failover
+to DC-B — how do you promote Replica2 if DC-A is completely unavailable?
+
+Present your runbook to the group.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Let me leave you with this.
+
+High availability is not a feature you turn on. It is a discipline you
+practice. You set up the replication. Then you TEST the failover — in a staging
+environment, with real traffic simulation, with a stopwatch running. Then you
+document what you observed. Then you do it again three months later because
+things change.
+
+The teams I've worked with that had the best RTO — Recovery Time Objective —
+weren't the ones with the most sophisticated tooling. They were the ones who
+had the most practised humans. Patroni can fail. repmgr can make wrong calls.
+etcd can lose quorum. When automation fails at 2 AM, a human who has run
+these runbooks fifty times in staging is the one who saves you.
+
+That's you. That's who you're becoming.
+
+Next session: we go deep on backup and restore. Not just "pg_dump works." We're
+talking about pgBackRest, point-in-time recovery, and what you do when you need
+to restore a single table from a 4 TB database without a full restore. That
+one is satisfying. See you then.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — HIGH AVAILABILITY
+  Print this. Laminate it if you have to.
+================================================================================
+
+── REPLICATION STATUS ───────────────────────────────────────────────────────
+
+  Streaming lag (on primary):
+    SELECT application_name, write_lag, flush_lag, replay_lag, sync_state
+    FROM pg_stat_replication;
+
+  Replication slots health:
+    SELECT slot_name, active,
+           pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+    FROM pg_replication_slots;
+
+  Standby self-report:
+    SELECT pg_is_in_recovery(),
+           now() - pg_last_xact_replay_timestamp() AS lag,
+           pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();
+
+  Sync replication blocked?
+    SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'SyncRep';
+
+── EMERGENCY ACTIONS ────────────────────────────────────────────────────────
+
+  Unblock writes (disable sync replication):
+    ALTER SYSTEM SET synchronous_standby_names = '';
+    SELECT pg_reload_conf();
+
+  Resume paused WAL replay:
+    SELECT pg_wal_replay_resume();
+
+  Promote standby (manual):
+    pg_ctl promote -D /var/lib/postgresql/15/main
+    SELECT pg_promote();
+
+  Drop orphaned slot:
+    SELECT pg_drop_replication_slot('slot_name');
+
+  Set slot WAL retention cap:
+    ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
+    SELECT pg_reload_conf();
+
+── PATRONI COMMANDS ─────────────────────────────────────────────────────────
+
+  Cluster status:         patronictl -c /etc/patroni/patroni.yml list
+  Manual failover:        patronictl ... failover <cluster> --master <node> --force
+  Planned switchover:     patronictl ... switchover <cluster> --master <m> --candidate <c>
+  Restart a node:         patronictl ... restart <cluster> <node>
+  Reinitialise replica:   patronictl ... reinit <cluster> <node>
+  Edit config live:       patronictl ... edit-config <cluster>
+
+── REPMGR COMMANDS ──────────────────────────────────────────────────────────
+
+  Cluster status:         repmgr -f /etc/repmgr.conf cluster show
+  Promote standby:        repmgr -f /etc/repmgr.conf standby promote
+  Follow new primary:     repmgr -f /etc/repmgr.conf standby follow --upstream-node-id <N>
+  Switchover:             repmgr -f /etc/repmgr.conf standby switchover --siblings-follow
+  Event log:              repmgr -f /etc/repmgr.conf cluster event --limit=20
+
+── BASEBACKUP & REWIND ──────────────────────────────────────────────────────
+
+  Add/rebuild replica (basebackup):
+    pg_basebackup -h <primary> -U replicator -D <data_dir> \
+        --wal-method=stream --checkpoint=fast --progress -R
+
+  Fast failback (pg_rewind):
+    pg_rewind --target-pgdata=<data_dir> \
+        --source-server="host=<new_primary> user=replicator dbname=postgres" \
+        --progress
+
+── KEY THRESHOLDS ───────────────────────────────────────────────────────────
+
+  replay_lag > 30s          → Investigate replay conflict or I/O
+  replay_lag > 5 min        → Standby may need rebuild
+  Slot WAL retained > 1 GB  → Alert (inactive) / investigate (active)
+  sync_state = 'potential'  → Sync standby not confirmed; check name config
+  pg_is_in_recovery = FALSE → That node is a primary (don't write to replicas!)
+
+── DECISION TREE ────────────────────────────────────────────────────────────
+
+  Primary is down?
+    └─ FENCE IT FIRST. Then:
+       └─ Automatic HA (Patroni/repmgr running)?  → Let automation promote.
+       └─ No automation?
+             └─ Pick standby with highest replay LSN.
+             └─ pg_ctl promote or SELECT pg_promote().
+             └─ Redirect application. Rebuild old primary as replica.
+
+  Planned maintenance on primary?
+    └─ Use SWITCHOVER not FAILOVER.
+    └─ Pre-check: lag = 0, no long transactions, standby fully caught up.
+    └─ Patroni: patronictl switchover.
+    └─ repmgr: repmgr standby switchover --siblings-follow.
+    └─ Manual: checkpoint, stop primary, promote standby, repoint others.
+
+================================================================================
+  END OF SESSION
+================================================================================

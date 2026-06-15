@@ -1,0 +1,2094 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: INCIDENT RESPONSE RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+Alright, settle in. Close your Slack, put your phone face-down — I mean it.
+What we're doing today is the most important session you'll sit through in this
+entire program. I'm not saying that to warm you up. I mean it in the way that
+3 a.m. phone calls are important. In the way that your on-call rotation is
+important. In the way that the difference between a two-minute outage and a
+six-hour outage lives entirely inside what we cover today.
+
+Today is Incident Response Runbooks.
+
+I've been doing this for twenty years. I've worked at banks, SaaS startups,
+a large logistics company, and a government health agency. And I can tell you
+with absolute certainty: the DBAs who survive on-call, who get promoted, who
+become the senior engineers that everyone else calls — they are not the ones
+who are the smartest in the room. They are the ones who, at 3 a.m., do not
+panic. They have a runbook. They follow it. They escalate correctly. They
+communicate. And they go back to sleep.
+
+The ones who don't have runbooks? I've watched them spiral. I've watched them
+run DROP TABLE on the wrong server. I've watched them restart primary nodes
+when the issue was a misconfigured replica. I watched one DBA at a fintech
+company attempt to "fix" transaction ID wraparound by changing max_connections.
+That was a fun Friday.
+
+So. We are going to build your runbook library today. Eighteen runbooks. Real
+commands. Real decision trees. And at the end, you are going to run through
+lab scenarios and fill in runbooks yourself.
+
+Let's go.
+
+================================================================================
+  A WORD ABOUT RUNBOOK PHILOSOPHY
+================================================================================
+
+Before we touch a single command, I want to talk about structure. Every runbook
+we write today follows the same four sections. Always. No exceptions.
+
+  1. DIAGNOSIS  — What signals told you this is happening? What do you
+                  look at first? What SQL and bash commands do you run?
+
+  2. STEP-BY-STEP PROCEDURE — What do you actually DO, in order, broken
+                  down by root cause? Not a wall of text — numbered steps.
+                  Each step has an expected output.
+
+  3. VERIFICATION — How do you know it's FIXED? This is not optional.
+                  I cannot tell you how many times I've seen someone "fix"
+                  a problem and declare victory while the database was still
+                  on fire underneath them.
+
+  4. ROLLBACK — What do you undo if your fix made things worse? Because
+                  sometimes you make things worse. Plan for it.
+
+Every runbook. Every time. That template is your contract with your future
+3 a.m. self. Don't skip sections.
+
+Okay. Let's build them.
+
+================================================================================
+  RUNBOOK 01: AUTOVACUUM NOT KEEPING UP
+  File: 01_incident_response/autovacuum_not_keeping_up.md
+================================================================================
+
+I want to start here because autovacuum is the engine that keeps PostgreSQL
+alive. When it falls behind, everything else eventually breaks — you get table
+bloat, you get index bloat, and if you ignore it long enough, you tip into
+transaction ID wraparound, which is one of the nastiest scenarios in this entire
+list. So pay attention.
+
+The symptom is usually one of these three things: your monitoring shows dead
+tuple counts exploding on a table, your table has grown to three times the size
+it should be for the data it holds, or you're getting explicit warnings in the
+PostgreSQL logs that autovacuum is skipping tables or can't keep up.
+
+Let me show you how to diagnose this properly.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+First thing I do when I suspect autovacuum lag is this query:
+
+```sql
+SELECT
+    schemaname,
+    relname,
+    n_dead_tup,
+    n_live_tup,
+    round(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2)
+        AS dead_ratio_pct,
+    last_autovacuum,
+    last_autoanalyze,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE n_dead_tup > 10000
+ORDER BY n_dead_tup DESC
+LIMIT 20;
+```
+
+What you're looking for: tables with dead_ratio_pct above 10–15% are already
+in trouble. If last_autovacuum is NULL or hours old on a table with millions
+of dead tuples, autovacuum has abandoned it. That's your culprit.
+
+Now check whether autovacuum workers are actually running or blocked:
+
+```sql
+SELECT
+    pid,
+    now() - pg_stat_activity.query_start AS duration,
+    query,
+    state,
+    wait_event_type,
+    wait_event
+FROM pg_stat_activity
+WHERE query ILIKE 'autovacuum:%'
+ORDER BY duration DESC;
+```
+
+If you see autovacuum workers sitting in wait_event = 'relation' or waiting on
+a lock — something is blocking them. We'll handle the lock scenario in a later
+runbook.
+
+On the OS side:
+
+```bash
+# See if autovacuum is being throttled by I/O cost limits
+grep -i autovacuum /etc/postgresql/*/main/postgresql.conf \
+    | grep -v '^#' | grep -v '^$'
+
+# Check current autovacuum config live (without restarting):
+psql -c "SELECT name, setting, unit FROM pg_settings
+         WHERE name ILIKE 'autovacuum%' ORDER BY name;"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root cause A: Autovacuum cost throttling too aggressive (most common in OLTP).
+
+1. **Check current cost delay settings** — Autovacuum has a built-in throttle
+   designed to reduce I/O impact. On very busy systems it can be SO throttled
+   it never finishes.
+
+   ```sql
+   SELECT name, setting FROM pg_settings
+   WHERE name IN (
+       'autovacuum_vacuum_cost_delay',
+       'autovacuum_vacuum_cost_limit',
+       'vacuum_cost_page_hit',
+       'vacuum_cost_page_miss',
+       'vacuum_cost_page_dirty'
+   );
+   ```
+
+   *Expected output:* autovacuum_vacuum_cost_delay is often 2ms by default in
+   PG 13+. If it's 20ms, someone cranked it up to protect I/O and forgot.
+   autovacuum_vacuum_cost_limit is 200 by default.
+
+2. **Tune cost delay at the table level first** — Do NOT change global settings
+   blindly. Target the problem table surgically.
+
+   ```sql
+   ALTER TABLE public.orders
+       SET (autovacuum_vacuum_cost_delay = 2,
+            autovacuum_vacuum_cost_limit = 800);
+   ```
+
+   *Expected output:* ALTER TABLE. This takes effect immediately for the next
+   autovacuum cycle. No restart needed.
+
+3. **Force a manual VACUUM if you can't wait** — On a non-production window,
+   or if the table is critical and lag is severe:
+
+   ```sql
+   VACUUM (VERBOSE, ANALYZE) public.orders;
+   ```
+
+   Watch the output. It tells you exactly what it's doing — pages scanned,
+   dead tuples removed, index pages cleaned. Leave it running. Don't kill it.
+
+Root cause B: Too many large tables, not enough autovacuum workers.
+
+4. **Increase autovacuum_max_workers in postgresql.conf** — default is 3, which
+   is fine for modest workloads but not for databases with hundreds of tables.
+
+   ```bash
+   # Edit postgresql.conf
+   autovacuum_max_workers = 6
+   ```
+
+   Then reload (not restart):
+   ```bash
+   pg_ctlcluster 15 main reload
+   # or
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+Root cause C: Autovacuum scale factor too coarse for large tables.
+
+5. **Lower the scale factor for tables with 100M+ rows** — By default autovacuum
+   triggers when 20% of a table is dead. On a 200M-row table that's 40 million
+   dead rows before vacuum kicks in. Criminal.
+
+   ```sql
+   ALTER TABLE public.events
+       SET (autovacuum_vacuum_scale_factor = 0.01,
+            autovacuum_analyze_scale_factor = 0.005);
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Re-run after one autovacuum cycle (give it 5–10 minutes)
+SELECT
+    relname,
+    n_dead_tup,
+    last_autovacuum,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE relname = 'orders';
+```
+
+You should see n_dead_tup falling and autovacuum_count incrementing. If
+last_autovacuum is now recent — you've fixed it.
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If increasing autovacuum workers or reducing cost delay causes I/O contention:
+
+```sql
+-- Revert table-level overrides
+ALTER TABLE public.orders RESET (autovacuum_vacuum_cost_delay,
+                                  autovacuum_vacuum_cost_limit);
+```
+
+For postgresql.conf changes: revert the value, then `SELECT pg_reload_conf();`
+No restart required for autovacuum parameters.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: BACKUP FAILURE — NO BACKUP IN 25+ HOURS
+  File: 01_incident_response/backup_failure_no_backup_25h.md
+================================================================================
+
+Here's a war story. A company I consulted for in 2017 had their entire backup
+job silently failing for eleven days. Script ran, said "OK", uploaded zero
+bytes to S3. Why? The pg_dump user's password expired. Nobody noticed because
+the exit code was 0. They found out when they needed to restore.
+
+The lesson: your backup monitoring needs to verify actual bytes written AND a
+test restore, not just exit codes.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- If using pgBackRest or barman, check from postgres side:
+SELECT
+    timeline_id,
+    wal_segment_name(start_lsn) AS start_wal,
+    wal_segment_name(end_lsn)   AS end_wal,
+    start_time,
+    end_time,
+    backup_type
+FROM pg_catalog.pg_backup_history   -- PG 15+ only
+ORDER BY start_time DESC
+LIMIT 5;
+```
+
+```bash
+# For pgBackRest:
+pgbackrest --stanza=main info
+
+# For custom pg_dump jobs, check file timestamps:
+ls -lth /backup/pgdump/ | head -20
+
+# Check last WAL archive success:
+psql -c "SELECT last_archived_wal, last_archived_time,
+                last_failed_wal, last_failed_time
+         FROM pg_stat_archiver;"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Confirm WAL archiving is healthy** — If WAL archiving is broken, even a
+   successful base backup is incomplete. Check pg_stat_archiver for failures.
+
+   ```sql
+   SELECT last_failed_wal, last_failed_time,
+          archived_count, failed_count
+   FROM pg_stat_archiver;
+   ```
+
+   *Expected output:* failed_count should be 0 or unchanged from the last check.
+   If last_failed_time is recent — the archive_command is broken.
+
+2. **Check the actual archive_command** — Know where WAL is going:
+
+   ```sql
+   SHOW archive_command;
+   SHOW archive_mode;
+   ```
+
+   Test it manually by running the command from the shell with a real WAL file.
+
+3. **Run a manual backup** — Once you confirm archiving is live:
+
+   ```bash
+   # pgBackRest:
+   pgbackrest --stanza=main --type=full backup
+
+   # pg_dump (emergency, for smaller databases):
+   pg_dump -Fc -d mydb -f /backup/emergency_$(date +%Y%m%d_%H%M%S).dump
+   ```
+
+4. **Investigate the root cause** — Cron job failure? Disk full on backup
+   target? Expired credentials? S3 bucket permission change? Fix it before
+   declaring this runbook closed. I mean it — fix root cause, not just symptom.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Verify backup integrity:
+pgbackrest --stanza=main check
+
+# For pg_dump: verify the file is non-zero and readable:
+pg_restore --list /backup/emergency_*.dump | head -20
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+No rollback for a backup operation itself. If the backup ran and caused
+unexpected I/O load, you can reschedule the backup window. If WAL archiving
+was turned off accidentally, re-enable via `archive_mode = on` (requires
+restart) and restore archive_command.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: CONNECTION POOL EXHAUSTION
+  File: 01_incident_response/connection_pool_exhaustion.md
+================================================================================
+
+You'll know this one the second it happens because your application starts
+returning "FATAL: remaining connection slots are reserved for replication" or
+"FATAL: sorry, too many clients already." That error is PostgreSQL slamming
+the door in your face.
+
+Default max_connections is 100. And every connection costs about 5–10 MB of
+shared memory. This is not a problem you solve by raising max_connections to
+1000. I'll tell you why in a minute.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- How close are we to the limit?
+SELECT
+    max_conn,
+    used_conn,
+    reserved_for_superuser,
+    max_conn - used_conn - reserved_for_superuser AS available
+FROM
+    (SELECT count(*) AS used_conn FROM pg_stat_activity) u,
+    (SELECT setting::int AS max_conn FROM pg_settings WHERE name='max_connections') m,
+    (SELECT setting::int AS reserved_for_superuser FROM pg_settings WHERE name='superuser_reserved_connections') s;
+
+-- Who is holding connections?
+SELECT
+    usename,
+    application_name,
+    client_addr,
+    state,
+    count(*) AS connection_count,
+    max(now() - state_change) AS longest_in_state
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+GROUP BY usename, application_name, client_addr, state
+ORDER BY connection_count DESC;
+
+-- Are idle connections piling up? (connection leaks)
+SELECT count(*) AS idle_connections
+FROM pg_stat_activity
+WHERE state = 'idle'
+  AND now() - state_change > interval '10 minutes';
+```
+
+```bash
+# From OS side — how many TCP connections to port 5432?
+ss -tn | grep :5432 | wc -l
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Immediately free up idle connections if you're in crisis** — This is
+   emergency surgery. You're killing idle connections to restore service.
+
+   ```sql
+   -- Kill idle connections older than 10 minutes (NOT superuser or replication)
+   SELECT pg_terminate_backend(pid)
+   FROM pg_stat_activity
+   WHERE state = 'idle'
+     AND state_change < now() - interval '10 minutes'
+     AND usename NOT IN ('replicator', 'postgres')
+     AND pid <> pg_backend_pid();
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   DO NOT run pg_terminate_backend on state = 'active' connections unless you
+   know exactly what transaction is running. You can corrupt in-flight writes.
+   Idle connections are safe to terminate. Active ones — check first.
+
+2. **Root cause: No connection pooler** — If your app connects directly to
+   PostgreSQL without PgBouncer or Pgpool, you will hit this repeatedly.
+
+   Install PgBouncer. Configure it in transaction mode for OLTP apps.
+   Pool size = (core_count * 2) + effective_spindle_count is a good starting
+   rule for PgBouncer's server_pool_size.
+
+3. **Root cause: Connection leak in application** — If idle connections keep
+   building up, the app is not returning connections to the pool. This is an
+   application bug. Open a ticket. Meanwhile:
+
+   ```sql
+   -- Set idle_in_transaction_session_timeout to auto-clean leaks:
+   -- Add to postgresql.conf:
+   -- idle_in_transaction_session_timeout = '5min'
+   -- idle_session_timeout = '30min'   -- PG 14+
+   SELECT pg_reload_conf(); -- after editing postgresql.conf
+   ```
+
+4. **Temporary emergency: Raise max_connections** — I want you to hear me
+   clearly: this is a SHORT-TERM bandage. Each extra connection eats memory
+   and degrades performance under load. Set it, restart, then fix the real
+   problem.
+
+   ```bash
+   # postgresql.conf:
+   max_connections = 200  # was 100, raised temporarily
+   ```
+
+   This requires a restart. Real fix is PgBouncer.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SELECT count(*) AS total_connections,
+       count(*) FILTER (WHERE state = 'idle') AS idle,
+       count(*) FILTER (WHERE state = 'active') AS active
+FROM pg_stat_activity;
+```
+
+Connection count should be within safe range. Application errors should stop.
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If idle_session_timeout causes unexpected connection drops in legitimate long-
+running sessions, revert it:
+
+```sql
+ALTER SYSTEM SET idle_session_timeout = 0;
+SELECT pg_reload_conf();
+```
+
+If max_connections was raised and memory pressure is now high, revert to prior
+value and restart postgres after properly deploying PgBouncer.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: DATA CORRUPTION SUSPECTED
+  File: 01_incident_response/data_corruption_suspected.md
+================================================================================
+
+I need everyone to take a breath before we go through this one, because this
+is the scenario that ends careers if you handle it wrong. Data corruption is
+rare in PostgreSQL — it's one of the most battle-hardened database engines
+there is — but when it happens, the worst thing you can do is thrash the
+database trying to "fix" things while you're still writing to it.
+
+Rule number one: STOP WRITES IMMEDIATELY if corruption is suspected.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- pg_catalog check: does a table's index still match its data?
+-- This is the safest first check.
+SELECT schemaname, tablename, attname
+FROM pg_attribute a
+JOIN pg_class c ON a.attrelid = c.oid
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE attnum > 0 AND NOT attisdropped
+  AND NOT EXISTS (
+      SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid
+  )
+LIMIT 10; -- not a corruption check by itself, just warm-up
+
+-- Check for pages that fail checksum (PG 9.3+ with checksums enabled):
+-- Run amcheck on indexes:
+CREATE EXTENSION IF NOT EXISTS amcheck;
+
+SELECT bt_index_check(index => oid::regclass, heapalloc => true)
+FROM pg_index
+JOIN pg_class ON pg_index.indexrelid = pg_class.oid
+WHERE pg_class.relname = 'your_index_name';
+```
+
+```bash
+# Check PostgreSQL logs for any "invalid page" or "checksum mismatch":
+grep -i "checksum\|invalid page\|corrupted" \
+    /var/log/postgresql/postgresql-*.log | tail -50
+
+# Full cluster amcheck via pageinspect extension:
+# (safer to do on a snapshot/standby)
+
+# If pg_filedump is available, inspect raw page:
+pg_filedump -i /var/lib/postgresql/data/base/12345/67890
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Immediately snapshot/freeze the situation** — Before touching anything,
+   take a filesystem-level snapshot (LVM, EBS snapshot, ZFS snapshot). You
+   want a forensic copy.
+
+   ```bash
+   # AWS EBS example:
+   aws ec2 create-snapshot --volume-id vol-XXXXXXXX \
+       --description "CORRUPTION SUSPECT $(date +%Y%m%d_%H%M)"
+   ```
+
+2. **Run amcheck on suspected objects** — amcheck is the official PostgreSQL
+   integrity checker for B-tree indexes.
+
+   ```sql
+   -- Check an index:
+   SELECT * FROM bt_index_check(index => 'public.orders_pkey'::regclass,
+                                 heapalloc => true);
+
+   -- If it returns without error — index is intact.
+   -- If it throws — you have corruption. Note the block number.
+   ```
+
+3. **If corruption confirmed: do NOT attempt in-place repair.** Your recovery
+   path is:
+   a. Restore from last known good backup to a parallel instance.
+   b. Use logical replication or pg_dump to extract clean data from the good
+      copy and reload into production.
+   c. If you have a physical standby — promote standby, verify its integrity
+      with amcheck, then failover.
+
+4. **Reindex if corruption is index-only** — Sometimes only an index page is
+   corrupted, not heap data. In that case:
+
+   ```sql
+   REINDEX INDEX CONCURRENTLY public.orders_pkey;
+   ```
+
+   Do NOT run REINDEX without CONCURRENTLY on a live table in production.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After reindex or restore: run amcheck again, expect clean output
+SELECT bt_index_check(index => 'public.orders_pkey'::regclass, heapalloc => true);
+
+-- Run pg_catalog consistency check:
+SELECT * FROM pg_catalog.pg_relation_check_pages('public.orders');
+-- (PG 17+)
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If a REINDEX CONCURRENTLY fails partway through, the old index remains intact.
+No rollback needed for amcheck (it's read-only). For a full restore: rollback
+IS the procedure. You're reverting to the snapshot.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: DEADLOCK
+  File: 01_incident_response/deadlock.md
+================================================================================
+
+Deadlocks are one of those things that new DBAs panic about and experienced
+DBAs shrug at — because they're usually application bugs, not database bugs.
+PostgreSQL detects them automatically and resolves them by killing one of the
+participating transactions. The pain is short-lived. The real job is finding
+out which code path causes them so the dev team can fix it.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Deadlocks are logged by default at log_level. Search for them:
+grep -i "deadlock detected" /var/log/postgresql/postgresql-*.log | tail -20
+
+# Full deadlock detail (shows which transactions and rows):
+grep -A 10 "deadlock detected" /var/log/postgresql/postgresql-*.log | tail -50
+```
+
+```sql
+-- Who is currently blocking whom? (real-time, before they resolve)
+SELECT
+    blocked.pid         AS blocked_pid,
+    blocked.usename     AS blocked_user,
+    blocking.pid        AS blocking_pid,
+    blocking.usename    AS blocking_user,
+    blocked.query       AS blocked_query,
+    blocking.query      AS blocking_query,
+    now() - blocked.query_start AS blocked_duration
+FROM pg_stat_activity AS blocked
+JOIN pg_stat_activity AS blocking
+    ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Let PostgreSQL resolve it first** — If a deadlock is detected, Postgres
+   automatically picks a victim and rolls it back within deadlock_timeout
+   (default 1 second). Let it do its job. Do not start terminating sessions
+   before this happens.
+
+2. **Collect the log evidence** — The log entry for a deadlock contains the
+   full stack: which PIDs, which tables, which rows were locked. Save this.
+
+   ```bash
+   grep -B 2 -A 20 "deadlock detected" /var/log/postgresql/postgresql-$(date +%Y-%m-%d)*.log \
+       > /tmp/deadlock_$(date +%Y%m%d_%H%M).txt
+   ```
+
+3. **Identify the application code path** — The log shows the queries. Work
+   with developers to find the transaction pair that acquires locks in opposite
+   order. That's your root cause. Fix: ensure all transactions acquire locks
+   in the same order.
+
+4. **Reduce deadlock window** — If deadlocks are frequent and causing visible
+   errors, you can reduce deadlock_timeout so the victim is chosen faster:
+
+   ```sql
+   -- Check current value:
+   SHOW deadlock_timeout;
+   -- Default: 1s. On high-OLTP systems, some teams lower to 200ms.
+   -- ALTER SYSTEM SET deadlock_timeout = '200ms';
+   -- SELECT pg_reload_conf();
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Monitor log for 15 minutes after fix:
+tail -f /var/log/postgresql/postgresql-*.log | grep -i deadlock
+```
+
+```sql
+-- pg_stat_activity should show no long waits on lock:
+SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock';
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If deadlock_timeout was changed: revert via ALTER SYSTEM and pg_reload_conf().
+No structural rollback needed — deadlock resolution is handled by PostgreSQL.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: DISK USAGE AT 85%
+  File: 01_incident_response/disk_usage_85_percent.md
+================================================================================
+
+85% disk usage is a yellow alert. 95% is a red alert. 100% is a catastrophe.
+PostgreSQL will hard-crash if it cannot write WAL. It doesn't degrade
+gracefully — it stops. I had a production database halt at 2 AM because a
+developer left a debug query running that was writing 200 MB of temporary
+files per second. By the time my alert fired at 85%, we had maybe 45 minutes.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Overall disk usage:
+df -h
+
+# What's consuming space in the data directory?
+du -sh /var/lib/postgresql/*/main/*/ 2>/dev/null | sort -h | tail -20
+
+# Check for WAL accumulation (common culprit):
+du -sh /var/lib/postgresql/*/main/pg_wal/
+
+# Check temp file space usage:
+du -sh /var/lib/postgresql/*/main/base/pgsql_tmp/
+```
+
+```sql
+-- Which databases and tables are largest?
+SELECT
+    pg_database.datname,
+    pg_size_pretty(pg_database_size(pg_database.datname)) AS size
+FROM pg_database
+ORDER BY pg_database_size(pg_database.datname) DESC;
+
+-- Largest tables in current database:
+SELECT
+    schemaname || '.' || tablename AS table_name,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
+    pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) AS table_size,
+    pg_size_pretty(pg_indexes_size(schemaname||'.'||tablename)) AS index_size
+FROM pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+LIMIT 15;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify and reclaim temp files** — Temp files from sorts and hash joins
+   are cleaned up automatically when queries complete, but if a query crashed
+   or is hung, temp files may be orphaned.
+
+   ```bash
+   ls -lh /var/lib/postgresql/*/main/base/pgsql_tmp/ | head -20
+   # Only delete files here if the process that owns them is dead.
+   # Check the PID in the filename against pg_stat_activity first.
+   ```
+
+2. **Check for bloated tables** — If autovacuum is behind (see Runbook 01),
+   tables may hold far more dead space than live data. VACUUM FULL reclaims it
+   but requires an exclusive lock — use pg_repack instead on production.
+
+   ```sql
+   -- pg_repack example (run from shell, not psql):
+   -- pg_repack -d mydb -t public.orders --no-order
+   ```
+
+3. **Check for WAL accumulation** — Is pg_wal growing? See Runbook 18.
+
+4. **Extend the volume** — If space is critically low and you can't free
+   enough: extend the EBS volume or LVM volume. This should be your last resort
+   not your first one.
+
+   ```bash
+   # LVM example (resize2fs after lvextend):
+   lvextend -L+50G /dev/vg_data/lv_pgdata
+   resize2fs /dev/vg_data/lv_pgdata
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+df -h   # Confirm usage has dropped or growth rate has slowed
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Disk reclamation operations (VACUUM, dropping temp files) are irreversible by
+design. Ensure you're not deleting active temp files. For pg_repack: the tool
+is safe and non-destructive (uses a shadow copy approach). If a volume extension
+goes wrong — that's a storage team escalation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: HIGH CPU USAGE
+  File: 01_incident_response/high_cpu_usage.md
+================================================================================
+
+High CPU from PostgreSQL is almost always queries doing sequential scans on
+large tables, or sort operations spilling to memory, or — and this is the one
+I see most often — a flood of identical short queries overwhelming the parser.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Which postgres processes are consuming CPU?
+top -u postgres -bn1 | head -30
+
+# Which queries are running right now?
+ps aux | grep postgres | grep -v grep | sort -k3 -rn | head -20
+```
+
+```sql
+-- Active queries sorted by CPU proxy (total_time in pg_stat_statements):
+SELECT
+    query,
+    calls,
+    round(total_exec_time::numeric, 2) AS total_ms,
+    round(mean_exec_time::numeric, 2)  AS mean_ms,
+    round(total_exec_time / sum(total_exec_time) OVER () * 100, 2) AS pct_of_total
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+
+-- Right now: what's actively running and for how long?
+SELECT pid, usename, state, wait_event,
+       now() - query_start AS duration,
+       left(query, 120) AS query_snippet
+FROM pg_stat_activity
+WHERE state = 'active'
+  AND pid <> pg_backend_pid()
+ORDER BY duration DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Find and EXPLAIN the top CPU query** — Take the top query from
+   pg_stat_statements and run EXPLAIN (ANALYZE, BUFFERS) on it.
+
+   ```sql
+   EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+   SELECT * FROM public.orders WHERE status = 'pending';
+   ```
+
+   If you see "Seq Scan" on a large table — missing index. If you see sort
+   operations with "Sort Method: external merge Disk" — work_mem too low.
+
+2. **Kill the runaway query if it's causing cascading impact:**
+
+   ```sql
+   SELECT pg_cancel_backend(pid)  -- soft kill, waits for checkpoint
+   FROM pg_stat_activity
+   WHERE pid = <pid_here>;
+
+   -- If pg_cancel_backend doesn't work after 30 seconds:
+   SELECT pg_terminate_backend(<pid_here>);
+   ```
+
+3. **Add missing index** — If EXPLAIN reveals a sequential scan:
+
+   ```sql
+   CREATE INDEX CONCURRENTLY idx_orders_status ON public.orders(status);
+   ```
+
+4. **Increase work_mem for sort-heavy sessions** — Set per-session, not
+   globally, unless you have very few concurrent connections.
+
+   ```sql
+   SET work_mem = '256MB';
+   -- Then re-run the heavy query in that session.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# CPU should normalise within 1–2 minutes after fixing the query:
+top -u postgres -bn1 | head -10
+```
+
+```sql
+-- Re-check pg_stat_statements after 15 min to confirm mean_exec_time dropped:
+SELECT query, mean_exec_time FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 5;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Index creation with CONCURRENTLY is safe to cancel mid-flight (the partial
+index is cleaned up). If work_mem was increased globally and causes OOM,
+revert: `ALTER SYSTEM RESET work_mem; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: HIGH REPLICATION LAG
+  File: 01_incident_response/high_replication_lag.md
+================================================================================
+
+Replication lag means your standby is behind the primary. It's not just an
+HA concern — if your application reads from the standby, users see stale data.
+And if lag grows without bound, you may eventually exhaust pg_wal on the
+primary because it can't release WAL segments the standby hasn't consumed.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- On the PRIMARY: how far behind is each standby?
+SELECT
+    application_name,
+    client_addr,
+    state,
+    sent_lsn,
+    write_lsn,
+    flush_lsn,
+    replay_lsn,
+    write_lag,
+    flush_lag,
+    replay_lag,
+    sync_state
+FROM pg_stat_replication
+ORDER BY replay_lag DESC NULLS LAST;
+
+-- On the STANDBY: how far behind are we?
+SELECT now() - pg_last_xact_replay_timestamp() AS replication_delay;
+SELECT pg_is_in_recovery(), pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();
+```
+
+```bash
+# Check network between primary and standby:
+ping -c 10 <standby_ip>
+iperf3 -c <standby_ip>
+
+# Check for WAL receiver process on standby:
+ps aux | grep walreceiver
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Determine lag type** — Is write_lag, flush_lag, or replay_lag highest?
+   - write_lag high → network bottleneck between primary and standby.
+   - flush_lag high → standby disk I/O can't write WAL fast enough.
+   - replay_lag high → standby CPU or I/O can't apply changes fast enough;
+     often caused by vacuum or heavy queries on the standby.
+
+2. **Network lag: check and tune wal_sender_timeout and wal_receiver_timeout:**
+
+   ```sql
+   SHOW wal_sender_timeout;
+   SHOW wal_receiver_timeout;
+   -- Both default to 60s. If the network is flaky, increase to 120s.
+   ```
+
+3. **Replay lag: check for query conflicts on standby:**
+
+   ```sql
+   -- On standby: are queries blocking WAL replay?
+   SELECT * FROM pg_stat_replication_slots;
+   SHOW max_standby_streaming_delay;
+   SHOW max_standby_archive_delay;
+   ```
+
+   If long-running queries on the standby are delaying replay, you can either
+   increase max_standby_streaming_delay or use hot_standby_feedback = on to
+   prevent the primary from vacuuming rows the standby still needs.
+
+4. **Replication slot bloat**: If a slot is lagging AND not used — see
+   Runbook 14. Drop the unused slot.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On primary: replay_lag should be < 1 second for sync replication,
+-- < 10 seconds for async depending on workload.
+SELECT application_name, replay_lag FROM pg_stat_replication;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If hot_standby_feedback was enabled and you're seeing table bloat on primary
+(because the standby held back vacuum), disable it: `ALTER SYSTEM SET
+hot_standby_feedback = off; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: I/O SATURATION
+  File: 01_incident_response/io_saturation.md
+================================================================================
+
+I/O saturation is what happens when the storage subsystem can't keep up with
+what PostgreSQL needs. Every query starts waiting. Checkpoint writes pile up.
+Autovacuum stalls. The whole system degrades together.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# %util approaching 100% means device is saturated:
+iostat -x 1 10
+
+# What processes are doing the I/O?
+iotop -o -b -n 3
+
+# OS-level block I/O:
+vmstat 1 5
+```
+
+```sql
+-- PostgreSQL I/O wait activity:
+SELECT wait_event, count(*) AS waiting_sessions
+FROM pg_stat_activity
+WHERE wait_event_type = 'IO'
+GROUP BY wait_event
+ORDER BY waiting_sessions DESC;
+
+-- Checkpoint write stats:
+SELECT
+    buffers_checkpoint,
+    buffers_clean,
+    buffers_backend,
+    checkpoint_write_time,
+    checkpoint_sync_time,
+    checkpoints_req,
+    checkpoints_timed
+FROM pg_stat_bgwriter;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Checkpoint storms: spread checkpoint I/O** — If checkpoints_req is high
+   relative to checkpoints_timed, checkpoints are being forced. Increase
+   max_wal_size to reduce frequency, and set checkpoint_completion_target = 0.9
+   to spread writes over a longer window.
+
+   ```bash
+   # postgresql.conf:
+   max_wal_size = 4GB          # was 1GB
+   checkpoint_completion_target = 0.9
+   ```
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+2. **Work_mem spill: queries writing to disk** — If iostat shows sustained
+   sequential writes and pg_stat_activity shows queries in I/O wait, find
+   the queries and EXPLAIN them. Sort spills are a common culprit.
+
+3. **Autovacuum I/O: throttle it on saturated systems:**
+
+   ```sql
+   -- Slow autovacuum down if it's hammering I/O:
+   ALTER SYSTEM SET autovacuum_vacuum_cost_delay = 20;  -- default 2ms
+   SELECT pg_reload_conf();
+   -- Note: this is a tradeoff. You're protecting I/O but slowing vacuum.
+   ```
+
+4. **Bulk load I/O: throttle INSERTs** — If a data load is causing saturation,
+   batch your inserts and add pg_sleep() between batches. Crude but effective
+   in an emergency.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# %util in iostat should drop below 70%:
+iostat -x 1 5
+
+# checkpoint_write_time should normalise:
+psql -c "SELECT checkpoint_write_time, checkpoint_sync_time FROM pg_stat_bgwriter;"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If increasing max_wal_size causes WAL directory to grow too large (see Runbook
+18), revert: `ALTER SYSTEM RESET max_wal_size; SELECT pg_reload_conf();`
+Checkpoint timing parameters require only a reload, not a restart.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 10: LONG-RUNNING QUERY BLOCKING OTHERS
+  File: 01_incident_response/long_running_query_blocking.md
+================================================================================
+
+This is probably the most common call you'll get. "The database is slow." You
+log in, and you find one query that's been running for 45 minutes holding a
+lock that's blocking 80 other sessions. The blocker is usually something
+innocent — a report that someone kicked off manually, or a migration that was
+supposed to run off-hours.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The classic "who is blocking whom" query. Learn this one by heart.
+SELECT
+    blocked.pid                     AS blocked_pid,
+    blocked.usename                 AS blocked_user,
+    blocked.query                   AS blocked_query,
+    blocked.query_start             AS blocked_since,
+    blocking.pid                    AS blocker_pid,
+    blocking.usename                AS blocker_user,
+    blocking.query                  AS blocker_query,
+    blocking.query_start            AS blocker_since,
+    now() - blocking.query_start    AS blocker_duration
+FROM pg_stat_activity AS blocked
+JOIN pg_stat_activity AS blocking
+    ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0
+ORDER BY blocker_duration DESC;
+
+-- How many sessions are waiting?
+SELECT count(*) FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Assess the blocker query** — Is it still making progress? Is it a
+   legitimate report, a stuck migration, or a leaked transaction (idle in
+   transaction)?
+
+   ```sql
+   SELECT pid, state, wait_event, now() - query_start AS duration,
+          left(query, 200) AS query
+   FROM pg_stat_activity
+   WHERE pid = <blocker_pid>;
+   ```
+
+   If state = 'idle in transaction' — this is almost certainly a leaked
+   transaction. Safe to kill.
+
+   If state = 'active' — the query is still running. Assess impact before
+   killing.
+
+2. **Cancel or terminate the blocker:**
+
+   ```sql
+   -- Try soft cancel first (waits for next cancellation checkpoint):
+   SELECT pg_cancel_backend(<blocker_pid>);
+
+   -- If no response in 30 seconds, hard terminate:
+   SELECT pg_terminate_backend(<blocker_pid>);
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Never kill connections by PID alone without confirming who owns them. I once
+   watched a junior DBA terminate a long-running ETL job that was one minute
+   from completing. It had been running for 8 hours. The team lead was not
+   pleased. CONFIRM what the query is and who owns it before you pull the plug.
+   Call them if you have to.
+
+3. **Prevent recurrence: set lock timeouts** — Add this to application
+   connection strings or postgresql.conf:
+
+   ```sql
+   -- Per-session (in app connection string):
+   -- options='-c lock_timeout=30s'
+
+   -- Or globally (careful — this affects DDL too):
+   ALTER SYSTEM SET lock_timeout = '60s';
+   SELECT pg_reload_conf();
+   ```
+
+4. **For idle-in-transaction sessions:** Add statement_timeout and
+   idle_in_transaction_session_timeout.
+
+   ```bash
+   # postgresql.conf:
+   statement_timeout = '30min'               -- kill runaway queries
+   idle_in_transaction_session_timeout = '5min'  -- kill leaked txns
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After killing blocker, check that queue clears:
+SELECT count(*) AS still_blocked
+FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0;
+
+-- Should return 0 within seconds.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Killing a query is irreversible. Its transaction rolls back automatically. If
+the killed query was a long migration, you'll need to re-run it. For lock and
+statement timeouts: revert via ALTER SYSTEM RESET if they're causing false
+positives on legitimate long-running jobs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 11: MULTIXACT WRAPAROUND IMMINENT
+  File: 01_incident_response/multixact_wraparound_imminent.md
+================================================================================
+
+Multixact IDs are used by PostgreSQL when multiple transactions share a row
+lock simultaneously — this happens with SELECT FOR SHARE and foreign key checks.
+Most DBAs learn about transaction ID wraparound but forget about multixact
+wraparound. I didn't, because I lived through one. The database went read-only
+at 11 PM on a Saturday. Not fun.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Check multixact age per database:
+SELECT datname,
+       datminmxid,
+       age(datminmxid) AS multixact_age,
+       2^31 - age(datminmxid) AS multixacts_remaining
+FROM pg_database
+ORDER BY age(datminmxid) DESC;
+
+-- Check table-level multixact age:
+SELECT relname,
+       relminmxid,
+       age(relminmxid) AS multixact_age
+FROM pg_class
+WHERE relkind = 'r'
+ORDER BY age(relminmxid) DESC
+LIMIT 20;
+```
+
+```bash
+# Check pg_multixact directory size:
+du -sh /var/lib/postgresql/*/main/pg_multixact/
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Alert threshold: age > 1.6 billion is critical** — If any table or
+   database shows multixact_age approaching 2 billion, you are in emergency
+   territory. The database will go into read-only mode to protect itself.
+
+2. **VACUUM the oldest tables aggressively:**
+
+   ```sql
+   -- Identify tables with oldest multixact:
+   SELECT relname, age(relminmxid)
+   FROM pg_class WHERE relkind = 'r'
+   ORDER BY age(relminmxid) DESC LIMIT 10;
+
+   -- VACUUM them, starting with the oldest:
+   VACUUM (FREEZE, VERBOSE, ANALYZE) public.the_oldest_table;
+   ```
+
+   The FREEZE option is critical — it converts old multixact references to
+   frozen XIDs, which resets the age counter.
+
+3. **Run autovacuum with aggressive settings temporarily:**
+
+   ```sql
+   ALTER SYSTEM SET autovacuum_freeze_max_age = 100000000;  -- lower trigger
+   ALTER SYSTEM SET autovacuum_multixact_freeze_max_age = 100000000;
+   SELECT pg_reload_conf();
+   ```
+
+4. **If wraparound is within hours: controlled outage may be required** to
+   run VACUUM FREEZE across the entire database. This holds locks.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Re-run after VACUUM FREEZE completes:
+SELECT datname, age(datminmxid) AS multixact_age
+FROM pg_database ORDER BY age(datminmxid) DESC;
+-- Should show significantly lower age values.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Freeze operations are safe and irreversible (they only advance, never regress).
+Revert the aggressive autovacuum settings after the crisis passes:
+`ALTER SYSTEM RESET autovacuum_freeze_max_age; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 12: OUT-OF-MEMORY KILL (OOM KILL)
+  File: 01_incident_response/out_of_memory_kill.md
+================================================================================
+
+When the Linux OOM killer shoots your PostgreSQL process, you'll see this in
+dmesg: "Out of memory: Kill process [PID] (postgres) score [X] or sacrifice
+child". The database server then goes down, or a backend worker gets killed,
+leaving connected sessions dead. This is ugly. And it's almost always a
+misconfigured shared_buffers or work_mem.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check OOM kill history:
+dmesg | grep -i "out of memory\|oom_kill\|killed process" | tail -20
+
+# Check current memory allocation:
+free -h
+cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable|Cached|SwapTotal|SwapFree"
+
+# PostgreSQL memory config:
+psql -c "SELECT name, setting, unit FROM pg_settings
+         WHERE name IN ('shared_buffers', 'work_mem', 'maintenance_work_mem',
+                        'effective_cache_size', 'max_connections');"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Calculate your real memory footprint:**
+
+   Real max memory ≈ shared_buffers
+                   + (work_mem × max_connections × 2–3)
+                   + maintenance_work_mem × autovacuum_max_workers
+                   + OS overhead (~1–2 GB)
+
+   If this number exceeds your total RAM — OOM is not a matter of if, but when.
+
+2. **Reduce work_mem first** — work_mem is the biggest hidden multiplier.
+   256 MB work_mem × 100 connections = 25 GB just for sorts. Reduce it:
+
+   ```sql
+   ALTER SYSTEM SET work_mem = '32MB';   -- was 256MB
+   SELECT pg_reload_conf();
+   ```
+
+3. **Enable HugePages if not already** — HugePages reduce memory fragmentation
+   and protect shared_buffers from the OOM killer on Linux.
+
+   ```bash
+   # How many huge pages does PostgreSQL need?
+   grep VmPeak /proc/$(head -1 /var/lib/postgresql/*/main/postmaster.pid)/status
+
+   # Calculate: VmPeak_KB / 2048 = number of 2MB hugepages
+   # Then in /etc/sysctl.conf:
+   # vm.nr_hugepages = <calculated_value>
+   sysctl -w vm.nr_hugepages=2048   # example
+
+   # postgresql.conf:
+   # huge_pages = on
+   ```
+
+4. **Set vm.overcommit_memory = 2 on dedicated DB servers:**
+
+   ```bash
+   sysctl -w vm.overcommit_memory=2
+   sysctl -w vm.overcommit_ratio=80
+   # Makes Linux refuse allocations that can't be satisfied, preventing OOM.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Monitor over 24 hours:
+free -h
+vmstat -s | grep -i "memory\|swap"
+dmesg | grep -i oom   # Should stay silent
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If reducing work_mem causes query failures (sort or hash operations exceeding
+memory budget), use SET work_mem for specific sessions that need more:
+`SET work_mem = '512MB';` — this only affects the current session.
+
+If HugePages aren't available on your kernel, reset huge_pages = try in
+postgresql.conf. Requires a restart.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 13: PRIMARY PROCESS NOT RESPONDING
+  File: 01_incident_response/primary_process_not_responding.md
+================================================================================
+
+This one is the midnight nightmare. Your monitoring fires. Your application
+is completely down. You SSH in and the postgres process is either not there,
+not accepting connections, or accepting connections but hanging every query.
+Your hands will want to restart it immediately. Resist that urge. Collect
+evidence first.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Is the process even running?
+pg_lsclusters
+systemctl status postgresql
+
+# Can we connect at all?
+psql -U postgres -c "SELECT 1;" 2>&1
+
+# Is it accepting connections?
+pg_isready -h localhost -p 5432
+
+# What do the logs say?
+tail -100 /var/log/postgresql/postgresql-$(date +%Y-%m-%d)*.log
+
+# Check for lock files:
+ls -la /var/lib/postgresql/*/main/postmaster.pid
+
+# System resources:
+vmstat 1 5
+dmesg | tail -30
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Distinguish: hung vs crashed vs never started**
+
+   - pg_isready returns "accepting connections" → process is alive but queries
+     hang → you have a lock/resource issue, NOT a crash.
+   - pg_isready returns "no response" → process is down or not listening.
+   - No postmaster.pid → crashed or was never started.
+
+2. **If crashed: check for corruption before restart:**
+
+   ```bash
+   # Check logs for the cause BEFORE restarting:
+   grep -i "fatal\|panic\|corrupt\|checksum" \
+       /var/log/postgresql/postgresql-*.log | tail -30
+
+   # If you see "database system was shut down in recovery" — WAL replay issue.
+   # If you see "requested WAL segment has already been removed" — replication lag.
+   ```
+
+3. **Safe restart (only if no corruption indicated):**
+
+   ```bash
+   pg_ctlcluster 15 main start
+   # or
+   systemctl start postgresql@15-main
+   ```
+
+   After restart, watch the log in real time:
+   ```bash
+   tail -f /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+   ```
+
+4. **If hung: identify who is holding system resources:**
+
+   ```sql
+   -- If you can get a connection:
+   SELECT pid, wait_event_type, wait_event, state, left(query,100)
+   FROM pg_stat_activity
+   WHERE state != 'idle'
+   ORDER BY wait_event_type;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+pg_isready -h localhost -p 5432
+psql -U postgres -c "SELECT version(), now();"
+# Check replication is reconnected after primary restart:
+psql -c "SELECT * FROM pg_stat_replication;"
+```
+
+── ROLLBACK ───────────────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If restart fails or makes things worse: failover to standby (see Runbook 16).
+Document everything — exact timestamps, exact error messages — before escalating.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 14: REPLICATION SLOT BLOAT
+  File: 01_incident_response/replication_slot_bloat.md
+================================================================================
+
+This one has eaten databases. Replication slots cause PostgreSQL to retain WAL
+files until the consumer confirms it has received them. If a consumer disappears
+— say, a logical replication subscriber goes offline for a week — the WAL
+directory grows without bound until your disk fills up and the primary crashes.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Show all slots, their lag, and WAL retained for them:
+SELECT
+    slot_name,
+    slot_type,
+    active,
+    restart_lsn,
+    confirmed_flush_lsn,
+    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+        AS wal_retained,
+    pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS wal_bytes
+FROM pg_replication_slots
+ORDER BY wal_bytes DESC NULLS LAST;
+```
+
+```bash
+# Watch pg_wal directory size:
+watch -n 5 "du -sh /var/lib/postgresql/*/main/pg_wal/"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify inactive slots with large WAL retained:**
+
+   ```sql
+   SELECT slot_name, active, wal_retained
+   FROM (
+       SELECT slot_name, active,
+              pg_size_pretty(
+                  pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+              ) AS wal_retained
+       FROM pg_replication_slots
+   ) s
+   WHERE active = false
+   ORDER BY wal_retained DESC;
+   ```
+
+   If active = false and WAL retained is in the GBs or TBs — this is your
+   problem.
+
+2. **Contact the slot owner before dropping** — Do NOT drop slots without
+   confirming with the team that owns the downstream consumer. Dropping a slot
+   means the consumer will need to resync from scratch.
+
+3. **Drop the confirmed-orphaned slot:**
+
+   ```sql
+   SELECT pg_drop_replication_slot('slot_name_here');
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   pg_drop_replication_slot is irreversible. The subscriber will need to be
+   reinitialized. Confirm with the owning team. Get it in writing. Then drop.
+
+4. **Set max_slot_wal_keep_size as a safety valve** — (PG 13+) This prevents
+   any slot from retaining more than N bytes of WAL. Subscribers that fall
+   too far behind are invalidated instead of causing a disk crisis.
+
+   ```sql
+   ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
+   SELECT pg_reload_conf();
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# pg_wal size should begin shrinking:
+watch -n 10 "du -sh /var/lib/postgresql/*/main/pg_wal/"
+```
+
+```sql
+SELECT slot_name, active, restart_lsn FROM pg_replication_slots;
+```
+
+── ROLLBACK ───────────────────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A dropped slot cannot be recreated in the same state. The consumer must be
+re-initialized. If max_slot_wal_keep_size caused unexpected slot invalidation
+on active subscribers, revert or raise the value:
+`ALTER SYSTEM RESET max_slot_wal_keep_size; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 15: SLOW QUERIES — P95 LATENCY DOUBLED
+  File: 01_incident_response/slow_queries_p95_doubled.md
+================================================================================
+
+P95 latency doubling means 5% of your queries are now taking twice as long as
+before. That might sound small. But on a system doing 10,000 queries per minute,
+that's 500 queries per minute running in the slow lane. Users feel this.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Requires pg_stat_statements (should always be enabled)
+SELECT
+    queryid,
+    left(query, 100) AS query,
+    calls,
+    round(mean_exec_time::numeric, 2) AS mean_ms,
+    round(stddev_exec_time::numeric, 2) AS stddev_ms,
+    round(max_exec_time::numeric, 2) AS max_ms,
+    round((mean_exec_time + 2 * stddev_exec_time)::numeric, 2) AS p95_est_ms,
+    shared_blks_hit,
+    shared_blks_read,
+    round(shared_blks_hit::numeric /
+          NULLIF(shared_blks_hit + shared_blks_read, 0) * 100, 2)
+          AS cache_hit_pct
+FROM pg_stat_statements
+WHERE calls > 100
+ORDER BY mean_exec_time DESC
+LIMIT 15;
+
+-- Check cache hit ratio globally:
+SELECT
+    round(blks_hit::numeric / NULLIF(blks_hit + blks_read, 0) * 100, 2)
+        AS cache_hit_pct
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+```bash
+# Check for recent changes that could have caused regression:
+git log --since='2 hours ago' -- migrations/   # if you track migrations in git
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Reset pg_stat_statements baseline, THEN compare** — If you didn't have a
+   baseline snapshot before the incident, you're flying blind. After this
+   incident, implement scheduled snapshots of pg_stat_statements.
+
+2. **Check for plan regression using pg_stat_statements:**
+
+   ```sql
+   -- A query whose mean_ms jumped AND whose stddev_ms jumped = plan change
+   -- EXPLAIN it to confirm:
+   EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+   <the slow query here>;
+   ```
+
+3. **Force a plan if the planner regressed:**
+
+   ```sql
+   -- If the right plan is a seq scan but planner chose index (or vice versa):
+   SET enable_seqscan = off;   -- force index usage (session scope)
+   -- Or use pg_hint_plan extension for persistent hints.
+   ```
+
+4. **Update statistics if they're stale:**
+
+   ```sql
+   ANALYZE public.orders;
+   -- Or full database:
+   ANALYZE VERBOSE;
+   ```
+
+5. **Check for table bloat causing sequential scans to read more pages** —
+   If bloat is high, even indexed queries may degrade. VACUUM or pg_repack.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Reset and re-sample pg_stat_statements after fix:
+SELECT pg_stat_statements_reset();
+-- Wait 15 minutes for queries to accumulate, then:
+SELECT left(query,80), mean_exec_time, calls FROM pg_stat_statements
+ORDER BY mean_exec_time DESC LIMIT 10;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If ANALYZE caused plan regression (rare but possible), run
+`ALTER TABLE ... ALTER COLUMN ... SET STATISTICS <higher_value>` to give the
+planner better data. If enable_seqscan was set globally by accident:
+`ALTER SYSTEM RESET enable_seqscan; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 16: SPLIT BRAIN RECOVERY
+  File: 01_incident_response/split_brain_recovery.md
+================================================================================
+
+I'm going to be straight with you: split brain is the most dangerous scenario
+on this list. It means BOTH your primary and your standby accepted writes
+simultaneously. You now have two diverged timelines of data. Merging them is
+not automatic. It requires careful forensic analysis. Sometimes data is lost.
+This is not an incident you close in 20 minutes.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check timeline IDs on both nodes:
+# On node A:
+psql -c "SELECT timeline_id, wal_segment_name(pg_current_wal_lsn()),
+                pg_is_in_recovery();"
+# On node B:
+psql -c "SELECT timeline_id, wal_segment_name(pg_current_wal_lsn()),
+                pg_is_in_recovery();"
+
+# If BOTH show pg_is_in_recovery() = false — you have split brain.
+# If timeline IDs differ — they diverged at some point in the past.
+```
+
+```sql
+-- On each node: what's the highest committed transaction ID?
+SELECT txid_current();
+
+-- Compare LSNs to understand how far they diverged:
+SELECT pg_current_wal_lsn() AS current_lsn;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+*** INSTRUCTOR WARNING — THIS IS THE BIG ONE ***
+Do NOT attempt to merge two diverged primaries by pointing one at the other
+as a replica without taking forensic backups of BOTH nodes first. I have seen
+this go catastrophically wrong. Take snapshots. Then act.
+
+1. **Immediately isolate both nodes from the application** — Stop all writes
+   to BOTH nodes. No half-measures. Update your load balancer/connection
+   string to point to NEITHER node while you investigate.
+
+2. **Take filesystem snapshots of BOTH nodes right now:**
+
+   ```bash
+   # AWS EBS example, run on each node:
+   aws ec2 create-snapshot --volume-id vol-XXXXXXXX \
+       --description "SPLIT_BRAIN_FORENSIC_$(hostname)_$(date +%Y%m%d_%H%M)"
+   ```
+
+3. **Determine the divergence point** — Compare WAL files using pg_waldump on
+   both nodes to find where the timelines split.
+
+   ```bash
+   # On each node:
+   pg_waldump -p /var/lib/postgresql/15/main/pg_wal \
+       --start=<lsn_before_split> --end=<lsn_after_split> \
+       > /tmp/waldump_$(hostname).txt
+
+   diff /tmp/waldump_nodeA.txt /tmp/waldump_nodeB.txt | head -100
+   ```
+
+4. **Choose the canonical primary** — Usually the node with more committed
+   transactions after the split, or the node that had continuous application
+   writes (not the promoted standby if it had no writes). This is a business
+   decision, not a technical one.
+
+5. **Re-initialize the losing node from the winner** — Use pg_basebackup to
+   clone the chosen primary to the other node.
+
+   ```bash
+   # On the node that LOSES (it will be overwritten):
+   systemctl stop postgresql
+   pg_basebackup -h <winner_ip> -U replicator -D /var/lib/postgresql/15/main \
+       --wal-method=stream --checkpoint=fast --progress
+   ```
+
+6. **Extract and reconcile diverged writes if they matter** — Use pg_waldump
+   output to identify transactions on the losing node that were not on the
+   winner. Work with your application team to manually re-apply critical ones.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# After re-initialization:
+psql -c "SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn();" # on replica
+
+# On primary:
+psql -c "SELECT * FROM pg_stat_replication;" # replica should appear
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+The forensic snapshots are your rollback. If re-initialization causes data loss
+that's unacceptable, restore from the snapshot of the losing node and bring in
+a data recovery specialist. This is above standard DBA runbook territory —
+escalate to leadership with clear communication about what data may be at risk.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 17: TRANSACTION ID WRAPAROUND IMMINENT
+  File: 01_incident_response/transaction_id_wraparound_imminent.md
+================================================================================
+
+PostgreSQL uses 32-bit transaction IDs. That means 4 billion transactions
+before wraparound. Before wraparound, PostgreSQL itself will shut down the
+cluster to protect data — it goes into read-only mode with the error:
+"database is not accepting commands to avoid wraparound data loss."
+
+I've had to respond to this in production. The team was not happy. Let me save
+you from that experience.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- This is the most important monitoring query for TXID health.
+-- Run it daily. Alert at age > 1.5 billion.
+SELECT
+    datname,
+    age(datfrozenxid) AS txid_age,
+    2^31 - age(datfrozenxid) AS txids_remaining,
+    round((age(datfrozenxid)::numeric / 2^31) * 100, 2) AS pct_consumed
+FROM pg_database
+ORDER BY txid_age DESC;
+
+-- Table-level: find the oldest table (the bottleneck):
+SELECT relname, age(relfrozenxid) AS table_age
+FROM pg_class
+WHERE relkind IN ('r', 't')
+ORDER BY age(relfrozenxid) DESC
+LIMIT 20;
+```
+
+```bash
+# Logs: PostgreSQL warns at autovacuum_freeze_max_age (default 200M):
+grep -i "transaction ID wrap\|TXID\|freeze" /var/log/postgresql/postgresql-*.log | tail -20
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Alert levels:**
+   - age > 500M: warning, schedule aggressive VACUUM window.
+   - age > 1B: urgent, run VACUUM FREEZE immediately.
+   - age > 1.5B: emergency, consider controlled maintenance window.
+   - age > 2B: PostgreSQL will shut down. You are in crisis.
+
+2. **Emergency: Run VACUUM FREEZE on the oldest tables immediately:**
+
+   ```sql
+   -- Run these in order from oldest to youngest:
+   VACUUM (FREEZE, VERBOSE, ANALYZE) public.oldest_table;
+   VACUUM (FREEZE, VERBOSE, ANALYZE) public.second_oldest_table;
+   ```
+
+   These can run concurrently from multiple sessions. FREEZE does not block
+   reads or normal writes, but it IS heavy on I/O.
+
+3. **If you cannot wait: lower the autovacuum freeze trigger:**
+
+   ```sql
+   ALTER SYSTEM SET autovacuum_freeze_max_age = 150000000;  -- 150M
+   ALTER SYSTEM SET vacuum_freeze_min_age = 1000000;        -- more aggressive
+   SELECT pg_reload_conf();
+   ```
+
+4. **Prevent long-running transactions from blocking freeze** — Transactions
+   that started before the freeze epoch prevent freezing of rows they might
+   see. Find and kill old transactions:
+
+   ```sql
+   SELECT pid, usename, now() - xact_start AS txn_age,
+          left(query,100) AS query
+   FROM pg_stat_activity
+   WHERE xact_start < now() - interval '1 hour'
+     AND state != 'idle'
+   ORDER BY txn_age DESC;
+
+   -- Kill old transactions blocking freeze (verify before killing):
+   SELECT pg_terminate_backend(<pid>);
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Re-run after VACUUM FREEZE on each table:
+SELECT datname, age(datfrozenxid) AS txid_age
+FROM pg_database
+ORDER BY txid_age DESC;
+-- Ages should have dropped significantly.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+VACUUM FREEZE is safe and non-destructive. Revert aggressive autovacuum
+parameters once the crisis passes:
+`ALTER SYSTEM RESET autovacuum_freeze_max_age; SELECT pg_reload_conf();`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 18: WAL FILE ACCUMULATION
+  File: 01_incident_response/wal_file_accumulation.md
+================================================================================
+
+WAL files accumulate in pg_wal for four reasons: replication slots holding them
+back (see Runbook 14), archive_command failing (see Runbook 02), max_wal_size
+being too large, or a checkpoint not completing. When pg_wal fills your disk —
+same as Runbook 06 — PostgreSQL halts.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# How big is pg_wal and how many files?
+du -sh /var/lib/postgresql/*/main/pg_wal/
+ls /var/lib/postgresql/*/main/pg_wal/ | wc -l
+```
+
+```sql
+-- Is archiving keeping up?
+SELECT archived_count, failed_count,
+       last_archived_wal, last_archived_time,
+       last_failed_wal, last_failed_time
+FROM pg_stat_archiver;
+
+-- Are replication slots holding WAL?
+SELECT slot_name, active,
+       pg_size_pretty(
+           pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+       ) AS wal_retained
+FROM pg_replication_slots
+ORDER BY wal_retained DESC;
+
+-- Checkpoint status:
+SELECT checkpoints_timed, checkpoints_req,
+       checkpoint_write_time, checkpoint_sync_time
+FROM pg_stat_bgwriter;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **If archive_command is failing:** Fix it immediately — restore the
+   destination path, credentials, or network connectivity. Once archiving
+   resumes, PostgreSQL will start recycling WAL.
+
+   ```bash
+   # Test archive_command manually:
+   archive_cmd=$(psql -At -c "SHOW archive_command;")
+   echo "Command: $archive_cmd"
+   # Replace %p and %f with a real WAL filename to test:
+   ```
+
+2. **If replication slot is holding WAL:** Refer to Runbook 14. Drop inactive
+   slots or apply max_slot_wal_keep_size.
+
+3. **If max_wal_size is too large for your checkpoint interval:**
+
+   ```sql
+   SHOW max_wal_size;
+   SHOW checkpoint_completion_target;
+   SHOW wal_keep_size;  -- PG 13+ (replaced wal_keep_segments)
+   ```
+
+   Reduce max_wal_size or reduce wal_keep_size if it's set unreasonably high.
+
+   ```sql
+   ALTER SYSTEM SET max_wal_size = '2GB';   -- if it was 8GB
+   ALTER SYSTEM SET wal_keep_size = '512MB'; -- if unnecessarily high
+   SELECT pg_reload_conf();
+   ```
+
+4. **Manually force a checkpoint to trigger WAL recycling:**
+
+   ```sql
+   CHECKPOINT;
+   ```
+
+   After a checkpoint, PostgreSQL recycles old WAL files (renames them for
+   future use or deletes them). Watch pg_wal size drop.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# WAL file count should stabilise or decrease:
+watch -n 10 "ls /var/lib/postgresql/*/main/pg_wal/ | wc -l"
+watch -n 10 "du -sh /var/lib/postgresql/*/main/pg_wal/"
+```
+
+```sql
+-- Archiver should show no recent failures:
+SELECT last_archived_time, failed_count FROM pg_stat_archiver;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If reducing max_wal_size causes more frequent checkpoints and additional I/O
+load, increase it back. Find the right balance with your I/O and storage budget.
+WAL parameters require only a reload, not a restart.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+Alright. Runbooks done. Now you do the work.
+
+I've set up a PostgreSQL 15 instance for each of you in the lab environment.
+It's deliberately misconfigured. Your job is to diagnose each scenario and
+fill in the runbook template.
+
+── LAB 1: THE SWOLLEN TABLE (Autovacuum + Wraparound) ─────────────────────────
+
+Your monitoring alert: n_dead_tup on the "transactions" table is at 8 million.
+autovacuum hasn't run on it in 6 hours.
+
+Your tasks:
+  a) Run the dead-tuple diagnostic query. What do you see?
+  b) Why hasn't autovacuum run? (hint: look at autovacuum_vacuum_cost_delay)
+  c) Fix it at the table level without touching global settings.
+  d) Confirm autovacuum is now running on that table.
+
+Bonus: what's the txid_age on the transactions table? Is it concerning?
+
+── LAB 2: THE CROWDED DATABASE (Connection Pool) ──────────────────────────────
+
+You receive an alert: "FATAL: sorry, too many clients already" from your app.
+max_connections is 100.
+
+Your tasks:
+  a) Run the connection diagnostic queries. Who has the most connections?
+  b) How many idle connections exist? How old are the oldest ones?
+  c) Clear idle connections older than 5 minutes (carefully — show your WHERE
+     clause before executing).
+  d) Set idle_in_transaction_session_timeout to prevent recurrence.
+
+Bonus: Calculate the memory footprint of the current configuration.
+
+── LAB 3: THE STALE QUERY (Blocking) ─────────────────────────────────────────
+
+A developer is complaining that their INSERT is "just hanging." You check the
+database and find a report query that's been running for 47 minutes.
+
+Your tasks:
+  a) Run the blocking query. Who is the blocker? Who are the blocked sessions?
+  b) What query is the blocker running?
+  c) Make the decision: cancel or terminate? Explain your reasoning.
+  d) Execute your decision. Confirm all blocked sessions are now running.
+
+Bonus: Add a lock_timeout to prevent this class of problem from recurring.
+
+── LAB 4: THE MISSING WAL (WAL Accumulation) ─────────────────────────────────
+
+pg_wal is 15 GB and growing. archive_command is configured but archiving is
+failing. The disk is at 78%.
+
+Your tasks:
+  a) Run the archiver diagnostic. What's the last failed WAL file?
+  b) Manually test the archive_command to find out why it's failing.
+  c) Fix the archive_command issue (hint: the destination path doesn't exist).
+  d) After fixing it, how long does it take for pg_wal to start shrinking?
+  e) What safety parameter would have prevented this from getting out of hand?
+
+── LAB 5: WRITE YOUR OWN (Open-Ended) ────────────────────────────────────────
+
+You get paged at 2 AM: "Database is very slow. P95 latency went from 12ms to
+180ms about 30 minutes ago."
+
+Write the full runbook in the template format. Diagnosis, procedure, verification,
+rollback. You have the tools. You have the commands. Trust your training.
+
+Then we'll compare runbooks as a group.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Here's what I want you to take away from today.
+
+Incidents are not about being the smartest person in the room. They're about
+being the calmest. The most systematic. The one who has a plan when everyone
+else is panicking.
+
+You now have eighteen of those plans.
+
+Are these runbooks perfect? No. Your first production incident will teach you
+something that no classroom can — and you'll update your runbook afterwards.
+That's the process. Run. Learn. Document. Repeat.
+
+The DBAs I most respect are not the ones who've never had an incident. They're
+the ones who've had every incident on this list, survived it, wrote it up, and
+shared it with their team so the next person could handle it faster.
+
+That's what a runbook repository is. It's institutional memory. It's the
+accumulated scar tissue of everyone who went through the same fire before you.
+
+Go build yours.
+
+See you next week. We're starting on performance tuning — specifically, the
+dark art of EXPLAIN ANALYZE. Bring your most confusing query plan. We'll
+dissect it together.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD
+  Print this. Tape it to your monitor. Memorise it.
+================================================================================
+
+── TRIAGE (run these first, every time) ─────────────────────────────────
+
+  Active connections and state:
+    SELECT pid, usename, state, wait_event, left(query,80)
+    FROM pg_stat_activity WHERE pid <> pg_backend_pid() ORDER BY state;
+
+  Who is blocking whom:
+    SELECT blocked.pid, blocked.query, blocking.pid, blocking.query
+    FROM pg_stat_activity blocked
+    JOIN pg_stat_activity blocking
+      ON blocking.pid = ANY(pg_blocking_pids(blocked.pid))
+    WHERE cardinality(pg_blocking_pids(blocked.pid)) > 0;
+
+  Lock wait overview:
+    SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock';
+
+  Transaction ID age (run daily):
+    SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY 2 DESC;
+
+  Dead tuple hotspots:
+    SELECT relname, n_dead_tup, last_autovacuum
+    FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+
+── EMERGENCY ACTIONS ────────────────────────────────────────────────────
+
+  Soft-kill a query:         SELECT pg_cancel_backend(<pid>);
+  Hard-kill a session:       SELECT pg_terminate_backend(<pid>);
+  Force VACUUM:              VACUUM (FREEZE, VERBOSE, ANALYZE) <table>;
+  Force CHECKPOINT:          CHECKPOINT;
+  Reload config (no restart):SELECT pg_reload_conf();
+  Check pg_wal health:       SELECT * FROM pg_stat_archiver;
+  Drop bad replication slot: SELECT pg_drop_replication_slot('<name>');
+
+── OS COMMANDS ──────────────────────────────────────────────────────────
+
+  Disk usage:                df -h
+  PostgreSQL data dir size:  du -sh /var/lib/postgresql/*/main/*/
+  WAL directory:             du -sh /var/lib/postgresql/*/main/pg_wal/
+  I/O saturation:            iostat -x 1 10
+  Top I/O processes:         iotop -o
+  OOM history:               dmesg | grep -i "out of memory"
+  PostgreSQL status:         pg_lsclusters / pg_isready -h localhost
+  Reload PostgreSQL:         pg_ctlcluster 15 main reload
+
+── KEY THRESHOLDS ───────────────────────────────────────────────────────
+
+  TXID age             > 1.5B  → URGENT VACUUM FREEZE
+  Multixact age        > 1.5B  → URGENT VACUUM FREEZE
+  Dead tuple ratio     > 20%   → VACUUM needed
+  pg_wal size          > 4x max_wal_size → investigate
+  Cache hit ratio      < 95%   → shared_buffers too small
+  Idle connections     > 50%   → PgBouncer / review app
+  Disk usage           > 85%   → ALERT. > 95% → CRISIS
+
+================================================================================
+  END OF SESSION
+================================================================================

@@ -1,0 +1,2057 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: MONITORING AND ALERTING RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+I want to start today with a question that should make you slightly
+uncomfortable.
+
+Right now — at this exact moment — if your production PostgreSQL database
+began degrading, how long would it take you to find out?
+
+Not how long to fix it. How long to find out it's happening.
+
+If your answer is "when users start complaining" — that is not monitoring.
+That is your users doing your job for you. And they will not be patient about
+it. And their complaints will reach someone above you before they reach you.
+
+If your answer is "we have alerts" — my follow-up question is: when did you
+last verify those alerts actually fire? Not assume they work. Actually test
+them by triggering a condition and confirming the notification arrived.
+
+I have worked with a team — talented, experienced engineers — who had a
+monitoring setup that looked excellent on paper. Dashboard, alert rules,
+PagerDuty integration. One morning their primary database went into
+transaction ID wraparound protection mode. Read-only. Complete service outage.
+They found out forty-seven minutes after it started, when the CEO called.
+
+Why? Because six months earlier, during a period of excessive alert noise,
+someone had muted the PagerDuty channel "temporarily" and never unmuted it.
+The alerts were firing. Nobody was receiving them. And nobody had tested the
+end-to-end path since the mute.
+
+A monitoring system that doesn't reach a human is not a monitoring system.
+It is a very expensive log file.
+
+Today we build monitoring that is robust, tested, appropriately sensitive,
+and connected to humans in a way that works under pressure. Ten runbooks.
+We go from the metrics themselves — what PostgreSQL exposes — all the way up to
+the escalation matrix that decides who gets woken up at what hour for what
+severity.
+
+Let's start.
+
+================================================================================
+  MONITORING PHILOSOPHY — THREE MINUTES OF CONTEXT
+================================================================================
+
+I use a four-tier model for thinking about database monitoring. Every metric
+you collect belongs in one of these tiers:
+
+  TIER 1 — AVAILABILITY: Is the database accepting connections?
+            Is replication running? Is the backup running?
+            These are binary. They are the first page. Zero tolerance.
+
+  TIER 2 — CAPACITY: Is disk usage < 85%? Is TXID age < 1.5B?
+            Is WAL retention < limit? Are connection slots < 80% used?
+            These trend toward problems. They need lead time. Days, not hours.
+
+  TIER 3 — PERFORMANCE: Is P95 query latency at baseline?
+            Is cache hit ratio > 95%? Is autovacuum keeping up?
+            These affect user experience. Important, but rarely an emergency.
+
+  TIER 4 — DIAGNOSTIC: Dead tuple counts, index bloat, lock wait frequency.
+            These inform tuning decisions. Never page on these.
+
+Most teams get Tier 1 wrong by having too many alerts for it and causing
+alert fatigue. They get Tier 4 wrong by paging on it and causing engineers
+to start ignoring pages.
+
+Alert on Tier 1 always. Alert on Tier 2 with lead time. Notify on Tier 3.
+Report on Tier 4.
+
+Everything we build today follows that model.
+
+================================================================================
+  RUNBOOK 01: CRITICAL METRICS BASELINE
+  File: 06_monitoring_alerting/critical_metrics_baseline.md
+================================================================================
+
+Before you can know what "wrong" looks like, you have to document what "normal"
+looks like. A baseline is a snapshot of your database's key metrics during
+normal operation. It is the reference point for every threshold you set and
+every alert you tune.
+
+Most teams skip this step. They set thresholds from documentation or blog posts
+that were written for different workloads on different hardware. Then they spend
+months chasing false positives.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Run this during normal business hours on a typical weekday.
+-- Save the output. This is your baseline document.
+
+-- 1. Connection baseline:
+SELECT
+    count(*)                                               AS total_connections,
+    count(*) FILTER (WHERE state = 'active')               AS active,
+    count(*) FILTER (WHERE state = 'idle')                 AS idle,
+    count(*) FILTER (WHERE state = 'idle in transaction')  AS idle_in_txn,
+    (SELECT setting::int FROM pg_settings
+     WHERE name = 'max_connections')                       AS max_connections,
+    round(count(*)::numeric /
+          (SELECT setting::int FROM pg_settings
+           WHERE name = 'max_connections') * 100, 1)       AS pct_used
+FROM pg_stat_activity;
+
+-- 2. Cache hit baseline:
+SELECT
+    sum(blks_hit)                                          AS total_blk_hits,
+    sum(blks_read)                                         AS total_blk_reads,
+    round(sum(blks_hit)::numeric /
+          NULLIF(sum(blks_hit) + sum(blks_read), 0) * 100, 2) AS cache_hit_pct
+FROM pg_stat_database
+WHERE datname NOT IN ('template0', 'template1');
+
+-- 3. Transaction rate baseline:
+SELECT
+    datname,
+    xact_commit + xact_rollback                            AS total_transactions,
+    xact_commit                                            AS commits,
+    xact_rollback                                          AS rollbacks,
+    round(xact_rollback::numeric /
+          NULLIF(xact_commit + xact_rollback, 0) * 100, 2) AS rollback_pct
+FROM pg_stat_database
+WHERE datname NOT IN ('template0', 'template1');
+
+-- 4. Replication baseline (run on primary):
+SELECT
+    application_name,
+    state,
+    write_lag,
+    flush_lag,
+    replay_lag,
+    sync_state
+FROM pg_stat_replication;
+
+-- 5. Autovacuum baseline:
+SELECT
+    relname,
+    n_dead_tup,
+    round(n_dead_tup::numeric /
+          NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2)    AS dead_pct,
+    last_autovacuum,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE n_live_tup > 100000
+ORDER BY n_dead_tup DESC
+LIMIT 10;
+
+-- 6. TXID age baseline:
+SELECT datname, age(datfrozenxid) AS txid_age
+FROM pg_database
+ORDER BY txid_age DESC;
+
+-- 7. WAL generation rate baseline:
+SELECT pg_current_wal_lsn();
+-- Wait exactly 1 minute, then:
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '<first_lsn>'::pg_lsn)
+       / 1024 / 1024 AS wal_mb_per_minute;
+
+-- 8. Query latency baseline (from pg_stat_statements):
+SELECT
+    round(avg(mean_exec_time)::numeric, 2)    AS avg_mean_ms,
+    round(max(mean_exec_time)::numeric, 2)    AS worst_query_mean_ms,
+    round(percentile_cont(0.95) WITHIN GROUP
+          (ORDER BY mean_exec_time)::numeric, 2) AS p95_mean_ms
+FROM pg_stat_statements
+WHERE calls > 100;
+```
+
+```bash
+# OS-level baseline metrics to record:
+echo "=== CPU ===" && top -bn1 | grep "Cpu(s)"
+echo "=== Memory ===" && free -h
+echo "=== Disk ===" && df -h | grep -E "/$|/data|/var/lib/postgresql"
+echo "=== I/O ===" && iostat -x 1 3 | grep -A 2 "Device"
+echo "=== PostgreSQL data dir ===" && \
+    du -sh /var/lib/postgresql/*/main/
+echo "=== WAL dir ===" && \
+    du -sh /var/lib/postgresql/*/main/pg_wal/
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Schedule automated baseline collection** — run these queries on a cron
+   schedule and store the results. Prometheus/Grafana will do this if you
+   have the exporter set up. If not, a simple table works:
+
+   ```sql
+   -- Create a metrics snapshot table:
+   CREATE TABLE IF NOT EXISTS dba_metrics_snapshots (
+       captured_at         TIMESTAMPTZ DEFAULT now(),
+       metric_name         TEXT NOT NULL,
+       metric_value        NUMERIC,
+       metric_labels       JSONB
+   );
+
+   -- Insert a snapshot (call this from a cron job):
+   INSERT INTO dba_metrics_snapshots (metric_name, metric_value)
+   VALUES
+       ('cache_hit_pct',
+        (SELECT round(sum(blks_hit)::numeric /
+                      NULLIF(sum(blks_hit)+sum(blks_read),0)*100,2)
+         FROM pg_stat_database
+         WHERE datname NOT IN ('template0','template1'))),
+       ('connection_count',
+        (SELECT count(*) FROM pg_stat_activity)),
+       ('txid_age_max',
+        (SELECT max(age(datfrozenxid)) FROM pg_database));
+   ```
+
+2. **Document the baseline in your runbook repository** — this is the reference
+   document for all alert threshold decisions. Format it as a table:
+
+   ```
+   Metric                     Normal Range      Alert Threshold   Page Threshold
+   ─────────────────────────────────────────────────────────────────────────────
+   cache_hit_pct              98–99.5%          < 95%             < 90%
+   connection_count           40–120            > 180             > 220
+   active_connections         10–40             > 80              > 120
+   idle_in_transaction        0–5               > 20              > 50
+   replication_replay_lag     0–200ms           > 5s              > 60s
+   txid_age                   50M–200M          > 1.5B            > 1.8B
+   disk_usage_pct             45–60%            > 80%             > 90%
+   dead_tuple_pct (hot tables) 1–5%             > 20%             (no page)
+   wal_generation_rate        200–500 MB/min    > 2 GB/min        (no page)
+   ```
+
+3. **Repeat the baseline measurement on a quarterly schedule** — your baseline
+   will drift as data grows, schema changes, and workloads evolve. Thresholds
+   that were correct six months ago may be wrong today.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm baseline data is being collected:
+SELECT captured_at, metric_name, metric_value
+FROM dba_metrics_snapshots
+ORDER BY captured_at DESC LIMIT 20;
+
+-- Verify the baseline covers a full week (Mon-Sun, peak and off-peak):
+SELECT
+    extract(dow FROM captured_at) AS day_of_week,
+    extract(hour FROM captured_at) AS hour,
+    count(*) AS snapshots
+FROM dba_metrics_snapshots
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Baseline collection is read-only on the source database. The snapshot table
+is disposable. No rollback needed. If the cron job is causing load, increase
+the interval from every 5 minutes to every 15 minutes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: ALERT THRESHOLDS TUNING
+  File: 06_monitoring_alerting/alert_thresholds_tuning.md
+================================================================================
+
+Alert fatigue is one of the most insidious problems in operations. When your
+team receives 50 alert notifications per day, 48 of which are noise, they stop
+reading them. All of them. Including the two that matter. I have watched this
+happen. It always ends badly.
+
+The cure is not fewer alerts — it is correctly calibrated alerts. Thresholds
+set below normal variance generate noise. Thresholds set too high miss real
+events. The baseline from Runbook 01 is what makes calibration possible.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# How many alerts fired in the last 7 days? (Prometheus/Alertmanager)
+curl -s http://alertmanager:9093/api/v2/alerts \
+    | jq '[.[] | select(.status.state == "firing")] | length'
+
+# Alert history from Alertmanager:
+curl -s "http://alertmanager:9093/api/v2/alerts?silenced=false&inhibited=false" \
+    | jq '.[] | {alertname: .labels.alertname, state: .status.state}'
+```
+
+```sql
+-- How many times did each alert fire? (if you log alerts to PostgreSQL)
+SELECT alert_name, count(*) AS fires, max(fired_at) AS last_fire
+FROM alert_history
+WHERE fired_at > now() - interval '7 days'
+GROUP BY alert_name
+ORDER BY fires DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Classify every current alert by signal quality:**
+
+   Run this classification for every alert in your system:
+
+   ```
+   Alert: PostgresHighConnections (threshold: > 80%)
+   Fires per week: 34
+   Led to a real incident: 0
+
+   Classification: FALSE POSITIVE FACTORY
+   Action: Raise threshold to 90%, add for: 10m duration.
+   ```
+
+   ```
+   Alert: PostgresReplicationStopped (threshold: lag > 5min)
+   Fires per week: 2
+   Led to real incident: 2
+
+   Classification: VALID SIGNAL
+   Action: Keep as-is. Review response time.
+   ```
+
+2. **Apply the threshold tuning rules:**
+
+   RULE 1: Add a `for:` duration to all non-binary alerts.
+   A spike that lasts 30 seconds is noise. A condition that persists for
+   5 minutes is a real problem.
+
+   ```yaml
+   # Bad (fires on any momentary spike):
+   - alert: HighConnections
+     expr: pg_stat_activity_count > 150
+
+   # Good (only fires if sustained for 5 minutes):
+   - alert: HighConnections
+     expr: pg_stat_activity_count > 150
+     for: 5m
+   ```
+
+   RULE 2: Use rate-of-change for trending metrics, not absolute values.
+
+   ```yaml
+   # Bad (fires every time disk is > 80%, even if it's been there for months):
+   - alert: DiskSpaceHigh
+     expr: disk_used_pct > 80
+
+   # Good (fires when disk is trending toward full):
+   - alert: DiskSpaceGrowing
+     expr: predict_linear(node_filesystem_avail_bytes[6h], 24*3600) < 0
+     for: 15m
+     annotations:
+       summary: "Disk predicted to fill within 24 hours"
+   ```
+
+   RULE 3: Binary availability alerts have zero tolerance and no `for:`.
+
+   ```yaml
+   # Connection refused is always immediate:
+   - alert: PostgresDown
+     expr: up{job="postgres"} == 0
+     # No 'for' — page immediately.
+   ```
+
+   RULE 4: Separate warning from critical. Route them differently.
+
+   ```yaml
+   - alert: TxidAgeWarning
+     expr: pg_stat_database_datfrozenxid_age > 1500000000
+     for: 10m
+     labels:
+       severity: warning   # → Slack notification
+     annotations:
+       summary: "TXID age approaching danger zone"
+
+   - alert: TxidAgeCritical
+     expr: pg_stat_database_datfrozenxid_age > 1800000000
+     for: 2m
+     labels:
+       severity: critical  # → PagerDuty page
+     annotations:
+       summary: "TXID age critical — database shutdown imminent"
+   ```
+
+3. **Document every threshold change with a rationale:**
+
+   ```yaml
+   # threshold_changes.md — keep this in your runbook repository
+   # 2024-06-15: Raised HighConnections from 80% to 90%
+   #   Reason: Alert fired 34 times last week, zero incidents.
+   #   Baseline shows normal peak is 75-85% on Tuesday mornings.
+   #   New threshold is 3σ above normal peak.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# After threshold changes: monitor alert fire rate for 7 days.
+# Target: < 5 alert firings per day that don't lead to action.
+# If still > 5: continue tuning.
+
+# Prometheus alert evaluation:
+curl -s http://prometheus:9090/api/v1/alerts \
+    | jq '.data.alerts[] | {name: .labels.alertname, state: .state}'
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Alert rule changes are in version-controlled YAML. Rollback is:
+`git revert <commit>` → redeploy Prometheus config.
+Never change alert thresholds without committing the change to git first.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: ALERTS NOT FIRING
+  File: 06_monitoring_alerting/alerts_not_firing.md
+================================================================================
+
+This is the runbook that addresses the scenario I opened class with. Alerts
+not firing means your safety net has a hole in it. The tricky part: you don't
+know the hole is there until the incident that falls through it.
+
+This is why you must test alert delivery regularly, not just alert evaluation.
+Those are two different things and failing at either means silence when you
+need noise.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Step 1: Is Prometheus evaluating the alert rules?
+curl -s http://prometheus:9090/api/v1/rules \
+    | jq '.data.groups[].rules[] | select(.type=="alerting")
+          | {name: .name, state: .state, health: .health}'
+# Look for health: "ok". If health: "err" — rule evaluation is failing.
+
+# Step 2: Is the alert in a firing state in Prometheus?
+curl -s http://prometheus:9090/api/v1/alerts \
+    | jq '.data.alerts[] | {name: .labels.alertname, state: .state}'
+
+# Step 3: Is Alertmanager receiving the alert from Prometheus?
+curl -s http://alertmanager:9093/api/v2/alerts \
+    | jq '.[] | {alertname: .labels.alertname, status: .status}'
+
+# Step 4: Is Alertmanager routing to the correct receiver?
+curl -s http://alertmanager:9093/api/v2/status \
+    | jq '.config.receivers[].name'
+
+# Step 5: Is the notification channel silenced or inhibited?
+curl -s http://alertmanager:9093/api/v2/silences \
+    | jq '.[] | select(.status.state == "active") | {id, comment, endsAt}'
+# ANY active silence here is a candidate for the bug.
+```
+
+```bash
+# For PagerDuty integration: check recent events:
+curl -s -H "Authorization: Token token=<pd_api_token>" \
+    "https://api.pagerduty.com/incidents?statuses[]=triggered&limit=5" \
+    | jq '.incidents[] | {title, status, created_at}'
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Verify the full alert pipeline end-to-end:**
+
+   The pipeline is: Database metric → postgres_exporter → Prometheus scrape
+   → Rule evaluation → Alertmanager → Receiver (PagerDuty/Slack/email).
+   A failure at ANY point breaks the chain.
+
+2. **Check postgres_exporter is scraping successfully:**
+
+   ```bash
+   # Is the exporter running?
+   systemctl status prometheus-postgres-exporter
+
+   # Is Prometheus scraping it?
+   curl -s http://prometheus:9090/api/v1/targets \
+       | jq '.data.activeTargets[] | select(.labels.job == "postgres")
+             | {health: .health, lastError: .lastError, lastScrape: .lastScrape}'
+   # health: "up" = good. health: "down" = scrape failing.
+   ```
+
+3. **Check Prometheus rule evaluation:**
+
+   ```bash
+   # Is the rule file valid syntax?
+   promtool check rules /etc/prometheus/rules/*.yml
+
+   # Manually evaluate a rule expression:
+   curl -s "http://prometheus:9090/api/v1/query?query=pg_stat_activity_count"
+   # If this returns data, the metric exists. If not, the metric name is wrong.
+   ```
+
+4. **Check Alertmanager routing:**
+
+   ```bash
+   # Send a test alert directly to Alertmanager:
+   curl -X POST http://alertmanager:9093/api/v2/alerts \
+       -H "Content-Type: application/json" \
+       -d '[{
+         "labels": {
+           "alertname": "TestAlert",
+           "severity": "critical",
+           "instance": "db-primary"
+         },
+         "annotations": {
+           "summary": "This is a test alert"
+         }
+       }]'
+   # Then check your PagerDuty/Slack/email — did it arrive?
+   ```
+
+5. **Check for active silences (the most common culprit):**
+
+   ```bash
+   # List ALL active silences — including old ones never removed:
+   curl -s http://alertmanager:9093/api/v2/silences \
+       | jq '.[] | select(.status.state == "active")
+             | {id, comment, createdBy, endsAt, matchers}'
+   ```
+
+   If you find a silence that was "temporary" from months ago:
+
+   ```bash
+   # Expire the silence immediately:
+   curl -X DELETE \
+       http://alertmanager:9093/api/v2/silence/<silence_id>
+   ```
+
+6. **Check for inhibition rules suppressing downstream alerts:**
+
+   ```bash
+   # Inhibitions: when alert A is firing, suppress alert B.
+   # A misconfigured inhibition can silently suppress critical alerts.
+   cat /etc/alertmanager/alertmanager.yml | grep -A 20 "inhibit_rules:"
+   ```
+
+7. **Implement alert delivery testing as a cron job (canary alert):**
+
+   ```yaml
+   # prometheus/rules/canary.yml
+   # This alert always fires — it's your heartbeat:
+   groups:
+     - name: canary
+       rules:
+         - alert: AlertPipelineCanary
+           expr: vector(1)   # always true
+           labels:
+             severity: canary
+           annotations:
+             summary: "Monitoring pipeline heartbeat — if you stop receiving
+                       this every 5 minutes, the alert pipeline is broken"
+   ```
+
+   Route the canary alert to a dedicated dead-man's switch service (e.g.,
+   Healthchecks.io, PagerDuty Dead Man's Snitch). If the heartbeat stops
+   arriving, you get paged — not because something is wrong with the database,
+   but because something is wrong with the monitoring.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# End-to-end test: manually trigger a known condition and confirm the page fires.
+# Example: temporarily lower the connection threshold to current connection count:
+# Edit alert rule: expr: pg_stat_activity_count > <current_count - 10>
+# Reload Prometheus. Wait for alert. Confirm PagerDuty fires.
+# Restore threshold. This is the only real verification.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Test alerts and canary alerts don't affect the database. If a test alert
+causes on-call noise, acknowledge it in PagerDuty with "scheduled test"
+and expire the silence when done. Restore alert thresholds via git revert.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: CUSTOM PROMETHEUS ALERT RULES
+  File: 06_monitoring_alerting/custom_prometheus_alert_rules.md
+================================================================================
+
+The postgres_exporter gives you a foundation of metrics. But every database
+has workload-specific signals that generic exporters don't know about. Custom
+alert rules are how you instrument your specific schema, your specific
+autovacuum patterns, and your specific query performance expectations.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# What metrics does postgres_exporter expose?
+curl -s http://postgres-exporter:9187/metrics | grep "^pg_" | cut -d' ' -f1 | sort -u
+
+# Which metrics are actually being scraped by Prometheus?
+curl -s "http://prometheus:9090/api/v1/label/__name__/values" \
+    | jq '.data[]' | grep "^pg_" | sort
+
+# Check existing alert rules:
+curl -s http://prometheus:9090/api/v1/rules \
+    | jq '.data.groups[].rules[] | select(.type=="alerting") | .name'
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+The complete production-grade PostgreSQL alert rule set. Save this as
+`/etc/prometheus/rules/postgresql_alerts.yml`:
+
+```yaml
+groups:
+  - name: postgresql_availability
+    rules:
+
+      # TIER 1: Binary availability — page immediately, no 'for'
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        labels:
+          severity: critical
+          tier: availability
+        annotations:
+          summary: "PostgreSQL instance {{ $labels.instance }} is DOWN"
+          description: "postgres_exporter cannot reach the database."
+          runbook: "runbooks/01_incident_response/primary_process_not_responding.md"
+
+      - alert: PostgresReplicationDown
+        expr: pg_replication_is_replica == 0 and
+              on(instance) pg_stat_replication_count == 0
+        for: 2m
+        labels:
+          severity: critical
+          tier: availability
+        annotations:
+          summary: "No replicas connected to primary {{ $labels.instance }}"
+          runbook: "runbooks/02_high_availability/failover_procedures.md"
+
+      - alert: PostgresReplicationStopped
+        expr: changes(pg_stat_replication_pg_wal_lsn_diff[5m]) == 0
+              and pg_replication_is_replica == 0
+        for: 5m
+        labels:
+          severity: critical
+          tier: availability
+        annotations:
+          summary: "Replication WAL is not advancing on {{ $labels.instance }}"
+
+  - name: postgresql_capacity
+    rules:
+
+      # TIER 2: Capacity — page on critical, notify on warning
+      - alert: PostgresTxidWraparoundWarning
+        expr: pg_stat_database_datfrozenxid_age > 1500000000
+        for: 10m
+        labels:
+          severity: warning
+          tier: capacity
+        annotations:
+          summary: "TXID age {{ $value | humanize }} approaching limit"
+          runbook: "runbooks/01_incident_response/transaction_id_wraparound_imminent.md"
+
+      - alert: PostgresTxidWraparoundCritical
+        expr: pg_stat_database_datfrozenxid_age > 1800000000
+        for: 2m
+        labels:
+          severity: critical
+          tier: capacity
+        annotations:
+          summary: "TXID age CRITICAL on {{ $labels.instance }} — shutdown imminent"
+
+      - alert: PostgresDiskPredictedFull
+        expr: predict_linear(
+                node_filesystem_avail_bytes{mountpoint="/var/lib/postgresql"}[6h],
+                24*3600
+              ) < 0
+        for: 15m
+        labels:
+          severity: warning
+          tier: capacity
+        annotations:
+          summary: "Disk at {{ $labels.instance }} predicted to fill within 24h"
+
+      - alert: PostgresDiskCritical
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/var/lib/postgresql"} /
+                   node_filesystem_size_bytes{mountpoint="/var/lib/postgresql"}) > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          tier: capacity
+        annotations:
+          summary: "Disk > 90% full on {{ $labels.instance }}"
+
+      - alert: PostgresConnectionsSaturated
+        expr: pg_stat_activity_count /
+              pg_settings_max_connections > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          tier: capacity
+        annotations:
+          summary: "Connection pool {{ $value | humanizePercentage }} full"
+          runbook: "runbooks/01_incident_response/connection_pool_exhaustion.md"
+
+      - alert: PostgresReplicationSlotBloat
+        expr: pg_replication_slots_wal_retention_bytes > 10737418240  # 10GB
+        for: 10m
+        labels:
+          severity: warning
+          tier: capacity
+        annotations:
+          summary: "Replication slot {{ $labels.slot_name }} retaining
+                    {{ $value | humanize1024 }}B of WAL"
+          runbook: "runbooks/01_incident_response/replication_slot_bloat.md"
+
+      - alert: PostgresNoBackupIn25Hours
+        expr: time() - pg_backup_last_completed_timestamp > 90000  # 25 hours
+        for: 5m
+        labels:
+          severity: critical
+          tier: capacity
+        annotations:
+          summary: "No successful backup in 25+ hours on {{ $labels.instance }}"
+          runbook: "runbooks/03_backup_recovery/backup_failure_no_backup_25h.md"
+
+  - name: postgresql_performance
+    rules:
+
+      # TIER 3: Performance — notify, don't page
+      - alert: PostgresHighReplicationLag
+        expr: pg_replication_replay_lag_seconds > 30
+        for: 5m
+        labels:
+          severity: warning
+          tier: performance
+        annotations:
+          summary: "Replication lag {{ $value }}s on {{ $labels.instance }}"
+          runbook: "runbooks/02_high_availability/replication_lag_troubleshooting.md"
+
+      - alert: PostgresLowCacheHitRatio
+        expr: rate(pg_stat_database_blks_hit[5m]) /
+              (rate(pg_stat_database_blks_hit[5m]) +
+               rate(pg_stat_database_blks_read[5m])) < 0.95
+        for: 15m
+        labels:
+          severity: warning
+          tier: performance
+        annotations:
+          summary: "Cache hit ratio below 95% — {{ $value | humanizePercentage }}"
+
+      - alert: PostgresAutoVacuumLagging
+        expr: pg_stat_user_tables_n_dead_tup /
+              pg_stat_user_tables_n_live_tup > 0.20
+        for: 30m
+        labels:
+          severity: warning
+          tier: performance
+        annotations:
+          summary: "Table {{ $labels.relname }} has > 20% dead tuples"
+
+      - alert: PostgresLongRunningQuery
+        expr: pg_stat_activity_max_tx_duration > 3600  # 1 hour
+        for: 5m
+        labels:
+          severity: warning
+          tier: performance
+        annotations:
+          summary: "Query running > 1 hour on {{ $labels.instance }}"
+          runbook: "runbooks/01_incident_response/long_running_query_blocking.md"
+
+      - alert: PostgresWALArchivingFailing
+        expr: increase(pg_stat_archiver_failed_count[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          tier: availability
+        annotations:
+          summary: "WAL archiving failures on {{ $labels.instance }}"
+          runbook: "runbooks/03_backup_recovery/wal_archiving_fails.md"
+```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Validate rule syntax:
+promtool check rules /etc/prometheus/rules/postgresql_alerts.yml
+
+# Reload Prometheus:
+curl -X POST http://prometheus:9090/-/reload
+
+# Confirm all rules loaded:
+curl -s http://prometheus:9090/api/v1/rules \
+    | jq '.data.groups[].rules | length'
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+All rule changes are in git. `git revert` + Prometheus reload.
+If Prometheus fails to reload (syntax error): it keeps the previous rule set.
+The reload endpoint is safe — it won't apply a broken config.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: LOGGING ROTATION FAILURE
+  File: 06_monitoring_alerting/logging_rotation_failure.md
+================================================================================
+
+PostgreSQL logs are your flight data recorder. When something goes wrong, the
+first place you look is the log. If log rotation has failed, one of two things
+has happened: either the log file has grown to fill the disk, or logs have
+been lost. Both are bad. The first kills the database. The second leaves you
+blind during an incident.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check current log file size and count:
+ls -lth /var/log/postgresql/ | head -20
+
+# Is a single log file growing without bound?
+ls -lh /var/log/postgresql/ | sort -k5 -rh | head -5
+
+# Check logrotate status:
+cat /var/lib/logrotate/status | grep postgresql
+
+# When did logrotate last run?
+stat /var/lib/logrotate/status
+
+# Check logrotate config for PostgreSQL:
+cat /etc/logrotate.d/postgresql
+
+# Run logrotate manually (dry run first):
+logrotate -d /etc/logrotate.d/postgresql   # debug mode, no changes
+logrotate -f /etc/logrotate.d/postgresql   # force rotation
+```
+
+```sql
+-- What's PostgreSQL's log configuration?
+SELECT name, setting
+FROM pg_settings
+WHERE name IN (
+    'log_destination',
+    'logging_collector',
+    'log_directory',
+    'log_filename',
+    'log_rotation_age',
+    'log_rotation_size',
+    'log_truncate_on_rotation',
+    'log_file_mode'
+)
+ORDER BY name;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root Cause A: logrotate is not configured for PostgreSQL.
+
+1. **Create the logrotate config:**
+
+   ```bash
+   cat > /etc/logrotate.d/postgresql << 'EOF'
+   /var/log/postgresql/*.log {
+       daily
+       rotate 14
+       compress
+       delaycompress
+       missingok
+       notifempty
+       sharedscripts
+       postrotate
+           # Signal PostgreSQL to reopen log files:
+           pg_lsclusters -h | awk '{print $1, $2}' | while read ver cluster; do
+               pg_ctlcluster $ver $cluster reload
+           done
+       endscript
+   }
+   EOF
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   The `postrotate` script is critical. Without it, PostgreSQL keeps writing
+   to the old (now rotated/renamed) log file descriptor. The new file will
+   be empty. You'll think you have fresh logs but everything is going to the
+   renamed old file. Always signal PostgreSQL to reopen its log files after
+   rotation.
+
+2. **Use PostgreSQL's built-in log rotation** — for environments where
+   logrotate is too coarse:
+
+   ```bash
+   # postgresql.conf:
+   logging_collector = on           # must be on for these to work
+   log_directory = 'pg_log'         # relative to data dir, or absolute path
+   log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+   log_rotation_age = 1d            # rotate daily
+   log_rotation_size = 100MB        # or rotate when file hits 100MB
+   log_truncate_on_rotation = on    # for day-based filenames, truncate old
+   ```
+
+   Reload after changes:
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+3. **For CSV logging (enables pgBadger analysis):**
+
+   ```bash
+   # postgresql.conf:
+   log_destination = 'csvlog'       # or 'stderr,csvlog'
+   logging_collector = on
+   log_filename = 'postgresql-%Y-%m-%d'
+   log_rotation_age = 1d
+   ```
+
+4. **If a single log file has grown very large — rotate it immediately:**
+
+   ```bash
+   # Force logrotate:
+   logrotate -f /etc/logrotate.d/postgresql
+
+   # Or manually signal PostgreSQL to open a new log file:
+   psql -c "SELECT pg_rotate_logfile();"
+   # Note: this only works if logging_collector = on.
+   ```
+
+5. **Alert on log directory disk usage:**
+
+   ```bash
+   # Add to monitoring — alert if log directory > 5GB:
+   du -sb /var/log/postgresql/ | awk '{if ($1 > 5368709120) print "ALERT: logs > 5GB"}'
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# After rotation: new log file exists and is being written to:
+ls -lth /var/log/postgresql/ | head -5
+# New file should exist with today's timestamp and be growing.
+
+# Old files should be compressed:
+ls /var/log/postgresql/*.gz | head -5
+
+# PostgreSQL is writing to the new file (not the old):
+tail -5 /var/log/postgresql/$(ls -t /var/log/postgresql/*.log | head -1)
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Logrotate config changes don't affect the database. If the postrotate script
+accidentally sends a wrong signal to PostgreSQL — check pg_lsclusters output
+and verify the cluster is still running. The rotate itself is safe: the old
+file data is preserved (compressed).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: MONITORING AGENT DOWN
+  File: 06_monitoring_alerting/monitoring_agent_down.md
+================================================================================
+
+Your postgres_exporter is down. Prometheus can't scrape your database metrics.
+Your dashboards are blank. Your alerts are not evaluating because they have
+no data. This is the exact scenario where a real incident could be invisible
+to you while it's happening.
+
+The first principle here: your monitoring infrastructure must be monitored too.
+It is not self-healing by default.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Is the postgres_exporter process running?
+systemctl status prometheus-postgres-exporter
+ps aux | grep postgres_exporter | grep -v grep
+
+# Can the exporter reach the database?
+sudo -u postgres_exporter psql \
+    "postgresql://postgres_exporter:password@localhost:5432/postgres" \
+    -c "SELECT 1;"
+
+# Is the exporter's HTTP endpoint responding?
+curl -sv http://localhost:9187/metrics 2>&1 | head -30
+
+# What does Prometheus say about the target?
+curl -s http://prometheus:9090/api/v1/targets \
+    | jq '.data.activeTargets[] | select(.labels.job == "postgres")
+          | {health, lastError, lastScrape, instance: .labels.instance}'
+
+# Check exporter logs:
+journalctl -u prometheus-postgres-exporter -n 50 --no-pager
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Root Cause A: postgres_exporter process crashed.
+
+1. **Restart it:**
+
+   ```bash
+   systemctl restart prometheus-postgres-exporter
+   systemctl enable prometheus-postgres-exporter   # ensure it starts on boot
+   ```
+
+2. **Check why it crashed:**
+
+   ```bash
+   journalctl -u prometheus-postgres-exporter -n 100 --no-pager | grep -i "error\|fatal\|panic"
+   ```
+
+Root Cause B: Exporter cannot connect to PostgreSQL (credentials, pg_hba).
+
+3. **Test the connection string directly:**
+
+   ```bash
+   # Check the DATA_SOURCE_NAME environment variable:
+   cat /etc/default/prometheus-postgres-exporter | grep DATA_SOURCE
+
+   # Test connection manually:
+   psql "postgres://postgres_exporter:password@localhost/postgres" -c "SELECT 1;"
+   ```
+
+   If connection fails:
+   ```sql
+   -- On the database: check if the user exists:
+   SELECT usename, usecreatedb, usesuper FROM pg_user
+   WHERE usename = 'postgres_exporter';
+
+   -- Check pg_hba.conf allows the connection:
+   SELECT type, database, user_name, address, auth_method
+   FROM pg_hba_file_rules
+   WHERE user_name @> ARRAY['postgres_exporter'];
+   ```
+
+Root Cause C: Exporter is running but returning errors on specific metrics.
+
+4. **Check for permission errors on monitored views:**
+
+   ```sql
+   -- postgres_exporter needs these grants:
+   GRANT pg_monitor TO postgres_exporter;
+   -- pg_monitor is a built-in role (PG 10+) that grants read access to all
+   -- monitoring views without superuser privileges.
+
+   -- Or grant individually (older approach):
+   GRANT SELECT ON pg_stat_database TO postgres_exporter;
+   GRANT SELECT ON pg_stat_activity TO postgres_exporter;
+   GRANT SELECT ON pg_stat_replication TO postgres_exporter;
+   GRANT SELECT ON pg_stat_bgwriter TO postgres_exporter;
+   GRANT SELECT ON pg_stat_user_tables TO postgres_exporter;
+   GRANT SELECT ON pg_stat_statements TO postgres_exporter;
+   ```
+
+Root Cause D: Prometheus can't reach the exporter (network, firewall).
+
+5. **Check firewall rules between Prometheus and the database server:**
+
+   ```bash
+   # From the Prometheus server:
+   nc -zv <db_server_ip> 9187
+   curl -sv http://<db_server_ip>:9187/metrics
+
+   # On the database server:
+   ss -tnlp | grep 9187  # is the exporter listening?
+   iptables -L INPUT | grep 9187  # is port blocked?
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# After fix: exporter is healthy and Prometheus is scraping:
+curl -s http://prometheus:9090/api/v1/targets \
+    | jq '.data.activeTargets[] | select(.labels.job=="postgres")
+          | {health, lastScrape}'
+# health should be "up" and lastScrape should be within the last 60 seconds.
+
+# Metrics are flowing:
+curl -s "http://prometheus:9090/api/v1/query?query=pg_up" \
+    | jq '.data.result[].value[1]'
+# Should return "1" for each database instance.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Exporter configuration changes: revert /etc/default/prometheus-postgres-exporter
+and restart. Permission grants to postgres_exporter user are additive and
+harmless — no rollback needed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: ON-CALL ESCALATION MATRIX
+  File: 06_monitoring_alerting/on_call_escalation_matrix.md
+================================================================================
+
+The escalation matrix is the human system that backs up the technical one. It
+answers three questions: Who gets paged? At what time? For what severity?
+Without a written, tested matrix, escalation decisions get made in the moment,
+under pressure, by whoever happens to be awake. That is not a good process.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Do you have a current escalation matrix? Find it:
+find /wiki /confluence /notion /runbooks -name "*escalation*" -o \
+     -name "*oncall*" -o -name "*pagerduty*" 2>/dev/null | head -10
+
+# When was it last updated?
+git log --follow -p runbooks/on_call_escalation_matrix.md | head -20
+
+# Is the PagerDuty schedule current?
+curl -s -H "Authorization: Token token=<pd_token>" \
+    "https://api.pagerduty.com/schedules/<schedule_id>/users?since=$(date -u +%Y-%m-%dT%H:%M:%SZ)&until=$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
+    | jq '.users[] | {name, email}'
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Define severity levels aligned with your business:**
+
+   ```
+   SEV-1 (CRITICAL — Page immediately, any hour):
+   ─────────────────────────────────────────────────────────────────────────
+   • Primary database is DOWN or not accepting connections.
+   • Replication is stopped and standby is not running.
+   • Disk will fill within 2 hours.
+   • TXID age > 1.8 billion (shutdown imminent).
+   • Data corruption suspected.
+   • No backup in 25+ hours.
+   • Split brain detected.
+
+   Response: Wake on-call DBA. If no response in 10 minutes, escalate to
+             Senior DBA. If no response in 20 minutes, escalate to DBA Lead.
+
+   SEV-2 (HIGH — Page during business hours, notify off-hours):
+   ─────────────────────────────────────────────────────────────────────────
+   • Replication lag > 5 minutes.
+   • TXID age > 1.5 billion.
+   • Connection pool > 85% full.
+   • Replication slot retaining > 10GB of WAL.
+   • WAL archiving failing for > 15 minutes.
+   • Long-running query > 1 hour blocking others.
+
+   Response: Notify on-call DBA. Must acknowledge within 30 minutes.
+
+   SEV-3 (MEDIUM — Ticket, no page):
+   ─────────────────────────────────────────────────────────────────────────
+   • Autovacuum lagging (dead_pct > 20% on any table).
+   • Cache hit ratio < 95%.
+   • Disk > 80% full (but not predicted to fill imminently).
+   • Index bloat > 40% on critical tables.
+   • Log rotation not running.
+
+   Response: Create ticket. DBA team addresses during next business day.
+
+   SEV-4 (LOW — Dashboard visibility only):
+   ─────────────────────────────────────────────────────────────────────────
+   • Unused indexes consuming > 1GB.
+   • Dead tuple growth rate increasing.
+   • Query P95 increased by > 20% over last week.
+
+   Response: Review in weekly DBA team meeting.
+   ```
+
+2. **Define the escalation path:**
+
+   ```
+   ESCALATION MATRIX
+   ═══════════════════════════════════════════════════════════════════════
+
+   SEV-1:
+     T+0:   Page on-call DBA via PagerDuty high-urgency policy.
+     T+10m: If no acknowledgement → page Senior DBA.
+     T+20m: If no acknowledgement → page DBA Lead + Engineering Manager.
+     T+30m: If no resolution → bridge call initiated, all DBA team paged.
+     T+60m: If no resolution → CTO/VP Engineering notified.
+
+   SEV-2:
+     Business hours (08:00–20:00 local): Page on-call DBA.
+     Off-hours: Slack alert to #dba-on-call. Check at start of next shift.
+     If SEV-2 becomes SEV-1 before acknowledgement → follow SEV-1 path.
+
+   SEV-3 / SEV-4:
+     Jira ticket created automatically by Alertmanager webhook.
+     Assigned to DBA team queue.
+     No human paging.
+
+   ═══════════════════════════════════════════════════════════════════════
+   ```
+
+3. **Configure PagerDuty routing in Alertmanager:**
+
+   ```yaml
+   # /etc/alertmanager/alertmanager.yml
+
+   route:
+     group_by: ['alertname', 'instance']
+     group_wait: 30s
+     group_interval: 5m
+     repeat_interval: 4h
+     receiver: default-slack
+
+     routes:
+       # SEV-1: immediate page
+       - match:
+           severity: critical
+         receiver: pagerduty-critical
+         continue: true   # also send to Slack for visibility
+
+       # SEV-2: business hours page
+       - match:
+           severity: warning
+           tier: availability
+         receiver: pagerduty-warning
+         active_time_intervals:
+           - business_hours
+
+       # Canary: to dead-man's switch, not humans
+       - match:
+           alertname: AlertPipelineCanary
+         receiver: healthchecks-io
+         repeat_interval: 5m
+
+   receivers:
+     - name: default-slack
+       slack_configs:
+         - api_url: '<slack_webhook_url>'
+           channel: '#dba-alerts'
+           title: '{{ .CommonAnnotations.summary }}'
+           text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+     - name: pagerduty-critical
+       pagerduty_configs:
+         - routing_key: '<pd_integration_key>'
+           severity: critical
+           description: '{{ .CommonAnnotations.summary }}'
+           details:
+             runbook: '{{ .CommonAnnotations.runbook }}'
+             instance: '{{ .CommonLabels.instance }}'
+
+     - name: pagerduty-warning
+       pagerduty_configs:
+         - routing_key: '<pd_integration_key_low>'
+           severity: warning
+
+     - name: healthchecks-io
+       webhook_configs:
+         - url: 'https://hc-ping.com/<uuid>'
+
+   time_intervals:
+     - name: business_hours
+       time_intervals:
+         - times:
+           - start_time: '08:00'
+             end_time: '20:00'
+           weekdays: ['monday:friday']
+   ```
+
+4. **Test the escalation matrix quarterly** — the same way you test DR drills:
+
+   ```
+   ESCALATION TEST CHECKLIST (run quarterly):
+   [ ] Trigger a test SEV-1 alert in a staging environment.
+   [ ] Confirm PagerDuty sends to on-call person. Time: ___
+   [ ] On-call person does NOT acknowledge (test escalation).
+   [ ] Confirm escalation to Senior DBA after 10 minutes. Time: ___
+   [ ] Acknowledge. Confirm resolution notification sent to Slack.
+   [ ] Verify all phone numbers and email addresses are current.
+   [ ] Verify on-call rotation is correct for next 90 days.
+   [ ] Verify runbook links in alert annotations are valid.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# PagerDuty: confirm escalation policy is correct:
+curl -s -H "Authorization: Token token=<pd_token>" \
+    "https://api.pagerduty.com/escalation_policies/<policy_id>" \
+    | jq '.escalation_policy.escalation_rules[] | {delay, targets: [.targets[].summary]}'
+
+# Alertmanager routing: test a specific alert's route:
+amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml \
+    severity=critical tier=availability alertname=PostgresDown
+# Should output: pagerduty-critical
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Alertmanager config changes: `git revert` + reload.
+`curl -X POST http://alertmanager:9093/-/reload`
+If the reload fails (syntax error), Alertmanager keeps the previous config.
+PagerDuty policy changes: revert in the PagerDuty UI.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: PG_STAT_STATEMENTS ANALYSIS
+  File: 06_monitoring_alerting/pg_stat_statements_analysis.md
+================================================================================
+
+pg_stat_statements is the single most valuable monitoring tool PostgreSQL ships.
+It aggregates execution statistics for every distinct query the database has
+run since the last reset. Total time, call count, mean time, max time, rows,
+shared buffer hits and misses, temporary file usage. Combined, these let you
+answer "which query is hurting my database the most" in about thirty seconds.
+
+Every PostgreSQL production database should have pg_stat_statements enabled.
+If yours doesn't — that's the first fix.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Is it enabled?
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_stat_statements';
+
+-- If not: (requires restart to load the shared library)
+-- Add to postgresql.conf: shared_preload_libraries = 'pg_stat_statements'
+-- Then: CREATE EXTENSION pg_stat_statements;
+
+-- Basic health check: how many queries are tracked?
+SELECT count(*) FROM pg_stat_statements;
+-- Should be > 0 after any workload. If 0: the extension loaded but no queries yet.
+
+-- When were stats last reset?
+SELECT stats_reset FROM pg_stat_statements_info;  -- PG 14+
+-- Or check pg_stat_database:
+SELECT stats_reset FROM pg_stat_database WHERE datname = current_database();
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Enable pg_stat_statements correctly:**
+
+   ```bash
+   # postgresql.conf:
+   shared_preload_libraries = 'pg_stat_statements'
+   pg_stat_statements.track = all          # track all statements incl nested
+   pg_stat_statements.max = 10000          # max unique queries tracked
+   pg_stat_statements.track_utility = on   # track COPY, VACUUM, etc.
+   pg_stat_statements.track_planning = on  # PG 13+: also track planning time
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main   # requires restart
+   ```
+
+   ```sql
+   CREATE EXTENSION pg_stat_statements;
+   ```
+
+2. **The core analysis queries — run these as your daily performance check:**
+
+   ```sql
+   -- TOP 10 QUERIES BY TOTAL TIME (the biggest consumers):
+   SELECT
+       left(query, 100)                                   AS query,
+       calls,
+       round(total_exec_time::numeric, 0)                 AS total_ms,
+       round(mean_exec_time::numeric, 2)                  AS mean_ms,
+       round(max_exec_time::numeric, 2)                   AS max_ms,
+       round(stddev_exec_time::numeric, 2)                AS stddev_ms,
+       rows,
+       round(total_exec_time /
+             sum(total_exec_time) OVER () * 100, 2)       AS pct_of_total_time
+   FROM pg_stat_statements
+   WHERE query NOT ILIKE '%pg_stat%'
+   ORDER BY total_exec_time DESC
+   LIMIT 10;
+
+   -- TOP 10 QUERIES BY MEAN TIME (slowest individual executions):
+   SELECT
+       left(query, 100)                                   AS query,
+       calls,
+       round(mean_exec_time::numeric, 2)                  AS mean_ms,
+       round(max_exec_time::numeric, 2)                   AS max_ms,
+       round((mean_exec_time + 2*stddev_exec_time)::numeric,2) AS p95_est_ms
+   FROM pg_stat_statements
+   WHERE calls > 10
+   ORDER BY mean_exec_time DESC
+   LIMIT 10;
+
+   -- TOP 10 QUERIES BY I/O (cache misses — disk reads):
+   SELECT
+       left(query, 100)                                   AS query,
+       calls,
+       shared_blks_read                                   AS disk_reads,
+       shared_blks_hit                                    AS cache_hits,
+       round(shared_blks_read::numeric /
+             NULLIF(shared_blks_hit + shared_blks_read, 0) * 100, 2)
+                                                          AS miss_pct,
+       temp_blks_written                                  AS temp_disk_writes
+   FROM pg_stat_statements
+   WHERE shared_blks_read > 0
+   ORDER BY shared_blks_read DESC
+   LIMIT 10;
+
+   -- QUERIES CAUSING TEMP FILE SPILL (work_mem too low):
+   SELECT
+       left(query, 100)                                   AS query,
+       calls,
+       temp_blks_written,
+       pg_size_pretty(temp_blks_written * 8192)           AS temp_written_size,
+       round(mean_exec_time::numeric, 2)                  AS mean_ms
+   FROM pg_stat_statements
+   WHERE temp_blks_written > 0
+   ORDER BY temp_blks_written DESC
+   LIMIT 10;
+
+   -- HIGH VARIANCE QUERIES (plan regression candidates):
+   SELECT
+       left(query, 100)                                   AS query,
+       calls,
+       round(mean_exec_time::numeric, 2)                  AS mean_ms,
+       round(stddev_exec_time::numeric, 2)                AS stddev_ms,
+       round(stddev_exec_time /
+             NULLIF(mean_exec_time, 0), 2)                AS cv,
+       round(max_exec_time::numeric, 2)                   AS max_ms
+   FROM pg_stat_statements
+   WHERE calls > 50
+     AND mean_exec_time > 1
+   ORDER BY cv DESC
+   LIMIT 10;
+   ```
+
+3. **Export pg_stat_statements to a daily snapshot table** for historical
+   comparison:
+
+   ```sql
+   -- Create snapshot table:
+   CREATE TABLE IF NOT EXISTS pgss_daily_snapshot (
+       snapshot_date  DATE DEFAULT current_date,
+       queryid        BIGINT,
+       query_text     TEXT,
+       calls          BIGINT,
+       total_exec_ms  NUMERIC,
+       mean_exec_ms   NUMERIC,
+       stddev_exec_ms NUMERIC,
+       max_exec_ms    NUMERIC,
+       shared_blks_read BIGINT,
+       temp_blks_written BIGINT
+   );
+
+   -- Insert daily snapshot (run from cron at midnight):
+   INSERT INTO pgss_daily_snapshot
+   SELECT
+       current_date,
+       queryid,
+       left(query, 500),
+       calls,
+       total_exec_time,
+       mean_exec_time,
+       stddev_exec_time,
+       max_exec_time,
+       shared_blks_read,
+       temp_blks_written
+   FROM pg_stat_statements
+   WHERE calls > 10
+   ORDER BY total_exec_time DESC
+   LIMIT 200;
+
+   -- Compare today vs yesterday for regressions:
+   SELECT
+       t.query_text,
+       y.mean_exec_ms                                     AS yesterday_mean,
+       t.mean_exec_ms                                     AS today_mean,
+       round((t.mean_exec_ms - y.mean_exec_ms) /
+             NULLIF(y.mean_exec_ms, 0) * 100, 1)         AS pct_change
+   FROM pgss_daily_snapshot t
+   JOIN pgss_daily_snapshot y USING (queryid)
+   WHERE t.snapshot_date = current_date
+     AND y.snapshot_date = current_date - 1
+     AND t.mean_exec_ms > y.mean_exec_ms * 1.5  -- 50% slower today
+   ORDER BY pct_change DESC;
+   ```
+
+4. **Reset statistics when taking a fresh baseline:**
+
+   ```sql
+   -- Reset all pg_stat_statements data:
+   SELECT pg_stat_statements_reset();
+   -- Note: this also resets pg_stat_statements_info.stats_reset timestamp.
+   -- Only do this after a deliberate decision (e.g., after a deployment).
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- pg_stat_statements is populated:
+SELECT count(*), max(calls) FROM pg_stat_statements;
+
+-- Snapshot table is growing:
+SELECT snapshot_date, count(*) FROM pgss_daily_snapshot
+GROUP BY snapshot_date ORDER BY snapshot_date DESC LIMIT 7;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+pg_stat_statements adds ~1-2% overhead on high-throughput systems. If overhead
+is unacceptable: `DROP EXTENSION pg_stat_statements;` and remove from
+shared_preload_libraries (restart required). The snapshot table is yours —
+drop it if no longer needed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: PMM SETUP BEST PRACTICES
+  File: 06_monitoring_alerting/pmm_setup_best_practices.md
+================================================================================
+
+Percona Monitoring and Management (PMM) is a full-stack monitoring solution
+specifically built for MySQL, PostgreSQL, and MongoDB. If your team wants
+a single pane of glass for database monitoring without building and maintaining
+a Prometheus/Grafana stack from scratch — PMM is worth serious evaluation.
+
+PMM gives you: pre-built PostgreSQL dashboards, Query Analytics (QAN, which
+wraps pg_stat_statements in a useful UI), automated alerting templates, and
+integrated advisors that flag configuration issues. The tradeoff: it's another
+service to run and maintain.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```bash
+# Check if PMM server is running:
+curl -s http://<pmm_server>:443/v1/version | jq '.version'
+
+# Check if PMM client is installed on database hosts:
+pmm-admin --version
+
+# Check what services are registered:
+pmm-admin list
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Deploy PMM Server** — easiest via Docker:
+
+   ```bash
+   docker volume create pmm-data
+
+   docker run -d \
+     --name pmm-server \
+     --restart always \
+     -p 443:443 \
+     -p 80:80 \
+     -v pmm-data:/srv \
+     percona/pmm-server:2
+   ```
+
+   Access at https://localhost — default credentials: admin/admin.
+
+2. **Install PMM Client on each database host:**
+
+   ```bash
+   # Ubuntu/Debian:
+   curl -fsSL https://www.percona.com/get/pmm | /bin/bash
+   # Or:
+   apt-get install -y pmm2-client
+
+   # Configure the client to point at the PMM server:
+   pmm-admin config \
+       --server-insecure-tls \
+       --server-url=https://admin:admin@<pmm_server_ip>
+   ```
+
+3. **Create the PMM monitoring user in PostgreSQL:**
+
+   ```sql
+   CREATE USER pmm_monitor WITH ENCRYPTED PASSWORD 'strongpassword';
+   GRANT pg_monitor TO pmm_monitor;
+   GRANT SELECT ON pg_stat_statements TO pmm_monitor;
+   ```
+
+4. **Register the PostgreSQL instance with PMM:**
+
+   ```bash
+   pmm-admin add postgresql \
+       --username=pmm_monitor \
+       --password=strongpassword \
+       --host=localhost \
+       --port=5432 \
+       --database=postgres \
+       --query-source=pgstatmonitor \   # or 'pgstatements' if pg_stat_monitor not available
+       --service-name=prod-postgres-primary
+   ```
+
+   PMM prefers `pg_stat_monitor` over `pg_stat_statements` because it provides
+   additional context (wait events, client info, query plan). Install it if
+   available for your version:
+
+   ```sql
+   CREATE EXTENSION pg_stat_monitor;
+   ```
+
+5. **Configure PMM alert rules:**
+
+   PMM has a built-in alerting framework. Navigate to:
+   PMM UI → Alerting → Alert Rules → Add Alert Rule.
+
+   Key built-in templates to enable:
+   - PostgreSQL: Connections used (> 80%)
+   - PostgreSQL: Replication running
+   - PostgreSQL: Cache hit ratio (< 95%)
+   - PostgreSQL: Dead tuples ratio (> 20%)
+
+6. **Configure PMM dashboards for your workload:**
+
+   Key dashboards to bookmark:
+   - PostgreSQL Overview: connection counts, TPS, cache hits, WAL activity
+   - PostgreSQL Instance Summary: per-database breakdown
+   - Query Analytics: top queries by total time, mean time, I/O
+   - PostgreSQL Vacuum Monitoring: autovacuum frequency, dead tuple trends
+
+7. **Set data retention:**
+
+   ```bash
+   # PMM Server: set metrics retention (default is 30 days):
+   # In PMM UI → Configuration → Settings → Metrics Resolution
+   # Or via API:
+   curl -X POST https://admin:admin@<pmm>/v1/Settings/Change \
+       -d '{"data_retention": "90d"}'
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Client reports services as running:
+pmm-admin list
+# All services should show status: OK
+
+# Metrics flowing to server:
+pmm-admin status
+
+# PMM UI: PostgreSQL Overview dashboard shows data.
+# Query Analytics: queries appear in the QAN table.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+To remove PMM monitoring from a database host without affecting the database:
+```bash
+pmm-admin remove postgresql prod-postgres-primary
+```
+The PMM user and grants on PostgreSQL remain (remove manually if desired).
+The PMM server itself is isolated in Docker — `docker stop pmm-server` stops
+monitoring entirely without affecting any database.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 10: PROMETHEUS POSTGRES EXPORTER TROUBLESHOOTING
+  File: 06_monitoring_alerting/prometheus_postgres_exporter_troubleshooting.md
+================================================================================
+
+The prometheus-postgres-exporter (github.com/prometheus-community/postgres_exporter)
+is the standard way to expose PostgreSQL metrics to Prometheus. When it breaks,
+your entire metrics pipeline breaks with it. This runbook covers the full
+troubleshooting spectrum from installation through metric-level debugging.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Is it installed and what version?
+prometheus-postgres-exporter --version
+# or:
+/usr/bin/postgres_exporter --version
+
+# Is it running?
+systemctl status prometheus-postgres-exporter
+pgrep -fa postgres_exporter
+
+# Is it listening on the correct port (default 9187)?
+ss -tnlp | grep 9187
+
+# What metrics is it exposing?
+curl -s http://localhost:9187/metrics | wc -l
+# Should be > 100 metric lines on a healthy exporter.
+
+# Any errors in the metrics output?
+curl -s http://localhost:9187/metrics | grep "^postgres_exporter_last_scrape_error"
+# Should be 0. If 1: the scrape failed.
+
+# What's the error?
+curl -s http://localhost:9187/metrics | grep "^postgres_exporter_last_scrape"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install postgres_exporter:**
+
+   ```bash
+   # Option A: apt (Ubuntu):
+   apt-get install -y prometheus-postgres-exporter
+
+   # Option B: Binary from GitHub releases:
+   EXPORTER_VERSION=0.15.0
+   curl -L https://github.com/prometheus-community/postgres_exporter/releases/\
+   download/v${EXPORTER_VERSION}/postgres_exporter-${EXPORTER_VERSION}.linux-amd64.tar.gz \
+   | tar xz
+   mv postgres_exporter-*/postgres_exporter /usr/local/bin/
+   ```
+
+2. **Configure the connection string:**
+
+   ```bash
+   # /etc/default/prometheus-postgres-exporter:
+   DATA_SOURCE_NAME="postgresql://postgres_exporter:password@localhost:5432/postgres?sslmode=disable"
+
+   # Or with a DSN file (more secure — no password in env):
+   # Create /etc/postgres_exporter.conf:
+   # DATA_SOURCE_NAME=postgresql://postgres_exporter:password@localhost:5432/postgres
+
+   # For monitoring multiple databases:
+   DATA_SOURCE_NAME="postgresql://postgres_exporter:pw@localhost:5432/db1 postgresql://postgres_exporter:pw@localhost:5432/db2"
+   ```
+
+3. **Configure the systemd unit:**
+
+   ```ini
+   # /etc/systemd/system/prometheus-postgres-exporter.service
+   [Unit]
+   Description=Prometheus PostgreSQL Exporter
+   After=network.target postgresql.service
+
+   [Service]
+   User=postgres_exporter
+   EnvironmentFile=/etc/default/prometheus-postgres-exporter
+   ExecStart=/usr/local/bin/postgres_exporter \
+       --web.listen-address=:9187 \
+       --web.telemetry-path=/metrics \
+       --collector.stat_statements \
+       --collector.stat_bgwriter \
+       --collector.stat_user_tables \
+       --collector.stat_activity \
+       --collector.replication \
+       --log.level=info
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   ```bash
+   systemctl daemon-reload
+   systemctl enable prometheus-postgres-exporter
+   systemctl start prometheus-postgres-exporter
+   ```
+
+4. **Configure Prometheus to scrape it:**
+
+   ```yaml
+   # /etc/prometheus/prometheus.yml — add scrape job:
+   scrape_configs:
+     - job_name: 'postgres'
+       static_configs:
+         - targets: ['<db_host>:9187']
+           labels:
+             instance: 'prod-primary'
+             env: 'production'
+       scrape_interval: 30s
+       scrape_timeout: 20s
+   ```
+
+5. **Troubleshoot specific metric collection issues:**
+
+   ```bash
+   # Enable debug logging:
+   systemctl edit prometheus-postgres-exporter
+   # Add: Environment="PGSSLMODE=disable"
+   # Add to ExecStart: --log.level=debug
+
+   # Check which collectors are enabled:
+   curl -s http://localhost:9187/metrics | grep "^go_\|^process_\|^postgres_"  | cut -d'{' -f1 | sort -u
+
+   # If pg_stat_statements metrics are missing:
+   # Verify the extension is installed:
+   psql -c "SELECT extname FROM pg_extension WHERE extname='pg_stat_statements';"
+   # And collector is enabled:
+   # Add --collector.stat_statements to ExecStart
+   ```
+
+6. **Custom queries** — extend the exporter with your own metrics:
+
+   ```yaml
+   # /etc/postgres_exporter/custom_queries.yaml
+   pg_database_size:
+     query: |
+       SELECT datname AS database,
+              pg_database_size(datname) AS size_bytes
+       FROM pg_database
+       WHERE datname NOT IN ('template0','template1')
+     metrics:
+       - datname:
+           usage: LABEL
+           description: Database name
+       - size_bytes:
+           usage: GAUGE
+           description: Database size in bytes
+
+   pg_txid_age:
+     query: |
+       SELECT datname AS database,
+              age(datfrozenxid) AS txid_age
+       FROM pg_database
+     metrics:
+       - database:
+           usage: LABEL
+           description: Database name
+       - txid_age:
+           usage: GAUGE
+           description: Transaction ID age
+   ```
+
+   ```bash
+   # Add custom query file to ExecStart:
+   --extend.query-path=/etc/postgres_exporter/custom_queries.yaml
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# All key metrics are present:
+curl -s http://localhost:9187/metrics | grep -E \
+    "^pg_up|^pg_stat_activity|^pg_stat_replication|^pg_stat_database|^pg_stat_bgwriter"
+
+# Prometheus is scraping successfully:
+curl -s "http://prometheus:9090/api/v1/query?query=pg_up" | jq '.data.result'
+# Should show {pg_up: 1} for each instance.
+
+# Custom metrics are present:
+curl -s http://localhost:9187/metrics | grep "pg_database_size\|pg_txid_age"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If a new exporter version causes issues: pin the old version.
+`apt-get install prometheus-postgres-exporter=<old_version>`
+Or swap the binary back from a backup. The exporter is stateless — no data
+is lost by downgrading. Prometheus retains historical data regardless of
+exporter version changes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+The monitoring lab is split into four tracks. Each one exercises a different
+layer of the monitoring stack — from the database itself up to the human
+escalation system.
+
+── LAB 1: BASELINE AND THRESHOLD CALIBRATION ────────────────────────────────
+
+Your lab environment has a PostgreSQL database running a realistic workload
+simulation. Your tasks:
+
+  a) Run the full baseline capture queries from Runbook 01 and record the values.
+  b) Compare your baseline to the alert thresholds in the custom alert rules
+     from Runbook 04. Identify any thresholds that would generate false
+     positives given YOUR measured baseline.
+  c) Propose revised thresholds for three metrics, with documented rationale.
+  d) Apply the revised thresholds to the Prometheus rule file. Validate syntax.
+     Reload Prometheus. Confirm the rules load.
+  e) Trigger one of your tuned thresholds deliberately. Confirm the alert fires.
+     Confirm it resolves when the condition clears.
+
+── LAB 2: BROKEN ALERT PIPELINE ────────────────────────────────────────────
+
+Your instructor has deliberately broken the monitoring stack in one of these
+ways (you don't know which):
+  - An active silence is muting all critical alerts.
+  - The postgres_exporter is not running.
+  - The Prometheus scrape is failing due to a bad target config.
+  - The Alertmanager routing rule has a typo sending alerts to /dev/null.
+  - The pg_stat_statements extension was dropped.
+
+Your tasks:
+  a) Systematically work through the alert pipeline diagnosis from Runbook 03.
+  b) Identify the break without being told what it is.
+  c) Fix it.
+  d) Verify end-to-end with a test alert.
+  e) Write a post-incident note: what in your regular monitoring process
+     would have caught this break BEFORE an incident revealed it?
+
+── LAB 3: PG_STAT_STATEMENTS ANALYSIS SESSION ───────────────────────────────
+
+The lab database has been running a mixed OLTP/analytics workload for the past
+hour. Using pg_stat_statements:
+
+  a) Identify the single query consuming the most total execution time.
+  b) Identify the single query with the highest variance (cv > 2).
+  c) Identify all queries causing temp file spill. Estimate total disk I/O.
+  d) For the top total-time query: run EXPLAIN ANALYZE and determine whether
+     the problem is a missing index, stale statistics, or work_mem.
+  e) Apply your fix. Verify using pg_stat_statements that mean_exec_time
+     improved. (Hint: you may need to reset stats and run the workload again.)
+
+── LAB 4: ESCALATION MATRIX EXERCISE ───────────────────────────────────────
+
+Working in pairs:
+
+  a) Write a complete escalation matrix for the lab database environment.
+     Assume: 2 DBAs on rotation, 1 senior DBA as backup, 1 DBA lead.
+     Business hours are 09:00–18:00. SLA is 4-hour RTO for SEV-1.
+  b) Map each of the alert rules from Runbook 04 to a severity level.
+     Justify your classification.
+  c) Configure the Alertmanager routes in the lab environment to implement
+     your escalation path.
+  d) Test it: trigger a SEV-1 condition in the lab, confirm the routing
+     reaches the correct receiver.
+  e) Present your matrix to the class. Be ready to defend your threshold
+     choices and severity classifications.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Let me tell you what good monitoring actually looks like from the inside.
+
+Good monitoring is boring. That's the tell. When monitoring is working well,
+the on-call engineer sleeps through the night, the morning dashboard shows
+green, and the team spends their day on planned work instead of reactive work.
+Good monitoring is invisible when it's working and unmistakable when it isn't.
+
+Bad monitoring is the team that gets paged forty times a week and starts routing
+those pages to a folder they never open. Bad monitoring is the dashboard nobody
+looks at because it's always red about something that doesn't matter. Bad
+monitoring is the gap between what you THINK is being checked and what's
+actually being checked — which you only discover when something important falls
+through.
+
+The canary alert from Runbook 03 is the most underrated thing I've taught you
+today. It's also the most important. A dead man's switch on your alert pipeline
+means you KNOW when monitoring breaks, not when users tell you the service is
+down. That single change has saved production twice in environments I've managed.
+Implement it before you do anything else.
+
+One more thing. Monitoring is documentation. Every threshold you set and every
+escalation path you define is a record of what your team believes normal looks
+like and what they believe constitutes an emergency. Keep that documentation
+current. Review it when the baseline changes. When you hire a new on-call
+engineer, the escalation matrix is one of the first things they need to read.
+
+You're almost at the end of this module sequence. We have one session left.
+Next time: security hardening — pg_hba.conf, roles and privileges, SSL/TLS,
+row-level security, audit logging. Everything between your data and someone
+who shouldn't have it.
+
+See you then.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — MONITORING AND ALERTING
+  The pipeline is: Database → Exporter → Prometheus → Alertmanager → Human.
+  If any link is broken, the chain fails silently.
+================================================================================
+
+── EXPORTER HEALTH CHECK ────────────────────────────────────────────────────
+
+  Is it running?
+    systemctl status prometheus-postgres-exporter
+    curl -s http://localhost:9187/metrics | grep "^pg_up"
+
+  Last scrape error?
+    curl -s http://localhost:9187/metrics | grep "last_scrape_error"
+    # 0 = healthy, 1 = error
+
+  Prometheus scrape status:
+    curl -s http://prometheus:9090/api/v1/targets \
+        | jq '.data.activeTargets[] | select(.labels.job=="postgres")
+              | {health, lastError}'
+
+── PROMETHEUS CHECKS ────────────────────────────────────────────────────────
+
+  Rules loaded?
+    curl -s http://prometheus:9090/api/v1/rules | jq '.data.groups | length'
+
+  Validate rule file:
+    promtool check rules /etc/prometheus/rules/*.yml
+
+  Reload Prometheus:
+    curl -X POST http://prometheus:9090/-/reload
+
+  Query a metric:
+    curl -s "http://prometheus:9090/api/v1/query?query=pg_stat_activity_count"
+
+── ALERTMANAGER CHECKS ──────────────────────────────────────────────────────
+
+  Active silences (the most common "alerts not firing" cause):
+    curl -s http://alertmanager:9093/api/v2/silences \
+        | jq '.[] | select(.status.state=="active") | {id, comment, endsAt}'
+
+  Send test alert:
+    curl -X POST http://alertmanager:9093/api/v2/alerts \
+        -H "Content-Type: application/json" \
+        -d '[{"labels":{"alertname":"TestAlert","severity":"critical"}}]'
+
+  Reload Alertmanager:
+    curl -X POST http://alertmanager:9093/-/reload
+
+  Test routing:
+    amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml \
+        severity=critical alertname=PostgresDown
+
+── PG_STAT_STATEMENTS QUICK ANALYSIS ────────────────────────────────────────
+
+  Top 5 by total time:
+    SELECT left(query,80), calls, round(mean_exec_time::numeric,2) AS mean_ms,
+           round(total_exec_time/sum(total_exec_time) OVER()*100,2) AS pct
+    FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;
+
+  Queries with temp file spill:
+    SELECT left(query,80), temp_blks_written,
+           pg_size_pretty(temp_blks_written*8192)
+    FROM pg_stat_statements WHERE temp_blks_written > 0
+    ORDER BY temp_blks_written DESC LIMIT 5;
+
+  Reset stats:    SELECT pg_stat_statements_reset();
+
+── CRITICAL METRIC THRESHOLDS (BASELINE REMINDER) ───────────────────────────
+
+  TIER 1 — PAGE IMMEDIATELY (binary):
+    pg_up == 0                            → PostgreSQL DOWN
+    replication slot active = false       → check WAL retention
+    backup age > 25h                      → no backup
+
+  TIER 2 — PAGE (sustained > 5-10m):
+    txid_age > 1.8B                       → shutdown imminent
+    disk > 90%                            → critical
+    connections > 85% max_connections     → saturation
+    replication lag > 5min                → HA degraded
+    WAL archiving failed > 15min          → PITR window shrinking
+
+  TIER 3 — NOTIFY (no page):
+    cache_hit_pct < 95%                   → shared_buffers review
+    dead_pct > 20% on any table           → autovacuum tuning
+    txid_age > 1.5B                       → urgent vacuum freeze
+    disk > 80%                            → capacity review
+
+  TIER 4 — DASHBOARD / TICKET ONLY:
+    unused indexes > 1GB                  → weekly review
+    index bloat > 40%                     → schedule pg_repack
+    query P95 up > 20% week-over-week     → performance investigation
+
+── THE CANARY ALERT ─────────────────────────────────────────────────────────
+
+  # Always add this to your Prometheus rules — it proves the pipeline works:
+  - alert: AlertPipelineCanary
+    expr: vector(1)
+    labels:
+      severity: canary
+    annotations:
+      summary: "Monitoring heartbeat — if absent, pipeline is broken"
+
+  # Route to a dead man's switch (healthchecks.io, PagerDuty Snitch).
+  # If the heartbeat stops → page. Not about the DB. About the monitoring.
+
+================================================================================
+  END OF SESSION
+================================================================================

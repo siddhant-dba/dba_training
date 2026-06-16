@@ -1,0 +1,2023 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: MIGRATIONS RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+At the end of last session I told you not to run ALTER TABLE ADD COLUMN DEFAULT
+until you'd heard this lecture. You're going to understand why in about four
+minutes.
+
+Let me set the stage with a story first, because this one still makes me
+uncomfortable to think about.
+
+It was 2014. PostgreSQL 9.3. A well-meaning developer needed to add a column
+to the accounts table with a default value of FALSE. The table had 80 million
+rows. They ran the migration in a Friday afternoon deploy window. The command
+was:
+
+  ALTER TABLE accounts ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;
+
+In PostgreSQL 9.3, that command rewrote the entire 80-million-row table.
+Physically. Every page. With an exclusive lock held the entire time.
+The rewrite took 23 minutes. The application was completely down for 23 minutes.
+On a Friday afternoon. Before a long weekend.
+
+Nobody had tested the migration on production-scale data. Nobody had a rollback
+plan. Nobody had considered what "ALTER TABLE" does at the storage layer.
+
+That was a fixable problem. PostgreSQL 11 changed this — non-volatile DEFAULT
+values in ADD COLUMN no longer cause a table rewrite. But the lesson wasn't
+just about the bug fix. The lesson was: migrations are not just SQL. They are
+the highest-risk operation a DBA performs on a production database, because
+they change schema that the application depends on while the application is
+running. The margin for error is essentially zero.
+
+This session is about doing migrations correctly. Not fast. Not clever.
+Correctly — which usually means slower, more deliberate, with a tested rollback
+ready before you start.
+
+We have eleven runbooks. Some are about schema changes. Some are about version
+upgrades. Some are about moving data with zero downtime. All of them share one
+philosophy: never do something irreversible until you know how to undo it.
+
+Let's start.
+
+================================================================================
+  MIGRATIONS PHILOSOPHY — THREE MINUTES OF CONTEXT
+================================================================================
+
+Every migration you will ever run falls into one of three risk categories:
+
+  LOW RISK: Adding a nullable column. Creating an index with CONCURRENTLY.
+            Adding a new table. These operations have no existing-data impact
+            and minimal or zero lock requirements. Run these any time.
+
+  MEDIUM RISK: Changing a column type. Adding NOT NULL. Adding a DEFAULT.
+               Dropping a column. These require careful planning, load testing,
+               and a rollback plan. Run these in a maintenance window, or use
+               the expand-contract pattern to do them online.
+
+  HIGH RISK: Renaming a table or column that's in active use. Major version
+             upgrades. Logical replication cutovers. Schema changes that
+             require data backfill on millions of rows. These require a
+             complete project plan, tested rollback, and a communications
+             plan. Never run these alone.
+
+Before ANY migration:
+  1. Test on a production-scale copy, not on a 1000-row dev database.
+  2. Measure how long the migration takes on that copy.
+  3. Know your rollback. If you can't articulate it in 30 seconds, you're
+     not ready to run the migration.
+  4. Set lock_timeout in your migration session. If you can't get the lock
+     within N seconds — fail fast, don't wait indefinitely blocking queries.
+
+Okay. Runbooks.
+
+================================================================================
+  RUNBOOK 01: ENUM TYPE SAFE MIGRATION
+  File: 05_migrations/enum_type_safe_migration.md
+================================================================================
+
+ENUM types are one of the most common traps for PostgreSQL developers who come
+from MySQL or application frameworks that love enums. They look harmless. They're
+stored efficiently. And then you try to add, rename, or remove a value and you
+discover what they actually are under the hood.
+
+In PostgreSQL, an ENUM type is a named type stored in pg_type. Modifying it is
+not like modifying a VARCHAR constraint. Some operations are safe. Some require
+a full table rewrite. And before PostgreSQL 10, ALL modifications except adding
+at the end required a full rewrite.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What ENUM types exist?
+SELECT
+    t.typname                                       AS enum_name,
+    n.nspname                                       AS schema_name,
+    array_agg(e.enumlabel ORDER BY e.enumsortorder) AS values
+FROM pg_type t
+JOIN pg_enum e ON e.enumtypid = t.oid
+JOIN pg_namespace n ON n.oid = t.typnamespace
+WHERE t.typtype = 'e'
+GROUP BY t.typname, n.nspname
+ORDER BY t.typname;
+
+-- Which tables/columns use a specific ENUM type?
+SELECT
+    c.table_schema,
+    c.table_name,
+    c.column_name,
+    c.udt_name AS enum_type
+FROM information_schema.columns c
+WHERE c.udt_name = 'order_status'   -- your enum type name
+ORDER BY c.table_name, c.column_name;
+
+-- How large are those tables? (determines migration risk)
+SELECT
+    relname,
+    pg_size_pretty(pg_total_relation_size(relid)) AS size,
+    n_live_tup
+FROM pg_stat_user_tables
+WHERE relname IN ('orders', 'order_items');  -- tables using the enum
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+OPERATION A: Add a new value to an existing ENUM. (PG 10.0+, safe, no lock)
+
+```sql
+-- Safe: add to the end (always safe, all versions):
+ALTER TYPE order_status ADD VALUE 'refunded';
+
+-- Safe: add at a specific position (PG 9.1+):
+ALTER TYPE order_status ADD VALUE 'disputed' AFTER 'processing';
+ALTER TYPE order_status ADD VALUE 'on_hold'  BEFORE 'cancelled';
+
+-- Note: the new value is not visible in the current transaction.
+-- Commit first, then use it.
+COMMIT;
+-- Now 'refunded' is usable in new INSERT/UPDATE statements.
+```
+
+OPERATION B: Rename an enum value. (PG 10.0+, safe)
+
+```sql
+ALTER TYPE order_status RENAME VALUE 'cancelled' TO 'canceled';
+-- US vs UK spelling fix. Safe, instant, no rewrite.
+```
+
+OPERATION C: Remove an enum value. (NOT directly supported in any version)
+
+This is the dangerous one. PostgreSQL does not have ALTER TYPE DROP VALUE.
+You must use the expand-contract pattern:
+
+1. **Create a replacement type:**
+
+   ```sql
+   -- Step 1: Create a new enum without the unwanted value:
+   CREATE TYPE order_status_new AS ENUM (
+       'pending', 'processing', 'complete', 'refunded'
+       -- 'cancelled' is intentionally omitted
+   );
+   ```
+
+2. **Migrate the column to the new type:**
+
+   ```sql
+   -- Step 2: Add a new column with the new type:
+   ALTER TABLE orders ADD COLUMN status_new order_status_new;
+
+   -- Step 3: Backfill the new column (in batches for large tables):
+   UPDATE orders
+   SET status_new = status::text::order_status_new
+   WHERE status != 'cancelled';   -- map or exclude the removed value
+
+   -- Step 4: Handle the value being removed:
+   UPDATE orders
+   SET status_new = 'complete'    -- map 'cancelled' to 'complete' (or NULL)
+   WHERE status = 'cancelled';
+
+   -- Step 5: Swap the columns (requires brief exclusive lock):
+   BEGIN;
+   ALTER TABLE orders ALTER COLUMN status DROP DEFAULT;
+   ALTER TABLE orders ALTER COLUMN status_new SET DEFAULT 'pending';
+   ALTER TABLE orders RENAME COLUMN status TO status_old;
+   ALTER TABLE orders RENAME COLUMN status_new TO status;
+   COMMIT;
+
+   -- Step 6: Drop the old column (after application is validated):
+   ALTER TABLE orders DROP COLUMN status_old;
+   DROP TYPE order_status;
+   ALTER TYPE order_status_new RENAME TO order_status;
+   ```
+
+OPERATION D: Change an enum value's meaning (rename + data migration).
+
+   Use the same expand-contract pattern as Operation C.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm new enum values:
+SELECT enumlabel, enumsortorder
+FROM pg_enum
+JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+WHERE typname = 'order_status'
+ORDER BY enumsortorder;
+
+-- Confirm no NULL or invalid values in migrated column:
+SELECT count(*) FROM orders WHERE status IS NULL;
+SELECT DISTINCT status FROM orders ORDER BY 1;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+For ADD VALUE: there is no DROP VALUE. If you added a wrong value — you must
+use the expand-contract pattern above to create a new type without it.
+This is exactly why you should NEVER add enum values casually. Use VARCHAR
+with a CHECK constraint if you need flexibility:
+
+```sql
+-- Safer long-term alternative to ENUM:
+ALTER TABLE orders ADD CONSTRAINT chk_status
+    CHECK (status IN ('pending', 'processing', 'complete', 'cancelled'));
+-- Changing valid values: DROP CONSTRAINT, ADD CONSTRAINT. No type rewrite.
+```
+
+For column swaps: if the rename transaction failed, the columns retain their
+original names. Revert the backfill with a targeted UPDATE.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: EXTENSIONS UPGRADE RUNBOOK
+  File: 05_migrations/extensions_upgrade_runbook.md
+================================================================================
+
+Extensions in PostgreSQL are versioned. When you upgrade PostgreSQL (or when an
+extension author releases a new version), the extension in your database doesn't
+automatically upgrade. You have to explicitly run ALTER EXTENSION UPDATE. And
+some extensions have complex upgrade paths that can fail if you skip intermediate
+versions.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What extensions are installed, and at what version?
+SELECT
+    extname,
+    extversion                                             AS installed_version,
+    default_version                                        AS available_version,
+    extname = 'pg_stat_statements'                        AS is_core,
+    extrelocatable
+FROM pg_extension
+JOIN pg_available_extensions ON name = extname
+ORDER BY extname;
+
+-- Which extensions need an upgrade?
+SELECT extname, extversion AS current, default_version AS available
+FROM pg_extension
+JOIN pg_available_extensions ON name = extname
+WHERE extversion <> default_version
+ORDER BY extname;
+
+-- What upgrade paths are available?
+SELECT name, from_version, to_version
+FROM pg_available_extension_versions v
+JOIN pg_extension e ON e.extname = v.name
+WHERE v.from_version = e.extversion
+ORDER BY name;
+```
+
+```bash
+# What extension files are available on disk?
+ls /usr/share/postgresql/15/extension/ | grep -v ".sql" | sort
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Check for breaking changes in the target extension version:**
+
+   Before running any ALTER EXTENSION UPDATE, read the extension's changelog.
+   PostGIS upgrades have historically had breaking function signature changes.
+   pg_partman upgrades between major versions can require manual steps.
+
+2. **Test the upgrade on a copy of the database first:**
+
+   ```bash
+   # Create a test copy:
+   createdb mydb_ext_test -T mydb
+   psql mydb_ext_test -c "ALTER EXTENSION postgis UPDATE;"
+   # If it fails here — you know what to fix before touching production.
+   ```
+
+3. **Upgrade a single extension:**
+
+   ```sql
+   -- Update to the latest available version:
+   ALTER EXTENSION postgis UPDATE;
+
+   -- Or update to a specific version:
+   ALTER EXTENSION postgis UPDATE TO '3.4.0';
+   ```
+
+4. **Upgrade path for extensions that require multiple steps:**
+
+   ```sql
+   -- Example: pg_partman 4.x → 5.x requires going through 4.7 first:
+   ALTER EXTENSION pg_partman UPDATE TO '4.7.4';
+   -- Verify intermediate state is healthy, then:
+   ALTER EXTENSION pg_partman UPDATE TO '5.0.0';
+   -- Read the pg_partman 5.0 migration guide for manual steps.
+   ```
+
+5. **Upgrade all extensions at once (risky — only for well-tested environments):**
+
+   ```sql
+   -- Get a list of upgrade commands:
+   SELECT 'ALTER EXTENSION ' || extname || ' UPDATE;'
+   FROM pg_extension
+   JOIN pg_available_extensions ON name = extname
+   WHERE extversion <> default_version;
+   -- Copy and execute each one individually, not as a batch.
+   ```
+
+6. **After a major PostgreSQL version upgrade:** extensions built against the
+   old PostgreSQL binary won't work until their .so files are also rebuilt for
+   the new version. This is handled by package managers automatically:
+
+   ```bash
+   # After upgrading PostgreSQL 15 → 16:
+   apt-get install -y postgresql-16-postgis-3 postgresql-16-pg-partman
+   # These install the extension .so files for PG 16.
+   # Then run pg_upgrade (see Runbook 05 or 11).
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- All extensions at target versions:
+SELECT extname, extversion FROM pg_extension ORDER BY extname;
+
+-- Run a functional test for each upgraded extension:
+SELECT PostGIS_version();       -- PostGIS
+SELECT partman.version();       -- pg_partman
+SELECT count(*) FROM pg_stat_statements;  -- pg_stat_statements
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Extension downgrades are rarely supported and not recommended. Your rollback is
+the database snapshot you took before the upgrade. This is another reason to
+always take a pgBackRest snapshot before running extension upgrades in production.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: LARGE TABLE ONLINE MIGRATION
+  File: 05_migrations/large_table_online_migration.md
+================================================================================
+
+This is the one you'll use more than any other in this section. Large table
+migrations — adding a NOT NULL column, changing a column type, backfilling data
+— cannot be done with a single ALTER TABLE on a table with 100 million rows.
+The lock would hold for minutes or hours. The answer is the online migration
+pattern: make changes incrementally, in small batches, while the application
+continues running.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- How large is the table? How long will a migration take?
+SELECT
+    relname,
+    n_live_tup,
+    pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+    pg_size_pretty(pg_relation_size(relid))       AS table_size
+FROM pg_stat_user_tables
+WHERE relname = 'orders';
+
+-- Estimate migration time: if you can backfill 10,000 rows/second safely,
+-- a 100M row table takes 10,000 seconds = ~2.8 hours.
+-- Always measure on a sample before estimating production runtime.
+
+-- What locks does ALTER TABLE acquire? Check the lock guide:
+-- ADD COLUMN (no default): ShareUpdateExclusiveLock — safe, very brief
+-- ADD COLUMN with DEFAULT (PG 11+, non-volatile): metadata only — safe
+-- ADD COLUMN with DEFAULT (PG < 11 or volatile): AccessExclusiveLock + REWRITE
+-- SET NOT NULL (existing nullable column): AccessExclusiveLock + full scan
+-- CHANGE TYPE (compatible): varies, may or may not rewrite
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+THE EXPAND-CONTRACT PATTERN for large table schema changes.
+This is the pattern used by GitHub's gh-ost, Stripe's stripe-migrate, and
+most serious migration frameworks. We're doing it manually here.
+
+SCENARIO: Add a NOT NULL column with a default to a 200M-row table.
+
+NAIVE APPROACH (WRONG for large tables):
+```sql
+ALTER TABLE orders ADD COLUMN is_priority BOOLEAN NOT NULL DEFAULT FALSE;
+-- PG 11+: this is actually safe (metadata only, no rewrite).
+-- PG 10-: this would rewrite the entire 200M-row table. Never do this.
+```
+
+SAFE APPROACH for all versions and all scenarios:
+
+PHASE 1: EXPAND (no locking, application keeps running)
+
+1. **Add the column as NULLABLE with no default:**
+
+   ```sql
+   -- Instant. No lock conflict. No rewrite. Ever.
+   ALTER TABLE orders ADD COLUMN is_priority BOOLEAN;
+   ```
+
+2. **Update the application to write to the new column** (application change,
+   not DBA change — coordinate with the dev team). New writes populate the
+   column going forward. Old rows remain NULL.
+
+3. **Backfill existing rows in small batches** — crucially, do NOT run a
+   single UPDATE across the entire table. That holds a lock for too long
+   and generates a massive WAL spike.
+
+   ```sql
+   -- Backfill script — run from a loop in your shell:
+   -- Find the min and max ID to drive the backfill:
+   SELECT min(id), max(id) FROM orders;
+
+   -- Then batch it (do this in a shell script or psql with \set):
+   DO $$
+   DECLARE
+       batch_size  INT := 10000;
+       min_id      BIGINT;
+       max_id      BIGINT;
+       cur_id      BIGINT;
+   BEGIN
+       SELECT min(id), max(id) INTO min_id, max_id FROM orders;
+       cur_id := min_id;
+       WHILE cur_id <= max_id LOOP
+           UPDATE orders
+           SET is_priority = false
+           WHERE id >= cur_id
+             AND id < cur_id + batch_size
+             AND is_priority IS NULL;
+           COMMIT;
+           cur_id := cur_id + batch_size;
+           PERFORM pg_sleep(0.05);  -- 50ms sleep between batches
+       END LOOP;
+   END $$;
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   The pg_sleep(0.05) between batches is not optional. Without throttling, your
+   backfill will saturate I/O, spike WAL generation, and slow down replication.
+   Production databases have other people's workloads on them. Be a considerate
+   tenant of your own system.
+
+4. **Verify backfill completed:**
+
+   ```sql
+   SELECT count(*) FROM orders WHERE is_priority IS NULL;
+   -- Should be 0 (or very small — rows inserted during backfill).
+   ```
+
+PHASE 2: CONTRACT (brief lock, minimal impact)
+
+5. **Set NOT NULL constraint — ONLY after all rows are populated:**
+
+   ```sql
+   -- Fast path (PG 12+): uses a CHECK constraint trick:
+   -- First add NOT VALID constraint (no table scan, instant):
+   ALTER TABLE orders ADD CONSTRAINT chk_is_priority_not_null
+       CHECK (is_priority IS NOT NULL) NOT VALID;
+
+   -- Then validate it (scans table but only ShareUpdateExclusiveLock):
+   ALTER TABLE orders VALIDATE CONSTRAINT chk_is_priority_not_null;
+
+   -- Finally, set NOT NULL using the validated constraint (metadata only):
+   -- (PG knows the constraint already holds, so no scan needed)
+   ALTER TABLE orders ALTER COLUMN is_priority SET NOT NULL;
+
+   -- Drop the helper constraint:
+   ALTER TABLE orders DROP CONSTRAINT chk_is_priority_not_null;
+   ```
+
+6. **Add the DEFAULT for new rows:**
+
+   ```sql
+   ALTER TABLE orders ALTER COLUMN is_priority SET DEFAULT FALSE;
+   -- Instant. Metadata only.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Column is NOT NULL with correct default:
+SELECT column_name, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_name = 'orders' AND column_name = 'is_priority';
+
+-- No NULL values remain:
+SELECT count(*) FROM orders WHERE is_priority IS NULL;  -- must be 0
+
+-- Application writes are working with the new column:
+INSERT INTO orders (customer_id, is_priority) VALUES (1, true) RETURNING id;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+At any phase of this migration, rollback is defined:
+- Phase 1 (column added, nullable): `ALTER TABLE orders DROP COLUMN is_priority;`
+- Phase 2 (backfill in progress): stop the backfill script; `DROP COLUMN`.
+- Phase 3 (NOT NULL set): revert NOT NULL with `ALTER COLUMN is_priority DROP NOT NULL;`
+All of these are fast operations. No data loss.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: LOGICAL REPLICATION CUTOVER
+  File: 05_migrations/logical_replication_cutover.md
+================================================================================
+
+Logical replication cutover is the cleanest way to migrate between PostgreSQL
+instances with near-zero downtime — whether you're moving to a new server,
+a new datacenter, or a different PostgreSQL major version. The pattern:
+set up logical replication to the new instance, let it catch up, then do a
+very brief traffic switchover when lag is near zero.
+
+I want to be clear about what "near-zero downtime" means here. We're talking
+about a 1–10 second write outage — the time between stopping writes to the old
+primary and confirming the new instance has applied all remaining WAL. If that
+is acceptable to your business — this is your migration path.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Source database requirements:
+-- wal_level must be 'logical':
+SHOW wal_level;
+
+-- max_replication_slots must be > 0:
+SHOW max_replication_slots;
+
+-- max_wal_senders must be > 0:
+SHOW max_wal_senders;
+
+-- What's the current LSN? (baseline for replication lag later)
+SELECT pg_current_wal_lsn();
+
+-- Are there any sequences, large objects, or DDL-only objects that
+-- logical replication WON'T replicate? (these need manual handling):
+SELECT count(*) FROM pg_largeobject_metadata;
+SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Prepare the SOURCE (publisher) database:**
+
+   ```sql
+   -- Confirm wal_level = logical (requires restart if changing):
+   ALTER SYSTEM SET wal_level = logical;
+   -- If you just changed it: restart PostgreSQL, then continue.
+
+   -- Create a publication (what to replicate):
+   CREATE PUBLICATION migration_pub FOR ALL TABLES;
+   -- Or specific tables:
+   -- CREATE PUBLICATION migration_pub FOR TABLE orders, customers, products;
+   ```
+
+2. **Prepare the TARGET (subscriber) database:**
+
+   The target must have the same schema. Copy it using pg_dump --schema-only:
+
+   ```bash
+   # Schema only, no data:
+   pg_dump --schema-only -d sourcedb | psql -d targetdb
+
+   # Or for cross-version migration, use pg_dump from the TARGET version binary
+   # to avoid any compatibility issues.
+   ```
+
+3. **Create the subscription on the TARGET:**
+
+   ```sql
+   -- Connect to TARGET database:
+   CREATE SUBSCRIPTION migration_sub
+       CONNECTION 'host=<source_ip> dbname=sourcedb user=replicator password=X'
+       PUBLICATION migration_pub
+       WITH (copy_data = true);   -- initial data copy from source
+   ```
+
+   This triggers an initial table sync. For large databases, this can take
+   hours. Monitor progress:
+
+   ```sql
+   -- On TARGET: check subscription sync status:
+   SELECT subname, pid, relid::regclass AS table_name,
+          state, received_lsn, last_msg_receipt_time
+   FROM pg_subscription_rel
+   JOIN pg_stat_subscription USING (subid)
+   ORDER BY state, table_name;
+   -- state = 'r' (ready) means the table is fully synced and streaming.
+   ```
+
+4. **Monitor replication lag until it approaches zero:**
+
+   ```sql
+   -- On TARGET: how far behind are we?
+   SELECT now() - last_msg_receipt_time AS lag
+   FROM pg_stat_subscription
+   WHERE subname = 'migration_sub';
+
+   -- On SOURCE: check the slot:
+   SELECT slot_name, active,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))
+              AS behind
+   FROM pg_replication_slots
+   WHERE slot_name = 'migration_sub';
+   -- 'behind' should approach 0 bytes.
+   ```
+
+5. **THE CUTOVER (brief write outage):**
+
+   ```sql
+   -- Step A: On the SOURCE — stop application writes.
+   -- (Update load balancer, application config, or:)
+   REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM app_user;
+
+   -- Step B: Wait for all pending changes to replicate:
+   -- On SOURCE:
+   SELECT pg_current_wal_lsn() AS source_lsn;
+
+   -- On TARGET: keep checking until confirmed_flush_lsn matches source_lsn:
+   SELECT confirmed_flush_lsn FROM pg_replication_slots
+   WHERE slot_name = 'migration_sub';
+   -- When confirmed_flush_lsn >= source_lsn: you're in sync.
+
+   -- Step C: Validate sequences on TARGET (not replicated, must be set manually):
+   -- On SOURCE: get current sequence values:
+   SELECT sequence_name,
+          last_value
+   FROM information_schema.sequences
+   JOIN LATERAL (
+       SELECT last_value FROM pg_sequences
+       WHERE schemaname = 'public' AND sequencename = sequence_name
+   ) s ON true
+   WHERE sequence_schema = 'public';
+   ```
+
+   ```sql
+   -- On TARGET: advance sequences to match SOURCE + buffer:
+   SELECT setval('orders_id_seq', 5000000 + 1000);  -- + 1000 as buffer
+   ```
+
+   ```sql
+   -- Step D: Switch application to TARGET.
+   -- Step E: Re-grant permissions on SOURCE (cleanup).
+   -- Step F: Drop the subscription on TARGET (replication no longer needed):
+   DROP SUBSCRIPTION migration_sub;
+   ```
+
+6. **Cleanup on SOURCE:**
+
+   ```sql
+   -- After confirming TARGET is fully operational:
+   DROP PUBLICATION migration_pub;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- On TARGET (new primary): verify row counts match source:
+SELECT relname, n_live_tup
+FROM pg_stat_user_tables
+ORDER BY n_live_tup DESC LIMIT 10;
+-- Compare against same query on source.
+
+-- Write test on TARGET:
+INSERT INTO orders (customer_id, status) VALUES (1, 'pending') RETURNING id;
+-- ID should be > any ID that exists on source (sequences advanced correctly).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If cutover fails: re-grant permissions on SOURCE, redirect application back
+to SOURCE. SOURCE was never stopped — it's still fully operational.
+Drop the subscription on TARGET to stop replication:
+`DROP SUBSCRIPTION migration_sub;`
+The SOURCE publication is harmless until explicitly dropped.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: MAJOR VERSION UPGRADE
+  File: 05_migrations/major_version_upgrade.md
+================================================================================
+
+Major version upgrade — PostgreSQL 14 to 15, 15 to 16, or skipping multiple
+versions at once. This is the operation most DBAs dread because it requires
+downtime if you use pg_upgrade, and careful planning if you want near-zero
+downtime with logical replication.
+
+I have three rules for major version upgrades:
+  1. Never upgrade more than two major versions in a single window.
+  2. Always run pg_upgrade --check before the real upgrade.
+  3. Always have a tested rollback that takes you back to the old version.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```bash
+# Current PostgreSQL version:
+psql -c "SELECT version();"
+
+# Check pg_upgrade compatibility before upgrade window:
+pg_upgrade \
+    --old-datadir /var/lib/postgresql/14/main \
+    --new-datadir /var/lib/postgresql/15/main \
+    --old-bindir  /usr/lib/postgresql/14/bin \
+    --new-bindir  /usr/lib/postgresql/15/bin \
+    --check    # dry run — checks compatibility, makes NO changes
+```
+
+```sql
+-- Pre-upgrade checks on the current database:
+-- Check for deprecated features or incompatible syntax:
+-- (pg_upgrade --check is the primary tool, but also check manually:)
+
+-- Check for system catalog objects that need attention:
+SELECT count(*) FROM pg_proc WHERE prosrc ILIKE '%old_deprecated_function%';
+
+-- Check for tables with OIDs (deprecated in PG 12):
+SELECT relname FROM pg_class WHERE relhasoids = true AND relkind = 'r';
+-- Should return 0 rows on PG 12+.
+
+-- Check for extensions that may not support the new version:
+SELECT extname, extversion FROM pg_extension ORDER BY extname;
+
+-- Check for replication slots (pg_upgrade cannot preserve them):
+SELECT slot_name, slot_type, active FROM pg_replication_slots;
+-- Note all slots — they will need to be recreated after upgrade.
+
+-- Check database sizes (determines upgrade downtime):
+SELECT datname, pg_size_pretty(pg_database_size(datname))
+FROM pg_database ORDER BY pg_database_size(datname) DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+METHOD A: pg_upgrade (requires downtime, fastest for large databases)
+
+1. **Install the target PostgreSQL version:**
+
+   ```bash
+   apt-get install -y postgresql-16 postgresql-16-<your-extensions>
+   ```
+
+2. **Initialize the new cluster:**
+
+   ```bash
+   pg_dropcluster 16 main --stop  # remove the empty default cluster
+   # Create a new cluster with the same locale settings as the old one:
+   pg_createcluster 16 main --locale=en_US.UTF-8
+   ```
+
+3. **Take a full backup before the upgrade:**
+
+   ```bash
+   pgbackrest --stanza=main --type=full backup
+   # This is your rollback if everything goes wrong.
+   ```
+
+4. **Stop all applications. Stop the old cluster:**
+
+   ```bash
+   systemctl stop postgresql@14-main
+   # Confirm no connections:
+   pg_lsclusters
+   ```
+
+5. **Run pg_upgrade:**
+
+   ```bash
+   pg_upgrade \
+       --old-datadir /var/lib/postgresql/14/main \
+       --new-datadir /var/lib/postgresql/16/main \
+       --old-bindir  /usr/lib/postgresql/14/bin \
+       --new-bindir  /usr/lib/postgresql/16/bin \
+       --link   # hard link instead of copy — MUCH faster, but old cluster
+                # data directory becomes unusable after upgrade
+       # OR omit --link for a safe copy (takes longer, preserves old cluster)
+   ```
+
+   With --link on a 1 TB database: typically under 10 minutes.
+   Without --link on a 1 TB database: ~2 hours (full copy).
+
+6. **Start the new cluster:**
+
+   ```bash
+   systemctl start postgresql@16-main
+   ```
+
+7. **Run post-upgrade tasks:**
+
+   ```bash
+   # pg_upgrade generates a script to update statistics:
+   /var/lib/postgresql/update_extensions.sql  # if generated
+   vacuumdb --all --analyze-in-stages -j 4    # rebuild stats
+
+   # Recreate replication slots:
+   psql -c "SELECT pg_create_physical_replication_slot('replica_node_01');"
+
+   # Update pg_hba.conf and postgresql.conf for the new cluster.
+   ```
+
+METHOD B: Logical replication cutover (see Runbook 04) — for near-zero downtime.
+
+   Use logical replication from PG 14 → PG 16 to pre-sync data, then do
+   a brief write-stop cutover. This is the approach for teams that cannot
+   tolerate downtime. Requires wal_level = logical on the source.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# New version is running:
+psql -c "SELECT version();"
+
+# All databases accessible:
+psql -l
+
+# Row count spot checks on critical tables:
+psql -d mydb -c "SELECT count(*) FROM orders;"
+```
+
+```sql
+-- Check for any catalog inconsistencies after upgrade:
+ANALYZE;   -- rebuild all statistics for the new version
+\dx        -- verify all extensions upgraded correctly
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+WITH --link: the old cluster's data directory is modified in place. Rollback
+requires restoring from the pre-upgrade pgBackRest backup.
+
+WITHOUT --link: the old cluster is preserved. Rollback:
+```bash
+systemctl stop postgresql@16-main
+systemctl start postgresql@14-main
+# Redirect applications to port 5432 (old cluster).
+```
+
+Always test the rollback procedure in staging before the production upgrade window.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: MIGRATION ZERO-DOWNTIME SCHEMA
+  File: 05_migrations/migration_zero_downtime_schema.md
+================================================================================
+
+Zero-downtime schema migration is not a single technique. It is a discipline
+with several tools. The core insight: separate schema changes into operations
+that are safe to run while the application is live, and operations that are not.
+Then sequence the safe ones first.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+Before ANY schema change, run this lock impact assessment:
+
+```sql
+-- What lock does my planned ALTER TABLE acquire?
+-- This query simulates the lock WITHOUT holding it:
+BEGIN;
+    SELECT mode FROM pg_locks
+    WHERE pid = pg_backend_pid()
+      AND locktype = 'relation';
+    -- Run your ALTER TABLE here (but we ROLLBACK at the end):
+    -- ALTER TABLE orders ADD COLUMN new_col INT;
+    SELECT mode, granted FROM pg_locks
+    WHERE pid = pg_backend_pid()
+      AND locktype = 'relation';
+ROLLBACK;
+-- The lock is released on ROLLBACK. This tells you the mode without impact.
+```
+
+```sql
+-- How many connections are currently active on this table?
+-- (More connections = more risk of lock queue buildup)
+SELECT count(*) FROM pg_stat_activity
+WHERE query ILIKE '%orders%' AND state = 'active';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+THE LOCK HIERARCHY: from safest to most dangerous.
+
+CATEGORY 1 — ZERO LOCK RISK (run anytime in production):
+
+```sql
+-- Add a nullable column with no default (instant, metadata only):
+ALTER TABLE orders ADD COLUMN notes TEXT;
+
+-- Create an index concurrently (ShareUpdateExclusiveLock only):
+CREATE INDEX CONCURRENTLY idx_orders_notes ON orders USING GIN (notes);
+
+-- Add a CHECK constraint NOT VALID (no table scan):
+ALTER TABLE orders ADD CONSTRAINT chk_amount_positive
+    CHECK (amount > 0) NOT VALID;
+
+-- Create a new table:
+CREATE TABLE order_audit (LIKE orders INCLUDING DEFAULTS);
+
+-- Add a trigger (ShareRowExclusiveLock, brief):
+CREATE TRIGGER audit_orders AFTER INSERT OR UPDATE OR DELETE ON orders ...
+```
+
+CATEGORY 2 — LOW LOCK RISK (run in low-traffic windows, seconds):
+
+```sql
+-- Validate a NOT VALID constraint (ShareUpdateExclusiveLock):
+ALTER TABLE orders VALIDATE CONSTRAINT chk_amount_positive;
+
+-- Run ANALYZE (ShareUpdateExclusiveLock):
+ANALYZE orders;
+
+-- Create or replace a function (brief ExclusiveLock on function):
+CREATE OR REPLACE FUNCTION get_order_status(id bigint) ...
+```
+
+CATEGORY 3 — HIGH LOCK RISK (must use maintenance window or workaround):
+
+```sql
+-- DANGER: SET NOT NULL without prior CHECK constraint:
+-- (Scans entire table with AccessExclusiveLock)
+ALTER TABLE orders ALTER COLUMN customer_id SET NOT NULL;
+-- INSTEAD: Use the NOT VALID / VALIDATE pattern from Runbook 03.
+
+-- DANGER: CHANGE COLUMN TYPE (most types):
+ALTER TABLE orders ALTER COLUMN amount TYPE NUMERIC(12,4);
+-- INSTEAD: Expand-contract — new column, backfill, swap.
+
+-- DANGER: DROP COLUMN (AccessExclusiveLock):
+ALTER TABLE orders DROP COLUMN old_flag;
+-- This is brief but blocks all concurrent access. Time it carefully.
+-- INSTEAD: Ignore the column in application code for one deploy, then drop.
+
+-- DANGER: ADD FOREIGN KEY (without NOT VALID):
+ALTER TABLE orders ADD CONSTRAINT fk_customer
+    FOREIGN KEY (customer_id) REFERENCES customers(id);
+-- This does a full scan of orders AND locks both tables.
+-- INSTEAD: Add with NOT VALID first, then VALIDATE separately.
+```
+
+THE ZERO-DOWNTIME FK PATTERN:
+
+```sql
+-- Step 1: Add FK without validating (instant, no scan):
+ALTER TABLE orders ADD CONSTRAINT fk_customer
+    FOREIGN KEY (customer_id) REFERENCES customers(id)
+    NOT VALID;
+
+-- Step 2: Validate the FK (ShareUpdateExclusiveLock, scans orders):
+-- This runs concurrently with reads and writes:
+ALTER TABLE orders VALIDATE CONSTRAINT fk_customer;
+```
+
+SETTING LOCK_TIMEOUT in migration sessions:
+
+```sql
+-- Always set this in your migration session before DDL:
+SET lock_timeout = '5s';   -- If we can't get the lock in 5 seconds, fail.
+-- This prevents your migration from joining a lock queue and blocking ALL
+-- subsequent queries that arrive after you.
+ALTER TABLE orders ADD COLUMN priority_score INT;
+```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm the schema change is in place:
+SELECT column_name, data_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_name = 'orders'
+ORDER BY ordinal_position;
+
+-- Confirm no unexpected lock waits occurred during migration:
+-- (check monitoring dashboard or pg_log for lock timeout errors)
+grep 'lock timeout\|deadlock' /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Rollback for each category:
+- Added column: `ALTER TABLE orders DROP COLUMN notes;`
+- Added constraint (NOT VALID): `ALTER TABLE orders DROP CONSTRAINT chk_...;`
+- Created index: `DROP INDEX CONCURRENTLY idx_orders_notes;`
+- Validated constraint: cannot unvalidate, but can DROP CONSTRAINT.
+Always document the exact DDL to reverse before running the forward migration.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: MINOR UPGRADE (PACKAGE UPGRADE)
+  File: 05_migrations/minor_upgrade_pg_upgrade.md
+================================================================================
+
+I want to clarify something that the file name implies incorrectly: pg_upgrade
+is for MAJOR version upgrades (14 → 15). Minor version upgrades (14.8 → 14.12)
+do NOT use pg_upgrade. They are a package upgrade followed by a restart.
+That's it. But there are still steps you should follow to do this safely.
+
+Minor releases fix bugs and security vulnerabilities in the same major version.
+They never change the data format, so no pg_upgrade is needed.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```bash
+# Current version:
+psql -c "SELECT version();"
+
+# What's the latest available minor version?
+apt-cache policy postgresql-15 | grep -i candidate
+
+# What changed in this minor release? (read before upgrading)
+# https://www.postgresql.org/docs/15/release.html
+
+# How long does a restart take? (measure in staging first)
+# Most PostgreSQL restarts take 2-10 seconds for the process cycle.
+# If you have long-running transactions, restart will wait for them to finish.
+
+# Check for active long-running transactions:
+SELECT pid, now() - xact_start AS txn_age, left(query, 80)
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+  AND now() - xact_start > interval '5 minutes'
+ORDER BY txn_age DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Take a backup before upgrading (even minor versions):**
+
+   ```bash
+   pgbackrest --stanza=main --type=diff backup
+   pgbackrest --stanza=main check
+   ```
+
+2. **Upgrade standbys FIRST, then the primary:**
+
+   The minor version should always be bumped on standbys before the primary.
+   PostgreSQL standbys can run a newer minor version than the primary — they're
+   compatible within the same major version. This lets you validate the upgrade
+   before touching the primary.
+
+   ```bash
+   # On EACH STANDBY, one at a time:
+   # Step 1: Stop PostgreSQL:
+   systemctl stop postgresql@15-main
+
+   # Step 2: Upgrade the packages:
+   apt-get install --only-upgrade postgresql-15 postgresql-client-15
+
+   # Step 3: Start PostgreSQL:
+   systemctl start postgresql@15-main
+
+   # Step 4: Verify standby came back and replication resumed:
+   psql -c "SELECT pg_is_in_recovery(), now() - pg_last_xact_replay_timestamp();"
+   # Confirm replica is streaming and lag is low.
+   # Monitor for 10-15 minutes before upgrading the next standby.
+   ```
+
+3. **Upgrade the PRIMARY (brief downtime window):**
+
+   ```bash
+   # Notify the team: primary restart in 5 minutes.
+
+   # Stop PostgreSQL gracefully (waits for active transactions to complete):
+   systemctl stop postgresql@15-main
+
+   # Upgrade packages:
+   apt-get install --only-upgrade postgresql-15 postgresql-client-15
+
+   # Start PostgreSQL:
+   systemctl start postgresql@15-main
+
+   # Confirm version:
+   psql -c "SELECT version();"
+   ```
+
+4. **Verify replication recovered after primary restart:**
+
+   ```sql
+   -- On PRIMARY:
+   SELECT application_name, state, replay_lag FROM pg_stat_replication;
+   -- All replicas should reconnect within 30-60 seconds.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# New minor version confirmed:
+psql -c "SELECT version();"
+
+# Application connectivity:
+pg_isready -h localhost -p 5432
+```
+
+```sql
+-- Spot check critical tables:
+SELECT count(*) FROM orders;
+SELECT count(*) FROM customers;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Minor version rollback is rarely needed (minor versions fix bugs, they don't
+introduce new data formats). If needed:
+
+```bash
+apt-get install postgresql-15=<old_version>   # pin to previous version
+systemctl restart postgresql@15-main
+```
+
+If data was somehow affected: restore from the pre-upgrade backup.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: PGLOGICAL MIGRATION RUNBOOK
+  File: 05_migrations/pglogical_migration_runbook.md
+================================================================================
+
+pglogical is a third-party logical replication extension that predates
+PostgreSQL's built-in logical replication (which arrived in PG 10). It's still
+used in environments that need features the built-in system doesn't provide:
+cross-major-version replication in PG 9.x environments, selective table
+filtering, multi-master setups, and replication from PostgreSQL 9.4+.
+
+The scenario where you'll most commonly see this: migrating from PostgreSQL 9.6
+or 10 to a modern version, where you want to use replication to minimise
+downtime but the built-in logical replication doesn't exist or has limitations
+on the old version.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Check if pglogical is installed on source:
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pglogical';
+
+-- Check wal_level and max_replication_slots:
+SHOW wal_level;             -- must be 'logical'
+SHOW max_replication_slots; -- must be > 0
+SHOW max_wal_senders;       -- must be > 0
+
+-- Track_commit_timestamp should be on for conflict detection:
+SHOW track_commit_timestamp;
+
+-- Check what pglogical version supports:
+SELECT pglogical.pglogical_version();
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install pglogical on SOURCE (old version) and TARGET (new version):**
+
+   ```bash
+   # Source (e.g., PostgreSQL 9.6):
+   apt-get install -y postgresql-9.6-pglogical
+
+   # Target (e.g., PostgreSQL 15):
+   apt-get install -y postgresql-15-pglogical
+   ```
+
+2. **Configure postgresql.conf on SOURCE:**
+
+   ```bash
+   # postgresql.conf on source:
+   wal_level = logical
+   max_replication_slots = 10
+   max_wal_senders = 10
+   shared_preload_libraries = 'pglogical'
+   track_commit_timestamp = on
+   ```
+
+   Restart the source PostgreSQL after these changes.
+
+3. **Create pglogical extension and provider node on SOURCE:**
+
+   ```sql
+   -- On SOURCE database:
+   CREATE EXTENSION pglogical;
+
+   SELECT pglogical.create_node(
+       node_name := 'provider',
+       dsn := 'host=<source_ip> port=5432 dbname=mydb user=replicator password=X'
+   );
+
+   -- Add all tables to the default replication set:
+   SELECT pglogical.replication_set_add_all_tables(
+       set_name := 'default',
+       schema_names := ARRAY['public'],
+       synchronize_data := true
+   );
+
+   -- Add all sequences:
+   SELECT pglogical.replication_set_add_all_sequences(
+       set_name := 'default',
+       schema_names := ARRAY['public'],
+       synchronize_data := true
+   );
+   ```
+
+4. **Prepare TARGET (schema copy):**
+
+   ```bash
+   # Copy schema from source:
+   pg_dump --schema-only -d sourcedb -h <source_ip> | psql -d targetdb
+   ```
+
+5. **Create pglogical extension and subscriber node on TARGET:**
+
+   ```sql
+   -- On TARGET database:
+   CREATE EXTENSION pglogical;
+
+   SELECT pglogical.create_node(
+       node_name := 'subscriber',
+       dsn := 'host=<target_ip> port=5432 dbname=mydb user=replicator password=X'
+   );
+
+   SELECT pglogical.create_subscription(
+       subscription_name := 'migration_sub',
+       provider_dsn := 'host=<source_ip> port=5432 dbname=mydb user=replicator password=X',
+       replication_sets := ARRAY['default'],
+       synchronize_structure := false,  -- we already copied schema
+       synchronize_data := true
+   );
+   ```
+
+6. **Monitor initial sync and ongoing replication:**
+
+   ```sql
+   -- Check subscription status on TARGET:
+   SELECT * FROM pglogical.show_subscription_status('migration_sub');
+
+   -- Check replication worker status:
+   SELECT * FROM pglogical.show_subscription_table_sync_status('migration_sub');
+   ```
+
+7. **Cutover** — same process as Runbook 04 (Logical Replication Cutover):
+   Stop writes to source, wait for lag to reach zero, advance sequences on
+   target, switch application, drop subscription.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Replication status is 'replicating':
+SELECT * FROM pglogical.show_subscription_status('migration_sub');
+
+-- Row counts match source:
+SELECT relname, n_live_tup FROM pg_stat_user_tables
+ORDER BY n_live_tup DESC LIMIT 10;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Drop the subscription on TARGET (source is unaffected):
+```sql
+SELECT pglogical.drop_subscription('migration_sub');
+```
+Source database continues running as-is. No data loss, no state change.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: ROLLBACK SCHEMA MIGRATION
+  File: 05_migrations/rollback_schema_migration.md
+================================================================================
+
+I have said this before and I will say it again: your rollback plan must be
+written before you run the migration. Not during. Not after. Before.
+
+This runbook is the framework for writing rollback procedures and for executing
+them when something goes wrong. The worst time to figure out how to rollback
+is when you're staring at a broken production database at 11 PM.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What schema changes have been applied recently?
+-- (If you're using a migration framework like Flyway or Liquibase,
+-- check the migration history table):
+SELECT installed_rank, version, description, installed_on, success
+FROM flyway_schema_history
+ORDER BY installed_rank DESC
+LIMIT 10;
+
+-- For Liquibase:
+SELECT id, author, dateexecuted, description, exectype
+FROM databasechangelog
+ORDER BY dateexecuted DESC LIMIT 10;
+
+-- If no framework: check DDL audit log (if pg_audit is enabled):
+SELECT log_time, command_tag, message
+FROM pgaudit.log
+WHERE command_tag IN ('ALTER TABLE','DROP TABLE','CREATE TABLE','CREATE INDEX')
+ORDER BY log_time DESC
+LIMIT 20;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+FRAMEWORK: Writing rollback before you migrate.
+
+For EVERY migration you write, answer these questions FIRST:
+
+```
+Migration: ALTER TABLE orders ADD COLUMN priority_level SMALLINT;
+Rollback:  ALTER TABLE orders DROP COLUMN priority_level;
+Risk:      Low. Column is nullable. Drop is instant.
+Test:      DROP COLUMN tested on staging. Takes 0.1s.
+
+Migration: ALTER TABLE orders ALTER COLUMN amount TYPE NUMERIC(14,4);
+Rollback:  ALTER TABLE orders ALTER COLUMN amount TYPE NUMERIC(10,2);
+Risk:      HIGH. Type change rewrites table. Requires maintenance window.
+Notes:     Data fits in both types (validated). Staging test: 4m 12s.
+           Application code must handle both types during rollout.
+
+Migration: CREATE INDEX CONCURRENTLY idx_orders_priority ON orders(priority_level);
+Rollback:  DROP INDEX CONCURRENTLY idx_orders_priority;
+Risk:      Low. CONCURRENTLY. No lock.
+```
+
+EXECUTING A ROLLBACK:
+
+CASE 1: Migration is still running (didn't finish).
+
+```sql
+-- Cancel the migration session (if it's a single transaction):
+SELECT pg_cancel_backend(<migration_pid>);
+-- Transaction rolls back automatically. Schema is unchanged.
+```
+
+CASE 2: Migration completed but caused a regression.
+
+```sql
+-- For reversible changes: execute the pre-written rollback DDL.
+-- Example: migration added a column, application is broken:
+SET lock_timeout = '5s';
+ALTER TABLE orders DROP COLUMN priority_level;
+```
+
+CASE 3: Migration completed and is NOT reversible (data was transformed).
+
+```sql
+-- Option A: Restore from backup (see Backup module Runbook 06-08).
+
+-- Option B: Fix-forward — write a new migration that corrects the problem.
+-- Sometimes faster than a restore, always the only option if you don't have
+-- a complete backup.
+
+-- Option C: Data extraction from a point-in-time recovery instance.
+-- Restore a PITR copy to just before the migration, extract the affected
+-- rows, reload into production.
+```
+
+ROLLBACK PATTERNS BY MIGRATION TYPE:
+
+```sql
+-- ADD COLUMN → DROP COLUMN
+ALTER TABLE orders DROP COLUMN IF EXISTS notes;
+
+-- RENAME COLUMN → RENAME BACK
+ALTER TABLE orders RENAME COLUMN note TO notes_old;
+
+-- ADD INDEX → DROP INDEX
+DROP INDEX CONCURRENTLY IF EXISTS idx_orders_notes;
+
+-- ADD CONSTRAINT → DROP CONSTRAINT
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS chk_amount_positive;
+
+-- ADD FOREIGN KEY → DROP FOREIGN KEY
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS fk_customer;
+
+-- CREATE TABLE → DROP TABLE
+DROP TABLE IF EXISTS order_audit CASCADE;
+
+-- ADD ENUM VALUE → (no direct rollback, must expand-contract)
+-- See Runbook 01.
+
+-- DROP TABLE → (no rollback without backup)
+-- This is why you NEVER DROP TABLE without a backup and without renaming first:
+ALTER TABLE orders_deprecated RENAME TO orders_backup_20240615;
+-- Wait 30 days. Confirm no one is using it. THEN drop.
+```
+
+ROLLBACK TESTING CHECKLIST (run before every production migration):
+
+```
+[ ] Rollback DDL written and reviewed.
+[ ] Rollback tested on staging database.
+[ ] Rollback time measured: _____ seconds.
+[ ] Application can run with BOTH old and new schema simultaneously?
+    YES = deploy application first, migrate schema, no rollback needed.
+    NO  = atomic migration window required.
+[ ] Data transformed during migration? If yes: can we accept the data loss?
+    If no data loss acceptable: PITR backup taken and verified before migration.
+```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After rollback: schema matches the expected pre-migration state:
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'orders'
+ORDER BY ordinal_position;
+
+-- Application smoke test passes:
+-- (Run your standard application health check against the database)
+```
+
+── ROLLBACK OF THE ROLLBACK ───────────────────────────────────────────────────
+
+If your rollback itself has a bug: this is why you test the rollback in staging.
+The fix-forward option always remains available. If you're in this situation —
+stop making changes, call for help, and communicate clearly about the current
+state.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 10: TABLESPACE MIGRATION PROCEDURE
+  File: 05_migrations/tablespace_migration_procedure.md
+================================================================================
+
+Tablespaces let you control where PostgreSQL stores files on disk. The default
+tablespace (pg_default) stores everything in the data directory. Custom
+tablespaces let you put high-I/O tables on NVMe, archive tables on spinning
+disks, or indexes on a separate volume from table data.
+
+You'll use this runbook when: migrating to new storage, separating index I/O
+from table I/O, or moving oversized objects off a nearly-full volume.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What tablespaces exist?
+SELECT
+    spcname                                                   AS tablespace_name,
+    pg_catalog.pg_tablespace_location(oid)                    AS location,
+    pg_size_pretty(pg_tablespace_size(oid))                   AS size,
+    pg_tablespace_size(oid)                                   AS size_bytes
+FROM pg_tablespace
+ORDER BY pg_tablespace_size(oid) DESC;
+
+-- What objects are in each tablespace?
+SELECT
+    spcname,
+    count(*)                                                  AS object_count,
+    pg_size_pretty(sum(pg_relation_size(c.oid)))              AS total_size
+FROM pg_class c
+JOIN pg_tablespace t ON c.reltablespace = t.oid
+WHERE c.relkind IN ('r', 'i')
+GROUP BY spcname
+ORDER BY sum(pg_relation_size(c.oid)) DESC;
+
+-- Disk usage on tablespace volumes:
+```
+
+```bash
+df -h   # check disk usage on all volumes
+lsblk   # block device layout
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Create the new tablespace on the new storage:**
+
+   ```bash
+   # Create the directory (must be owned by postgres):
+   mkdir -p /mnt/nvme_data/pg_tblspc
+   chown postgres:postgres /mnt/nvme_data/pg_tblspc
+   chmod 700 /mnt/nvme_data/pg_tblspc
+   ```
+
+   ```sql
+   -- Create the tablespace:
+   CREATE TABLESPACE fast_nvme LOCATION '/mnt/nvme_data/pg_tblspc';
+   ```
+
+2. **Move a single table to the new tablespace:**
+
+   ```sql
+   -- Requires AccessExclusiveLock — plan for brief downtime or low-traffic window:
+   SET lock_timeout = '10s';
+   ALTER TABLE public.orders SET TABLESPACE fast_nvme;
+   -- Duration: proportional to table size. ~1 minute per GB on local disk.
+   ```
+
+3. **Move all indexes on a table:**
+
+   ```sql
+   -- Get all index names for the table:
+   SELECT indexname FROM pg_indexes
+   WHERE tablename = 'orders' AND schemaname = 'public';
+
+   -- Move each index:
+   ALTER INDEX public.orders_pkey SET TABLESPACE fast_nvme;
+   ALTER INDEX public.idx_orders_status SET TABLESPACE fast_nvme;
+   -- Repeat for each index.
+   ```
+
+4. **Move an entire database's default tablespace:**
+
+   ```sql
+   -- All NEW objects in this database will use the new tablespace by default:
+   ALTER DATABASE mydb SET TABLESPACE fast_nvme;
+   -- Existing objects are NOT moved — they stay where they are.
+   -- This only affects newly created tables/indexes.
+   ```
+
+5. **Move all objects in a tablespace to another (batch migration):**
+
+   ```sql
+   -- Move everything from old_tablespace to fast_nvme:
+   -- PostgreSQL does not have ALTER TABLESPACE MOVE. Use this script:
+   DO $$
+   DECLARE
+       r RECORD;
+   BEGIN
+       FOR r IN
+           SELECT c.relname, n.nspname, c.relkind
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_tablespace t ON t.oid = c.reltablespace
+           WHERE t.spcname = 'old_tablespace'
+             AND c.relkind IN ('r', 'i')
+           ORDER BY pg_relation_size(c.oid) DESC
+       LOOP
+           IF r.relkind = 'r' THEN
+               EXECUTE format('ALTER TABLE %I.%I SET TABLESPACE fast_nvme',
+                              r.nspname, r.relname);
+           ELSIF r.relkind = 'i' THEN
+               EXECUTE format('ALTER INDEX %I.%I SET TABLESPACE fast_nvme',
+                              r.nspname, r.relname);
+           END IF;
+           RAISE NOTICE 'Moved: %.%', r.nspname, r.relname;
+       END LOOP;
+   END $$;
+   ```
+
+   Each ALTER TABLE/INDEX in the loop acquires and releases its lock
+   individually. Other objects remain accessible while one is being moved.
+
+6. **Drop the old tablespace (after verifying it's empty):**
+
+   ```sql
+   SELECT count(*) FROM pg_class
+   WHERE reltablespace = (SELECT oid FROM pg_tablespace WHERE spcname = 'old_tablespace');
+   -- Must return 0 before dropping.
+
+   DROP TABLESPACE old_tablespace;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm object is in new tablespace:
+SELECT relname, spcname
+FROM pg_class
+JOIN pg_tablespace ON pg_tablespace.oid = pg_class.reltablespace
+WHERE relname = 'orders';
+
+-- Confirm disk usage on new volume:
+SELECT pg_size_pretty(pg_tablespace_size('fast_nvme'));
+```
+
+```bash
+# OS-level confirmation:
+ls -la /mnt/nvme_data/pg_tblspc/
+du -sh /mnt/nvme_data/pg_tblspc/
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If the new tablespace has issues: move back with another ALTER TABLE SET
+TABLESPACE. The operation is symmetric and reversible. If the new disk fails
+mid-move: PostgreSQL will recover to the pre-move state on restart (the old
+file is preserved until the copy completes successfully).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 11: ZERO-DOWNTIME UPGRADE 11 TO 16
+  File: 05_migrations/zero_downtime_upgrade_11to16.md
+================================================================================
+
+This is the capstone runbook. Multi-version skip upgrade — PostgreSQL 11 all
+the way to 16 — with zero application downtime. This is the most complex
+migration scenario in this module and it pulls together everything: logical
+replication, cutover procedures, sequence management, extension upgrades, and
+rollback planning.
+
+I've done this exact migration twice in my career. Both times took 3-4 weeks
+of preparation for a 60-90 second actual cutover. The preparation is the work.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- On PostgreSQL 11 (source): pre-flight checklist
+
+-- 1. Confirm wal_level = logical (required for logical replication):
+SHOW wal_level;
+
+-- 2. Check for features removed or changed in PG 16:
+-- PG 12: WITH OIDS removed, recovery.conf removed.
+-- PG 13: logical replication of partitioned tables improved.
+-- PG 14: range types, multirange, improved VACUUM.
+-- PG 15: MERGE statement, improved logical replication.
+-- PG 16: pg_hba.conf changes, pg_stat_io, logical replication from standby.
+
+-- 3. Check for incompatible extensions:
+SELECT extname, extversion FROM pg_extension ORDER BY extname;
+-- Verify each extension has a PG 16-compatible version available.
+
+-- 4. Check for pg_upgrade incompatibilities (even if not using pg_upgrade):
+-- Install PG 16 binaries on a test system and run:
+-- pg_upgrade --check (from Runbook 05)
+
+-- 5. Check for large objects (not replicated by built-in logical replication):
+SELECT count(*) FROM pg_largeobject_metadata;
+-- If count > 0: add large object migration to the plan.
+
+-- 6. Identify all sequences (must be manually synced at cutover):
+SELECT schemaname, sequencename, last_value
+FROM pg_sequences WHERE schemaname = 'public';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+WEEK 1-2: BUILD THE TARGET CLUSTER
+
+1. **Provision PostgreSQL 16 server** with production-equivalent hardware.
+   Install all required extensions in their PG 16 versions.
+
+2. **Copy schema from PG 11 to PG 16:**
+
+   ```bash
+   # Use pg_dump from PG 16 binaries to read from PG 11 (downgrade-compatible):
+   /usr/lib/postgresql/16/bin/pg_dump \
+       --schema-only \
+       -h <pg11_host> \
+       -d mydb \
+       | psql -h <pg16_host> -d mydb
+   ```
+
+3. **Configure PG 11 as logical replication publisher:**
+
+   ```sql
+   -- On PG 11 (requires restart if wal_level wasn't already logical):
+   -- postgresql.conf:
+   -- wal_level = logical
+   -- max_replication_slots = 10
+
+   CREATE PUBLICATION upgrade_pub FOR ALL TABLES;
+   ```
+
+4. **Create subscription on PG 16:**
+
+   ```sql
+   -- On PG 16 target:
+   CREATE SUBSCRIPTION upgrade_sub
+       CONNECTION 'host=<pg11_host> dbname=mydb user=replicator password=X'
+       PUBLICATION upgrade_pub
+       WITH (copy_data = true, create_slot = true);
+   ```
+
+5. **Monitor initial sync** — can take hours for large databases:
+
+   ```sql
+   -- On PG 16: all tables should reach state = 'r' (ready):
+   SELECT subid, subname, pid, received_lsn,
+          count(*) FILTER (WHERE srsubstate = 'r') AS ready_tables,
+          count(*) AS total_tables
+   FROM pg_subscription
+   JOIN pg_subscription_rel ON pg_subscription_rel.srsubid = oid
+   JOIN pg_stat_subscription USING (subid)
+   GROUP BY subid, subname, pid, received_lsn;
+   ```
+
+WEEK 3: PARALLEL VALIDATION
+
+6. **Run validation queries against PG 16** while PG 11 is still primary:
+
+   ```sql
+   -- Row count comparison (run on both, should match):
+   SELECT relname, n_live_tup FROM pg_stat_user_tables
+   ORDER BY n_live_tup DESC LIMIT 20;
+
+   -- Functional validation (run application read queries against PG 16):
+   -- If you can route read-only traffic to PG 16, do so and monitor for errors.
+   ```
+
+7. **Test cutover procedure on staging** — full dress rehearsal:
+   - Time the write-stop to sync-confirmed window.
+   - Test sequence advance on target.
+   - Test application reconnect to PG 16.
+   - Test rollback (re-enable writes on PG 11).
+
+DAY OF CUTOVER:
+
+8. **Pre-cutover checks (30 minutes before window):**
+
+   ```sql
+   -- PG 16 replication lag is near zero:
+   SELECT now() - last_msg_receipt_time AS lag
+   FROM pg_stat_subscription WHERE subname = 'upgrade_sub';
+   -- Should be < 1 second.
+
+   -- No long-running transactions on PG 11:
+   SELECT count(*) FROM pg_stat_activity
+   WHERE state <> 'idle' AND now() - xact_start > interval '5 min';
+
+   -- PG 11 backup is current:
+   pgbackrest --stanza=main check
+   ```
+
+9. **EXECUTE CUTOVER:**
+
+   T+0: Stop application writes to PG 11.
+   ```sql
+   -- On PG 11:
+   REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM app_user;
+   SELECT pg_current_wal_lsn() AS final_lsn;  -- note this value
+   ```
+
+   T+5s: Wait for PG 16 to catch up to final_lsn.
+   ```sql
+   -- On PG 16: poll until confirmed_flush_lsn >= final_lsn:
+   SELECT confirmed_flush_lsn FROM pg_replication_slots
+   WHERE slot_name = 'upgrade_sub';
+   ```
+
+   T+10s: Advance sequences on PG 16.
+   ```sql
+   -- On PG 11: get current sequence values:
+   SELECT 'SELECT setval(''' || schemaname||'.'||sequencename||''', '||
+          (last_value + 10000) || ');'
+   FROM pg_sequences WHERE schemaname = 'public';
+   -- Execute each setval on PG 16.
+   ```
+
+   T+20s: Drop subscription on PG 16.
+   ```sql
+   DROP SUBSCRIPTION upgrade_sub;  -- PG 16 no longer needs the slot
+   ```
+
+   T+25s: Grant permissions on PG 16.
+   ```sql
+   GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
+   ```
+
+   T+30s: Switch application connection strings to PG 16.
+   T+60s: Confirm application is working on PG 16.
+   T+90s: Declare cutover complete.
+
+10. **Post-cutover: run ANALYZE on PG 16** — statistics from pg_dump don't
+    transfer; fresh stats are required:
+
+    ```bash
+    vacuumdb --all --analyze-in-stages -j 4
+    ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- PG 16 is primary:
+SELECT version();
+SELECT pg_is_in_recovery();  -- FALSE
+
+-- Application writes succeed:
+INSERT INTO orders (customer_id, status) VALUES (1, 'pending') RETURNING id;
+-- ID should be beyond any PG 11 IDs (sequences were advanced).
+
+-- No errors in application logs for 15 minutes post-cutover.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If cutover fails at any point before T+30s (before app switch):
+```sql
+-- Re-grant writes on PG 11:
+GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
+-- PG 11 is still the primary. Application never left it.
+-- Nothing was written to PG 16 during the failed cutover window.
+```
+
+If cutover fails AFTER T+30s (app is on PG 16, issues discovered):
+```sql
+-- Option A: fix-forward on PG 16 (preferred if issue is minor).
+-- Option B: repoint app to PG 11 — but any writes made to PG 16 are lost.
+--           This is acceptable only if the outage window allows it AND
+--           PG 16 has had minimal writes.
+-- Option C: use PITR on PG 11 to get it to the exact state of PG 16,
+--           repoint app back, lose the PG 16-only writes.
+```
+
+Rollback from T+30s onwards is expensive. This is why you rehearse, validate,
+and only declare the window open when you are confident.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+Migrations lab focuses on two things: doing schema changes correctly under
+realistic constraints, and executing and testing rollbacks. Every lab has a
+deliberate trap in it. Find the trap, handle it.
+
+── LAB 1: THE ENUM TRAP ─────────────────────────────────────────────────────
+
+The lab database has a `delivery_status` ENUM type with values:
+  ('pending', 'dispatched', 'in_transit', 'delivered')
+
+The business wants to add 'attempted_delivery' AFTER 'in_transit' AND remove
+'pending' because it's now handled by a separate service.
+
+  a) Add the new value correctly. What happens if you add it in a transaction?
+  b) Plan the removal of 'pending'. Write the full expand-contract DDL.
+  c) Execute the removal. Validate: no NULL delivery_status values remain.
+  d) What is the rollback for each step?
+  e) Bonus: Should this have been a VARCHAR with CHECK constraint? Make the
+     argument for and against. Present your conclusion.
+
+── LAB 2: LARGE TABLE ONLINE MIGRATION ──────────────────────────────────────
+
+The `events` table has 50 million rows and needs a NOT NULL column `source`
+(VARCHAR(50)) added, backfilled with 'legacy', and constrained.
+
+  a) Add the column with zero application downtime (show lock_timeout setting).
+  b) Estimate the backfill time from a sample of 100,000 rows.
+  c) Write the batched backfill script. Include pg_sleep throttling.
+  d) Apply NOT NULL using the NOT VALID → VALIDATE → SET NOT NULL pattern.
+  e) Verify: no NULLs, schema is correct, no Seq Scan regression on common
+     queries against events.
+
+Record: total elapsed time, peak WAL generation rate during backfill, any
+lock waits observed. Share results with the class.
+
+── LAB 3: ZERO-DOWNTIME SCHEMA CHANGE DECISION ──────────────────────────────
+
+You are given a list of 10 proposed migrations. For each one:
+  a) Classify the lock risk (zero/low/high).
+  b) Write the zero-downtime version if the naive version has high lock risk.
+  c) Write the rollback DDL.
+  d) State whether the migration can be deployed independently or requires
+     a coordinated application deploy.
+
+The 10 migrations include traps: a DROP COLUMN without rename-first, a FK
+without NOT VALID, a column type change that triggers a table rewrite, and
+three that are actually safe but look dangerous.
+
+── LAB 4: MAJOR VERSION UPGRADE DRY RUN ────────────────────────────────────
+
+The lab environment has a PostgreSQL 14 cluster. Your task is to execute a
+complete dry-run upgrade to PostgreSQL 16:
+
+  a) Install PostgreSQL 16 packages.
+  b) Run pg_upgrade --check. Fix any pre-flight failures.
+  c) Document what pg_upgrade --check warned you about.
+  d) Run the upgrade itself (lab environment, no traffic).
+  e) Run the post-upgrade ANALYZE and verify all extensions.
+  f) Time the full procedure. Calculate what downtime would be in production
+     given the lab database is 1/10th production size.
+  g) What would you use instead if production downtime had to be < 60 seconds?
+     Write the outline of the logical replication plan.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Here is what I want you to remember from this session, above everything else.
+
+A migration is a conversation between your database and your application. Both
+sides have to agree on the schema at the same time. When they don't — when the
+application is looking for a column that doesn't exist yet, or looking for a
+value in an ENUM that you removed — you have an outage.
+
+The expand-contract pattern solves this. You always expand first — add the new
+thing, let both sides coexist, then contract — remove the old thing only when
+nothing depends on it. This is not just a database pattern. It's a systems
+design principle. And it works for any stateful system, not just PostgreSQL.
+
+The other thing I want you to take away is this: the rollback is part of the
+migration. Not an afterthought. Not a fallback plan you'll "figure out if
+needed." It's a documented, tested, measured procedure that exists before the
+first byte of the forward migration runs. If you can't write the rollback, you
+are not ready to run the migration.
+
+Final thought. You have now been through five modules in this program. Incident
+response, high availability, backup and recovery, performance tuning, and
+migrations. These are not isolated topics. They are one system. The index you
+created in the performance module might block a migration. The migration you ran
+tonight might break replication. The backup you took before the upgrade is what
+saves you if the upgrade fails.
+
+See it as a system. Treat it as a system. And document everything — because
+the person who needs your documentation most might be you at 3 AM six months
+from now with no memory of why you made that decision.
+
+Good work today. See you next session.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — MIGRATIONS
+  The locks matter. The sequence matters. The rollback matters.
+================================================================================
+
+── LOCK RISK QUICK REFERENCE ────────────────────────────────────────────────
+
+  SAFE (no blocking):
+    ADD COLUMN nullable, no default          → ShareUpdateExclusiveLock
+    CREATE INDEX CONCURRENTLY               → ShareUpdateExclusiveLock
+    ADD CONSTRAINT NOT VALID                → ShareUpdateExclusiveLock
+    VALIDATE CONSTRAINT                     → ShareUpdateExclusiveLock
+    DROP INDEX CONCURRENTLY                 → ShareUpdateExclusiveLock
+
+  MEDIUM (brief block):
+    DROP COLUMN                             → AccessExclusiveLock (brief)
+    RENAME TABLE / RENAME COLUMN            → AccessExclusiveLock (brief)
+    ADD COLUMN with DEFAULT (PG 11+, non-volatile) → AccessExclusiveLock (very brief)
+
+  DANGEROUS (long block, may cause table rewrite):
+    ADD COLUMN with DEFAULT (PG < 11)       → AccessExclusiveLock + FULL REWRITE
+    ALTER COLUMN TYPE (most types)          → AccessExclusiveLock + FULL REWRITE
+    SET NOT NULL (without prior constraint) → AccessExclusiveLock + FULL SCAN
+    ADD FOREIGN KEY (without NOT VALID)     → ShareRowExclusiveLock + FULL SCAN
+    ADD UNIQUE CONSTRAINT                   → ShareRowExclusiveLock + FULL SCAN
+    VACUUM FULL / CLUSTER                   → AccessExclusiveLock + FULL REWRITE
+    TRUNCATE                                → AccessExclusiveLock
+
+── SAFE PATTERNS ────────────────────────────────────────────────────────────
+
+  Add NOT NULL (safe pattern):
+    1. ADD COLUMN nullable
+    2. Backfill in batches
+    3. ADD CONSTRAINT chk NOT VALID
+    4. VALIDATE CONSTRAINT chk
+    5. ALTER COLUMN SET NOT NULL
+    6. DROP CONSTRAINT chk
+
+  Add FK (safe pattern):
+    ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (...) NOT VALID;
+    ALTER TABLE t VALIDATE CONSTRAINT fk;
+
+  Add unique constraint (safe pattern):
+    CREATE UNIQUE INDEX CONCURRENTLY idx_unique ON t(col);
+    ALTER TABLE t ADD CONSTRAINT u UNIQUE USING INDEX idx_unique;
+
+  Change column type (safe pattern):
+    ADD COLUMN col_new <new_type>;
+    UPDATE in batches;
+    Rename old → col_deprecated, new → col;
+    DROP COLUMN col_deprecated (later);
+
+── SET BEFORE EVERY MIGRATION SESSION ───────────────────────────────────────
+
+    SET lock_timeout = '5s';       -- fail fast, don't queue
+    SET statement_timeout = '0';   -- don't cut off long backfills
+    SET idle_in_transaction_session_timeout = '5min';
+
+── LOGICAL REPLICATION CUTOVER CHECKLIST ────────────────────────────────────
+
+  Source prep:    wal_level=logical, CREATE PUBLICATION ... FOR ALL TABLES
+  Target prep:    Schema copy (pg_dump --schema-only), CREATE SUBSCRIPTION
+  Monitor lag:    SELECT now()-last_msg_receipt_time FROM pg_stat_subscription
+  At cutover:     REVOKE writes on source → wait for lag=0 → advance sequences
+                  → DROP SUBSCRIPTION → GRANT writes on target → switch app
+  Rollback:       GRANT writes back on source. App never saw target.
+
+── PG_UPGRADE CHECKLIST (major version) ─────────────────────────────────────
+
+  1. pg_upgrade --check  (dry run, fix warnings)
+  2. Install PG target version + all extensions
+  3. Full backup (pgbackrest)
+  4. Stop applications + old cluster
+  5. pg_upgrade [--link for speed]
+  6. Start new cluster
+  7. vacuumdb --all --analyze-in-stages -j 4
+  8. Recreate replication slots
+  9. Test, then drop old cluster
+
+── ENUM MIGRATION RULES ─────────────────────────────────────────────────────
+
+  ADD VALUE:     ALTER TYPE t ADD VALUE 'new_val' [BEFORE|AFTER 'existing'];
+                 NOT visible in same transaction. Commit first.
+  RENAME VALUE:  ALTER TYPE t RENAME VALUE 'old' TO 'new';   (PG 10+)
+  REMOVE VALUE:  Not supported. Must expand-contract with new type.
+  SAFER OPTION:  Use VARCHAR + CHECK CONSTRAINT instead of ENUM.
+
+── SEQUENCE SYNC AT CUTOVER ─────────────────────────────────────────────────
+
+  -- Get values from source:
+  SELECT 'SELECT setval('''||schemaname||'.'||sequencename||''', '||
+         (last_value+10000)||');'
+  FROM pg_sequences WHERE schemaname = 'public';
+  -- Run output on TARGET. +10000 is a buffer.
+
+================================================================================
+  END OF SESSION
+================================================================================

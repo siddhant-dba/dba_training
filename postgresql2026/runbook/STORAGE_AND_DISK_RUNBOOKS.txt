@@ -1,0 +1,1055 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: STORAGE AND DISK RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+Okay, at this point I'm going to stop announcing "this is the last session"
+because I've now been wrong about that twice. Apparently the curriculum
+committee keeps finding one more thing they're not willing to let you graduate
+without. This time it's storage. And honestly? Good. Because disk-full
+incidents are some of the ugliest, most unforgiving outages in this entire
+job, and they deserve their own dedicated session rather than getting
+squeezed into a corner of the incident response module.
+
+Here's why disk incidents are special. Most of the failure modes we've covered
+in this program degrade gracefully or give you warning. Replication lag grows
+slowly. Bloat accumulates over weeks. Connection pools fill up over minutes,
+and you get errors, not silence. Disk space is different. PostgreSQL needs
+free disk space to do almost anything — write WAL, write temp files, extend a
+table, even just start up cleanly after a crash. When the disk hits 100%,
+PostgreSQL doesn't degrade. It stops. Hard. And depending on exactly which
+file ran out of room when, the recovery path ranges from "restart and you're
+fine" to "we need to talk about backups."
+
+I had a case early in my career — a junior DBA's first solo incident, actually,
+and I was the senior backing them up remotely — where the data volume hit
+100% at 4 AM. PostgreSQL crashed mid-write. When we got it restarted, recovery
+itself needed disk space to replay WAL that the full disk didn't have. We were
+stuck in a chicken-and-egg problem: can't free space without the database
+running queries to find what to clean up, can't start the database without
+free space. We ended up SCP'ing files off to a temporary location from another
+host just to get enough headroom for WAL replay to complete. That's a stressful
+hour you don't want to repeat.
+
+Five runbooks today. Tight, focused, all about one resource: disk. Let's go.
+
+================================================================================
+  STORAGE LAYOUT CONTEXT — TWO MINUTES
+================================================================================
+
+Before the runbooks, you need the map of what's actually consuming space on
+a PostgreSQL data volume, because "disk is full" is not specific enough to
+act on. The usual suspects, by directory:
+
+```
+$PGDATA/base/<oid>/          — your actual table and index data (heap + indexes)
+$PGDATA/base/<oid>/pgsql_tmp/ — temporary files from sorts/hashes that spilled
+$PGDATA/pg_wal/               — write-ahead log segments (16MB each by default)
+$PGDATA/pg_wal/archive_status/ — tiny marker files, rarely a space problem itself
+$PGDATA/pg_logical/            — logical replication slot state, can grow if
+                                  a logical subscriber falls behind
+$PGDATA/pg_xact/               — transaction commit status, grows slowly,
+                                  shrinks as old transactions are no longer needed
+$PGDATA/log/ or external       — PostgreSQL's own text/csv logs, if logging_collector
+  log directory                  writes inside the data directory (often it's
+                                  external — check your log_directory setting)
+```
+
+The single most useful diagnostic habit: NEVER assume which directory is
+growing. Always measure. "Disk is full" could be WAL accumulation, a runaway
+temp file, an actual data growth trend that finally caught up to you, or a
+completely unrelated process on the same volume (yes, that happens — someone's
+log shipping agent fills the same disk PostgreSQL lives on).
+
+Let's build the runbooks.
+
+================================================================================
+  RUNBOOK 01: DISK USAGE > 95 PERCENT
+  File: 09_storage_disk/disk_usage_gt_95_percent.md
+================================================================================
+
+We touched 85% in the incident response module as the early-warning threshold.
+This runbook is the next stage up — past 95%, where you are no longer doing
+proactive capacity management, you are doing acute incident response, and the
+window before PostgreSQL refuses writes or crashes outright is measured in
+minutes, not hours.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Confirm the actual numbers — don't trust a single dashboard reading:
+df -h
+
+# Which filesystem is critical? Identify the mount point PGDATA lives on:
+df -h $(psql -At -c "SHOW data_directory;")
+
+# Break down usage within the data directory, largest first:
+du -sh $(psql -At -c "SHOW data_directory;")/* 2>/dev/null | sort -rh | head -20
+
+# Specifically check the big three culprits:
+du -sh $(psql -At -c "SHOW data_directory;")/pg_wal/
+du -sh $(psql -At -c "SHOW data_directory;")/base/*/pgsql_tmp/ 2>/dev/null
+du -sh $(psql -At -c "SHOW data_directory;")/base/
+
+# Is there a SEPARATE filesystem for WAL? (best practice — check if your
+# environment has this; if so, WAL filling up won't take down the data disk)
+mount | grep pg_wal
+```
+
+```sql
+-- From inside PostgreSQL: confirm it can still write at all.
+-- A simple write test tells you how close to total failure you actually are:
+CREATE TABLE IF NOT EXISTS disk_space_canary (id int);
+INSERT INTO disk_space_canary VALUES (1);
+DROP TABLE disk_space_canary;
+-- If this fails with "No space left on device" — you are already past the edge.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+*** INSTRUCTOR WARNING ***
+At > 95%, do not run anything that GENERATES more data before you've freed
+space. That includes VACUUM FULL (writes a full new copy before dropping the
+old one), CREATE INDEX (writes a new index file), and even regular VACUUM in
+some cases (writes WAL for the cleanup itself). Your first moves must be pure
+space reclamation, not "fixes" that temporarily need MORE room.
+
+1. **Identify and remove orphaned temp files first — this is the safest,
+   fastest win because temp files are disposable by definition:**
+
+   ```bash
+   # List temp files and the PIDs that own them:
+   ls -la $(psql -At -c "SHOW data_directory;")/base/*/pgsql_tmp/ 2>/dev/null
+
+   # Cross-reference each PID against currently running backends:
+   psql -c "SELECT pid, state, query_start FROM pg_stat_activity;"
+
+   # ONLY delete temp files whose owning PID is NOT in the active list above —
+   # those belong to crashed or already-completed queries:
+   # (PostgreSQL normally cleans these up itself on completion/crash recovery,
+   # but a hard crash can leave orphans)
+   rm $(data_dir)/base/<oid>/pgsql_tmp/pgsql_tmp<stale_pid>.<n>
+   ```
+
+2. **If WAL is the culprit — diagnose WHY before deleting anything from
+   pg_wal directly (you should almost never manually delete WAL files):**
+
+   ```sql
+   -- Is a replication slot retaining WAL?
+   SELECT slot_name, active,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+              AS retained
+   FROM pg_replication_slots
+   ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC NULLS LAST;
+
+   -- Is WAL archiving failing, preventing recycling?
+   SELECT last_archived_time, last_failed_time, failed_count
+   FROM pg_stat_archiver;
+   ```
+
+   ```sql
+   -- If an inactive slot is the cause and you've confirmed with its owner
+   -- it's safe to drop:
+   SELECT pg_drop_replication_slot('orphaned_slot_name');
+
+   -- If archiving is broken: fix the archive_command (see backup module
+   -- Runbook 09), then force a checkpoint to trigger recycling of WAL that's
+   -- now safely archived:
+   CHECKPOINT;
+   ```
+
+   This is exactly the same diagnostic path as the incident response module's
+   WAL accumulation runbook — disk-full from WAL is a downstream symptom of
+   that same root cause, just at a more acute stage.
+
+3. **If table/index data growth is the actual cause (not WAL, not temp files)
+   — you need either more space or to remove data, and there's no shortcut:**
+
+   ```bash
+   # Extend the volume if you're in a cloud/LVM environment — this is
+   # almost always faster and safer than trying to shrink the database
+   # under pressure:
+
+   # AWS EBS example — extend then grow the filesystem online:
+   aws ec2 modify-volume --volume-id vol-XXXXXXXX --size <new_size_gb>
+   # Wait for state to be "optimizing" or "completed", then:
+   growpart /dev/nvme1n1 1          # if using a partition
+   resize2fs /dev/nvme1n1p1         # ext4
+   # or: xfs_growfs /mount/point    # if XFS
+   ```
+
+   ```sql
+   -- If extending storage isn't immediately possible, identify what you
+   -- could safely archive/drop — old partitions are the cleanest win:
+   SELECT inhrelid::regclass AS partition_name,
+          pg_size_pretty(pg_total_relation_size(inhrelid)) AS size
+   FROM pg_inherits
+   WHERE inhparent = 'events'::regclass
+   ORDER BY pg_total_relation_size(inhrelid) DESC;
+
+   -- Dropping an old partition is instant and frees space immediately,
+   -- unlike DELETE which only creates dead tuples that still need vacuuming:
+   DROP TABLE events_2022_01;
+   ```
+
+4. **Emergency last resort — move WAL or specific large objects to a
+   different volume temporarily, ONLY if extending storage truly isn't
+   possible in time:**
+
+   ```bash
+   # This requires a brief outage to relocate pg_wal safely.
+   systemctl stop postgresql@15-main
+   mv $(data_dir)/pg_wal /mnt/emergency_volume/pg_wal
+   ln -s /mnt/emergency_volume/pg_wal $(data_dir)/pg_wal
+   systemctl start postgresql@15-main
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   This is genuinely a last resort, not a standard tool in your kit. It works
+   in a true emergency but you are now running with WAL on a different
+   filesystem than your data, with different I/O characteristics, different
+   backup coverage assumptions, and a symlink that someone needs to remember
+   exists. Schedule a proper fix (real volume extension, or a planned
+   tablespace move per the migrations module) as soon as the immediate fire
+   is out.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+df -h $(psql -At -c "SHOW data_directory;")
+# Confirm usage has dropped to a sustainable level (target: < 80%).
+```
+
+```sql
+-- Confirm PostgreSQL can write again:
+CREATE TABLE disk_recovery_check (id int);
+DROP TABLE disk_recovery_check;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Dropping old partitions or confirmed-orphaned temp files is not reversible —
+that's the point, you're reclaiming space. If you relocated pg_wal via symlink
+as an emergency measure, plan the proper migration back to a permanent
+location during a maintenance window using the tablespace migration runbook
+from the migrations module; don't leave the symlink as the permanent state.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: PG_FILENODE TO OBJECT MAPPING
+  File: 09_storage_disk/pg_filenode_to_object_mapping.md
+================================================================================
+
+This is the runbook you reach for when `du` tells you a specific FILE on
+disk is enormous, but you need to know which TABLE or INDEX that file
+actually belongs to. This happens more than you'd think — disk monitoring
+tools report filesystem paths, not PostgreSQL object names, and translating
+between the two under pressure is a skill worth having cold.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# You've found a large file on disk via du/ncdu. It looks like this:
+# /var/lib/postgresql/15/main/base/16384/2674193
+# The path structure is: base/<database_oid>/<relfilenode>
+# Sometimes with a segment suffix: 2674193.1, 2674193.2 (files split at 1GB)
+
+ls -la $(psql -At -c "SHOW data_directory;")/base/16384/2674193*
+```
+
+```sql
+-- Step 1: which database does OID 16384 correspond to?
+SELECT datname FROM pg_database WHERE oid = 16384;
+
+-- Step 2: connect to THAT specific database (filenodes are only meaningful
+-- within their own database's catalog), then resolve the relfilenode:
+\c that_database_name
+
+SELECT
+    c.relname,
+    n.nspname AS schema_name,
+    c.relkind,
+    pg_size_pretty(pg_relation_size(c.oid)) AS size
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE pg_relation_filenode(c.oid) = 2674193;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **The reverse direction is just as useful — given an object name, find
+   its file on disk** (useful for targeted backup, manual inspection, or
+   confirming a VACUUM/REINDEX actually changed the physical file):
+
+   ```sql
+   SELECT
+       pg_relation_filepath('public.orders') AS heap_file_path,
+       pg_relation_filenode('public.orders') AS relfilenode;
+
+   -- For an index specifically:
+   SELECT pg_relation_filepath('public.orders_pkey');
+   ```
+
+2. **Understand relkind so you know what TYPE of object you're looking at:**
+
+   ```
+   relkind values:
+     r — ordinary table
+     i — index
+     S — sequence
+     t — TOAST table (see below — very commonly the mystery large file)
+     m — materialized view
+     p — partitioned table (no physical file of its own — children have files)
+     I — partitioned index (same — children have files)
+   ```
+
+3. **TOAST tables are the most common "mystery large file" scenario** —
+   when a row contains large values (big TEXT, JSONB, BYTEA columns) that
+   exceed about 2KB, PostgreSQL transparently moves them out of the main
+   heap into a separate TOAST table you didn't create and don't see in `\dt`:
+
+   ```sql
+   -- Find the TOAST table associated with a regular table:
+   SELECT
+       c.relname AS main_table,
+       t.relname AS toast_table,
+       pg_size_pretty(pg_relation_size(t.oid)) AS toast_size,
+       pg_size_pretty(pg_relation_size(c.oid)) AS main_table_size
+   FROM pg_class c
+   JOIN pg_class t ON t.oid = c.reltoastrelid
+   WHERE c.relname = 'orders';
+
+   -- Or go the OTHER direction — given a mystery pg_toast.* relation,
+   -- find its parent table:
+   SELECT c.relname AS parent_table
+   FROM pg_class toast
+   JOIN pg_class c ON c.reltoastrelid = toast.oid
+   WHERE toast.relname = 'pg_toast_16500';   -- the name you found
+   ```
+
+4. **For segmented files (relfilenode.1, relfilenode.2, etc.) — confirm
+   total object size accounts for ALL segments, not just the first:**
+
+   ```bash
+   # Each segment is capped at 1GB (configurable at compile time, but 1GB
+   # is the standard default). A 5.3GB table shows as:
+   # 2674193, 2674193.1, 2674193.2, 2674193.3, 2674193.4, 2674193.5
+   ls -la $(data_dir)/base/16384/2674193*
+   du -ch $(data_dir)/base/16384/2674193* | tail -1
+   ```
+
+5. **Cross-check with pg_stat_file for low-level file metadata** (requires
+   superuser or pg_read_server_files membership):
+
+   ```sql
+   SELECT * FROM pg_stat_file(
+       pg_relation_filepath('public.orders')
+   );
+   -- Returns: size, access/modification/change timestamps, isdir
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm your mapping is correct by checking sizes match:
+SELECT pg_size_pretty(pg_relation_size('public.orders'));
+```
+
+```bash
+du -sh $(data_dir)/base/16384/$(psql -At -c \
+    "SELECT pg_relation_filenode('public.orders');")*
+# The two sizes should agree (within rounding/page alignment).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+This runbook is purely diagnostic — read-only queries against system
+catalogs and filesystem inspection. No rollback applicable. Never manually
+edit or delete files identified through this process without going through
+the proper SQL-level operation (DROP TABLE, VACUUM, etc.) — direct filesystem
+manipulation of live PostgreSQL files will corrupt the database.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: SLOW DISK I/O
+  File: 09_storage_disk/slow_disk_io.md
+================================================================================
+
+We covered I/O saturation as a symptom in the incident response and
+performance modules — high %util, queries waiting on IO wait events. This
+runbook goes one level deeper: distinguishing "the disk is genuinely slow
+hardware/storage-tier" from "the disk is fine but PostgreSQL is asking too
+much of it," because the fixes are completely different.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Baseline device-level performance characteristics:
+iostat -x 1 10
+# Key columns:
+#   %util   — saturation. Consistently > 80% means the device is the bottleneck.
+#   await   — average ms per I/O request (queue + service time).
+#             > 10ms is concerning for SSD/NVMe. > 20-30ms is concerning even
+#             for spinning disk on a database workload.
+#   r_await / w_await — split read vs write latency; tells you which
+#             direction is hurting.
+#   svctm   — deprecated in modern iostat but if present, raw service time
+#             (without queueing) — compare against await to see queue depth impact.
+
+# Is this device shared with other tenants/workloads? (cloud, virtualized,
+# or shared SAN storage)
+lsblk
+cat /sys/block/<device>/queue/rotational   # 0 = SSD/NVMe, 1 = spinning
+
+# Raw, synthetic test of the underlying storage (run when you can tolerate
+# some load — NOT against a live production volume during business hours
+# without coordination):
+fio --name=randwrite --ioengine=libaio --rw=randwrite --bs=8k --size=1G \
+    --numjobs=4 --runtime=30 --group_reporting --directory=/tmp/fiotest
+```
+
+```sql
+-- From inside PostgreSQL: how much of current wait time is I/O vs other causes?
+SELECT wait_event_type, wait_event, count(*)
+FROM pg_stat_activity
+WHERE state = 'active'
+GROUP BY wait_event_type, wait_event
+ORDER BY count(*) DESC;
+
+-- Checkpoint I/O burden — is the database itself generating the I/O storm?
+SELECT
+    checkpoints_timed, checkpoints_req,
+    checkpoint_write_time, checkpoint_sync_time,
+    buffers_checkpoint, buffers_backend
+FROM pg_stat_bgwriter;
+-- High buffers_backend relative to buffers_checkpoint/buffers_clean means
+-- backends are being forced to write dirty pages themselves because bgwriter
+-- and checkpointer can't keep up — a strong signal of genuine I/O pressure
+-- rather than a single bad query.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Distinguish "storage is genuinely slow" from "PostgreSQL is asking
+   too much" using the await number against your storage tier's known
+   capability:**
+
+   ```
+   Reference expectations (rough, varies by exact hardware/cloud tier):
+     Local NVMe SSD:        await should be < 1-2ms typically
+     Network-attached SSD
+       (EBS gp3, etc.):      await 1-5ms is normal, > 10ms worth investigating
+     Network-attached SSD
+       under-provisioned
+       IOPS (e.g. gp2 burst
+       exhausted):           await can spike to 20-50ms+ — check burst balance
+     Spinning disk (HDD):    await 5-15ms is typical, > 30ms is bad
+
+   If await is far above what your storage TIER should deliver: this is an
+   infrastructure problem (under-provisioned IOPS, noisy neighbor, failing
+   disk) — escalate to infra/cloud team, this isn't something tuning
+   PostgreSQL parameters will fix.
+
+   If await is roughly in line with the tier's normal range but %util is
+   still pegged at 100%: PostgreSQL is generating MORE I/O requests than this
+   tier can absorb even at normal latency — this IS something you can affect
+   from the database side.
+   ```
+
+2. **Check cloud burst-balance exhaustion specifically — this is an
+   extremely common silent cause that looks identical to "disk got slow for
+   no reason":**
+
+   ```bash
+   # AWS EBS gp2/gp3 burst balance (CloudWatch metric, or via instance):
+   aws cloudwatch get-metric-statistics \
+       --namespace AWS/EBS \
+       --metric-name BurstBalance \
+       --dimensions Name=VolumeId,Value=vol-XXXXXXXX \
+       --start-time $(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%S) \
+       --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+       --period 300 --statistics Average
+   ```
+
+   If burst balance hit zero: the volume has been throttled to its baseline
+   IOPS, which can be a fraction of what it was delivering before. The fix
+   is provisioning more baseline IOPS (gp3 lets you set this directly) or
+   moving to a non-burstable tier (io2, or provisioned IOPS).
+
+3. **If PostgreSQL-side demand is the actual cause — reduce checkpoint-driven
+   I/O spikes:**
+
+   ```sql
+   -- If checkpoints_req >> checkpoints_timed, checkpoints are being forced
+   -- too often, causing I/O bursts instead of smooth, spread-out writes:
+   ALTER SYSTEM SET max_wal_size = '4GB';      -- raise from whatever it is
+   ALTER SYSTEM SET checkpoint_completion_target = 0.9;  -- spread writes out
+   SELECT pg_reload_conf();
+   ```
+
+4. **Reduce autovacuum's I/O footprint if it's competing with foreground
+   query I/O during business hours:**
+
+   ```sql
+   ALTER SYSTEM SET autovacuum_vacuum_cost_delay = 10;  -- throttle more
+   SELECT pg_reload_conf();
+   -- Tradeoff: vacuum takes longer to complete, but spreads its I/O impact
+   -- more gently across time instead of bursting.
+   ```
+
+5. **Separate WAL onto its own volume if it currently shares a disk with
+   table data** — this is one of the highest-leverage storage architecture
+   decisions you can make, because WAL writes are sequential and latency-
+   sensitive (every commit waits on a WAL flush), while heap/index I/O is
+   much more random-access:
+
+   ```bash
+   # Requires a maintenance window. Mount a new volume, then:
+   systemctl stop postgresql@15-main
+   rsync -av $(data_dir)/pg_wal/ /mnt/new_wal_volume/pg_wal/
+   rm -rf $(data_dir)/pg_wal
+   ln -s /mnt/new_wal_volume/pg_wal $(data_dir)/pg_wal
+   systemctl start postgresql@15-main
+   ```
+
+6. **If query patterns themselves are driving excessive reads (cache
+   misses), the fix isn't storage — it's the performance tuning module's
+   territory:** shared_buffers sizing, missing indexes causing sequential
+   scans, or bloat inflating the amount of data that has to be read for the
+   same logical query. Cross-reference Runbook 04 (slow_query_investigation)
+   from the performance tuning module if I/O demand looks abnormally high
+   relative to your data size and workload.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# %util should trend back toward normal range, await should drop:
+iostat -x 1 10
+```
+
+```sql
+-- backend-forced writes should decrease relative to clean/checkpoint writes:
+SELECT buffers_checkpoint, buffers_clean, buffers_backend
+FROM pg_stat_bgwriter;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Checkpoint and autovacuum parameter changes: revert via
+`ALTER SYSTEM RESET <param>; SELECT pg_reload_conf();` — no restart needed.
+A WAL volume relocation done via stop/rsync/symlink/start can be reversed
+the same way in the opposite direction, during another maintenance window.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: TABLESPACE FULL
+  File: 09_storage_disk/tablespace_full.md
+================================================================================
+
+This is a more specific case than the general disk-full runbook: you have
+MULTIPLE tablespaces (we covered creating and migrating them in the migrations
+module), and one of them — not necessarily the main data directory — has run
+out of room. The diagnostic path is similar, but the fix is scoped to a
+specific tablespace, which is both easier (you know exactly which volume) and
+sometimes trickier (you can't just "add space to PGDATA" if the full
+tablespace is a separate, smaller dedicated volume by design).
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm tablespace layout and current sizes:
+SELECT
+    spcname,
+    pg_tablespace_location(oid) AS filesystem_path,
+    pg_size_pretty(pg_tablespace_size(oid)) AS current_size
+FROM pg_tablespace
+ORDER BY pg_tablespace_size(oid) DESC;
+```
+
+```bash
+# Check actual filesystem usage at each tablespace's underlying path:
+for path in $(psql -At -c \
+    "SELECT pg_tablespace_location(oid) FROM pg_tablespace
+     WHERE pg_tablespace_location(oid) != '';"); do
+    echo "=== $path ==="
+    df -h "$path"
+done
+```
+
+```sql
+-- Which objects live in the full tablespace, sorted by size?
+SELECT
+    c.relname,
+    n.nspname,
+    c.relkind,
+    pg_size_pretty(pg_relation_size(c.oid)) AS size
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE t.spcname = 'fast_nvme'   -- the full tablespace's name
+ORDER BY pg_relation_size(c.oid) DESC
+LIMIT 20;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Confirm whether new objects are still being directed to this
+   tablespace by default — if so, stop the bleeding first:**
+
+   ```sql
+   SELECT setting FROM pg_settings WHERE name = 'default_tablespace';
+   -- Or check per-database:
+   SELECT datname, dattablespace::regclass
+   FROM pg_database WHERE datname = current_database();
+   ```
+
+   ```sql
+   -- If this full tablespace is the default, temporarily redirect new
+   -- object creation elsewhere while you resolve the space issue:
+   ALTER DATABASE mydb SET TABLESPACE pg_default;
+   -- Note: existing objects already in the full tablespace are NOT moved
+   -- by this — it only affects where NEW objects land.
+   ```
+
+2. **Move the largest, least-critical objects OUT of the full tablespace
+   to relieve immediate pressure** — exactly the same mechanic as the
+   migrations module's tablespace migration runbook, just applied urgently:
+
+   ```sql
+   SET lock_timeout = '10s';
+   ALTER TABLE public.archive_logs SET TABLESPACE pg_default;
+   -- This requires AccessExclusiveLock and enough free space in the TARGET
+   -- tablespace to hold a full copy during the move — verify pg_default
+   -- (or wherever you're moving to) actually has room first.
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Moving a table OUT of a full tablespace still requires writing the full
+   table to the DESTINATION tablespace before the source copy is dropped.
+   If your destination is also tight on space, you can make things worse,
+   not better. Always verify free space at the destination before starting
+   the move, not just at the source.
+
+3. **If no tablespace has room to receive a move, and you can't immediately
+   extend the underlying volume — identify space that can be reclaimed
+   in-place instead:**
+
+   ```sql
+   -- Drop old partitions if this tablespace holds partitioned time-series data:
+   SELECT inhrelid::regclass, pg_size_pretty(pg_total_relation_size(inhrelid))
+   FROM pg_inherits WHERE inhparent = 'events'::regclass
+   ORDER BY pg_total_relation_size(inhrelid) DESC;
+   DROP TABLE events_2022_03;   -- instant space reclamation, no rewrite needed
+
+   -- Or identify heavily bloated objects where VACUUM/pg_repack would help —
+   -- but remember the earlier warning: these operations need SOME headroom
+   -- to work with, so this is a secondary option, not your first move at
+   -- near-zero free space.
+   ```
+
+4. **Extend the underlying volume for this specific tablespace** — usually
+   the cleanest permanent fix, identical mechanics to extending the main
+   data volume, just pointed at a different mount:
+
+   ```bash
+   # Example: tablespace lives on a dedicated EBS volume:
+   aws ec2 modify-volume --volume-id vol-YYYYYYYY --size <new_size_gb>
+   growpart /dev/nvme2n1 1
+   resize2fs /dev/nvme2n1p1
+   ```
+
+5. **Once space is restored, revert any temporary default_tablespace
+   redirection from step 1:**
+
+   ```sql
+   ALTER DATABASE mydb SET TABLESPACE fast_nvme;
+   -- Only after confirming the underlying volume actually has headroom again.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SELECT spcname, pg_size_pretty(pg_tablespace_size(oid))
+FROM pg_tablespace ORDER BY pg_tablespace_size(oid) DESC;
+```
+
+```bash
+df -h $(psql -At -c \
+    "SELECT pg_tablespace_location(oid) FROM pg_tablespace
+     WHERE spcname = 'fast_nvme';")
+# Confirm usage is back to a sustainable level.
+```
+
+```sql
+-- Confirm writes to objects in this tablespace succeed again:
+INSERT INTO public.some_table_in_that_tablespace DEFAULT VALUES;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Tablespace moves (ALTER TABLE ... SET TABLESPACE) are symmetric and reversible
+by moving the object back, provided the original location now has room.
+Dropped partitions are not reversible — restore from backup if a partition
+was dropped in error. Volume extensions are not reversible (and don't need
+to be — more space is never the problem).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: UNCONTROLLED LOG GROWTH
+  File: 09_storage_disk/uncontrolled_log_growth.md
+================================================================================
+
+This is distinct from the monitoring module's log ROTATION FAILURE runbook,
+though they're related. Rotation failure is "logrotate isn't running."
+Uncontrolled growth is the broader problem: even with rotation working
+correctly, your logs are growing faster than your rotation/retention policy
+accounts for, and you're either filling disk anyway or accumulating logs
+indefinitely because nobody set a sane retention limit in the first place.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# How large is the log directory right now, and how fast is it growing?
+du -sh /var/log/postgresql/
+ls -la /var/log/postgresql/ | sort -k5 -rn | head -10
+
+# Measure actual growth rate — take two snapshots:
+du -sb /var/log/postgresql/ > /tmp/log_size_t1.txt
+sleep 300   # wait 5 minutes
+du -sb /var/log/postgresql/ > /tmp/log_size_t2.txt
+diff /tmp/log_size_t1.txt /tmp/log_size_t2.txt
+# Calculate bytes/5min, extrapolate to bytes/day.
+```
+
+```sql
+-- What's actually driving high log volume? Check verbosity settings:
+SELECT name, setting FROM pg_settings
+WHERE name IN (
+    'log_min_duration_statement', 'log_statement', 'log_min_messages',
+    'log_min_error_statement', 'log_lock_waits', 'log_temp_files',
+    'log_autovacuum_min_duration', 'log_checkpoints', 'log_connections'
+)
+ORDER BY name;
+```
+
+```bash
+# Sample the actual log content to see what's dominating line count:
+tail -1000 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    | grep -oP '(LOG|ERROR|WARNING|STATEMENT|DETAIL):' \
+    | sort | uniq -c | sort -rn
+
+# Is one specific repeating message flooding the log?
+tail -5000 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    | sed -E 's/[0-9]+/N/g' \
+    | sort | uniq -c | sort -rn | head -10
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Identify the specific setting causing excess volume** — the usual
+   suspects, roughly in order of how much volume they typically generate:
+
+   ```
+   log_statement = 'all'
+     → Logs EVERY statement, including trivial SELECTs. Enormous volume on
+       any non-trivial OLTP workload. Almost never appropriate for production
+       long-term — use log_min_duration_statement instead to log only slow
+       queries.
+
+   log_min_duration_statement set very low (e.g. 0 or 10ms)
+     → Logs nearly every query as "slow." Fine briefly for an investigation,
+       disastrous as a permanent setting on a busy system.
+
+   log_lock_waits = on with frequent lock contention
+     → Each wait generates a log entry. If lock contention is itself the
+       underlying problem (performance module territory), fixing THAT
+       reduces log volume as a side effect.
+
+   log_temp_files = 0 (logs ALL temp files, even tiny ones)
+     → Can be very chatty on a system doing lots of small sorts. Consider
+       raising the threshold to only log temp files above a meaningful size
+       (the parameter takes a size in kB, 0 means "log all").
+
+   log_autovacuum_min_duration = 0 on a database with many small, frequently-
+   vacuumed tables
+     → Logs every single autovacuum run, even sub-second ones on tiny tables.
+   ```
+
+2. **Tune the verbosity to a sustainable level — this is almost always the
+   actual fix, not bigger disks or more aggressive rotation:**
+
+   ```sql
+   ALTER SYSTEM SET log_min_duration_statement = '500ms';  -- only slow queries
+   ALTER SYSTEM SET log_temp_files = '10240';  -- only log temp files > 10MB
+   ALTER SYSTEM SET log_autovacuum_min_duration = '1s';  -- skip trivial vacuums
+   SELECT pg_reload_conf();
+   ```
+
+3. **If a SPECIFIC repeating error/warning is flooding the log (common
+   cause: a misbehaving application retrying a failing query thousands of
+   times per minute) — fix the actual application bug, but in the interim,
+   reduce log noise:**
+
+   ```bash
+   # Identify the exact repeating message and its source:
+   grep -c "specific recurring error text" \
+       /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+   # If this number is in the tens of thousands — you've found your volume
+   # driver. Escalate to the application team; this is almost never a
+   # database-side fix, it's a client retrying something broken.
+   ```
+
+4. **Set a hard retention policy so log volume has a ceiling regardless of
+   daily generation rate, rather than relying purely on rotation timing:**
+
+   ```bash
+   # /etc/logrotate.d/postgresql — size-based rotation as a backstop,
+   # in ADDITION to time-based, so a sudden volume spike can't blow past
+   # your daily rotation before it triggers:
+   /var/log/postgresql/*.log {
+       size 500M          # rotate immediately if a file hits 500MB,
+                           # regardless of the daily schedule
+       daily
+       rotate 14
+       compress
+       delaycompress
+       missingok
+       notifempty
+       sharedscripts
+       postrotate
+           pg_ctlcluster 15 main reload
+       endscript
+   }
+   ```
+
+5. **For PostgreSQL's own internal log rotation (if not using logrotate),
+   set rotation_size as a hard backstop too:**
+
+   ```bash
+   # postgresql.conf:
+   log_rotation_size = 100MB   # rotate immediately at this size, regardless
+                                # of log_rotation_age
+   ```
+
+6. **If logs are shipped to external storage (S3, log aggregator) — confirm
+   the shipping process isn't itself falling behind, causing local
+   accumulation while waiting to be shipped:**
+
+   ```bash
+   # Check your log shipping agent's own backlog/queue depth:
+   # (example for a generic shipping agent — adapt to your actual tool)
+   systemctl status <log-shipper-agent>
+   journalctl -u <log-shipper-agent> -n 50 | grep -i "backlog\|queue\|error"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Re-measure growth rate after tuning:
+du -sb /var/log/postgresql/ > /tmp/log_size_after_t1.txt
+sleep 300
+du -sb /var/log/postgresql/ > /tmp/log_size_after_t2.txt
+diff /tmp/log_size_after_t1.txt /tmp/log_size_after_t2.txt
+# Growth rate should be substantially lower than your initial measurement.
+```
+
+```bash
+# Confirm rotation backstop is in place and functioning:
+logrotate -d /etc/logrotate.d/postgresql 2>&1 | grep -i "size\|rotat"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Logging verbosity settings: revert via
+`ALTER SYSTEM RESET log_min_duration_statement; SELECT pg_reload_conf();`
+if you find you've reduced visibility too far for an active investigation —
+it's fine to temporarily lower the threshold again during a specific
+troubleshooting window, then restore the sustainable setting afterward.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+── LAB 1: THE 4 AM SCENARIO ─────────────────────────────────────────────────
+
+The lab environment's data volume is artificially constrained to a small size
+and has been filled to 97% by a combination of WAL accumulation (an inactive
+replication slot) and orphaned temp files from a crashed query.
+
+  a) Diagnose the breakdown of what's consuming space — don't guess, measure.
+  b) Identify and safely remove the orphaned temp files.
+  c) Identify and resolve the WAL-retaining replication slot.
+  d) Force a checkpoint and confirm WAL begins recycling.
+  e) Confirm PostgreSQL can write again with the canary test.
+  f) Write a one-paragraph postmortem: what monitoring threshold (from the
+     monitoring module) would have caught this before it reached 97%?
+
+── LAB 2: FILENODE DETECTIVE WORK ───────────────────────────────────────────
+
+You're given only a filesystem path: a large file under base/<oid>/<filenode>.1
+(note the .1 segment suffix) in the lab environment. You are NOT told which
+table it belongs to.
+
+  a) Resolve the database OID to a database name.
+  b) Connect to that database and resolve the filenode to an object name.
+  c) Determine whether this is a regular table, an index, or a TOAST table.
+  d) If it's a TOAST table: identify the parent table and explain why the
+     parent table itself appeared small in `\dt+` despite this large TOAST file.
+  e) Calculate the object's true total size accounting for all segments.
+
+── LAB 3: TABLESPACE EMERGENCY ──────────────────────────────────────────────
+
+The lab environment has two tablespaces. The non-default one (`fast_nvme`)
+is full. The default tablespace has plenty of room.
+
+  a) Confirm which tablespace is full and identify its largest occupants.
+  b) Verify the destination (pg_default) has sufficient room before moving anything.
+  c) Move the largest, least-critical table out to relieve pressure.
+  d) Confirm writes to objects remaining in fast_nvme succeed again.
+  e) Bonus: identify whether default_tablespace was pointing at the full
+     tablespace, and if so, correct it to prevent immediate recurrence.
+
+── LAB 4: LOG VOLUME AUDIT ──────────────────────────────────────────────────
+
+The lab PostgreSQL instance has log_min_duration_statement set to 0 and
+log_statement set to 'all', simulating a common "we turned on verbose logging
+to debug something six months ago and forgot to turn it back off" scenario.
+
+  a) Measure the current log growth rate over a 2-minute sample window.
+  b) Identify which specific settings are responsible for the volume.
+  c) Tune them to sustainable production values.
+  d) Re-measure growth rate and quantify the improvement (e.g., "reduced
+     from X MB/hour to Y MB/hour").
+  e) Add a size-based logrotate backstop in addition to the existing
+     time-based policy.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Short module, focused topic, but I want to leave you with the same idea I
+opened with, because it's the one that actually matters here: disk-full
+incidents are unforgiving in a way that almost nothing else in this job is.
+A slow query degrades. A replication lag grows. A disk-full event STOPS.
+
+The single best thing you can do about that isn't anything in these five
+runbooks — it's the proactive measurement habit. Know your growth rate. Know
+your headroom in days, not just percent. A disk at 80% that's been flat for
+six months is a completely different risk profile than a disk at 80% that
+grew 15% in the last week. The percentage alone doesn't tell you the story.
+The trend does.
+
+Build the dashboard. Set the alert with lead time, not just a threshold.
+And when you do hit a real disk-full emergency — and at some point in your
+career, you will — work the layers calmly: measure first, identify the actual
+driver, reclaim the safest space first, and don't run anything that needs
+MORE room before you've made room.
+
+That's storage. Onward to whatever the curriculum committee decides is
+"actually, definitely, for real this time" the last session.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — STORAGE AND DISK
+================================================================================
+
+── FIRST MOVES AT ANY DISK-FULL INCIDENT ────────────────────────────────────
+
+  Measure before acting:
+    df -h
+    du -sh $(psql -At -c "SHOW data_directory;")/* 2>/dev/null | sort -rh | head -20
+
+  Canary write test (confirms how close to total failure you are):
+    psql -c "CREATE TABLE _canary(id int); DROP TABLE _canary;"
+
+  DO NOT run VACUUM FULL, CREATE INDEX, or anything that writes a full new
+  copy of data until space is reclaimed — these need MORE room first.
+
+── THE THREE USUAL SUSPECTS ─────────────────────────────────────────────────
+
+  Orphaned temp files:
+    ls -la $(data_dir)/base/*/pgsql_tmp/ 2>/dev/null
+    -- cross-check PIDs against pg_stat_activity before deleting
+
+  WAL accumulation (check slots and archiving before touching pg_wal):
+    SELECT slot_name, active, pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)
+    FROM pg_replication_slots;
+    SELECT last_failed_time, failed_count FROM pg_stat_archiver;
+
+  Genuine data growth:
+    SELECT pg_size_pretty(pg_total_relation_size(relid)), relname
+    FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 10;
+
+── FILENODE ↔ OBJECT NAME TRANSLATION ───────────────────────────────────────
+
+  File → object:
+    SELECT relname FROM pg_class WHERE pg_relation_filenode(oid) = <filenode>;
+
+  Object → file:
+    SELECT pg_relation_filepath('schema.table');
+
+  Find a TOAST table's parent:
+    SELECT c.relname FROM pg_class toast
+    JOIN pg_class c ON c.reltoastrelid = toast.oid
+    WHERE toast.relname = 'pg_toast_NNNNN';
+
+── TABLESPACE QUICK CHECKS ───────────────────────────────────────────────────
+
+  Sizes:
+    SELECT spcname, pg_size_pretty(pg_tablespace_size(oid))
+    FROM pg_tablespace ORDER BY 2 DESC;
+
+  What's in a specific tablespace:
+    SELECT c.relname, pg_size_pretty(pg_relation_size(c.oid))
+    FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace
+    WHERE t.spcname = '<name>' ORDER BY 2 DESC;
+
+  Move an object (verify destination has room FIRST):
+    ALTER TABLE t SET TABLESPACE <destination>;
+
+── I/O TRIAGE ────────────────────────────────────────────────────────────────
+
+  Device saturation:        iostat -x 1 10     (%util, await)
+  Cloud burst exhaustion:   check BurstBalance metric (AWS) or equivalent
+  PG-side demand check:
+    SELECT checkpoints_req, checkpoints_timed, buffers_backend
+    FROM pg_stat_bgwriter;
+    -- high buffers_backend relative to clean/checkpoint = backends forced
+    -- to write themselves = real I/O pressure, not just one bad query
+
+── LOG VOLUME CONTROL ────────────────────────────────────────────────────────
+
+  Sustainable production settings:
+    log_min_duration_statement = '500ms'   -- not 0, not 'all'
+    log_temp_files = '10240'               -- kB threshold, not 0
+    log_autovacuum_min_duration = '1s'     -- not 0
+
+  Hard backstop regardless of daily rotation:
+    log_rotation_size = 100MB              -- in postgresql.conf
+    size 500M                              -- in logrotate config
+
+── EMERGENCY SPACE RECLAMATION (FASTEST → SLOWEST) ──────────────────────────
+
+  1. Delete confirmed-orphaned temp files          — instant
+  2. Drop an old partition                          — instant
+  3. Drop a confirmed-orphaned replication slot      — instant, frees WAL over time
+  4. Force CHECKPOINT after fixing archiving         — fast, recycles WAL
+  5. Extend the volume (cloud/LVM)                   — minutes
+  6. Move a table to another tablespace/volume       — proportional to size
+  7. VACUUM FULL / pg_repack                          — slow, needs headroom first
+
+================================================================================
+  END OF SESSION
+================================================================================

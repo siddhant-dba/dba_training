@@ -1,0 +1,1641 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: SECURITY AND ACCESS RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+I told you last session was the last one. I was wrong — or rather, the
+program committee was wrong, and I'm delighted about it, because this is a
+module that absolutely should not have been left out. You cannot call yourself
+a complete DBA without being comfortable in this material. So: surprise. One
+more session. Let's make it count.
+
+Here's the story I want to open with, because it's the one that taught me
+to take this module seriously.
+
+I was brought in to consult for a mid-size company after an incident. Their
+story: a former contractor's database account was never deactivated. Eight
+months after the contract ended, that account was used to pull a full export
+of their customer table — names, emails, hashed passwords, partial payment
+data. Nobody noticed for three weeks because nobody was auditing connections.
+When they finally noticed, they couldn't tell us how the access happened,
+because their pg_hba.conf had a rule that was supposed to restrict connections
+to a specific VPN range, but a rule ABOVE it in the file matched first and
+allowed connections from anywhere with the right password.
+
+One misordered rule in pg_hba.conf. One account nobody remembered to revoke.
+Zero audit logging to catch it in real time. Three independent failures, any
+one of which would have prevented or caught this.
+
+This is what the security module is about. Not paranoia. Diligence. The gap
+between "we have a password" and "we have an access control system" is wide,
+and most teams don't realize how wide until something falls through it.
+
+Eight runbooks today. Authentication, authorization, encryption in transit,
+auditing, and the incident response for when each one breaks. Let's go.
+
+================================================================================
+  SECURITY MODEL CONTEXT — THREE MINUTES
+================================================================================
+
+PostgreSQL security operates in layers, and you need to understand all of them
+because a failure at any layer compromises everything above it.
+
+  LAYER 1 — NETWORK: Can the client even reach PostgreSQL? Firewalls, security
+            groups, listen_addresses. If this layer is wrong, nothing else matters.
+
+  LAYER 2 — AUTHENTICATION (pg_hba.conf): Given that a client reached the
+            server, is this specific connection attempt permitted, and by
+            what method (password, certificate, peer, etc.)? This is the
+            single most misunderstood file in PostgreSQL.
+
+  LAYER 3 — TRANSPORT ENCRYPTION (SSL/TLS): Is the data between client and
+            server encrypted in transit? Without this, anyone on the network
+            path can read credentials and query results.
+
+  LAYER 4 — AUTHORIZATION (roles, grants): Given that a client authenticated
+            successfully, what are they actually allowed to do? This is
+            where the principle of least privilege lives or dies.
+
+  LAYER 5 — AUDIT: Given that everything above happened, do you have a record
+            of it? Can you answer "who did what, when" six months from now?
+
+The incident I opened with was a failure at layers 2 and 5 simultaneously,
+with a contributing failure at layer 4 (the account had more privilege than
+it needed for eight months after its job was done).
+
+Let's build each layer properly.
+
+================================================================================
+  RUNBOOK 01: USER CANNOT CONNECT
+  File: 08_security_access/user_cannot_connect.md
+================================================================================
+
+This is the most common support ticket you will receive in this category.
+"I can't connect to the database." The cause could be anywhere in the five
+layers above. Your job is to walk the stack systematically instead of
+guessing.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Layer 1: Network reachability.
+# From the CLIENT machine:
+nc -zv <db_host> 5432
+telnet <db_host> 5432
+# If this fails: firewall, security group, or listen_addresses problem.
+# Not a PostgreSQL authentication issue yet — the TCP connection itself failed.
+
+# Is PostgreSQL even listening?
+# On the SERVER:
+ss -tnlp | grep 5432
+psql -c "SHOW listen_addresses;"
+# listen_addresses = 'localhost' means remote connections are refused
+# at the network layer regardless of pg_hba.conf.
+```
+
+```sql
+-- Layer 2: Authentication. What does PostgreSQL log say?
+-- Check the log for the exact rejection reason:
+```
+
+```bash
+tail -50 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | grep -i "fatal\|reject\|no pg_hba"
+```
+
+```sql
+-- Layer 4: Does the role exist and can it log in?
+SELECT rolname, rolcanlogin, rolvaliduntil, rolconnlimit
+FROM pg_roles
+WHERE rolname = 'alice';
+
+-- Is the role's password expired?
+SELECT rolname, rolvaliduntil, rolvaliduntil < now() AS expired
+FROM pg_roles WHERE rolname = 'alice';
+
+-- Connection limit reached for this specific role?
+SELECT rolname, rolconnlimit,
+       (SELECT count(*) FROM pg_stat_activity WHERE usename = 'alice') AS current_conns
+FROM pg_roles WHERE rolname = 'alice';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+Walk the layers in order — don't skip ahead based on a guess.
+
+1. **Confirm network reachability first.** If `nc -zv` fails, this is not a
+   PostgreSQL problem. Check:
+
+   ```bash
+   # listen_addresses must include the interface the client is connecting to:
+   grep listen_addresses /etc/postgresql/15/main/postgresql.conf
+   # '*' = all interfaces. 'localhost' = local only. Specific IP = that IP only.
+
+   # Firewall on the server:
+   iptables -L INPUT -n | grep 5432
+   ufw status | grep 5432
+
+   # Cloud security groups (AWS example):
+   aws ec2 describe-security-groups --group-ids <sg_id> \
+       --query 'SecurityGroups[].IpPermissions'
+   ```
+
+2. **If network is fine, check the exact PostgreSQL log entry.** The log
+   message tells you precisely why the connection was rejected:
+
+   ```
+   "FATAL: no pg_hba.conf entry for host ... user ... database ..., SSL off"
+       → No matching rule in pg_hba.conf. See Runbook 02.
+
+   "FATAL: password authentication failed for user ..."
+       → Authentication method matched, but credentials are wrong.
+
+   "FATAL: role ... does not exist"
+       → Typo, or the role was never created, or it was dropped.
+
+   "FATAL: database ... does not exist"
+       → Client is connecting to the wrong database name.
+
+   "FATAL: too many connections for role ..."
+       → rolconnlimit reached for this specific role.
+
+   "FATAL: remaining connection slots are reserved for non-replication superuser connections"
+       → max_connections globally exhausted. See incident module Runbook 03.
+
+   "FATAL: SSL connection is required"
+       → pg_hba.conf rule requires hostssl but client connected without SSL.
+   ```
+
+3. **Fix based on the specific log entry:**
+
+   ```sql
+   -- Role doesn't exist:
+   CREATE ROLE alice LOGIN ENCRYPTED PASSWORD 'temporarypassword';
+
+   -- Password authentication failing — reset it:
+   ALTER ROLE alice ENCRYPTED PASSWORD 'newstrongpassword';
+
+   -- rolvaliduntil expired:
+   ALTER ROLE alice VALID UNTIL 'infinity';
+   -- Or set a new future expiry:
+   ALTER ROLE alice VALID UNTIL '2025-12-31';
+
+   -- Connection limit too low:
+   ALTER ROLE alice CONNECTION LIMIT 20;
+
+   -- rolcanlogin is false:
+   ALTER ROLE alice LOGIN;
+   ```
+
+4. **If the error is "no pg_hba.conf entry"** — this needs a pg_hba.conf fix.
+   Go to Runbook 02 for the full procedure. Don't add a permissive rule
+   just to make the error go away — get the specific rule right.
+
+5. **Test the fix from the client's actual context** — not just from the
+   database server itself. A connection that works locally but not remotely
+   often means the pg_hba.conf rule is scoped to the wrong CIDR range:
+
+   ```bash
+   # From the actual client machine/network:
+   psql -h <db_host> -p 5432 -U alice -d mydb -c "SELECT 1;"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Successful connection test from the client's network:
+psql -h <db_host> -U alice -d mydb -c "SELECT current_user, now();"
+
+# No new FATAL entries in the log for this user:
+tail -20 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | grep alice
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Password resets and role changes are immediately reversible by setting the
+prior value (if known) or generating a new one. If you created a temporary
+role for diagnosis, drop it once the real issue is identified:
+`DROP ROLE IF EXISTS temp_diag_user;`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: PG_HBA.CONF MISCONFIGURED
+  File: 08_security_access/pg_hba_conf_misconfigured.md
+================================================================================
+
+pg_hba.conf is the single file responsible for the incident I opened class
+with. It is read top to bottom, and the FIRST matching rule wins — not the
+most specific one, not the most restrictive one, the first one. This is the
+single most important fact about this file and the one that catches people
+out the most.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- View the active pg_hba.conf rules as PostgreSQL currently sees them
+-- (this reflects the LAST RELOAD, not necessarily the current file on disk):
+SELECT line_number, type, database, user_name, address, auth_method
+FROM pg_hba_file_rules
+ORDER BY line_number;
+
+-- Are there any rules with errors? (PostgreSQL parses but flags bad lines)
+SELECT line_number, error
+FROM pg_hba_file_rules
+WHERE error IS NOT NULL;
+
+-- What rule actually matched (or would match) a specific connection attempt?
+-- There's no direct SQL for this — you trace it manually using the order above.
+```
+
+```bash
+# Where is the file, and does the on-disk version match what's loaded?
+psql -c "SHOW hba_file;"
+diff <(psql -At -c "SELECT line_number||' '||type||' '||database||' '||
+        user_name||' '||address||' '||auth_method FROM pg_hba_file_rules
+        ORDER BY line_number;") \
+     <(grep -v '^#' /etc/postgresql/15/main/pg_hba.conf | grep -v '^$')
+# If these differ significantly — pg_reload_conf() hasn't been run since
+# the file was last edited.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Understand the column format**, because misreading a single field is
+   the most common source of errors:
+
+   ```
+   TYPE      DATABASE   USER       ADDRESS            METHOD
+   ────────────────────────────────────────────────────────────────
+   local     all        postgres                      peer
+   host      mydb       app_user   10.0.1.0/24         scram-sha-256
+   hostssl   mydb       app_user   0.0.0.0/0           scram-sha-256
+   hostnossl all        all        0.0.0.0/0            reject
+
+   TYPE meanings:
+     local    — Unix domain socket connections only (no network).
+     host     — TCP/IP connections, SSL or non-SSL.
+     hostssl  — TCP/IP connections, SSL REQUIRED.
+     hostnossl— TCP/IP connections, SSL must NOT be used.
+
+   METHOD meanings:
+     trust         — no password required. NEVER use this except local dev.
+     reject        — explicitly deny (useful for carve-outs, see below).
+     peer          — use the OS username (local connections only).
+     scram-sha-256 — password, modern hashing. USE THIS for password auth.
+     md5           — password, legacy hashing. Migrate away from this.
+     cert          — client certificate required, no password.
+   ```
+
+2. **The ordering trap — this is what caused the incident at the top of
+   class.** Rules are evaluated top to bottom. The FIRST match wins, even if
+   a more specific (and more correct) rule exists further down:
+
+   ```
+   # WRONG ORDER — broad rule shadows the specific restriction below it:
+   host    mydb    app_user    0.0.0.0/0        scram-sha-256
+   host    mydb    app_user    10.0.5.0/24      reject
+   # The first line matches ANY address, including 10.0.5.0/24.
+   # The reject rule below NEVER gets evaluated for this user.
+
+   # CORRECT ORDER — specific restriction comes first:
+   host    mydb    app_user    10.0.5.0/24      reject
+   host    mydb    app_user    0.0.0.0/0        scram-sha-256
+   # Now connections from 10.0.5.0/24 are rejected, all others get password auth.
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Always put your MOST SPECIFIC and MOST RESTRICTIVE rules at the TOP of the
+   file. Generic catch-all rules belong at the bottom. Every single pg_hba.conf
+   incident I have ever seen traces back to this ordering principle being
+   violated. Read the file top to bottom every time you edit it and ask
+   "what is the FIRST rule that matches each connection scenario I care about?"
+
+3. **Common misconfigurations and their fixes:**
+
+   ```
+   PROBLEM: "no pg_hba.conf entry for host" even though a rule looks like
+            it should match.
+   CAUSE:   The database name doesn't match. "all" matches any database,
+            but a specific database name only matches that name exactly
+            (no wildcards beyond "all" and "sameuser"/"samerole").
+   FIX:     Check the exact database name in the connection string against
+            the DATABASE column.
+
+   PROBLEM: SSL connections being rejected with "no pg_hba.conf entry,
+            SSL off" when the client thinks it's using SSL.
+   CAUSE:   Client is not actually negotiating SSL (driver default,
+            missing sslmode parameter), and the matching rule is hostssl.
+   FIX:     Add a hostssl rule that matches, AND/OR fix the client connection
+            string to include sslmode=require.
+
+   PROBLEM: Connections work from psql on the server but not from the
+            application server.
+   CAUSE:   The "local" rule type only matches Unix socket connections.
+            local rules NEVER apply to TCP/IP connections, even from
+            localhost via 127.0.0.1.
+   FIX:     Add a host rule for 127.0.0.1/32 if TCP connections from the
+            same machine are needed.
+
+   PROBLEM: peer authentication failing for an application user.
+   CAUSE:   peer matches the OS username to the PostgreSQL username. If the
+            OS user running the application is "appsvc" but the PostgreSQL
+            role is "app_user", they don't match.
+   FIX:     Use scram-sha-256 with a password instead, or set up a
+            ident map (pg_ident.conf) to translate OS user to PG role.
+   ```
+
+4. **Make and test the change:**
+
+   ```bash
+   # Edit the file:
+   nano /etc/postgresql/15/main/pg_hba.conf
+
+   # Validate before reloading — check for syntax errors:
+   # PostgreSQL won't tell you about syntax errors until reload, so be careful.
+
+   # Reload (does NOT require restart):
+   psql -c "SELECT pg_reload_conf();"
+
+   # Immediately verify the new rules loaded without error:
+   psql -c "SELECT line_number, type, database, user_name, address, auth_method, error
+            FROM pg_hba_file_rules WHERE error IS NOT NULL;"
+   -- Any rows returned here mean a rule failed to parse. Fix before proceeding.
+   ```
+
+5. **Test from the actual failing client context, not just the server:**
+
+   ```bash
+   psql -h <db_host> -U <affected_user> -d <affected_db> -c "SELECT 1;"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- No parse errors in the active ruleset:
+SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;
+-- Should be 0.
+
+-- The rule order matches your intent — review top to bottom:
+SELECT line_number, type, database, user_name, address, auth_method
+FROM pg_hba_file_rules
+ORDER BY line_number;
+```
+
+```bash
+# The previously failing connection now succeeds:
+psql -h <db_host> -U <user> -d <db> -c "SELECT current_user;"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Keep a backup of pg_hba.conf before every edit:
+```bash
+cp /etc/postgresql/15/main/pg_hba.conf \
+   /etc/postgresql/15/main/pg_hba.conf.bak.$(date +%Y%m%d_%H%M%S)
+```
+To roll back: restore the backup file and reload:
+```bash
+cp /etc/postgresql/15/main/pg_hba.conf.bak.<timestamp> \
+   /etc/postgresql/15/main/pg_hba.conf
+psql -c "SELECT pg_reload_conf();"
+```
+pg_reload_conf() never locks you out instantly — existing connections are
+unaffected by a pg_hba.conf change. Only NEW connection attempts are evaluated
+against the updated rules. This means you can safely test from a second
+session without losing your current one.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: SUPERUSER LOCKED OUT
+  File: 08_security_access/superuser_locked_out.md
+================================================================================
+
+This is the emergency that makes people's stomachs drop. The superuser
+password is lost, expired, or the only superuser role was accidentally
+revoked of its privileges, or — worse — a pg_hba.conf edit has locked out
+every authentication method including the one you need to fix it. This
+runbook is your way back in.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Can you reach the server's filesystem at all (SSH access)?
+# If yes — you have a path back in regardless of database-level lockout.
+# If no — this is an infrastructure problem, not a PostgreSQL problem.
+
+# Confirm the actual symptom:
+psql -U postgres -c "SELECT 1;"
+# What's the exact error? "password authentication failed"? "role does not
+# exist"? "no pg_hba.conf entry"? Each has a different fix.
+```
+
+```sql
+-- If you CAN get in with some other role: check superuser status:
+SELECT rolname, rolsuper, rolcanlogin FROM pg_roles WHERE rolsuper = true;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+*** INSTRUCTOR WARNING ***
+Every method below requires OS-level (filesystem) access to the database
+server. If you don't have that either, this is not a PostgreSQL problem
+anymore — it's an infrastructure access problem, and you need your ops/cloud
+team. PostgreSQL has no remote "break glass" mechanism. This is by design.
+
+METHOD A: Use a local trust connection to reset the password (most common).
+
+1. **Edit pg_hba.conf to temporarily allow local trust authentication:**
+
+   ```bash
+   # Back up first:
+   cp /etc/postgresql/15/main/pg_hba.conf \
+      /etc/postgresql/15/main/pg_hba.conf.before_emergency
+
+   # Add this line at the VERY TOP of pg_hba.conf (remember: first match wins):
+   local   all   postgres   trust
+   ```
+
+2. **Reload PostgreSQL configuration:**
+
+   ```bash
+   systemctl reload postgresql@15-main
+   # Or if reload command isn't available:
+   pg_ctlcluster 15 main reload
+   ```
+
+3. **Connect locally without a password and reset it:**
+
+   ```bash
+   sudo -u postgres psql
+   ```
+
+   ```sql
+   ALTER ROLE postgres ENCRYPTED PASSWORD 'newstrongpassword';
+   -- Also fix rolsuper if it was accidentally revoked:
+   ALTER ROLE postgres SUPERUSER;
+   ALTER ROLE postgres LOGIN;
+   ```
+
+4. **IMMEDIATELY revert the pg_hba.conf change:**
+
+   ```bash
+   cp /etc/postgresql/15/main/pg_hba.conf.before_emergency \
+      /etc/postgresql/15/main/pg_hba.conf
+   systemctl reload postgresql@15-main
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   The trust line you added in step 1 means ANYONE with OS shell access to
+   this server can become superuser with no password during the window it's
+   active. Minimize that window. Do steps 1 through 4 in one sitting, without
+   distraction, and confirm the revert took effect before doing anything else.
+
+METHOD B: Use single-user mode (when pg_hba.conf itself is broken/inaccessible
+          or you need to bypass authentication entirely).
+
+5. **Stop PostgreSQL completely:**
+
+   ```bash
+   systemctl stop postgresql@15-main
+   ```
+
+6. **Start in single-user mode** — this bypasses pg_hba.conf and all
+   authentication entirely. It connects you directly as a superuser to a
+   specified database with no network listener:
+
+   ```bash
+   sudo -u postgres postgres --single -D /var/lib/postgresql/15/main mydb
+   ```
+
+   You'll get a bare prompt (not psql — it's a minimal single-user backend).
+   Commands don't need semicolons in some versions, and output formatting
+   is raw.
+
+7. **Fix the role from inside single-user mode:**
+
+   ```
+   ALTER ROLE postgres SUPERUSER LOGIN PASSWORD 'newstrongpassword';
+   ```
+
+   Press Ctrl+D or type the command followed by a newline to execute, then
+   exit single-user mode.
+
+8. **Start PostgreSQL normally:**
+
+   ```bash
+   systemctl start postgresql@15-main
+   psql -U postgres -c "SELECT current_user, rolsuper FROM pg_roles
+                         WHERE rolname = current_user;"
+   ```
+
+METHOD C: No OS-level superuser role exists at all (rare, catastrophic
+          misconfiguration where the only superuser role was dropped).
+
+9. **Single-user mode again — this time CREATE a new superuser role:**
+
+   ```bash
+   systemctl stop postgresql@15-main
+   sudo -u postgres postgres --single -D /var/lib/postgresql/15/main postgres
+   ```
+
+   ```
+   CREATE ROLE emergency_admin SUPERUSER LOGIN PASSWORD 'newstrongpassword';
+   ```
+
+   ```bash
+   systemctl start postgresql@15-main
+   psql -U emergency_admin -c "SELECT 1;"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm superuser access is restored:
+SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user;
+-- rolsuper should be true.
+
+-- Confirm pg_hba.conf is back to its pre-emergency state (no leftover trust):
+SELECT line_number, type, database, user_name, auth_method
+FROM pg_hba_file_rules
+WHERE auth_method = 'trust';
+-- Should return ONLY intentional trust rules (if any), never an emergency one.
+```
+
+```bash
+diff /etc/postgresql/15/main/pg_hba.conf \
+     /etc/postgresql/15/main/pg_hba.conf.before_emergency
+# Should show no differences (confirms clean revert).
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+The rollback IS step 4 / the pg_hba.conf restoration — make sure it actually
+happened. This is the one runbook in the entire program where forgetting the
+rollback step leaves a standing security hole, not just an inconvenience.
+Set a calendar reminder or have a second person confirm the revert before
+closing this incident.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: ROLE PRIVILEGES MISSING
+  File: 08_security_access/role_privileges_missing.md
+================================================================================
+
+"Permission denied for table orders" is one of the most common error messages
+in any PostgreSQL shop, and it's almost always one of a small number of root
+causes. This runbook gives you the systematic check instead of guessing and
+granting things randomly (which is how you end up with the over-permissioned
+roles that caused the incident at the top of this session).
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- What privileges does the role actually have on the object in question?
+SELECT grantee, table_schema, table_name, privilege_type
+FROM information_schema.table_privileges
+WHERE grantee = 'alice'
+  AND table_name = 'orders';
+
+-- Does the role have USAGE on the schema? (commonly forgotten)
+SELECT grantee, table_schema, privilege_type
+FROM information_schema.usage_privileges
+WHERE grantee = 'alice';
+
+-- What roles is alice a member of? (privileges can come via group membership)
+SELECT r.rolname AS member_role, g.rolname AS group_role
+FROM pg_auth_members am
+JOIN pg_roles r ON r.oid = am.member
+JOIN pg_roles g ON g.oid = am.roleid
+WHERE r.rolname = 'alice';
+
+-- Is row-level security blocking access even though table grants look fine?
+SELECT schemaname, tablename, rowsecurity, forcerowsecurity
+FROM pg_tables
+WHERE tablename = 'orders';
+
+SELECT polname, polcmd, polroles::regrole[], pg_get_expr(polqual, polrelid) AS using_expr
+FROM pg_policy
+WHERE polrelid = 'public.orders'::regclass;
+
+-- Are default privileges set up so future objects inherit access correctly?
+SELECT defaclrole::regrole, defaclnamespace::regnamespace, defaclacl
+FROM pg_default_acl;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Confirm the exact error and exact object:**
+
+   ```
+   "permission denied for table orders"           → table-level GRANT missing
+   "permission denied for schema public"          → schema USAGE missing
+   "permission denied for sequence orders_id_seq"  → sequence privilege missing
+   "permission denied for function ..."            → EXECUTE privilege missing
+   "permission denied for database mydb"          → CONNECT privilege missing
+   ```
+
+2. **Grant schema USAGE first — this is the most commonly forgotten step:**
+
+   ```sql
+   GRANT USAGE ON SCHEMA public TO alice;
+   -- Without this, table grants are silently ineffective. The role literally
+   -- cannot "see into" the schema to find the table, regardless of table grants.
+   ```
+
+3. **Grant the specific table privilege needed:**
+
+   ```sql
+   GRANT SELECT ON public.orders TO alice;
+   -- Or for write access:
+   GRANT SELECT, INSERT, UPDATE, DELETE ON public.orders TO alice;
+   ```
+
+4. **Don't forget sequences** — if the role needs to INSERT into a table
+   with a SERIAL/IDENTITY column, it needs sequence privilege too:
+
+   ```sql
+   GRANT USAGE, SELECT ON SEQUENCE orders_id_seq TO alice;
+   -- Or grant on all sequences in the schema at once:
+   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO alice;
+   ```
+
+5. **Set DEFAULT PRIVILEGES so future tables inherit the grant automatically:**
+
+   ```sql
+   -- This must be run by the role that OWNS future objects (often the
+   -- migration/deploy role), not by you as a superuser, or it won't apply
+   -- to objects that role creates:
+   ALTER DEFAULT PRIVILEGES FOR ROLE deploy_user IN SCHEMA public
+       GRANT SELECT ON TABLES TO alice;
+   ALTER DEFAULT PRIVILEGES FOR ROLE deploy_user IN SCHEMA public
+       GRANT USAGE, SELECT ON SEQUENCES TO alice;
+   ```
+
+6. **If row-level security is enabled and blocking legitimate access:**
+
+   ```sql
+   -- Check what policies exist and what they require:
+   SELECT polname, pg_get_expr(polqual, polrelid) AS condition
+   FROM pg_policy WHERE polrelid = 'public.orders'::regclass;
+
+   -- The session likely needs a setting the policy depends on:
+   SET app.current_user_id = '12345';
+   -- This is an application-level fix, not a grant — coordinate with developers.
+   ```
+
+7. **Use group roles instead of individual grants for maintainability** —
+   if you find yourself granting the same set of privileges to many
+   individual users, stop and create a group role:
+
+   ```sql
+   CREATE ROLE analytics_readonly;
+   GRANT USAGE ON SCHEMA public TO analytics_readonly;
+   GRANT SELECT ON ALL TABLES IN SCHEMA public TO analytics_readonly;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+       GRANT SELECT ON TABLES TO analytics_readonly;
+
+   GRANT analytics_readonly TO alice;
+   GRANT analytics_readonly TO bob;
+   -- Now managing the team's access is one role, not N individual grants.
+   ```
+
+8. **Audit for over-permissioning while you're in here** — this is the
+   proactive half of the fix, directly addressing the opening incident story:
+
+   ```sql
+   -- Find roles with privileges they may no longer need:
+   SELECT grantee, table_name, privilege_type
+   FROM information_schema.table_privileges
+   WHERE grantee NOT IN (
+       SELECT rolname FROM pg_roles WHERE rolcanlogin = true
+   )
+   -- AND grantee is not a known group role you expect
+   ORDER BY grantee;
+
+   -- Find roles that can log in but haven't connected in a long time
+   -- (candidates for deactivation):
+   SELECT rolname, rolcanlogin
+   FROM pg_roles
+   WHERE rolcanlogin = true
+     AND rolname NOT IN (
+         SELECT DISTINCT usename FROM pg_stat_activity
+     );
+   -- Cross-reference this with your HR/offboarding process. This is exactly
+   -- the check that would have caught the former contractor's account.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm the grant took effect:
+SELECT has_table_privilege('alice', 'public.orders', 'SELECT');
+-- Should return true.
+
+-- Test as the actual role:
+SET ROLE alice;
+SELECT count(*) FROM public.orders;
+RESET ROLE;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+REVOKE SELECT, INSERT, UPDATE, DELETE ON public.orders FROM alice;
+REVOKE USAGE ON SCHEMA public FROM alice;
+-- For default privileges, you must revoke the default, not the already-
+-- granted objects (those keep their grants unless explicitly revoked):
+ALTER DEFAULT PRIVILEGES FOR ROLE deploy_user IN SCHEMA public
+    REVOKE SELECT ON TABLES FROM alice;
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: SSL/TLS CONFIGURATION
+  File: 08_security_access/ssl_tls_configuration.md
+================================================================================
+
+If your PostgreSQL traffic isn't encrypted, every query, every result set,
+and every password sent over the wire is readable by anyone with access to
+the network path — a compromised switch, a malicious VPC peer, a packet
+capture on a shared network segment. SSL/TLS is not optional for any
+production deployment that isn't strictly localhost-only.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Is SSL currently enabled at all?
+SHOW ssl;
+
+-- What's the current SSL configuration?
+SELECT name, setting FROM pg_settings
+WHERE name LIKE 'ssl%'
+ORDER BY name;
+
+-- Which active connections are using SSL right now?
+SELECT pid, usename, ssl, client_addr,
+       (SELECT version FROM pg_stat_ssl WHERE pg_stat_ssl.pid = pg_stat_activity.pid) AS tls_version
+FROM pg_stat_activity
+JOIN pg_stat_ssl USING (pid)
+WHERE ssl = true;
+
+-- Which connections are NOT using SSL (potential exposure):
+SELECT pid, usename, client_addr
+FROM pg_stat_activity sa
+LEFT JOIN pg_stat_ssl ss USING (pid)
+WHERE (ss.ssl IS NULL OR ss.ssl = false)
+  AND client_addr IS NOT NULL;   -- exclude local socket connections
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Generate or obtain certificates** — for production, use a CA-signed
+   certificate (internal CA or public CA like Let's Encrypt). For this
+   walkthrough, here's the self-signed path for understanding the mechanics:
+
+   ```bash
+   # Generate a private key and self-signed certificate (test/internal use):
+   openssl req -new -x509 -days 365 -nodes \
+       -out /etc/postgresql/15/main/server.crt \
+       -keyout /etc/postgresql/15/main/server.key \
+       -subj "/CN=db-primary.internal.company.com"
+
+   chmod 600 /etc/postgresql/15/main/server.key
+   chown postgres:postgres /etc/postgresql/15/main/server.key \
+                            /etc/postgresql/15/main/server.crt
+   ```
+
+   For production: obtain a certificate from your internal CA or a public CA,
+   following their CSR process, and place the resulting .crt and .key files
+   in the same location with the same permissions.
+
+2. **Configure postgresql.conf to enable SSL:**
+
+   ```bash
+   # postgresql.conf:
+   ssl = on
+   ssl_cert_file = 'server.crt'
+   ssl_key_file = 'server.key'
+   ssl_ca_file = 'root.crt'           # if using client certificate auth
+   ssl_min_protocol_version = 'TLSv1.2'   # disable old, weak protocols
+   ssl_prefer_server_ciphers = on
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main   # ssl = on requires restart
+   ```
+
+3. **Require SSL for remote connections in pg_hba.conf:**
+
+   ```
+   # Replace 'host' with 'hostssl' to REQUIRE encryption:
+   hostssl   mydb   app_user   0.0.0.0/0   scram-sha-256
+
+   # Explicitly reject any non-SSL attempt for extra clarity (optional,
+   # but good practice — makes the policy explicit rather than implicit):
+   hostnossl mydb   app_user   0.0.0.0/0   reject
+   ```
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+4. **Configure client-side to require/verify SSL:**
+
+   ```bash
+   # Connection string sslmode options, from weakest to strongest:
+   # disable     — no SSL at all
+   # allow       — try non-SSL first, fall back to SSL
+   # prefer      — try SSL first, fall back to non-SSL (DEFAULT — not secure enough)
+   # require     — SSL required, but doesn't verify server certificate
+   # verify-ca   — SSL required, verifies cert is signed by trusted CA
+   # verify-full — SSL required, verifies CA AND that hostname matches cert CN
+
+   # Production applications should use verify-full:
+   psql "postgresql://app_user@db-primary.internal.company.com/mydb?sslmode=verify-full&sslrootcert=/etc/ssl/certs/internal-ca.crt"
+   ```
+
+5. **(Optional, high security) Configure mutual TLS — client certificate
+   authentication:**
+
+   ```bash
+   # postgresql.conf:
+   ssl_ca_file = 'root.crt'   # CA that signs client certs
+
+   # pg_hba.conf — require a valid client cert AND a password:
+   hostssl   mydb   app_user   0.0.0.0/0   scram-sha-256 clientcert=verify-full
+   ```
+
+   ```bash
+   # Client connects with its certificate:
+   psql "postgresql://app_user@db_host/mydb?sslmode=verify-full&sslcert=client.crt&sslkey=client.key&sslrootcert=root.crt"
+   ```
+
+6. **Check cipher strength and disable weak protocols:**
+
+   ```bash
+   # Test what the server actually offers:
+   openssl s_client -connect <db_host>:5432 -starttls postgres 2>&1 \
+       | grep -E "Protocol|Cipher"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm SSL is required and enforced:
+SHOW ssl;
+
+-- Confirm all active connections are now using SSL:
+SELECT count(*) AS non_ssl_connections
+FROM pg_stat_activity sa
+LEFT JOIN pg_stat_ssl ss USING (pid)
+WHERE (ss.ssl IS NULL OR ss.ssl = false)
+  AND client_addr IS NOT NULL;
+-- Should be 0 after enforcing hostssl in pg_hba.conf.
+
+-- Check the negotiated TLS version and cipher for a connection:
+SELECT pid, ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+```
+
+```bash
+# Attempt a non-SSL connection — it should be rejected if hostssl is enforced:
+psql "postgresql://app_user@db_host/mydb?sslmode=disable" -c "SELECT 1;"
+# Expected: "FATAL: no pg_hba.conf entry ... SSL off" or "SSL required"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+If enforcing SSL breaks legacy clients that can't negotiate TLS 1.2+:
+temporarily revert pg_hba.conf rules from `hostssl` back to `host` while you
+upgrade the client driver, then re-enforce. Never leave this reverted long
+term — track it as a follow-up action with an owner and a date.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: SSL CERTIFICATE EXPIRED
+  File: 08_security_access/ssl_certificate_expired.md
+================================================================================
+
+An expired SSL certificate is a 100% predictable incident — certificates have
+a known expiry date the day you create them — and yet it remains one of the
+most common self-inflicted outages in the industry. This runbook is both the
+incident response AND the prevention.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Check the current certificate's expiry date:
+openssl x509 -in /etc/postgresql/15/main/server.crt -noout -enddate
+# Output: notAfter=Jun 15 00:00:00 2024 GMT
+
+# Check expiry remotely (from a client, without filesystem access):
+echo | openssl s_client -connect <db_host>:5432 -starttls postgres 2>/dev/null \
+    | openssl x509 -noout -enddate
+
+# How many days until expiry (or how many days expired)?
+openssl x509 -in /etc/postgresql/15/main/server.crt -noout -checkend 0
+# Exit code 0 = not yet expired. Exit code 1 = expired.
+
+openssl x509 -in /etc/postgresql/15/main/server.crt -noout -checkend 2592000
+# checkend takes seconds — this checks "will it expire within 30 days?"
+```
+
+```bash
+# Confirm this is actually the symptom — what does the client see?
+psql "postgresql://app_user@db_host/mydb?sslmode=verify-full" -c "SELECT 1;"
+# Error will mention: "certificate has expired" or "certificate verify failed"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Determine urgency:** is sslmode on clients set to `require` (doesn't
+   check expiry/validity, connections likely still work) or `verify-ca`/
+   `verify-full` (these WILL refuse to connect to an expired cert)?
+
+   ```bash
+   # If clients use sslmode=require: connections continue working even with
+   # an expired cert (the client isn't checking it), but you are now
+   # vulnerable to MITM attacks since validation is effectively void.
+   # This is degraded security, not an outage — but treat it as urgent.
+
+   # If clients use verify-ca or verify-full: this IS an outage. Every new
+   # connection attempt will be refused starting from the expiry moment.
+   ```
+
+2. **Generate a renewed certificate** — using the same CA/process used
+   originally:
+
+   ```bash
+   # If using an internal CA — generate a new CSR and have it signed:
+   openssl req -new -nodes \
+       -out /tmp/server_renewal.csr \
+       -keyout /tmp/server_renewal.key \
+       -subj "/CN=db-primary.internal.company.com"
+
+   # Submit /tmp/server_renewal.csr to your CA for signing.
+   # You'll receive back a signed server_renewal.crt.
+
+   # If using Let's Encrypt (certbot):
+   certbot certonly --standalone -d db-primary.company.com
+   ```
+
+3. **Install the renewed certificate:**
+
+   ```bash
+   cp /tmp/server_renewal.crt /etc/postgresql/15/main/server.crt
+   cp /tmp/server_renewal.key /etc/postgresql/15/main/server.key
+   chmod 600 /etc/postgresql/15/main/server.key
+   chown postgres:postgres /etc/postgresql/15/main/server.key \
+                            /etc/postgresql/15/main/server.crt
+   ```
+
+4. **Reload PostgreSQL to pick up the new certificate — this does NOT
+   require a restart:**
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Existing connections established before the reload continue using the OLD
+   certificate's already-negotiated session — they are not retroactively
+   affected. Only NEW connections after the reload use the renewed
+   certificate. This means a reload is safe to perform during business hours
+   with zero disruption to existing sessions.
+
+5. **Verify the new certificate is active:**
+
+   ```bash
+   echo | openssl s_client -connect <db_host>:5432 -starttls postgres 2>/dev/null \
+       | openssl x509 -noout -enddate
+   # Should now show the NEW expiry date.
+   ```
+
+6. **Set up monitoring to prevent recurrence — this is the permanent fix:**
+
+   ```yaml
+   # Add a Prometheus alert (blackbox_exporter has a built-in TLS expiry probe,
+   # or use a simple cron-based check):
+   - alert: PostgresSSLCertExpiringSoon
+     expr: probe_ssl_earliest_cert_expiry - time() < 30 * 86400
+     for: 1h
+     labels:
+       severity: warning
+     annotations:
+       summary: "PostgreSQL SSL certificate expires in less than 30 days"
+   ```
+
+   ```bash
+   # Or a simple cron-based canary check, no extra infrastructure needed:
+   # /etc/cron.daily/check_pg_ssl_expiry:
+   #!/bin/bash
+   DAYS=30
+   if ! openssl x509 -in /etc/postgresql/15/main/server.crt -noout \
+        -checkend $((DAYS * 86400)); then
+       echo "PostgreSQL SSL cert expires within $DAYS days" | \
+           mail -s "SSL CERT EXPIRY WARNING" dba-alerts@company.com
+   fi
+   ```
+
+7. **If using Let's Encrypt: automate renewal entirely** — never depend on
+   a human remembering:
+
+   ```bash
+   # certbot renewal hook to reload PostgreSQL after auto-renewal:
+   cat > /etc/letsencrypt/renewal-hooks/deploy/postgresql-reload.sh << 'EOF'
+   #!/bin/bash
+   cp /etc/letsencrypt/live/db-primary.company.com/fullchain.pem \
+      /etc/postgresql/15/main/server.crt
+   cp /etc/letsencrypt/live/db-primary.company.com/privkey.pem \
+      /etc/postgresql/15/main/server.key
+   chown postgres:postgres /etc/postgresql/15/main/server.crt \
+                            /etc/postgresql/15/main/server.key
+   chmod 600 /etc/postgresql/15/main/server.key
+   sudo -u postgres psql -c "SELECT pg_reload_conf();"
+   EOF
+   chmod +x /etc/letsencrypt/renewal-hooks/deploy/postgresql-reload.sh
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Certificate is valid for the expected duration:
+openssl x509 -in /etc/postgresql/15/main/server.crt -noout -checkend 2592000
+echo "Exit code: $?"  # 0 = valid for at least 30 more days
+
+# Clients using verify-full can connect successfully:
+psql "postgresql://app_user@db_host/mydb?sslmode=verify-full&sslrootcert=root.crt" \
+    -c "SELECT 1;"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Keep the previous (expired) certificate file as a backup before overwriting:
+```bash
+cp /etc/postgresql/15/main/server.crt /etc/postgresql/15/main/server.crt.old
+```
+If the new certificate has an issue (wrong CN, wrong CA chain) causing client
+verification failures: restore the old files and reload, then re-issue the
+certificate correctly. An expired cert that clients are validating against is
+safer to have temporarily than a malformed one, in the rare case the new one
+is broken — but don't leave an expired cert in place any longer than needed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: AUDITING CONNECTION FAILURES
+  File: 08_security_access/auditing_connection_failures.md
+================================================================================
+
+A spike in failed connection attempts is one of your earliest warning signs
+of either a misconfiguration (an application with the wrong password redeployed)
+or an actual attack (credential stuffing, brute force). Either way, you need
+visibility into this, and by default PostgreSQL's logging of it is too quiet
+for most production needs.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Is connection logging even enabled?
+SELECT name, setting FROM pg_settings
+WHERE name IN ('log_connections', 'log_disconnections', 'log_hostname');
+```
+
+```bash
+# How many failed authentication attempts today?
+grep "FATAL.*authentication failed\|FATAL.*no pg_hba" \
+    /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | wc -l
+
+# Break down by source IP and user — find patterns:
+grep "FATAL.*authentication failed" \
+    /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    | grep -oP 'user=\K[^,]+|host=\K[\d\.]+' \
+    | paste - - \
+    | sort | uniq -c | sort -rn | head -20
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Enable comprehensive connection logging:**
+
+   ```bash
+   # postgresql.conf:
+   log_connections = on        # logs every successful connection attempt
+   log_disconnections = on     # logs every disconnection, with session duration
+   log_hostname = on           # resolve and log client hostname, not just IP
+   log_line_prefix = '%m [%p] %q%u@%d %r '   # includes remote host:port
+   ```
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+2. **Build a daily failed-connection report:**
+
+   ```bash
+   #!/usr/bin/env bash
+   # /opt/scripts/auth_failure_report.sh
+   LOGFILE="/var/log/postgresql/postgresql-$(date +%Y-%m-%d).log"
+
+   echo "=== Failed authentication attempts: $(date +%Y-%m-%d) ==="
+   grep "FATAL.*\(authentication failed\|no pg_hba\|password authentication\)" \
+       "$LOGFILE" | wc -l
+
+   echo "=== Top source IPs ==="
+   grep "FATAL.*authentication failed" "$LOGFILE" \
+       | grep -oP 'host=\K[\d\.]+' | sort | uniq -c | sort -rn | head -10
+
+   echo "=== Top targeted usernames ==="
+   grep "FATAL.*authentication failed" "$LOGFILE" \
+       | grep -oP 'user=\K[^,\s]+' | sort | uniq -c | sort -rn | head -10
+
+   echo "=== Repeated failures from a single IP (possible brute force, >10/hr) ==="
+   grep "FATAL.*authentication failed" "$LOGFILE" \
+       | grep -oP 'host=\K[\d\.]+' | sort | uniq -c \
+       | awk '$1 > 10 {print}'
+   ```
+
+   ```bash
+   # Schedule daily:
+   echo "0 7 * * * postgres /opt/scripts/auth_failure_report.sh | \
+       mail -s 'Daily Auth Failure Report' dba-alerts@company.com" \
+       >> /etc/cron.d/auth_report
+   ```
+
+3. **Alert in real time on a spike** (Prometheus + log-based metrics via
+   grok_exporter or promtail/Loki, or a simpler tail-based script):
+
+   ```yaml
+   # Prometheus alert rule, assuming a log-derived metric exists:
+   - alert: PostgresAuthFailureSpike
+     expr: increase(postgres_auth_failures_total[5m]) > 20
+     for: 2m
+     labels:
+       severity: warning
+     annotations:
+       summary: "{{ $value }} failed PostgreSQL auth attempts in 5 minutes"
+   ```
+
+4. **Implement connection rate limiting at the network layer** — PostgreSQL
+   itself has no built-in brute-force lockout (this is deliberate — see the
+   note below), so this needs to happen upstream:
+
+   ```bash
+   # fail2ban filter for PostgreSQL (example, adapt to your log format):
+   cat > /etc/fail2ban/filter.d/postgresql.conf << 'EOF'
+   [Definition]
+   failregex = FATAL:  password authentication failed for user .* host=<HOST>
+   EOF
+
+   cat > /etc/fail2ban/jail.d/postgresql.conf << 'EOF'
+   [postgresql]
+   enabled = true
+   filter = postgresql
+   logpath = /var/log/postgresql/postgresql-*.log
+   maxretry = 5
+   findtime = 600
+   bantime = 3600
+   EOF
+
+   systemctl restart fail2ban
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   PostgreSQL intentionally does NOT implement account lockout after N failed
+   attempts. This is a deliberate design decision — an account lockout
+   mechanism is itself a denial-of-service vector (an attacker can lock out
+   legitimate users just by repeatedly failing their login). Rate limiting
+   and IP banning at the network layer (fail2ban, WAF, cloud security groups)
+   is the correct place to implement this control, not inside PostgreSQL.
+
+5. **Cross-reference failed attempts against your offboarding process** —
+   directly addressing the opening incident:
+
+   ```sql
+   -- Roles that can log in but are not in your "active employee/system" list:
+   -- (maintain an allowlist table that your HR/IT process updates)
+   SELECT rolname FROM pg_roles
+   WHERE rolcanlogin = true
+     AND rolname NOT IN (SELECT username FROM active_personnel_allowlist);
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Connection logging is active and capturing detail:
+tail -20 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | grep -i connection
+
+# The daily report script runs without error:
+/opt/scripts/auth_failure_report.sh
+
+# fail2ban is actively monitoring (if deployed):
+fail2ban-client status postgresql
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Logging changes (log_connections, log_disconnections) only increase log
+volume — revert via `ALTER SYSTEM RESET log_connections; pg_reload_conf();`
+if log volume becomes a storage concern (see logging rotation runbook).
+fail2ban bans can be manually lifted if a legitimate user is caught:
+`fail2ban-client set postgresql unbanip <ip_address>`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: PGAUDIT SETUP AND CONFIGURATION
+  File: 08_security_access/pgaudit_setup_and_configuration.md
+================================================================================
+
+The standard PostgreSQL log tells you connections and slow queries. It does
+NOT give you a clean, structured audit trail of "who ran what DDL, who read
+which table, who changed which row" in a format suitable for compliance
+review or forensic investigation. That's what pgAudit is for. If your
+organization has any compliance requirement — SOC 2, PCI-DSS, HIPAA, or just
+"we need to be able to answer auditors' questions" — pgAudit is not optional.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Is pgAudit already installed?
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pgaudit';
+
+-- Is it loaded (it requires shared_preload_libraries):
+SHOW shared_preload_libraries;
+```
+
+```bash
+# Is the pgaudit package available for this PostgreSQL version?
+apt-cache search postgresql-15-pgaudit
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install the pgAudit package:**
+
+   ```bash
+   apt-get install -y postgresql-15-pgaudit
+   ```
+
+2. **Load it via shared_preload_libraries — requires a restart:**
+
+   ```bash
+   # postgresql.conf:
+   shared_preload_libraries = 'pgaudit'    # add to existing list, don't replace
+   # If you already have pg_stat_statements:
+   # shared_preload_libraries = 'pg_stat_statements,pgaudit'
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+3. **Create the extension and configure audit classes:**
+
+   ```sql
+   CREATE EXTENSION pgaudit;
+   ```
+
+   ```bash
+   # postgresql.conf — configure what to audit:
+   pgaudit.log = 'ddl, role, write'
+   # Available classes:
+   #   READ      — SELECT and COPY when source is a relation
+   #   WRITE     — INSERT, UPDATE, DELETE, TRUNCATE, COPY when target is a relation
+   #   FUNCTION  — function calls and DO blocks
+   #   ROLE      — GRANT, REVOKE, CREATE/ALTER/DROP ROLE
+   #   DDL       — all DDL not captured by ROLE class (CREATE/ALTER/DROP TABLE etc.)
+   #   MISC      — miscellaneous commands (DISCARD, FETCH, CHECKPOINT, VACUUM, etc.)
+   #   MISC_SET  — SET, SHOW commands
+   #   ALL       — everything (very high volume — use selectively)
+
+   pgaudit.log_catalog = off          # don't audit catalog-only queries (reduces noise)
+   pgaudit.log_relation = on          # log each relation referenced separately
+   pgaudit.log_statement_once = off   # log full statement+parameters for each relation
+   pgaudit.log_parameter = on         # include bind parameters in the log (PII consideration!)
+   ```
+
+   ```bash
+   psql -c "SELECT pg_reload_conf();"
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   Think carefully about `pgaudit.log_parameter = on`. It logs actual bound
+   parameter VALUES — meaning if a query inserts a customer's SSN or password,
+   that value lands in your audit log in plaintext. For compliance-driven
+   audit logging, you often WANT this for forensic completeness, but it also
+   means your log files themselves become a sensitive data store requiring
+   the same access controls and retention policy as the database itself.
+   Decide this deliberately, don't leave it at a default you didn't evaluate.
+
+4. **Configure object-level (fine-grained) auditing for sensitive tables —
+   this is the recommended approach for production rather than blanket
+   READ/WRITE logging, which generates enormous volume:**
+
+   ```sql
+   -- Create a role specifically to scope object auditing:
+   CREATE ROLE audit_targets NOLOGIN;
+
+   -- Grant it (no-op privilege, just for pgaudit role-based scoping) on
+   -- the specific sensitive tables you want READ access audited for:
+   GRANT SELECT ON public.customers TO audit_targets;
+   GRANT SELECT ON public.payment_methods TO audit_targets;
+   ```
+
+   ```bash
+   # postgresql.conf:
+   pgaudit.role = 'audit_targets'
+   # Now READ/WRITE auditing only fires for objects audit_targets has
+   # privileges on, NOT for every table in the database.
+   ```
+
+   ```sql
+   -- Now set log to include READ/WRITE, scoped by the role above:
+   ```
+   ```bash
+   pgaudit.log = 'ddl, role, read, write'
+   ```
+
+5. **Sample the resulting log output to confirm format:**
+
+   ```bash
+   tail -50 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | grep AUDIT
+   ```
+
+   Output format:
+   ```
+   AUDIT: SESSION,1,1,DDL,CREATE TABLE,TABLE,public.test_table,
+       CREATE TABLE test_table (id int),<not logged>
+   AUDIT: SESSION,2,1,READ,SELECT,TABLE,public.customers,
+       SELECT * FROM customers WHERE id = $1,<not logged>
+   ```
+
+6. **Route audit logs to a separate, append-only, access-controlled
+   destination** — mixing audit logs with regular application logs makes them
+   both harder to use for their intended purpose and easier to tamper with:
+
+   ```bash
+   # Option A: separate log file via log_line_prefix filtering downstream
+   # (e.g., promtail/Filebeat pipeline that routes lines containing "AUDIT:"
+   # to a dedicated, immutable storage target like S3 with object lock).
+
+   # Option B: pgaudit can be combined with a logging extension that writes
+   # to a separate table (more complex, but queryable):
+   # See: pgaudit + a trigger-based audit table, or third-party SIEM integration.
+   ```
+
+7. **Build a few standard audit queries for compliance review** (assuming
+   logs are shipped to a queryable store like Loki, Elasticsearch, or a
+   PostgreSQL table via log ingestion):
+
+   ```
+   "Show all DDL run against the production database in the last 30 days"
+   "Show all role/permission changes in the last 90 days, with who ran them"
+   "Show all SELECT statements against the customers table by user X
+    in the last 7 days"
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Extension is active:
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pgaudit';
+
+-- Generate a test DDL statement and confirm it's captured:
+CREATE TABLE pgaudit_test (id int);
+DROP TABLE pgaudit_test;
+```
+
+```bash
+grep "AUDIT.*pgaudit_test" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+# Should show both the CREATE TABLE and DROP TABLE audit entries.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+To disable auditing without removing the extension (reduces log volume
+immediately, reload only):
+```sql
+ALTER SYSTEM SET pgaudit.log = 'none';
+SELECT pg_reload_conf();
+```
+To fully remove (requires restart to unload shared library):
+```sql
+DROP EXTENSION pgaudit;
+```
+```bash
+# Remove 'pgaudit' from shared_preload_libraries, then:
+systemctl restart postgresql@15-main
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+── LAB 1: PG_HBA.CONF ORDERING TRAP ─────────────────────────────────────────
+
+The lab environment has a pg_hba.conf with a deliberately broken rule order —
+a permissive catch-all rule sits above a restrictive rule meant to block a
+specific subnet, exactly like the incident from the start of class.
+
+  a) Confirm the bug by attempting a connection that SHOULD be rejected
+     but isn't.
+  b) Use pg_hba_file_rules to identify exactly which rule is matching first.
+  c) Reorder the rules correctly. Reload. Re-test.
+  d) Confirm the previously-blocked connection now correctly fails, and
+     legitimate connections still succeed.
+
+── LAB 2: LOCKED OUT RECOVERY ───────────────────────────────────────────────
+
+Your instructor will revoke superuser status from the only superuser role
+in the lab environment and lock you out.
+
+  a) Diagnose the exact symptom (what error do you get and why).
+  b) Use the local trust method to regain access.
+  c) Restore the superuser role correctly.
+  d) Confirm you reverted the pg_hba.conf emergency change — verify with
+     a diff against the backup.
+  e) Write one sentence describing what additional control (in Runbook 07
+     or 04) would have made this incident detectable sooner.
+
+── LAB 3: PERMISSION AUDIT AND CLEANUP ──────────────────────────────────────
+
+The lab database has five roles. One of them belongs to a "former contractor"
+scenario — it can log in, has broad privileges, and hasn't connected in the
+simulated log history for months.
+
+  a) Run the audit queries to identify all roles with login capability.
+  b) Identify which role matches the "former contractor" profile.
+  c) Decide: revoke privileges, revoke login, or drop the role entirely?
+     Justify your choice (consider: does anything still reference this role
+     as an object owner?).
+  d) Execute your decision safely (check for owned objects first).
+  e) Set up a recurring query (described as a runbook entry) that would
+     catch this pattern automatically going forward.
+
+── LAB 4: FULL TLS ROLLOUT ──────────────────────────────────────────────────
+
+The lab PostgreSQL instance currently has SSL disabled.
+
+  a) Generate a self-signed certificate and enable SSL.
+  b) Update pg_hba.conf to require hostssl for all remote connections.
+  c) Confirm a sslmode=disable connection attempt is now rejected.
+  d) Confirm a sslmode=verify-full connection succeeds with the correct
+     root certificate.
+  e) Set the certificate's expiry monitoring check (the cron script from
+     Runbook 06) and confirm it correctly reports days remaining.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+I want to end this module — and given the way the program is structured, this
+really might be the last thing I say to some of you — with the thought that
+ties this entire session together.
+
+Security work in a database context is invisible when it's done well. Nobody
+thanks you for the pg_hba.conf rule that correctly blocked an unauthorized
+subnet. Nobody notices the certificate that renewed itself three weeks before
+expiry because you automated it. Nobody sees the audit log that sat there for
+eight months doing nothing — until the one day someone needs to ask "who
+accessed this table on March 3rd," and suddenly that boring, invisible
+infrastructure is the only thing standing between your company and a very
+bad week.
+
+That's the nature of this work. You are building the things that matter most
+when they're never needed, and that pay for themselves completely the one
+time they are.
+
+The incident I opened with — the former contractor, the misordered pg_hba.conf
+rule, the missing audit trail — every piece of that incident has a runbook in
+this session now. That's not a coincidence. That's the whole point of this
+course. You build the runbook BEFORE the incident, not after.
+
+You've now been through eight modules. Incident response, high availability,
+backup and recovery, performance tuning, migrations, monitoring, knowledge
+base internals, and security. That is a complete operational picture of what
+it means to run PostgreSQL professionally.
+
+Go build good systems. Keep your runbooks current. And when something does go
+wrong — because eventually, for everyone, something does — you'll already
+know exactly where to look.
+
+Good luck out there.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — SECURITY AND ACCESS
+  Five layers: Network → Authentication → Encryption → Authorization → Audit
+================================================================================
+
+── DIAGNOSING "CANNOT CONNECT" (WORK TOP TO BOTTOM) ─────────────────────────
+
+  1. Network reachable?      nc -zv <host> 5432
+  2. PostgreSQL listening?   ss -tnlp | grep 5432 ; SHOW listen_addresses;
+  3. Exact log error?        tail -f postgresql-<date>.log | grep FATAL
+  4. Role exists/can login?  SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname='x';
+  5. pg_hba rule matching?   SELECT * FROM pg_hba_file_rules ORDER BY line_number;
+
+── PG_HBA.CONF RULES ────────────────────────────────────────────────────────
+
+  FIRST MATCH WINS. Most specific/restrictive rules go at the TOP.
+
+  TYPE       MEANING
+  local      Unix socket only
+  host       TCP/IP, SSL or non-SSL
+  hostssl    TCP/IP, SSL required
+  hostnossl  TCP/IP, SSL forbidden
+
+  METHOD     MEANING
+  trust      No password (NEVER except emergency/local dev)
+  scram-sha-256   Password, modern (USE THIS)
+  md5        Password, legacy (migrate away)
+  peer       OS username match (local only)
+  cert       Client certificate required
+
+  Validate after edit:
+    SELECT line_number, error FROM pg_hba_file_rules WHERE error IS NOT NULL;
+  Reload (no restart needed):
+    SELECT pg_reload_conf();
+
+── EMERGENCY SUPERUSER RECOVERY ─────────────────────────────────────────────
+
+  Method A (pg_hba edit):
+    1. Backup pg_hba.conf
+    2. Add at TOP: local all postgres trust
+    3. Reload: systemctl reload postgresql
+    4. sudo -u postgres psql
+    5. ALTER ROLE postgres ENCRYPTED PASSWORD '...'; SUPERUSER; LOGIN;
+    6. RESTORE pg_hba.conf backup. Reload again. CONFIRM.
+
+  Method B (single-user mode, bypasses pg_hba entirely):
+    systemctl stop postgresql
+    sudo -u postgres postgres --single -D <data_dir> <dbname>
+    ALTER ROLE postgres SUPERUSER LOGIN PASSWORD '...';
+    systemctl start postgresql
+
+── GRANTS CHECKLIST (MOST COMMONLY MISSED STEP IN BOLD) ─────────────────────
+
+    GRANT CONNECT ON DATABASE mydb TO role;
+    **GRANT USAGE ON SCHEMA public TO role;**     ← forgotten constantly
+    GRANT SELECT ON TABLE orders TO role;
+    GRANT USAGE, SELECT ON SEQUENCE orders_id_seq TO role;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO role;
+
+  Check effective privilege:
+    SELECT has_table_privilege('role','public.orders','SELECT');
+
+── SSL/TLS QUICK SETUP ──────────────────────────────────────────────────────
+
+  Enable:
+    ssl = on  /  ssl_cert_file='server.crt'  /  ssl_key_file='server.key'
+    (requires restart)
+  Enforce in pg_hba.conf:
+    hostssl  mydb  user  0.0.0.0/0  scram-sha-256
+  Client sslmode (weakest→strongest):
+    disable < allow < prefer < require < verify-ca < verify-full
+  Check cert expiry:
+    openssl x509 -in server.crt -noout -checkend 2592000   # 30 days
+  Check live connections' SSL status:
+    SELECT pid, ssl, version FROM pg_stat_ssl JOIN pg_stat_activity USING(pid);
+
+── PGAUDIT QUICK SETUP ──────────────────────────────────────────────────────
+
+  shared_preload_libraries = 'pgaudit'   (restart)
+  CREATE EXTENSION pgaudit;
+  pgaudit.log = 'ddl, role, write'       (reload)
+  pgaudit.log_parameter = on  → WARNING: logs literal bound values (PII risk)
+  Scope READ/WRITE to specific tables via pgaudit.role + grants on a
+  dedicated NOLOGIN role.
+
+── AUTH FAILURE MONITORING ──────────────────────────────────────────────────
+
+  Enable logging:
+    log_connections = on / log_disconnections = on / log_hostname = on
+  Count today's failures:
+    grep "FATAL.*authentication failed" postgresql-<date>.log | wc -l
+  PostgreSQL has NO built-in lockout (by design — avoids DoS vector).
+  Rate-limit at network layer: fail2ban, WAF, cloud security groups.
+
+── OFFBOARDING / STALE ACCOUNT AUDIT ────────────────────────────────────────
+
+    -- Roles that can log in:
+    SELECT rolname FROM pg_roles WHERE rolcanlogin = true;
+    -- Cross-reference against your HR/active-personnel list.
+    -- Roles with no recent activity in pg_stat_activity history are
+    -- candidates for REVOKE LOGIN or DROP ROLE (check owned objects first).
+
+================================================================================
+  END OF SESSION
+================================================================================

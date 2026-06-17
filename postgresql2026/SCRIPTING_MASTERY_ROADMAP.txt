@@ -1,0 +1,2169 @@
+================================================================================
+                    90-DAY DBA SCRIPTING MASTERY ROADMAP
+        From Beginner to Production-Grade Linux & PostgreSQL Automation
+================================================================================
+
+TRAINING PHILOSOPHY
+────────────────────────────────────────────────────────────────────────────
+This is not a coding bootcamp. This is operational engineering training.
+
+You are learning to think like a Senior DBA who automates, diagnoses, and
+operates production systems under pressure, with visibility, accountability,
+and zero tolerance for failure.
+
+Every script must answer:
+  - Why does a DBA need this? (business value)
+  - What breaks? (failure modes)
+  - How do I know if it worked? (validation)
+  - What do I do if it fails? (rollback/recovery)
+  - Who needs to know? (logging/alerting)
+
+NOT: "Here's a clever Bash one-liner."
+YES: "Here's a production script with error handling, logging, audit trails,
+      and validated success criteria."
+
+================================================================================
+                              PHASE 1: FOUNDATIONS
+                         (Days 1–14, 2 weeks)
+                Linux and PostgreSQL Operational Context
+================================================================================
+
+OBJECTIVE
+  Build mental models of how Linux and PostgreSQL work at the OS level.
+  Understand the runtime environment, privilege model, process architecture.
+  Learn to think operationally: What can fail? How do I detect it?
+
+DAILY SCHEDULE (Week 1-2)
+────────────────────────────────────────────────────────────────────────────
+
+DAY 1-2: LINUX FILESYSTEM & PERMISSIONS (Why DBAs Care)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Filesystem hierarchy (/, /var, /home, /opt, /data)
+  - Inodes, blocks, metadata
+  - Permission model (rwx for user/group/other)
+  - File ownership and group membership
+  - Special permissions (setuid, setgid, sticky bit)
+
+PRODUCTION RELEVANCE
+  - PostgreSQL data directory lives on disk (usually /var/lib/postgresql or /data)
+  - Permissions control who can read/write WAL, backups, config files
+  - Disk full is a common incident; understanding inodes vs blocks matters
+  - Backup permissions determine who can restore
+  - Log rotation requires write access to pg_log/
+
+COMMON MISTAKES
+  - Running PostgreSQL with wrong ownership (postgres:postgres is required)
+  - World-readable data directory (SECURITY RISK)
+  - Backup files with wrong permissions (restore fails)
+  - Not checking available inodes (df shows space, but inode exhaustion blocks writes)
+  - Mounted filesystems with noexec flag (PostgreSQL cannot start)
+
+REAL-WORLD INCIDENT
+  [2019] Production PostgreSQL stopped accepting writes. "No space left on device."
+  Investigation: "df -h" showed 15% free. But "df -i" showed 97% inode usage.
+  Root cause: Log rotation script died; /var/log filled with 4M small files.
+  Fix: Delete old logs, restart PostgreSQL.
+  Lesson: Check both space AND inodes. Both matter.
+
+BEST PRACTICES
+  1. PostgreSQL data directory always: /data (or dedicated mount) with mode 700
+  2. PostgreSQL binary/config in /opt or /usr/lib/postgresql (system managed)
+  3. Backups in /backups with restricted permissions (backup user only)
+  4. Logs in /var/log/postgresql with rotation policy (14 days default)
+  5. Temporary files in /tmp or /var/tmp with cleanup
+  6. All PostgreSQL files owned by postgres:postgres
+  7. Regular monitoring: df -h, df -i, du -sh for top directories
+
+SECURITY CONSIDERATIONS
+  - Data directory must NOT be world-readable (encryption keys, configs exposed)
+  - Backup files must be readable only by backup user
+  - WAL archiving files require careful permission management
+  - Audit logs must not be modifiable by regular users
+
+PERFORMANCE CONSIDERATIONS
+  - Filesystem choice matters (ext4, xfs, zfs)
+  - I/O scheduling affects PostgreSQL latency
+  - RAID configuration affects recovery time
+  - SSD vs HDD trade-offs
+
+MONITORING CONSIDERATIONS
+  - Alert when filesystem reaches 80%, 90%, 95%
+  - Alert when inode usage exceeds 85%
+  - Monitor disk growth trend (capacity planning)
+  - Track I/O wait percentage (iostat)
+
+TROUBLESHOOTING APPROACH
+  1. Run "df -h" and "df -i" to see space and inode usage
+  2. Use "du -sh /*" to identify large directories
+  3. Check "lsblk" to see mounted filesystems and their types
+  4. Review "mount" output to check mount options (noexec, nodev, nosuid)
+  5. Use "stat" on data directory to verify owner and permissions
+  6. Check "iostat -x 1" for I/O performance
+
+EXERCISE 1.1: Filesystem Audit
+  - Log into your PostgreSQL server
+  - Run: ls -lad /data /var/lib/postgresql /backups
+  - Run: df -h; df -i; du -sh /data /var/lib/postgresql /var/log/postgresql
+  - Create a simple file in /data/test and verify permissions
+  - Answer: What is the owner/group/permission of the PostgreSQL data directory?
+  - Answer: How much space/inodes are available?
+  - Answer: What is the growth rate? (du now vs. one month ago)
+
+EXERCISE 1.2: Permission Model
+  - Create a test directory: mkdir -p /tmp/pg_test
+  - Change ownership: chown postgres:postgres /tmp/pg_test
+  - Set permissions to 700: chmod 700 /tmp/pg_test
+  - Try to read as different user (if applicable)
+  - Answer: Who can read/write/execute? Why does this matter?
+  - Answer: What happens if permissions are 777?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 3-4: USERS, GROUPS & PROCESSES (Process Privilege Model)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - User/group model in Linux (/etc/passwd, /etc/group)
+  - UID/GID (numeric identifiers)
+  - Process ownership and execution context
+  - Process hierarchy (parent/child, PID/PPID)
+  - Signal handling (SIGTERM, SIGKILL, etc.)
+
+PRODUCTION RELEVANCE
+  - PostgreSQL runs as "postgres" user (non-root, security boundary)
+  - Backup scripts may run as "backup" user (least privilege)
+  - Replication requires trust between postgres user on primary and standby
+  - Cron jobs run with specific user context (postgres, root, monitoring user)
+  - Process monitoring requires understanding PID/PPID relationships
+  - Signals control how you safely stop/restart PostgreSQL
+
+COMMON MISTAKES
+  - Running PostgreSQL as root (SECURITY NIGHTMARE)
+  - Running backup as postgres, then trying to restore as root (permission denied)
+  - Not understanding signal delivery (SIGKILL vs SIGTERM)
+  - Killing parent process, expecting children to die (they don't always)
+  - Not checking process owner in monitoring scripts
+
+REAL-WORLD INCIDENT
+  [2018] Backup script ran as root. After restore, all files were root-owned.
+  PostgreSQL couldn't start (permission denied on data files).
+  Production down 2 hours while fixing permissions.
+  Lesson: Always run backups as the service user, not root.
+
+BEST PRACTICES
+  1. PostgreSQL always runs as "postgres" user (UID typically 26 on Linux)
+  2. Backup scripts run as "postgres" or dedicated "backup" user
+  3. Monitoring scripts can run as "postgres" or special "pgmon" user
+  4. Replication scripts run as "postgres"
+  5. Configuration files should be readable by postgres, not world-readable
+  6. Always check process owner before sending signals
+  7. Use ps -u postgres to see all PostgreSQL processes
+  8. Use kill -0 <PID> to check if process exists before operating on it
+
+SECURITY CONSIDERATIONS
+  - Never run PostgreSQL as root
+  - Never trust scripts that change user context (sudo, su)
+  - Backup user should not have shell access
+  - Monitoring user should have minimal permissions
+  - Replication trust requires careful user/host validation
+
+PERFORMANCE CONSIDERATIONS
+  - Process scheduling affects query latency
+  - Context switching overhead (too many processes)
+  - Memory per process (work_mem, shared_buffers impact)
+
+MONITORING CONSIDERATIONS
+  - Alert if PostgreSQL process dies
+  - Monitor number of PostgreSQL connections/processes
+  - Track process resource usage (CPU, memory)
+  - Alert on zombie processes (dead children not reaped)
+
+TROUBLESHOOTING APPROACH
+  1. Check if PostgreSQL is running: ps aux | grep postgres
+  2. Find main PostgreSQL PID: pg_lsclusters or ps aux (look for "postgres -D")
+  3. List all child processes: ps --ppid <main_PID>
+  4. Check process owner: ps -u postgres
+  5. Inspect process file descriptors: ls -l /proc/<PID>/fd
+  6. Check process limits: cat /proc/<PID>/limits
+
+EXERCISE 1.3: Process Inspection
+  - Run: ps aux | grep postgres (find PostgreSQL processes)
+  - Note: which process is the main postgres process? (parent)
+  - Note: which are child processes? (backends, workers)
+  - Run: ps -ef --forest | grep postgres (see parent/child tree)
+  - Answer: What is the PID of the main postgres process?
+  - Answer: How many child processes are there?
+  - Answer: What user owns the processes?
+
+EXERCISE 1.4: User Model
+  - Run: id postgres (show user/group of postgres account)
+  - Run: getent passwd postgres (show /etc/passwd entry)
+  - Run: groups postgres (show group memberships)
+  - Try: su - postgres (switch to postgres user, exit when done)
+  - Answer: What is the UID/GID?
+  - Answer: What is the home directory?
+  - Answer: What groups is postgres in?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 5-6: ENVIRONMENT VARIABLES & SHELL BASICS (DBA Context)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Environment variables (PATH, HOME, USER, PS1, etc.)
+  - Shell initialization files (.bashrc, .bash_profile, .profile)
+  - Setting environment for child processes
+  - Variable scope (global vs. local)
+  - Special variables ($?, $0, $@, $#, etc.)
+
+PRODUCTION RELEVANCE
+  - PostgreSQL looks for PGDATA, PGVERSION, etc.
+  - Backup scripts set PGPASSWORD to authenticate without prompting
+  - Monitoring scripts read MONITORING_USER, ALERT_EMAIL from environment
+  - Cron jobs have minimal environment (PATH may not be set)
+  - Replication scripts require specific role/password env vars
+  - DBA tools (psql, pg_dump) respond to PGHOST, PGPORT, PGUSER, PGPASSWORD
+
+COMMON MISTAKES
+  - Cron jobs fail because PATH is not set (can't find psql, pg_dump)
+  - Scripts hardcode passwords instead of using environment
+  - Not exporting variables (child processes don't inherit)
+  - Assuming HOME or USER are set in cron context
+  - Not understanding variable expansion ($ precedence)
+
+REAL-WORLD INCIDENT
+  [2017] Backup cron job failed silently for 30 days.
+  Manual backup worked fine: pg_dump ran in shell with all variables set.
+  Investigation: Cron environment is minimal; pg_dump path was not in $PATH.
+  Full path required: /usr/lib/postgresql/XX/bin/pg_dump
+  Lesson: Always use full paths in cron jobs. Never assume PATH.
+
+BEST PRACTICES
+  1. Always use full paths in cron jobs: /usr/bin/psql, /usr/lib/postgresql/XX/bin/*
+  2. Set PGHOST, PGPORT, PGUSER explicitly (don't assume defaults)
+  3. Never hardcode passwords; use .pgpass or PGPASSWORD env var
+  4. Export variables in scripts that spawn child processes: export VAR=value
+  5. Use ${VAR:-default} syntax to provide defaults
+  6. Echo debug variables at start of script (helps troubleshooting)
+  7. Set PS1 in shell startup to identify environment (dev/staging/prod)
+
+SECURITY CONSIDERATIONS
+  - Never export PGPASSWORD or other secrets in shell history
+  - .pgpass should be mode 600 (readable by user only)
+  - Use PGOPTIONS to set options without embedding in scripts
+  - Sanitize environment variables before using in commands
+  - Don't trust environment variables for authentication decisions
+
+PERFORMANCE CONSIDERATIONS
+  - Large PATH variable means slower command lookup
+  - Environment size affects process startup time (usually negligible)
+
+MONITORING CONSIDERATIONS
+  - Log environment at script start for troubleshooting
+  - Alert if critical variables are unset (PGHOST, PGDATA)
+
+TROUBLESHOOTING APPROACH
+  1. Run: env (see all environment variables)
+  2. Run: echo $PATH (check command search path)
+  3. Run: which psql (find psql location)
+  4. Run: echo $PGHOST; echo $PGPORT; echo $PGUSER (check PG variables)
+  5. In cron context: */1 * * * * env > /tmp/cron_env.txt (capture cron env)
+  6. Compare cron env vs. interactive shell env
+
+EXERCISE 1.5: Environment Variables
+  - Run: env | grep PG (see PostgreSQL environment variables)
+  - Run: echo $SHELL; echo $HOME; echo $USER
+  - Run: which psql; which pg_dump
+  - Answer: What is the full path to psql?
+  - Answer: What environment variables does PostgreSQL use?
+  - Answer: What would happen if PGHOST is not set?
+
+EXERCISE 1.6: Shell Initialization
+  - View: cat ~/.bashrc (see what's in your shell startup)
+  - View: cat ~/.bash_profile
+  - Add: echo "PATH=$PATH" to your .bashrc, logout/login
+  - Answer: Where are bash initialization files? What order are they loaded?
+  - Answer: What variables are set by default?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 7-8: STANDARD I/O, PIPES & REDIRECTION (Text Processing)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - stdin (file descriptor 0)
+  - stdout (file descriptor 1)
+  - stderr (file descriptor 2)
+  - Pipes (|) and redirection (>, >>, <, 2>&1)
+  - Command substitution
+  - Here documents (heredoc)
+
+PRODUCTION RELEVANCE
+  - Backup scripts log to stdout (captured in cron email)
+  - Error messages go to stderr (can be separated from normal output)
+  - Monitoring scripts pipe output through grep, awk, sort
+  - Replication monitoring reads output of pg_stat_replication
+  - Log analysis requires piping through grep, awk, sed
+  - Health check scripts combine multiple command outputs
+
+COMMON MISTAKES
+  - Not separating stdout and stderr (errors mixed with normal output)
+  - Not redirecting output to file (cron sends everything to email)
+  - Pipe breaking on error (command fails, next pipe doesn't get input)
+  - Not quoting variables with spaces in redirection
+  - Not understanding file descriptor ordering (2>&1 vs 1>&2)
+
+REAL-WORLD INCIDENT
+  [2016] Health check script ran every minute, output went to cron email.
+  Server's mail queue grew to 100GB in 3 days.
+  Root cause: No redirection; output was emailed per run.
+  Fix: Add ">> /var/log/healthcheck.log 2>&1" to cron job.
+  Lesson: Always redirect output in production cron jobs.
+
+BEST PRACTICES
+  1. Always redirect stdout and stderr in cron jobs
+  2. Use >> (append) for logs, not > (overwrite)
+  3. Separate stdout and stderr when needed: command 2>/tmp/errors.log
+  4. Pipe through tee to both display and log: command | tee -a log.txt
+  5. Use heredoc for multi-line text: cat << 'EOF' ... EOF
+  6. Test pipes before using in production (does data flow correctly?)
+  7. Log with timestamp: command 2>&1 | while read line; do echo "$(date) $line"; done
+
+SECURITY CONSIDERATIONS
+  - Don't redirect to world-readable files (logs may contain sensitive data)
+  - Don't pipe secrets through grep (leaves in process list momentarily)
+  - Sanitize stderr before logging (may contain passwords from failed commands)
+
+PERFORMANCE CONSIDERATIONS
+  - Pipes create subshells (slight overhead, usually negligible)
+  - Large amounts of data through pipes (memory buffering)
+  - Appending to very large log files (seek time on disk)
+
+MONITORING CONSIDERATIONS
+  - Log all output for troubleshooting
+  - Alert on specific patterns in stderr (FATAL, ERROR)
+  - Monitor log file growth (rotation needed?)
+
+TROUBLESHOOTING APPROACH
+  1. Test command with explicit redirection: command > /tmp/test.log 2>&1
+  2. Check if output is going to right place: tail /tmp/test.log
+  3. Use "set -x" in script to see what's executing
+  4. Verify pipes work: echo "test" | cat (should print "test")
+  5. Check file permissions: ls -l on output files
+
+EXERCISE 1.7: I/O Redirection
+  - Run: echo "hello" > /tmp/test.txt (redirect stdout)
+  - Run: cat /tmp/test.txt (verify it worked)
+  - Run: echo "world" >> /tmp/test.txt (append)
+  - Run: cat /tmp/test.txt (should have two lines)
+  - Run: ls /nonexistent 2>/dev/null (suppress error)
+  - Run: ls /nonexistent 2>&1 (redirect error to stdout)
+
+EXERCISE 1.8: Pipes
+  - Run: ps aux | grep postgres (pipe output to grep)
+  - Run: ps aux | grep postgres | wc -l (count lines)
+  - Run: echo -e "one\ntwo\nthree" | while read line; do echo "Line: $line"; done
+  - Answer: How many pipes can you chain together?
+  - Answer: What happens if one command in a pipe fails?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 9-10: EXIT CODES & ERROR DETECTION (DBA Reliability)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Exit codes (0 = success, 1-255 = failure)
+  - $? variable (last exit code)
+  - set -e (exit on error)
+  - set -o pipefail (pipe failures)
+  - Error handling patterns
+
+PRODUCTION RELEVANCE
+  - Backup script must exit non-zero if backup fails (alerting depends on this)
+  - Replication check must return 0 only if replication is healthy
+  - Monitoring scripts must signal failure to monitoring system
+  - Cron job relies on exit code to determine if action succeeded
+  - Incident response scripts must communicate success/failure clearly
+
+COMMON MISTAKES
+  - Not checking exit codes (script continues after failure)
+  - Using "set -e" without understanding its limitations
+  - Not using pipefail (first command in pipe fails silently)
+  - Hardcoding exit codes (should return specific codes for specific failures)
+  - Not propagating exit codes from subshells
+
+REAL-WORLD INCIDENT
+  [2020] Backup script had no error checking. Backup command failed silently.
+  For 2 weeks, no valid backups existed. Recovery point objective violated.
+  Root cause: Script didn't check pg_dump exit code or log errors.
+  Lesson: Every critical command must be checked. Log failures. Alert ops.
+
+BEST PRACTICES
+  1. Always check exit codes: if ! command; then ... fi
+  2. Use "set -e" at start of scripts (exit on error, with caveats)
+  3. Use "set -o pipefail" (fail if any command in pipe fails)
+  4. Exit with specific codes (0=success, 1=general error, 2=usage, etc.)
+  5. Log all errors to stderr before exiting
+  6. Return exit code from functions
+  7. Use || to handle errors: command || { log error; exit 1; }
+
+SECURITY CONSIDERATIONS
+  - Don't ignore errors (silent failure = undetected compromise)
+  - Verify command success before acting on output
+  - Log failures for audit trail
+
+PERFORMANCE CONSIDERATIONS
+  - set -e and pipefail have negligible performance impact
+
+MONITORING CONSIDERATIONS
+  - Alert on non-zero exit code
+  - Track exit codes in monitoring system
+  - Distinguish between different failure types (code 1, 2, 3...)
+
+TROUBLESHOOTING APPROACH
+  1. Run command, check exit code: command; echo $?
+  2. Add "echo $?" after each step in script during debugging
+  3. Use "set -x" to see which command failed
+  4. Test error conditions deliberately (delete file, disconnect network)
+  5. Verify error messages are clear and actionable
+
+EXERCISE 1.9: Exit Codes
+  - Run: true; echo $? (should be 0)
+  - Run: false; echo $? (should be 1)
+  - Run: psql -h nonexistent -c 'select 1' 2>/dev/null; echo $?
+  - Create /tmp/test_exit.sh with:
+    if ! pg_isready -h localhost; then
+      echo "PostgreSQL not ready"
+      exit 1
+    fi
+    echo "PostgreSQL ready"
+    exit 0
+  - Run: bash /tmp/test_exit.sh; echo "Exit code: $?"
+  - Answer: What exit code means what? Why does it matter?
+
+EXERCISE 1.10: set -e and pipefail
+  - Create /tmp/test_set_e.sh:
+    set -e
+    false
+    echo "This line should not print"
+  - Run: bash /tmp/test_set_e.sh (should exit before echo)
+  - Create /tmp/test_pipefail.sh:
+    set -o pipefail
+    false | true
+    echo "Exit: $?"
+  - Answer: What does pipefail do differently?
+  - Answer: When would you use set -e? When would it be dangerous?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 11-12: CRON, LOGGING & SCHEDULING (Operational Foundation)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Cron daemon and crontab format
+  - Cron environment (minimal PATH, no terminal)
+  - Cron output handling (email vs. log files)
+  - Logging standards (timestamp, level, context)
+  - Log rotation
+  - Systemd timer as alternative to cron
+
+PRODUCTION RELEVANCE
+  - Backup scripts run on cron schedule (daily, hourly)
+  - Replication monitoring runs every minute
+  - Health checks run every 5 minutes
+  - Cleanup scripts (old logs, temp files) run nightly
+  - Capacity planning reports run weekly
+  - Cron is the primary scheduler for DBA automation
+
+COMMON MISTAKES
+  - Cron jobs failing due to missing PATH
+  - Cron output sent to email (mail queue grows)
+  - No logging (can't debug issues)
+  - Overlapping cron jobs (two instances running simultaneously)
+  - Not using full paths (script can't find psql, pg_dump)
+  - Not setting PGHOST, PGPORT explicitly
+  - Cron jobs without timeout (can hang indefinitely)
+
+REAL-WORLD INCIDENT
+  [2021] Backup cron ran every 2 hours. One run took 4 hours.
+  Next run started before first finished. Both locked database.
+  Production unresponsive for 1 hour.
+  Fix: Add flock/lock file to prevent concurrent runs.
+  Lesson: Production cron jobs need lock files, timeouts, explicit environment.
+
+BEST PRACTICES
+  1. Always use full paths: /usr/lib/postgresql/XX/bin/psql
+  2. Set environment explicitly: PGHOST, PGPORT, PGUSER, PGPASSWORD
+  3. Redirect output to log file, never to email: >> /var/log/backup.log 2>&1
+  4. Add lock file to prevent concurrent runs: flock -n /var/run/backup.lock
+  5. Add timeout: timeout 3600 command (kill if >1 hour)
+  6. Log with timestamp at start/end
+  7. Check exit code and log it
+  8. Rotate logs regularly (logrotate or manual script)
+  9. Keep cron logs in /var/log/cron or application-specific logs
+  10. Test cron job manually before deploying: bash -x script.sh
+
+SECURITY CONSIDERATIONS
+  - Cron job runs with user's privileges (use postgres user)
+  - Output may contain sensitive data (log permissions: mode 600)
+  - .pgpass must be mode 600
+  - crontab readable only by owner and root
+
+PERFORMANCE CONSIDERATIONS
+  - Cron job scheduling affects database load (don't run all at once)
+  - Long-running jobs should have timeout
+  - Overlapping jobs can cause lock contention
+
+MONITORING CONSIDERATIONS
+  - Alert if cron job doesn't run (systemd timer or monitoring)
+  - Alert if cron job takes too long
+  - Monitor cron log for errors: grep CRON /var/log/syslog
+  - Alert on exit code != 0
+
+TROUBLESHOOTING APPROACH
+  1. Check cron logs: grep CRON /var/log/syslog or /var/log/cron
+  2. Test cron environment: env -i /bin/sh -c 'command' (minimal env)
+  3. Test cron job manually: bash /path/to/script.sh
+  4. Check if cron daemon is running: ps aux | grep cron
+  5. Verify crontab: crontab -l (for current user) or crontab -u postgres -l
+  6. Check mail queue: mailq (if output is being emailed)
+  7. Test with explicit environment: PGHOST=localhost /path/to/script.sh
+
+EXERCISE 1.11: Cron Basics
+  - View: crontab -l (see your current cron jobs)
+  - View: sudo crontab -u postgres -l (see postgres user's cron jobs)
+  - Create test script /tmp/cron_test.sh:
+    #!/bin/bash
+    echo "Cron test ran at $(date)" >> /tmp/cron_test.log
+  - Run: chmod +x /tmp/cron_test.sh
+  - Add to crontab: crontab -e, add line: * * * * * /tmp/cron_test.sh
+  - Wait 1 minute, check: tail /tmp/cron_test.log
+  - Answer: Did it run? What time was it?
+  - Answer: What is the cron environment? (compare to your shell env)
+
+EXERCISE 1.12: Logging Standards
+  - Create /tmp/backup_test.sh:
+    #!/bin/bash
+    LOG="/var/log/backup_test.log"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup started" >> "$LOG"
+    if pg_dump -U postgres testdb > /tmp/testdb.sql 2>&1; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup succeeded" >> "$LOG"
+      exit 0
+    else
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup failed: $?" >> "$LOG"
+      exit 1
+    fi
+  - Run: bash /tmp/backup_test.sh
+  - Check: cat /var/log/backup_test.log
+  - Answer: What information should be in a production log?
+  - Answer: How would you format timestamps for easy parsing?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 13-14: INTRODUCTION TO POSTGRESQL OPERATIONS (Context)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - PostgreSQL architecture (processes, memory, files)
+  - Data directory structure
+  - Connection model (user/database/role authentication)
+  - pg_isready, psql connection strings
+  - Basic health checks
+
+PRODUCTION RELEVANCE
+  - DBA automation focuses on backing up, monitoring, replicating PostgreSQL
+  - Must understand what PostgreSQL looks like at OS level
+  - Must know how to connect and run queries from shell
+  - Must understand data directory layout
+  - Incident response requires quick health assessment
+
+COMMON MISTAKES
+  - Assuming PostgreSQL is running when it's not (check pg_isready)
+  - Not understanding connection failures (host/port/user wrong)
+  - Hardcoding credentials instead of using .pgpass
+  - Not understanding role/user model (pg roles != OS users)
+  - Not knowing what postgresql.conf controls
+
+REAL-WORLD INCIDENT
+  [2015] Script tried to connect to PostgreSQL, failed silently (no error checking).
+  Automation ran blindly for hours while database was down.
+  Root cause: pg_isready check was commented out during testing.
+  Lesson: Always verify PostgreSQL is running before operating on it.
+
+BEST PRACTICES
+  1. Always start scripts with pg_isready check
+  2. Use connection strings: psql -h host -U user -d database
+  3. Never hardcode credentials; use .pgpass or environment
+  4. Understand PGHOST, PGPORT, PGUSER, PGPASSWORD (order of precedence)
+  5. Know the data directory layout (pg_wal, pg_data, pg_log)
+  6. Understand tablespace concept (where data lives on disk)
+  7. Check pg_catalog.pg_database for critical metadata
+
+SECURITY CONSIDERATIONS
+  - Never pass password on command line (use .pgpass)
+  - Don't log connection strings (may contain passwords)
+  - Understand role-based access control (GRANT/REVOKE)
+  - SSL/TLS encryption for remote connections
+
+PERFORMANCE CONSIDERATIONS
+  - Connection pooling for high-frequency connections
+  - Idle connections waste memory
+  - Connection limits (max_connections) must be planned
+
+MONITORING CONSIDERATIONS
+  - Alert if PostgreSQL is down (pg_isready)
+  - Monitor active connections
+  - Monitor long-running queries
+  - Track connection count trends
+
+TROUBLESHOOTING APPROACH
+  1. Check if PostgreSQL is running: pg_isready -h localhost -p 5432
+  2. Check listen address: grep "^listen_addresses" postgresql.conf
+  3. Check connection limits: psql -c "show max_connections"
+  4. List active connections: psql -c "select * from pg_stat_activity"
+  5. Check roles: psql -c "\du"
+  6. Check databases: psql -c "\l"
+
+EXERCISE 1.13: PostgreSQL Basics
+  - Run: pg_isready -h localhost -p 5432 -U postgres
+  - Run: psql -U postgres -d postgres -c "select version()"
+  - Run: psql -U postgres -d postgres -c "select datname from pg_database"
+  - Create .pgpass (if needed): echo "localhost:5432:*:postgres:password" > ~/.pgpass
+  - Run: chmod 600 ~/.pgpass
+  - Run: psql -h localhost -U postgres -d postgres -c "select current_database()"
+  - Answer: Can you connect to PostgreSQL? What does the version say?
+  - Answer: What databases exist?
+
+EXERCISE 1.14: Data Directory
+  - Find PostgreSQL data directory: sudo -u postgres psql -c "show data_directory"
+  - Explore: sudo -u postgres ls -la /data (or wherever PGDATA is)
+  - List: sudo -u postgres ls -la /data/pg_wal (WAL files)
+  - Check: du -sh /data/* (size of each subdirectory)
+  - Answer: Where does PostgreSQL store data?
+  - Answer: What is pg_wal? What is pg_xact?
+
+WEEK 1-2 SUMMARY
+────────────────────────────────────────────────────────────────────────────
+You now understand:
+  - How Linux filesystems, users, and processes work
+  - How PostgreSQL sits on top of this (data, user, process model)
+  - How shell scripting fits in (automation, cron, environment)
+  - Why DBAs care about these fundamentals
+  - Debugging approach: check filesystem, processes, environment, then postgres
+
+READINESS CHECK
+  Before moving to Phase 2, verify you can:
+  [ ] Explain PostgreSQL data directory ownership/permissions
+  [ ] Find PostgreSQL processes and understand parent/child relationships
+  [ ] Understand shell environment and why PATH matters in cron
+  [ ] Understand I/O redirection and pipes
+  [ ] Know what exit codes mean
+  [ ] Create a cron job with proper logging
+  [ ] Connect to PostgreSQL and run a basic query
+  [ ] Understand the difference between success and failure
+
+================================================================================
+                         PHASE 2: SHELL SCRIPTING BASICS
+                         (Days 15–35, 3 weeks)
+                  Variables, Conditions, Loops, Functions, Arrays
+================================================================================
+
+OBJECTIVE
+  Master fundamental Bash programming constructs with production discipline.
+  Write clean, readable, maintainable code. Understand why each construct exists.
+  Build scripts that are defensive (check inputs, handle errors, log extensively).
+
+DAILY SCHEDULE (Week 3-5)
+────────────────────────────────────────────────────────────────────────────
+
+DAY 15-16: VARIABLES & PARAMETER EXPANSION
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Variable assignment (VAR=value, VAR="value with spaces")
+  - Parameter expansion ($VAR, ${VAR})
+  - Default values (${VAR:-default})
+  - String length (${#VAR})
+  - Substring (${VAR:offset:length})
+  - Pattern substitution (${VAR//pattern/replace})
+  - Quoting rules (single vs double quotes)
+
+PRODUCTION RELEVANCE
+  - Configuration values stored in variables
+  - Database names, hostnames, ports from environment
+  - Backup paths constructed dynamically
+  - Error messages with embedded variables
+  - Parsing command output into variables
+
+COMMON MISTAKES
+  - Not quoting variables with spaces: echo $VAR (breaks if spaces)
+  - Using single quotes when variable expansion needed
+  - Not using ${VAR} syntax (looks like $VARIABLE1, means VAR then 1)
+  - Assuming variables persist across pipes (subshell isolation)
+  - Not initializing variables (undefined = empty string)
+
+REAL-WORLD INCIDENT
+  [2014] Script had BACKUP_PATH=$BASE_PATH/$DB_NAME
+  DB_NAME had space: "Production DB"
+  Result: BACKUP_PATH became two separate paths in subsequent commands.
+  Backup created in wrong directory, unnoticed for days.
+  Fix: Always quote: BACKUP_PATH="$BASE_PATH/$DB_NAME"
+  Lesson: Quote all variables. Always. No exceptions.
+
+BEST PRACTICES
+  1. Always quote variables: "${VAR}", not $VAR
+  2. Use lowercase for local variables, UPPERCASE for constants
+  3. Initialize variables at start: VAR=""
+  4. Use ${VAR:-default} for optional values
+  5. Use ${VAR:?error message} to assert variables are set
+  6. Use ${VAR/old/new} for string replacement
+  7. Never use eval
+  8. Document variable purpose in comments
+
+SECURITY CONSIDERATIONS
+  - Don't store passwords in variables (use environment/files)
+  - Sanitize variables used in commands (avoid injection)
+  - Don't expose variables in process list (ps aux)
+
+PERFORMANCE CONSIDERATIONS
+  - Variable lookup is O(1) (negligible)
+  - String expansion can be slow on large strings (rarely an issue)
+
+MONITORING CONSIDERATIONS
+  - Log key variables at script start (helps troubleshooting)
+
+TROUBLESHOOTING APPROACH
+  1. Use "set -x" to see variable expansion
+  2. Add "echo" statements to print variables at checkpoints
+  3. Use "${VAR}" and check if it's empty: [ -z "${VAR}" ]
+
+EXERCISE 2.1: Variable Basics
+  Create /tmp/var_exercise.sh:
+    #!/bin/bash
+    NAME="Alice"
+    AGE=30
+    MESSAGE="Hello, $NAME"
+    echo "Message: $MESSAGE"
+    echo "Age: $AGE"
+    
+    # Try these:
+    VAR="one two three"
+    echo "Without quotes: $VAR"   # Bad
+    echo "With quotes: \"$VAR\""   # Good
+    
+    # Defaults
+    OPTIONAL_VAR="${OPTIONAL_VAR:-default_value}"
+    echo "Optional: $OPTIONAL_VAR"
+    
+    # Assertion
+    REQUIRED="${REQUIRED:?Variable REQUIRED must be set}"
+    echo "Required: $REQUIRED"
+
+  Run: bash /tmp/var_exercise.sh
+  Run: OPTIONAL_VAR="custom" bash /tmp/var_exercise.sh
+  Answer: Why is quoting important? When does it matter?
+  Answer: What does :- mean? What does :? mean?
+
+EXERCISE 2.2: Parameter Expansion
+  Create /tmp/param_exercise.sh:
+    #!/bin/bash
+    FILEPATH="/var/lib/postgresql/data/pg_wal/000000010000000000000001"
+    FILENAME=$(basename "$FILEPATH")
+    DIRNAME=$(dirname "$FILEPATH")
+    
+    echo "Full path: $FILEPATH"
+    echo "Filename: $FILENAME"
+    echo "Directory: $DIRNAME"
+    
+    # String length
+    echo "Length of FILENAME: ${#FILENAME}"
+    
+    # Substring
+    FIRST_TEN="${FILENAME:0:10}"
+    echo "First 10 chars: $FIRST_TEN"
+    
+    # Replace
+    NEW_PATH="${FILEPATH/postgresql/postgres_backup}"
+    echo "Replaced: $NEW_PATH"
+
+  Run: bash /tmp/param_exercise.sh
+  Answer: What's the difference between $(command) and `command`?
+  Answer: When would you use substring extraction?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 17-18: CONDITIONALS & TESTING
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - if/then/else/elif
+  - Test operators: [ ], [[ ]] (preferred in Bash)
+  - File tests: -f, -d, -r, -w, -x
+  - String tests: =, !=, -z (empty), -n (not empty)
+  - Numeric tests: -eq, -ne, -lt, -le, -gt, -ge
+  - Boolean operators: &&, ||, !
+
+PRODUCTION RELEVANCE
+  - Check if file exists before operating on it
+  - Check if PostgreSQL is running before backup
+  - Check if variable is empty before using it
+  - Conditional logic in monitoring (alert if threshold exceeded)
+  - Error handling based on exit codes
+
+COMMON MISTAKES
+  - Using [ ] in Bash (POSIX, less capable; use [[ ]])
+  - Not quoting variables in tests: [ $VAR = "value" ] fails if $VAR empty
+  - Confusing = and == (both work, but -eq for numbers)
+  - Not using -f, -d, -r tests (assume file exists)
+  - Forgetting spaces around operators: [$VAR="value"] is invalid
+
+REAL-WORLD INCIDENT
+  [2019] Script tested if file exists: if [ -f $BACKUP_FILE ]; then
+  BACKUP_FILE was empty (variable unset).
+  Condition evaluated true (no file to delete).
+  Script tried to delete root directory (wildcard expansion).
+  Lesson: Always quote variables. Always use file tests. Always check assumptions.
+
+BEST PRACTICES
+  1. Use [[ ]] instead of [ ] (more capable, safer)
+  2. Always quote variables: [[ -f "${FILE}" ]]
+  3. Use -f for files, -d for directories
+  4. Use -r, -w, -x for permission checks
+  5. Use -z for empty, -n for non-empty strings
+  6. Use -eq, -ne, -lt, etc. for numeric comparisons
+  7. Combine conditions with && and ||
+  8. Use early return pattern: if ! condition; then return 1; fi
+  9. Indent logic clearly (makes bugs obvious)
+
+SECURITY CONSIDERATIONS
+  - Don't trust user input in conditions (inject defensive checks)
+  - Use -r for permission checks (file readable before using)
+
+PERFORMANCE CONSIDERATIONS
+  - [[ ]] is slightly slower than [ ] (usually negligible)
+  - File tests cause stat() syscalls (expensive on network filesystems)
+
+MONITORING CONSIDERATIONS
+  - Log the condition that failed (helps troubleshooting)
+
+TROUBLESHOOTING APPROACH
+  1. Add "set -x" to see which branch is taken
+  2. Test condition manually: [[ -f /path/to/file ]] && echo "Exists"
+  3. Check variable: echo "VAR=$VAR" before using in condition
+
+EXERCISE 2.3: Conditionals
+  Create /tmp/cond_exercise.sh:
+    #!/bin/bash
+    
+    # File test
+    if [[ -f /etc/passwd ]]; then
+      echo "/etc/passwd exists"
+    fi
+    
+    # String test
+    USERNAME="postgres"
+    if [[ "$USERNAME" == "postgres" ]]; then
+      echo "Running as postgres"
+    fi
+    
+    # Numeric test
+    CONNECTIONS=150
+    if [[ $CONNECTIONS -gt 100 ]]; then
+      echo "High connection count: $CONNECTIONS"
+    fi
+    
+    # Negation
+    if [[ ! -d /nonexistent ]]; then
+      echo "Directory does not exist"
+    fi
+    
+    # Combined
+    if [[ -f /etc/passwd ]] && [[ -r /etc/passwd ]]; then
+      echo "File exists and is readable"
+    fi
+
+  Run: bash /tmp/cond_exercise.sh
+  Answer: Why use [[ ]] instead of [ ]?
+  Answer: What file tests would you use in a DBA script?
+
+EXERCISE 2.4: Early Return Pattern
+  Create /tmp/early_return.sh:
+    #!/bin/bash
+    
+    check_postgres() {
+      if ! pg_isready -h localhost &>/dev/null; then
+        echo "ERROR: PostgreSQL not running"
+        return 1
+      fi
+      
+      if ! psql -h localhost -c "select 1" &>/dev/null; then
+        echo "ERROR: Cannot connect to PostgreSQL"
+        return 1
+      fi
+      
+      echo "PostgreSQL is healthy"
+      return 0
+    }
+    
+    check_postgres
+    if [[ $? -eq 0 ]]; then
+      echo "Proceeding with operation"
+    else
+      echo "Aborting: PostgreSQL not ready"
+      exit 1
+    fi
+
+  Run: bash /tmp/early_return.sh
+  Answer: What does the early return pattern do?
+  Answer: When would you use it?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 19-20: LOOPS (for, while, until)
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - for loop (iterate over list, C-style loop)
+  - while loop (while condition true)
+  - until loop (until condition true)
+  - break and continue
+  - Loop variable scope
+
+PRODUCTION RELEVANCE
+  - Process multiple databases
+  - Iterate over list of hosts (primary, standby, replica)
+  - Process lines from query output
+  - Retry logic (loop until success or max attempts)
+  - Batch operations (process files in /var/backups)
+
+COMMON MISTAKES
+  - Not quoting variables in for loop: for file in $list (globbing issue)
+  - Assuming loop variables survive outside loop (they don't in subshells)
+  - Infinite loops without timeout mechanism
+  - Not tracking iteration count (retry logic fails)
+  - Modifying list while iterating (undefined behavior)
+
+REAL-WORLD INCIDENT
+  [2018] Script iterated over databases from query output.
+  Query output was piped to while loop (subshell).
+  Loop modified variables. After loop, variables were empty.
+  Script continued with undefined behavior (deleted wrong data).
+  Lesson: Understand subshell scope. Use process substitution or readarray.
+
+BEST PRACTICES
+  1. Use for loop with quoted list: for db in "${DATABASES[@]}"
+  2. Use while read for line-by-line input: while read line; do ... done
+  3. Use process substitution to avoid subshells: while read line; do ... done < <(cmd)
+  4. Or use readarray: readarray -t LINES < <(cmd)
+  5. Add timeout to while loops: MAX_ATTEMPTS=10; ATTEMPT=0; while ...
+  6. Log iteration progress for debugging
+  7. Break early if operation succeeds
+
+SECURITY CONSIDERATIONS
+  - Be careful with word splitting in loops (sanitize input)
+  - Don't iterate over untrusted lists
+
+PERFORMANCE CONSIDERATIONS
+  - for loop with glob expansion can be slow (10k+ files)
+  - while read is slower than pure Bash loops (spawns processes)
+  - Use process substitution to avoid subshells
+
+MONITORING CONSIDERATIONS
+  - Log progress at each iteration (helps identify which item fails)
+  - Alert if loop takes too long (timeout mechanism)
+
+TROUBLESHOOTING APPROACH
+  1. Add echo at each iteration: echo "Processing: $ITEM"
+  2. Use "set -x" to see loop execution
+  3. Test loop logic in isolation
+
+EXERCISE 2.5: for Loop
+  Create /tmp/for_exercise.sh:
+    #!/bin/bash
+    
+    # Simple for loop
+    DATABASES=("testdb" "proddb" "devdb")
+    for db in "${DATABASES[@]}"; do
+      echo "Database: $db"
+    done
+    
+    # Loop with range
+    echo "Numbers 1-5:"
+    for i in {1..5}; do
+      echo "  $i"
+    done
+    
+    # C-style for loop
+    echo "C-style loop:"
+    for ((i=1; i<=3; i++)); do
+      echo "  Iteration $i"
+    done
+
+  Run: bash /tmp/for_exercise.sh
+  Answer: When would you use each style of for loop?
+  Answer: Why do you quote "${DATABASES[@]}"?
+
+EXERCISE 2.6: while Loop with Retry
+  Create /tmp/while_retry.sh:
+    #!/bin/bash
+    
+    MAX_ATTEMPTS=5
+    ATTEMPT=0
+    SUCCESS=0
+    
+    while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+      ATTEMPT=$((ATTEMPT + 1))
+      echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+      
+      if pg_isready -h localhost &>/dev/null; then
+        echo "PostgreSQL connected"
+        SUCCESS=1
+        break
+      fi
+      
+      echo "Failed, waiting 2 seconds..."
+      sleep 2
+    done
+    
+    if [[ $SUCCESS -eq 1 ]]; then
+      echo "Success after $ATTEMPT attempts"
+    else
+      echo "Failed after $MAX_ATTEMPTS attempts"
+      exit 1
+    fi
+
+  Run: bash /tmp/while_retry.sh
+  Answer: How would you use this pattern in a production script?
+  Answer: What happens if you remove the break statement?
+
+EXERCISE 2.7: while read
+  Create /tmp/while_read.sh:
+    #!/bin/bash
+    
+    # Read lines from a file
+    TESTFILE="/tmp/test_lines.txt"
+    cat > "$TESTFILE" << 'EOF'
+    database1
+    database2
+    database3
+    EOF
+    
+    echo "Using while read:"
+    while IFS= read -r line; do
+      echo "Line: $line"
+    done < "$TESTFILE"
+    
+    # Read from command output
+    echo "From psql output:"
+    psql -h localhost -U postgres -c "select datname from pg_database limit 3" -t | \
+    while read -r dbname; do
+      echo "Found database: $dbname"
+    done
+
+  Run: bash /tmp/while_read.sh
+  Answer: What does IFS= do?
+  Answer: What does -r do in read?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 21-22: FUNCTIONS & CODE ORGANIZATION
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Function definition and calling
+  - Parameters ($1, $2, $@, $#)
+  - Return values (return N, echo for output)
+  - Local variables (local VAR=value)
+  - Exit trap and cleanup
+
+PRODUCTION RELEVANCE
+  - Modular code (backup, restore, verify as separate functions)
+  - Reusable logic (function library)
+  - Error handling (trap and cleanup)
+  - Testing (test individual functions)
+
+COMMON MISTAKES
+  - Not declaring local variables (pollute global scope)
+  - Forgetting return statements (function exits with last command's code)
+  - Returning multiple values (use global variables or echo)
+  - Not handling function parameters ($1, $2, etc. without checking)
+  - Not using trap for cleanup
+
+REAL-WORLD INCIDENT
+  [2017] Backup function used variable TEMP_FILE without declaring local.
+  Multiple concurrent backup processes used same temp file.
+  Files were corrupted. Recovery failed.
+  Fix: declare local TEMP_FILE in function.
+  Lesson: Always use local in functions. Always declare variables.
+
+BEST PRACTICES
+  1. Declare local variables: local TEMP_FILE
+  2. Document function parameters in comment
+  3. Validate parameters at function start: [[ $# -lt 1 ]] && return 1
+  4. Return exit code or echo output (be consistent)
+  5. Use trap to cleanup: trap "cleanup" EXIT
+  6. Log function entry/exit for debugging
+  7. Keep functions focused (one responsibility)
+  8. Source reusable functions from library file
+
+SECURITY CONSIDERATIONS
+  - Sanitize function parameters (don't use in shell commands)
+  - Don't use eval
+  - Be careful with global variables (pollution)
+
+PERFORMANCE CONSIDERATIONS
+  - Function calls have negligible overhead
+
+MONITORING CONSIDERATIONS
+  - Log function execution for audit trail
+
+TROUBLESHOOTING APPROACH
+  1. Add echo at function start: echo "Entering function_name with params: $@"
+  2. Use "set -x" in function to see execution
+  3. Test function in isolation
+
+EXERCISE 2.8: Function Basics
+  Create /tmp/function_exercise.sh:
+    #!/bin/bash
+    
+    # Simple function
+    greet() {
+      echo "Hello, World!"
+    }
+    
+    # Function with parameters
+    greet_person() {
+      local name="$1"
+      local greeting="${2:-Hello}"
+      echo "$greeting, $name!"
+    }
+    
+    # Function with return code
+    check_file() {
+      local file="$1"
+      if [[ -f "$file" ]]; then
+        return 0
+      else
+        return 1
+      fi
+    }
+    
+    # Calls
+    greet
+    greet_person "Alice"
+    greet_person "Bob" "Hi"
+    
+    if check_file "/etc/passwd"; then
+      echo "/etc/passwd exists"
+    fi
+
+  Run: bash /tmp/function_exercise.sh
+  Answer: Why use local variables?
+  Answer: How do you pass parameters to functions?
+
+EXERCISE 2.9: Function with Cleanup
+  Create /tmp/function_cleanup.sh:
+    #!/bin/bash
+    
+    TEMP_DIR=""
+    
+    cleanup() {
+      if [[ -n "$TEMP_DIR" ]] && [[ -d "$TEMP_DIR" ]]; then
+        echo "Cleaning up temp directory: $TEMP_DIR"
+        rm -rf "$TEMP_DIR"
+      fi
+    }
+    
+    trap cleanup EXIT
+    
+    do_work() {
+      TEMP_DIR=$(mktemp -d)
+      echo "Created temp dir: $TEMP_DIR"
+      
+      # Do some work
+      echo "Working..."
+      sleep 2
+      
+      echo "Done"
+    }
+    
+    do_work
+    echo "Script exiting, trap will run cleanup"
+
+  Run: bash /tmp/function_cleanup.sh
+  Answer: When does the trap function run?
+  Answer: Why is cleanup important?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 23-24: ARRAYS & DATA STRUCTURES
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Indexed arrays: ARRAY=("item1" "item2")
+  - Associative arrays (dictionaries): declare -A DICT
+  - Array expansion: "${ARRAY[@]}", "${!ARRAY[@]}"
+  - Array length: "${#ARRAY[@]}"
+  - Array manipulation: unset, +=
+
+PRODUCTION RELEVANCE
+  - Store list of databases, hosts, roles
+  - Store configuration key-value pairs
+  - Process multiple items (databases, servers, backup types)
+  - Associative arrays for status tracking
+
+COMMON MISTAKES
+  - Not initializing arrays: ARRAY=() before using
+  - Not quoting array expansion: $ARRAY vs "${ARRAY[@]}"
+  - Assuming arrays are in order (they can be sparse)
+  - Using associative arrays without declare -A
+  - Assuming array survives pipe (subshell isolation)
+
+REAL-WORLD INCIDENT
+  [2016] Script stored database names in array: DATABASES=(db1 db2 db3)
+  Pipe used in loop: for db in $DATABASES | grep ...
+  Variables didn't expand correctly due to quoting.
+  Wrong databases were processed.
+  Lesson: Always use "${ARRAY[@]}" for proper expansion.
+
+BEST PRACTICES
+  1. Declare arrays: declare -a ARRAY for indexed, declare -A DICT for assoc
+  2. Initialize empty: ARRAY=()
+  3. Expand with "${ARRAY[@]}" (always quote)
+  4. Use "${!ARRAY[@]}" to get keys (associative)
+  5. Get length: "${#ARRAY[@]}"
+  6. Append: ARRAY+=("new_item")
+  7. Iterate with for loop, not pipes (avoids subshell)
+
+SECURITY CONSIDERATIONS
+  - Sanitize array contents (don't assume they're safe)
+
+PERFORMANCE CONSIDERATIONS
+  - Arrays have O(1) lookup (negligible for typical sizes)
+
+MONITORING CONSIDERATIONS
+  - Log array contents for debugging
+
+TROUBLESHOOTING APPROACH
+  1. Print array: declare -p ARRAY (shows full array)
+  2. Print element: echo "${ARRAY[0]}"
+  3. Check length: echo "${#ARRAY[@]}"
+
+EXERCISE 2.10: Indexed Arrays
+  Create /tmp/array_exercise.sh:
+    #!/bin/bash
+    
+    # Declare array
+    declare -a DATABASES=("postgres" "template0" "template1")
+    
+    echo "All databases:"
+    for db in "${DATABASES[@]}"; do
+      echo "  - $db"
+    done
+    
+    echo "Array length: ${#DATABASES[@]}"
+    echo "First element: ${DATABASES[0]}"
+    echo "Last element: ${DATABASES[-1]}"
+    
+    # Append
+    DATABASES+=("testdb")
+    echo "After append: ${DATABASES[@]}"
+
+  Run: bash /tmp/array_exercise.sh
+  Answer: What's the difference between $DATABASES and "${DATABASES[@]}"?
+  Answer: Why quote the array expansion?
+
+EXERCISE 2.11: Associative Arrays
+  Create /tmp/assoc_array.sh:
+    #!/bin/bash
+    
+    declare -A STATUS
+    
+    STATUS[primary]="online"
+    STATUS[standby1]="streaming"
+    STATUS[standby2]="offline"
+    
+    echo "Replication status:"
+    for host in "${!STATUS[@]}"; do
+      echo "  $host: ${STATUS[$host]}"
+    done
+    
+    echo "Primary status: ${STATUS[primary]}"
+
+  Run: bash /tmp/assoc_array.sh
+  Answer: What's the difference between indexed and associative arrays?
+  Answer: When would you use each type?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 25-26: COMMAND SUBSTITUTION & ADVANCED FEATURES
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Command substitution: $(command) (preferred) vs `command` (old)
+  - Process substitution: <(command)
+  - Here documents: << 'EOF' ... EOF
+  - String expansion: ${VAR#pattern}, ${VAR%pattern}
+  - Word splitting and globbing
+
+PRODUCTION RELEVANCE
+  - Capture command output into variables
+  - Process query output from PostgreSQL
+  - Create multi-line configuration files
+  - String manipulation for paths, filenames
+
+COMMON MISTAKES
+  - Using backticks instead of $() (less readable, harder to nest)
+  - Not realizing command substitution creates subshell (variable isolation)
+  - Unquoted command substitution causing word splitting
+  - Here documents with incorrect quoting
+  - Not understanding word splitting rules
+
+REAL-WORLD INCIDENT
+  [2015] Script: DATABASES=$(psql -c "select datname from pg_database")
+  Output had leading spaces. Word splitting broke.
+  Wrong databases used in subsequent operations.
+  Fix: Quote properly: DATABASES="$(psql ...)"
+  Lesson: Understand word splitting. Quote command substitution.
+
+BEST PRACTICES
+  1. Use $() instead of backticks
+  2. Quote command substitution: "$(command)"
+  3. Use process substitution to avoid subshell: while read < <(cmd)
+  4. Use here documents for multi-line text: cat << 'EOF' ... EOF
+  5. Use ${VAR#pattern} to remove prefix, ${VAR%pattern} for suffix
+  6. Be aware of word splitting (split on IFS: space, tab, newline)
+
+SECURITY CONSIDERATIONS
+  - Sanitize command substitution output (don't assume it's safe)
+  - Don't use eval with substitution
+
+PERFORMANCE CONSIDERATIONS
+  - Command substitution spawns subshell (slight overhead)
+  - Process substitution avoids subshell (better for variables)
+
+MONITORING CONSIDERATIONS
+  - Log command output for debugging
+
+TROUBLESHOOTING APPROACH
+  1. Test command separately to verify output
+  2. Add echo to inspect substituted value
+  3. Use "set -x" to see expansion
+
+EXERCISE 2.12: Command Substitution
+  Create /tmp/subst_exercise.sh:
+    #!/bin/bash
+    
+    # Basic substitution
+    CURRENT_DATE=$(date '+%Y-%m-%d')
+    echo "Today: $CURRENT_DATE"
+    
+    # From PostgreSQL
+    DB_COUNT=$(psql -h localhost -t -c "select count(*) from pg_database")
+    echo "Database count: $DB_COUNT"
+    
+    # Multiline capture
+    DATABASES=$(psql -h localhost -t -c "select datname from pg_database limit 3")
+    echo "Databases:"
+    while read -r db; do
+      echo "  $db"
+    done <<< "$DATABASES"
+
+  Run: bash /tmp/subst_exercise.sh
+  Answer: Why quote the command substitution?
+  Answer: How do you process multi-line output?
+
+EXERCISE 2.13: Here Documents
+  Create /tmp/heredoc_exercise.sh:
+    #!/bin/bash
+    
+    # Create config file
+    CONFIG="/tmp/test_config.sql"
+    
+    cat > "$CONFIG" << 'EOF'
+    SELECT datname, sizedata FROM pg_database
+    WHERE datistemplate = false
+    ORDER BY sizedata DESC;
+    EOF
+    
+    echo "Config file created:"
+    cat "$CONFIG"
+    
+    # Use in psql
+    psql -h localhost -f "$CONFIG"
+
+  Run: bash /tmp/heredoc_exercise.sh
+  Answer: What's the difference between << 'EOF' and << EOF?
+  Answer: When would you use here documents?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 27-28: INPUT VALIDATION & ERROR HANDLING PATTERNS
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Parameter validation (check $# and types)
+  - Error messages and exit codes
+  - Defensive programming patterns
+  - set -e, set -u, set -o pipefail
+  - Error recovery and rollback
+
+PRODUCTION RELEVANCE
+  - Validate input before operating on it
+  - Meaningful error messages (helps troubleshooting)
+  - Defensive checks prevent data loss
+  - Exit codes guide monitoring/alerting
+
+COMMON MISTAKES
+  - Not validating parameters (assume they're correct)
+  - Generic error messages (can't debug)
+  - Not handling empty values (use :? syntax)
+  - Ignoring errors (set -e false sense of security)
+  - Not logging errors before exiting
+
+REAL-WORLD INCIDENT
+  [2013] Backup script: BACKUP_DIR="$1"
+  User forgot argument. $1 was empty.
+  Script used default: BACKUP_DIR=/tmp/backups (user meant /var/backups)
+  Backups went to wrong location. Unnoticed for a week.
+  Recovery failed due to missing backups.
+  Lesson: Validate all inputs. Assert assumptions.
+
+BEST PRACTICES
+  1. Start with set -euo pipefail (exit on error, undefined vars, pipe fail)
+  2. Validate parameter count: [[ $# -lt 1 ]] && { usage; exit 1; }
+  3. Validate parameter values: [[ ! -d "$DIR" ]] && { echo "ERROR: $DIR not found"; exit 1; }
+  4. Use :? syntax: REQUIRED_VAR="${1:?Usage: $0 database_name}"
+  5. Log errors to stderr: echo "ERROR: message" >&2
+  6. Return specific exit codes (1=general, 2=usage, etc.)
+  7. Document error codes in comments
+
+SECURITY CONSIDERATIONS
+  - Validate all external input (arguments, environment, files)
+  - Sanitize before using in commands
+  - Don't trust user input
+
+PERFORMANCE CONSIDERATIONS
+  - Validation overhead is negligible
+
+MONITORING CONSIDERATIONS
+  - Log all errors with context
+  - Alert on specific error patterns
+
+TROUBLESHOOTING APPROACH
+  1. Add validation echo statements
+  2. Test with invalid input intentionally
+  3. Use "set -x" to see what's being validated
+
+EXERCISE 2.14: Input Validation
+  Create /tmp/validation_exercise.sh:
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Validate parameter count
+    if [[ $# -lt 2 ]]; then
+      echo "ERROR: Usage: $0 database hostname"
+      echo "  database: Name of database to backup"
+      echo "  hostname: PostgreSQL server hostname"
+      exit 2
+    fi
+    
+    DBNAME="$1"
+    HOSTNAME="$2"
+    
+    # Validate values
+    if [[ -z "$DBNAME" ]]; then
+      echo "ERROR: Database name cannot be empty"
+      exit 1
+    fi
+    
+    if ! grep -q "^$HOSTNAME" /etc/hosts 2>/dev/null; then
+      echo "WARNING: Hostname not found in /etc/hosts (OK if using DNS)"
+    fi
+    
+    echo "Backup configuration:"
+    echo "  Database: $DBNAME"
+    echo "  Hostname: $HOSTNAME"
+    
+    # Simulate backup
+    pg_dump -h "$HOSTNAME" -d "$DBNAME" > /tmp/"${DBNAME}_backup.sql"
+    echo "Backup complete"
+
+  Run: bash /tmp/validation_exercise.sh (missing args, should fail)
+  Run: bash /tmp/validation_exercise.sh testdb localhost (should work)
+  Answer: What does set -u do?
+  Answer: Why use :? syntax?
+
+EXERCISE 2.15: Error Handling Pattern
+  Create /tmp/error_handling.sh:
+    #!/bin/bash
+    set -euo pipefail
+    
+    SCRIPT_NAME=$(basename "$0")
+    TEMP_FILE=""
+    
+    log_error() {
+      echo "[ERROR] $*" >&2
+    }
+    
+    cleanup() {
+      local exit_code=$?
+      if [[ -n "$TEMP_FILE" ]] && [[ -f "$TEMP_FILE" ]]; then
+        rm -f "$TEMP_FILE"
+      fi
+      return $exit_code
+    }
+    
+    trap cleanup EXIT
+    
+    main() {
+      TEMP_FILE=$(mktemp)
+      echo "Created temp file: $TEMP_FILE"
+      
+      if ! pg_isready -h localhost &>/dev/null; then
+        log_error "PostgreSQL not running"
+        return 1
+      fi
+      
+      echo "PostgreSQL is ready"
+    }
+    
+    main "$@"
+
+  Run: bash /tmp/error_handling.sh
+  Answer: What is the purpose of trap cleanup EXIT?
+  Answer: Why capture the exit code in cleanup?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 29-30: ADVANCED BASH FEATURES & IDIOMS
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - set -x for debugging (shell expansion tracing)
+  - Arithmetic expansion: $((expression))
+  - Pattern matching and regex
+  - Brace expansion: {1..10}, {a,b,c}
+  - Ternary operator: ${VAR:+value_if_set}
+
+PRODUCTION RELEVANCE
+  - Debugging script logic
+  - Performing calculations (connection counts, disk usage)
+  - Pattern matching in log analysis
+  - Shorthand for many-item operations
+
+COMMON MISTAKES
+  - set -x left on in production (reveals sensitive info)
+  - Arithmetic without $(( )) (interpreted as string)
+  - Not understanding precedence in arithmetic
+  - Regex without proper escaping
+  - Brace expansion with variables (doesn't expand $VAR)
+
+REAL-WORLD INCIDENT
+  [2020] Performance monitoring script ran with set -x accidentally left on.
+  Script processed PGPASSWORD and other secrets.
+  set -x logged everything to stderr, which was piped to log file.
+  Secrets exposed in plaintext logs.
+  Lesson: Never commit set -x to production. Use controlled debugging.
+
+BEST PRACTICES
+  1. Use set -x only for debugging, wrap in conditional: [[ "${DEBUG:-0}" == "1" ]]
+  2. Disable set -x in production: [[ "${DEBUG:-0}" == "1" ]] && set -x
+  3. Use arithmetic for calculations: RESULT=$((a + b))
+  4. Use pattern matching for simple cases: [[ "$VAR" =~ pattern ]]
+  5. Document regex patterns (they're hard to read)
+  6. Use ${VAR:+value} for conditional expansion
+  7. Use ${VAR:=default} to set default if unset
+
+SECURITY CONSIDERATIONS
+  - Never enable set -x in production (logs secrets)
+  - Sanitize regex input (don't use user input directly)
+
+PERFORMANCE CONSIDERATIONS
+  - set -x has negligible overhead (only active during debugging)
+  - Arithmetic is fast (native Bash)
+
+MONITORING CONSIDERATIONS
+  - Log debug information separately from production logs
+
+TROUBLESHOOTING APPROACH
+  1. Enable DEBUG=1 to activate set -x conditionally
+  2. Use set -x before problem area, set +x after
+  3. Test regex patterns separately
+
+EXERCISE 2.16: Debugging and Arithmetic
+  Create /tmp/debug_arithmetic.sh:
+    #!/bin/bash
+    
+    # Enable debug if DEBUG env var set
+    if [[ "${DEBUG:-0}" == "1" ]]; then
+      set -x
+    fi
+    
+    CONNECTIONS=150
+    MAX_CONNECTIONS=200
+    THRESHOLD=80
+    
+    # Arithmetic
+    USAGE_PERCENT=$((CONNECTIONS * 100 / MAX_CONNECTIONS))
+    echo "Connection usage: $USAGE_PERCENT%"
+    
+    # Conditional calculation
+    if [[ $USAGE_PERCENT -gt $THRESHOLD ]]; then
+      AVAILABLE=$((MAX_CONNECTIONS - CONNECTIONS))
+      echo "Warning: Only $AVAILABLE connections available"
+    fi
+
+  Run: bash /tmp/debug_arithmetic.sh
+  Run: DEBUG=1 bash /tmp/debug_arithmetic.sh (with debug output)
+  Answer: How would you use arithmetic in capacity planning?
+  Answer: Why is DEBUG conditionally enabling set -x useful?
+
+EXERCISE 2.17: Pattern Matching
+  Create /tmp/pattern_matching.sh:
+    #!/bin/bash
+    
+    # Simple glob pattern
+    DBNAME="production_db_2024"
+    if [[ $DBNAME == production_* ]]; then
+      echo "Production database detected"
+    fi
+    
+    # Regex pattern
+    TIMESTAMP="2024-12-17T14:30:45Z"
+    if [[ $TIMESTAMP =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+      echo "Valid ISO timestamp"
+    fi
+    
+    # Extract with regex
+    if [[ $TIMESTAMP =~ ([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
+      YEAR="${BASH_REMATCH[1]}"
+      MONTH="${BASH_REMATCH[2]}"
+      DAY="${BASH_REMATCH[3]}"
+      echo "Date: $YEAR-$MONTH-$DAY"
+    fi
+
+  Run: bash /tmp/pattern_matching.sh
+  Answer: When would you use =~ for regex?
+  Answer: How do you extract captured groups from regex?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 31-32: SCRIPTING BEST PRACTICES & CODE ORGANIZATION
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  - Script template/boilerplate
+  - Modular code (functions, libraries)
+  - Configuration files
+  - Logging standards
+  - Version control and commenting
+
+PRODUCTION RELEVANCE
+  - Consistency across all DBA scripts
+  - Maintainability (others must understand your code)
+  - Configuration management (same script, different environments)
+  - Audit trail (logging and comments)
+
+COMMON MISTAKES
+  - No standard structure (each script different)
+  - Hard-coded values (change requires code edit)
+  - No logging (can't troubleshoot)
+  - No comments (unclear intent)
+  - No version control (can't track changes)
+
+REAL-WORLD INCIDENT
+  [2012] DBA wrote backup script. Backup ran fine for months.
+  DBA left company. New DBA tried to modify script.
+  No comments, hard-coded paths, no logging.
+  Modification broke backup. Unnoticed for days.
+  Lesson: Code for the person who comes after you.
+
+BEST PRACTICES
+  1. Create standard script template
+  2. Use functions for major operations
+  3. Source configuration from external file
+  4. Implement consistent logging function
+  5. Add header comments (purpose, usage, author, date)
+  6. Add inline comments for complex logic
+  7. Use consistent naming conventions
+  8. Version control all scripts
+  9. Add usage function (show help)
+
+SECURITY CONSIDERATIONS
+  - Don't hardcode passwords (use config or environment)
+  - Don't log sensitive data
+  - Restrict script permissions
+
+PERFORMANCE CONSIDERATIONS
+  - Configuration file overhead is negligible
+
+MONITORING CONSIDERATIONS
+  - Log all operations with timestamp
+
+TROUBLESHOOTING APPROACH
+  1. Read script header to understand purpose
+  2. Check logging output
+  3. Review configuration file
+
+EXERCISE 2.18: Script Template
+  Create /tmp/dba_script_template.sh:
+    #!/bin/bash
+    
+    ################################################################################
+    # PURPOSE: Template for DBA automation scripts
+    # USAGE: ./script.sh [-c config_file] [-v verbose] database_name
+    # AUTHOR: DBA Team
+    # DATE: 2024-12-17
+    ################################################################################
+    
+    set -euo pipefail
+    
+    # Configuration
+    CONFIG_FILE="${CONFIG_FILE:-./.dba_config}"
+    SCRIPT_NAME=$(basename "$0")
+    SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+    LOG_DIR="${LOG_DIR:-/var/log/dba}"
+    LOG_FILE="${LOG_DIR}/${SCRIPT_NAME%.sh}.log"
+    
+    ################################################################################
+    # LOGGING
+    ################################################################################
+    
+    log() {
+      local level="$1"
+      shift
+      local message="$*"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" | tee -a "$LOG_FILE"
+    }
+    
+    log_info() { log "INFO" "$@"; }
+    log_error() { log "ERROR" "$@" >&2; }
+    log_warn() { log "WARN" "$@"; }
+    
+    ################################################################################
+    # FUNCTIONS
+    ################################################################################
+    
+    usage() {
+      cat << EOF
+    Usage: $SCRIPT_NAME [OPTIONS] database_name
+    
+    OPTIONS:
+      -c FILE    Configuration file (default: $CONFIG_FILE)
+      -v         Verbose output (enable set -x)
+      -h         Show this help message
+    
+    EXAMPLES:
+      $SCRIPT_NAME testdb
+      $SCRIPT_NAME -c /etc/dba.conf proddb
+    EOF
+    }
+    
+    cleanup() {
+      local exit_code=$?
+      log_info "Script exiting with code $exit_code"
+      return $exit_code
+    }
+    
+    main() {
+      log_info "Script started by $(whoami)"
+      
+      [[ $# -eq 0 ]] && { usage; exit 2; }
+      
+      local dbname="$1"
+      log_info "Operating on database: $dbname"
+      
+      # TODO: Add logic here
+      
+      log_info "Script completed successfully"
+    }
+    
+    ################################################################################
+    # INITIALIZATION
+    ################################################################################
+    
+    trap cleanup EXIT
+    
+    mkdir -p "$LOG_DIR"
+    
+    # Parse options
+    while getopts "c:vh" opt; do
+      case $opt in
+        c) CONFIG_FILE="$OPTARG" ;;
+        v) set -x ;;
+        h) usage; exit 0 ;;
+        *) usage; exit 2 ;;
+      esac
+    done
+    shift $((OPTIND - 1))
+    
+    main "$@"
+
+  Review: What sections does a production script need?
+  Answer: Why log with timestamp and level?
+  Answer: How do you make scripts configurable?
+
+────────────────────────────────────────────────────────────────────────────
+
+DAY 33-35: PHASE 2 REVIEW & MINI-PROJECT
+────────────────────────────────────────────────────────────────────────────
+CONCEPT
+  Review all Phase 2 topics. Apply in a single script.
+
+MINI-PROJECT: Health Check Script
+
+Create a production-grade health check script that:
+  1. Checks if PostgreSQL is running
+  2. Checks if database is accessible
+  3. Checks disk space (alert if >80% used)
+  4. Checks active connections (alert if >100)
+  5. Logs all checks with timestamp
+  6. Returns appropriate exit codes
+  7. Supports multiple databases (array)
+  8. Reads configuration from file
+  9. Has proper error handling
+  10. Includes help/usage
+
+REQUIREMENTS
+  - Use all Phase 2 constructs (variables, conditionals, loops, functions, arrays)
+  - Implement proper logging
+  - Implement error handling
+  - Support command-line arguments
+  - Read configuration from file
+  - Return meaningful exit codes
+  - Be idempotent (can run multiple times safely)
+
+EVALUATION CRITERIA
+  - Correctness: Does it work as specified?
+  - Reliability: Handles all error cases?
+  - Readability: Can another DBA understand it?
+  - Security: No hardcoded passwords, proper validation?
+  - Production-readiness: Logging, error handling, documentation?
+
+STEPS
+  1. Design the script (write runbook first)
+  2. Create configuration file structure
+  3. Implement functions: check_postgres, check_database, check_disk, etc.
+  4. Implement logging
+  5. Implement error handling
+  6. Test with valid and invalid inputs
+  7. Get code review from mentor
+
+PHASE 2 COMPLETION CHECKLIST
+  [ ] I can write variables with proper quoting
+  [ ] I can use conditionals ([[ ]] syntax)
+  [ ] I can write loops (for, while, until)
+  [ ] I can write and call functions with parameters
+  [ ] I can use arrays (indexed and associative)
+  [ ] I can capture command output with $()
+  [ ] I can validate input and handle errors
+  [ ] I can log with timestamp and level
+  [ ] I can create production-like script structure
+  [ ] I understand exit codes and $?
+  [ ] I can debug with set -x
+  [ ] I can write a multi-function script
+
+================================================================================
+                       PHASE 3: PRODUCTION SCRIPT DESIGN
+                         (Days 36–49, 2 weeks)
+         Idempotency, Safety Checks, Rollback, Logging, Auditability
+================================================================================
+
+[Phase 3-7 follow similar detailed structure, but abbreviated for brevity]
+
+OBJECTIVE
+  Design scripts that are production-safe: can run multiple times without
+  breaking, can fail gracefully, can be audited, can be rolled back.
+
+TOPICS (2-3 days each)
+  1. Idempotency (rerunnable operations)
+  2. Lock files and concurrency control
+  3. Backup/rollback strategy
+  4. Comprehensive logging and audit trails
+  5. Configuration management and defaults
+  6. Retry mechanisms and timeout handling
+  7. Health checks and dependency validation
+
+MINI-PROJECT: Backup Script with Rollback
+
+Create a daily backup script that:
+  - Takes backup of specified database
+  - Verifies backup integrity
+  - Cleans old backups
+  - Implements rollback capability
+  - Logs every step
+  - Handles errors gracefully
+  - Prevents concurrent runs (lock file)
+  - Sends summary report
+  - Integrates with monitoring
+
+================================================================================
+                       PHASE 4: POSTGRESQL AUTOMATION
+                       (Days 50–64, 3 weeks)
+       Health Checks, Backup Verification, Replication Monitoring, etc.
+================================================================================
+
+OBJECTIVE
+  Apply scripting fundamentals to PostgreSQL-specific DBA tasks.
+  Understand how to automate common operational procedures.
+
+TOPICS (2-3 days each)
+  1. PostgreSQL health check script
+  2. Backup and recovery automation
+  3. Replication monitoring
+  4. Connection analysis
+  5. WAL management and archiving
+  6. Vacuum and bloat monitoring
+  7. Index analysis and maintenance
+  8. Capacity planning reports
+
+MINI-PROJECT: Replication Monitor
+
+Create a 5-minute monitoring script that:
+  - Checks if replication is running
+  - Measures replication lag
+  - Identifies stuck replication slots
+  - Alerts if lag exceeds threshold
+  - Logs status for trending
+  - Integrates with alerting system
+
+================================================================================
+                       PHASE 5: DIAGNOSTIC FRAMEWORKS
+                       (Days 65–74, 2 weeks)
+       Incident Data Collection, Slow Database Diagnosis, Issue Resolution
+================================================================================
+
+OBJECTIVE
+  Learn to diagnose production issues systematically.
+  Collect all relevant information quickly.
+  Present data that leads to root cause.
+
+TOPICS
+  1. Incident data collection (what to gather)
+  2. Slow database diagnosis (query analysis)
+  3. Replication lag diagnosis
+  4. Storage and I/O diagnosis
+  5. Network connectivity diagnosis
+  6. Authentication and authorization diagnosis
+  7. Memory pressure and performance diagnosis
+
+MINI-PROJECT: Incident Response Data Collection
+
+Create a script that collects all diagnostic data when incident happens:
+  - PostgreSQL version and configuration
+  - Current connections and queries
+  - System resource usage (CPU, memory, disk)
+  - I/O statistics
+  - Replication status
+  - Recent log entries
+  - Vacuum and bloat status
+  - Output to structured format (JSON)
+
+================================================================================
+                       PHASE 6: PRODUCTION REPORTING
+                       (Days 75–82, 1+ weeks)
+       Daily Reports, Weekly Analysis, Trending, Capacity Planning
+================================================================================
+
+OBJECTIVE
+  Generate reports that communicate database health to operations and management.
+  Automated reporting reduces manual work.
+  Reports identify trends and capacity issues early.
+
+TOPICS
+  1. Daily health reports (email or dashboard)
+  2. Weekly capacity reports (growth, usage trends)
+  3. Backup and recovery reports
+  4. Replication status reports
+  5. Security audit reports
+  6. Performance trend analysis
+
+MINI-PROJECT: Automated Daily Report
+
+Create daily report script that generates:
+  - Database sizes
+  - Connection statistics
+  - Replication status
+  - Backup verification results
+  - Any alerts or issues
+  - Capacity projections
+  - Output to HTML or email-friendly format
+
+================================================================================
+                       PHASE 7: PRODUCTION ENGINEERING
+                       (Days 83–90, 1+ weeks)
+       Modular Architecture, Shared Libraries, Monitoring Integration
+================================================================================
+
+OBJECTIVE
+  Move from one-off scripts to integrated automation platform.
+  Build reusable libraries and components.
+  Integrate with monitoring, alerting, metrics systems.
+
+TOPICS
+  1. Script library design (shared functions)
+  2. Configuration-driven automation
+  3. Monitoring integration (export metrics)
+  4. Alerting integration (send alerts)
+  5. Prometheus metrics export
+  6. Grafana dashboard integration
+  7. CI/CD for automation (testing, deployment)
+
+FINAL PROJECT: Automated DBA Platform
+
+Create integrated platform with:
+  - Shared library of DBA functions
+  - Configuration-driven automation
+  - Health checks running every 5 minutes
+  - Metrics export to Prometheus
+  - Alerting to ops team
+  - Automated reports daily/weekly
+  - Incident data collection on-demand
+  - All scripts tested and documented
+
+================================================================================
+                           PROGRESSION MILESTONES
+================================================================================
+
+End of Week 2 (Phase 1):
+  - Understand Linux fundamentals
+  - Can troubleshoot basic filesystem/permission issues
+  - Understand PostgreSQL operational context
+  - Can check PostgreSQL health from command line
+
+End of Week 5 (Phase 2):
+  - Can write complete Bash scripts
+  - Implement error handling and logging
+  - Pass code review on mini-project (health check script)
+  - Comfortable with all Bash fundamentals
+
+End of Week 7 (Phase 3):
+  - Can design production-safe scripts
+  - Understand idempotency and safety
+  - Implement backup/rollback mechanisms
+  - Pass code review on mini-project (backup script)
+
+End of Week 10 (Phase 4):
+  - Can automate PostgreSQL operations
+  - Write health checks, monitoring, diagnostics
+  - Pass code review on mini-project (replication monitor)
+
+End of Week 12 (Phase 5):
+  - Can diagnose production issues
+  - Collect diagnostic data systematically
+  - Present data that leads to solutions
+
+End of Week 13 (Phase 6):
+  - Can generate production reports
+  - Automate reporting to stakeholders
+
+End of Week 14 (Phase 7):
+  - Can build integrated automation platform
+  - Scripts production-ready and team-maintainable
+  - Ready for senior DBA responsibilities
+
+================================================================================
+                       TRAINING DELIVERY FRAMEWORK
+================================================================================
+
+FOR EACH TASK/TOPIC:
+
+1. EXPLAIN (15-30 min)
+   - Concept and why it matters
+   - Real-world incident that illustrates it
+   - Production best practices
+   - Common mistakes and how to avoid them
+
+2. DESIGN REVIEW (15-20 min)
+   - You sketch out design/approach
+   - I review and ask questions
+   - We refine design together
+   - Validate design before coding
+
+3. CODE DEVELOPMENT (30-60 min)
+   - You write code yourself
+   - Paste code for review
+   - I review line-by-line
+   - We identify issues and improvements
+
+4. DEBUGGING & REFINEMENT (15-30 min)
+   - We test with valid and invalid inputs
+   - You fix bugs I identify
+   - We improve readability and error handling
+   - We verify production readiness
+
+5. CODE REVIEW SCORECARD
+   Evaluate on 1-10 scale:
+   - Correctness: Does it work?
+   - Reliability: Handles errors?
+   - Readability: Clear and maintainable?
+   - Security: Validates input, no hardcoded secrets?
+   - Performance: Efficient and responsive?
+   - Production-readiness: Logging, monitoring, error messages?
+   - Maintainability: Can someone else understand it?
+   - DBA-usefulness: Solves real operational problems?
+
+6. LEARNING OUTCOME
+   - Can you explain why the code works?
+   - Can you modify it for similar problems?
+   - Can you debug similar issues in future?
+   - Have you internalized the pattern?
+
+================================================================================
+                           MENTOR APPROACH
+================================================================================
+
+NEVER GIVE COMPLETE SCRIPTS
+  - You need to struggle, debug, learn
+  - Copy-paste doesn't build skills
+  - Mistakes are valuable learning
+
+GUIDANCE IS LAYERED
+  1. First: Ask clarifying questions
+  2. Then: Point out the issue ("This approach won't handle X")
+  3. Then: Suggest direction ("Consider checking the file first")
+  4. Finally: If truly stuck, show similar pattern from earlier
+
+DEBUGGING IS CRITICAL
+  - You learn most when fixing your mistakes
+  - I'll point out the issue, you find the fix
+  - Test with edge cases intentionally
+
+PRODUCTION MINDSET
+  - Every script is operational
+  - Think about failure modes
+  - Log everything
+  - Validate everything
+  - Assume the worst
+
+YOUR RESPONSIBILITY
+  - Write every line of code
+  - Test before submitting
+  - Ask questions when stuck
+  - Implement feedback
+  - Think operationally
+
+================================================================================
+                         90-DAY ROADMAP SUMMARY
+================================================================================
+
+Phase 1 (Days 1-14): Linux Fundamentals
+  Week 1: Filesystem, Permissions, Users, Environment, I/O
+  Week 2: Exit Codes, Cron, Logging, PostgreSQL intro
+
+Phase 2 (Days 15-35): Shell Scripting Foundations
+  Week 3: Variables, Conditionals, Loops
+  Week 4: Functions, Arrays, Command Substitution
+  Week 5: Input Validation, Error Handling, Best Practices, Mini-project
+
+Phase 3 (Days 36-49): Production Script Design
+  Idempotency, Locking, Backup/Rollback, Logging, Configuration, Mini-project
+
+Phase 4 (Days 50-64): PostgreSQL Automation
+  Health checks, Backup/Verify, Replication, Connections, WAL, Vacuum, Indexes
+
+Phase 5 (Days 65-74): Diagnostic Frameworks
+  Incident collection, Slow DB diagnosis, Issue categorization
+
+Phase 6 (Days 75-82): Production Reporting
+  Daily/Weekly reports, Trending, Alerting
+
+Phase 7 (Days 83-90): Production Engineering
+  Libraries, Configuration, Monitoring integration, Final integrated project
+
+OUTCOME
+After 90 days, you will be able to:
+  - Design and write production-grade automation scripts
+  - Troubleshoot issues systematically
+  - Automate PostgreSQL operations safely
+  - Generate reports and alerts
+  - Build integrated monitoring/automation platform
+  - Think operationally (failure modes, safety, auditability)
+  - Code at senior DBA/SRE level

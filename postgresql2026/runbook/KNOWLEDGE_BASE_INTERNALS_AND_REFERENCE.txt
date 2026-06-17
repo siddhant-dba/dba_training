@@ -1,0 +1,1807 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: KNOWLEDGE BASE — INTERNALS AND REFERENCE
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+  *** FINAL SESSION OF THE PROGRAM ***
+================================================================================
+
+Six sessions. Six modules. Somewhere north of a hundred and twenty runbooks,
+procedures, and reference documents between all of them.
+
+This is the last one.
+
+I want to spend the first five minutes being honest with you about something.
+Everything we've covered so far — incident response, high availability, backup,
+performance tuning, migrations, monitoring — all of it is procedure. It tells
+you WHAT to do and WHEN. But there's a deeper layer underneath all of that,
+and it's the layer that separates people who follow runbooks from people who
+write them.
+
+That layer is internals. Understanding HOW PostgreSQL actually works.
+
+Why does VACUUM have to scan the whole table? Because of MVCC. Why does
+transaction ID wraparound happen? Because of how MVCC assigns XIDs. Why does
+replication work the way it does? Because of WAL. Why does adding an index with
+CONCURRENTLY not block reads? Because of the locking hierarchy. Why does a
+single poorly-written query cascade into a system-wide freeze? Because of how
+lock queues work.
+
+Every time you've run a command in this program without fully understanding
+why it works — this session is where that gap gets filled.
+
+This is the knowledge base module. It is not a runbook module. It is a
+reference module. These are the documents you build once, maintain forever,
+and reach for when the runbook doesn't cover the specific situation in front
+of you.
+
+Thirteen reference documents. We are going deep today.
+
+Let me also tell you this: the internals content we're covering — MVCC, WAL,
+locking, wait events, vacuum internals — this is the material that gets you
+hired at senior level. These are the questions that appear in every serious
+DBA interview. Not "how do you add a column." How does PostgreSQL decide which
+rows are visible to which transaction. Those are different questions.
+
+You ready? Let's finish this.
+
+================================================================================
+  REFERENCE 01: POSTGRES INTERNALS QUICK REFERENCE
+  File: 07_knowledge_base/postgres_internals_quick_ref.md
+================================================================================
+
+Before we go deep into individual internals topics, let me give you the
+structural overview — the architecture that everything else sits on. Think
+of this as the map before we explore individual territories.
+
+PostgreSQL's architecture from the ground up:
+
+PROCESS MODEL:
+  PostgreSQL is a multi-process architecture, not multi-threaded. Each client
+  connection spawns a dedicated backend process. This means:
+  - One connection = one OS process = ~5-10MB of private memory
+  - Processes don't share heap memory — they share the shared buffer pool
+  - If a backend crashes, only that connection dies. The postmaster (supervisor)
+    detects it and may trigger recovery, but other connections continue.
+  - This is why max_connections costs real memory.
+
+  Key background processes:
+  ```
+  postmaster       — the supervisor. Spawns backends on connection. Monitors
+                     all processes. If any critical process dies, postmaster
+                     restarts the cluster.
+
+  bgwriter         — writes dirty shared buffer pages to disk periodically,
+                     reducing the work checkpointer has to do.
+
+  checkpointer     — periodically writes all dirty pages to disk and records
+                     a checkpoint LSN in WAL. After a crash, recovery only
+                     needs to replay WAL from the last checkpoint.
+
+  walwriter        — writes WAL records from the WAL buffer to the WAL files
+                     on disk. Flushes based on wal_writer_delay.
+
+  autovacuum launcher — spawns autovacuum worker processes for tables that
+                     need vacuuming. Runs on autovacuum_naptime schedule.
+
+  autovacuum worker — actually vacuums tables. Multiple workers run in parallel.
+
+  wal sender       — streams WAL to replicas. One per replica connection.
+
+  wal receiver     — on standbys. Receives WAL from primary wal sender.
+
+  logical replication worker — applies decoded logical changes from a publisher.
+
+  archiver         — copies completed WAL segments to the archive location.
+  ```
+
+MEMORY ARCHITECTURE:
+  ```
+  shared_buffers       — shared page cache. All backends read/write pages here
+                         before/instead of disk. Target: 25% of RAM.
+
+  WAL buffers          — staging area for WAL records before fsync to WAL files.
+                         wal_buffers = 64MB is usually fine.
+
+  work_mem             — per-sort-or-hash-join working memory. PRIVATE to each
+                         operation, not shared. Max usage is:
+                         work_mem × max_connections × operations_per_query.
+                         This is why high work_mem + high connections = OOM.
+
+  maintenance_work_mem — for VACUUM, CREATE INDEX, and pg_restore. Larger is
+                         better for these batch operations.
+
+  effective_cache_size — NOT allocated. A hint to the planner about total
+                         available memory (shared_buffers + OS page cache).
+  ```
+
+STORAGE FORMAT:
+  ```
+  Heap file     — the table's actual data, stored as 8KB pages. Each page
+                  contains tuple headers and tuple data. Pages are identified
+                  by their block number (ctid = (block, offset)).
+
+  FSM           — Free Space Map. Tracks which pages have free space for
+                  inserts. Updated by VACUUM.
+
+  VM            — Visibility Map. One bit per heap page. Bit set = all tuples
+                  on that page are visible to all transactions. Used by
+                  Index Only Scans and aggressive VACUUM.
+
+  Index file    — separate file from the heap. B-tree, GIN, GiST, etc.
+                  Contains pointers back to heap (ctid values).
+
+  WAL files     — write-ahead log. 16MB segments (wal_segment_size) in
+                  pg_wal/. Sequential write. Named by timeline + LSN.
+
+  pg_clog/pg_xact — transaction commit status. One bit per transaction:
+                  committed, aborted, or in-progress. Critical for MVCC.
+  ```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 02: MVCC AND VISIBILITY INTERNALS
+  File: 07_knowledge_base/mvcc_and_visibility_internals.md
+================================================================================
+
+MVCC — Multi-Version Concurrency Control — is the mechanism that allows
+PostgreSQL readers and writers to never block each other. It is the reason
+you can run a long SELECT against a table while 10,000 inserts are happening
+concurrently, and your SELECT sees a perfectly consistent snapshot of the
+data at the moment it started.
+
+Understanding MVCC is the key to understanding: why dead tuples exist, why
+VACUUM is necessary, why transaction ID wraparound happens, and why long
+transactions cause bloat. All of it is MVCC.
+
+Let me explain it from first principles, because most DBAs have a shallow
+understanding of this and it costs them in incident situations.
+
+MVCC CORE PRINCIPLE:
+  Instead of locking a row when someone updates it, PostgreSQL creates a NEW
+  version of the row alongside the old version. The old version is kept until
+  no transaction needs to see it anymore. Then VACUUM removes it.
+
+  This means:
+  - Every row in PostgreSQL has two hidden system columns: xmin and xmax.
+  - xmin: the transaction ID (XID) of the transaction that INSERTED this row.
+  - xmax: the transaction ID of the transaction that DELETED or UPDATED this
+    row. Zero means the row is still live.
+
+```sql
+-- See the hidden MVCC columns on any table:
+SELECT
+    ctid,                  -- physical location (block, offset)
+    xmin,                  -- which XID inserted this row
+    xmax,                  -- which XID deleted/updated this row (0 = live)
+    cmin,                  -- command ID within the transaction
+    id,
+    status
+FROM orders
+WHERE id = 12345;
+```
+
+HOW VISIBILITY IS DETERMINED:
+  When a transaction reads a row, PostgreSQL checks:
+  1. Is xmin committed and < my transaction's snapshot XID?
+     (The row was inserted by a committed transaction that I can see.)
+  2. Is xmax zero, OR is xmax not yet committed, OR is xmax > my snapshot?
+     (The row has not been validly deleted from my perspective.)
+
+  If both conditions are true: the row is VISIBLE to me.
+  If the first fails: I can't see this row — it was inserted by a newer txn.
+  If the second fails: I can't see this row — it was deleted before I started.
+
+  This is why readers don't block writers and writers don't block readers.
+  Each transaction sees a consistent snapshot based on when it started.
+
+```sql
+-- See your current transaction snapshot:
+SELECT txid_current_snapshot();
+-- Returns: xmin:xmax:xip_list
+-- xmin: lowest XID still active (oldest transaction)
+-- xmax: next XID to be assigned (newest committed + 1)
+-- xip_list: in-progress XIDs between xmin and xmax
+
+-- See what your current transaction ID is:
+SELECT txid_current();
+
+-- See what committed status a specific XID has (pg_xact_commit_timestamp):
+SELECT txid_status(12345::xid8);   -- PG 13+
+```
+
+WHY DEAD TUPLES EXIST:
+  When you UPDATE a row:
+  1. The old row gets xmax set to the current XID.
+  2. A NEW row is inserted with xmin = current XID, xmax = 0.
+  3. Both rows exist on the heap page physically.
+  4. New transactions see the new row. Older transactions (still open when
+     the update happened) still see the old row.
+  5. Once NO transaction can see the old row anymore — it is a DEAD TUPLE.
+  6. VACUUM finds dead tuples, marks their space as reusable, and updates
+     the FSM so future inserts can reclaim the space.
+
+  The critical implication: a LONG-RUNNING TRANSACTION prevents VACUUM from
+  removing dead tuples that predate it. The transaction might need to "go back
+  in time" and see the old row. While that transaction is open, those dead
+  tuples cannot be removed. This is why long transactions cause table bloat.
+
+```sql
+-- Find long transactions that are holding back dead tuple cleanup:
+SELECT
+    pid,
+    usename,
+    now() - xact_start                AS txn_age,
+    txid_current() - backend_xmin     AS held_xid_range,
+    state,
+    left(query, 80)                   AS query
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY backend_xmin::text::bigint ASC
+LIMIT 10;
+-- backend_xmin: the oldest XID this transaction can "see back to"
+-- VACUUM cannot remove tuples newer than backend_xmin of any live transaction.
+```
+
+TRANSACTION ID WRAPAROUND — WHY IT EXISTS:
+  PostgreSQL XIDs are 32-bit unsigned integers. That gives 4 billion unique
+  transaction IDs. PostgreSQL uses a modular arithmetic system where XIDs
+  are compared in a circular space: any XID is considered "in the past"
+  relative to 2 billion XIDs ahead of it, and "in the future" relative to
+  2 billion XIDs behind it.
+
+  When XIDs approach wraparound, PostgreSQL can no longer correctly determine
+  which transactions are "in the past" (visible) and which are "in the future"
+  (not visible). To prevent this: VACUUM FREEZE converts old row xmin values
+  to a special "frozen" state (FrozenTransactionId = 2) which is always
+  visible to every transaction. This resets the age counter for that tuple.
+
+  The safeguard: PostgreSQL forces a shutdown at autovacuum_freeze_max_age
+  (default 200M XIDs) from the oldest unfrozen XID. You see the warning in
+  logs. You should never reach the shutdown threshold.
+
+```sql
+-- How old are our oldest unfrozen rows?
+SELECT
+    relname,
+    age(relfrozenxid)                          AS table_xid_age,
+    pg_size_pretty(pg_relation_size(oid))      AS table_size,
+    2^31 - age(relfrozenxid)                  AS xids_before_forced_freeze
+FROM pg_class
+WHERE relkind = 'r'
+ORDER BY age(relfrozenxid) DESC
+LIMIT 10;
+```
+
+HINT BITS — A PERFORMANCE OPTIMISATION:
+  Checking xmin/xmax committed status requires looking up pg_xact on every
+  row access. This is expensive. PostgreSQL caches the committed/aborted status
+  directly in the tuple header using "hint bits" — two bits that say "xmin is
+  definitely committed" and "xmax is definitely committed."
+
+  When a tuple's hint bits are not set, the first transaction to read that
+  tuple has to look up pg_xact and then SET the hint bit (a write to the page)
+  so future readers don't have to. This is why after a large data load or
+  restore, the first full scan is always slower than subsequent scans — it's
+  setting hint bits across the entire table.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 03: WAL INTERNALS REFERENCE
+  File: 07_knowledge_base/wal_internals_reference.md
+================================================================================
+
+WAL — Write-Ahead Log — is the most important subsystem in PostgreSQL for
+durability and replication. The rule: NEVER write a change to the heap or
+index pages without first writing a WAL record describing that change. This
+guarantees that any committed transaction can be recovered from WAL alone,
+even if the database files are lost or corrupted.
+
+WAL IS HOW POSTGRESQL ACHIEVES THREE THINGS SIMULTANEOUSLY:
+  1. DURABILITY: On commit, WAL records are flushed to disk. Even if the
+     server crashes immediately after, the committed data can be recovered
+     by replaying the WAL. The heap files may lag — WAL is the truth.
+
+  2. REPLICATION: WAL records are streamed to replicas in real time. The
+     replica replays them in order, maintaining an exact copy of the primary.
+
+  3. PITR: WAL files are archived continuously. Combined with a base backup,
+     you can replay WAL up to any second in history.
+
+WAL RECORD STRUCTURE:
+  Every change to PostgreSQL data generates one or more WAL records. Each
+  record contains:
+  - LSN (Log Sequence Number): the unique position in the WAL stream. Monotonically
+    increasing, never reused within a timeline.
+  - Resource Manager ID: which subsystem generated this record (heap, btree,
+    transaction, sequence, etc.)
+  - Record type: insert, update, delete, commit, abort, checkpoint, etc.
+  - Before/after page image (for full-page writes, see below)
+  - The actual change data
+
+```sql
+-- Current WAL position on primary:
+SELECT pg_current_wal_lsn(), pg_current_wal_insert_lsn();
+
+-- How much WAL has been generated since a point:
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/15000000'::pg_lsn)
+       AS bytes_since_reference;
+
+-- WAL file name for a given LSN:
+SELECT pg_walfile_name(pg_current_wal_lsn());
+
+-- LSN for a given WAL filename:
+SELECT pg_walfile_name_offset(pg_current_wal_lsn());
+-- Returns (file_name, file_offset)
+
+-- WAL generation rate over 1 minute:
+SELECT pg_current_wal_lsn() AS lsn_start;
+-- Wait 60 seconds, then:
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '<lsn_start>'::pg_lsn) / 60
+       AS wal_bytes_per_second;
+```
+
+FULL PAGE WRITES — FPW:
+  After a checkpoint, the FIRST write to any page includes the ENTIRE 8KB
+  page image in the WAL record, not just the change. This is called a
+  Full Page Write (FPW). It protects against torn pages — a scenario where
+  a crash occurs mid-page-write, leaving a page in a half-written state on
+  disk. With FPW: recovery replays the complete page image first, ensuring
+  the page is clean before applying subsequent changes.
+
+  FPW significantly increases WAL volume after each checkpoint. This is
+  expected behavior. You can see FPW activity:
+
+  ```bash
+  pg_waldump -p /var/lib/postgresql/15/main/pg_wal \
+      --start=<start_lsn> --end=<end_lsn> 2>&1 \
+      | grep "FPI\|full_page"
+  ```
+
+CHECKPOINTS AND WAL:
+  A checkpoint is a point where PostgreSQL guarantees all dirty pages have
+  been written to disk. After a checkpoint:
+  - Recovery only needs to replay WAL from this checkpoint LSN forward.
+  - WAL files before the last checkpoint can be recycled (or archived).
+  - The checkpoint record is written to WAL and also to pg_control.
+
+  Too-frequent checkpoints: lots of I/O, lots of FPW-induced WAL volume.
+  Too-infrequent checkpoints: slow recovery after a crash (more WAL to replay),
+  large pg_wal directory.
+
+  ```sql
+  -- Checkpoint statistics:
+  SELECT
+      checkpoints_timed,           -- triggered by checkpoint_timeout
+      checkpoints_req,             -- triggered by max_wal_size (too frequent = raise max_wal_size)
+      checkpoint_write_time,       -- ms spent writing dirty pages
+      checkpoint_sync_time,        -- ms spent in fsync
+      buffers_checkpoint,          -- pages written during checkpoints
+      buffers_clean,               -- pages written by bgwriter (good: reduces checkpoint I/O)
+      buffers_backend              -- pages written by backends directly (bad: high = bgwriter can't keep up)
+  FROM pg_stat_bgwriter;
+  ```
+
+WAL TIMELINE SYSTEM:
+  Timelines are how PostgreSQL prevents confusion after a failover. When a
+  standby is promoted, it starts a NEW timeline (timeline 2, 3, etc.). WAL
+  records on the new timeline are distinct from WAL records that might have
+  been written on the old primary's timeline at the same LSN.
+
+  This is why pg_rewind can rebase a node: it finds the divergence point
+  in the WAL, determines which timeline each side was on, and fast-forwards
+  the old primary to match the new primary's timeline.
+
+  ```bash
+  # Inspect WAL file: timeline is embedded in the filename
+  # 000000010000000000000042 → timeline=1, segment=0x42=66
+  # 000000020000000000000001 → timeline=2 (after failover), segment=1
+
+  # Use pg_waldump to read WAL content:
+  pg_waldump /var/lib/postgresql/15/main/pg_wal/000000010000000000000042 \
+      --timeline=1 2>&1 | head -50
+  ```
+
+WAL LEVELS:
+  ```
+  minimal   — minimum WAL for crash recovery only.
+              Cannot use for replication or PITR.
+              Default: NOT minimal (would break everything).
+
+  replica   — WAL sufficient for streaming replication and WAL archiving.
+              Default and recommended for most setups.
+              Enables: streaming replication, PITR, pg_basebackup.
+
+  logical   — replica-level WAL PLUS enough information for logical decoding.
+              Required for: logical replication, pglogical, Debezium, etc.
+              Higher WAL volume than replica.
+  ```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 04: VACUUM INTERNALS REFERENCE
+  File: 07_knowledge_base/vacuum_internals_reference.md
+================================================================================
+
+Now that you understand MVCC — and you do, because you just read Reference 02
+— VACUUM makes complete sense. VACUUM is the garbage collector that reclaims
+the space left by dead tuples that no running transaction can see anymore.
+
+But VACUUM does more than garbage collection. It does five things:
+
+  1. REMOVES DEAD TUPLES that are no longer visible to any transaction.
+  2. UPDATES THE FSM (Free Space Map) to record which pages have free space.
+  3. UPDATES THE VM (Visibility Map) to mark pages where all tuples are visible
+     to all transactions. Enables Index Only Scans to skip heap access entirely.
+  4. FREEZES OLD TUPLES (sets xmin to FrozenXID) to prevent transaction ID
+     wraparound. A frozen tuple is permanently visible to all transactions.
+  5. UPDATES pg_stat_user_tables statistics for the planner.
+
+VACUUM PHASES — what actually happens when VACUUM runs:
+
+  PHASE 1: HEAP SCAN
+    VACUUM scans the heap table page by page. For each page, it checks
+    every tuple's visibility:
+    - Is xmax committed? Is xmax visible to all current transactions?
+      If yes: the tuple is dead. Record it for cleanup.
+    - Is xmin old enough to freeze? If yes: mark for freezing.
+    VACUUM respects the FSM and visibility map — if a page is marked all-visible
+    in the VM, it can skip reading that page entirely (fast path VACUUM).
+
+  PHASE 2: INDEX CLEANUP
+    For each index on the table, VACUUM removes index entries pointing to the
+    dead heap tuples identified in Phase 1. This requires scanning all indexes.
+
+  PHASE 3: HEAP CLEANUP
+    VACUUM returns to the dead tuple pages and actually removes the dead entries,
+    compacting within each page. The freed space is recorded in the FSM.
+
+  PHASE 4: FREEZE AND VM UPDATE
+    Pages where all remaining tuples are now frozen and visible get their VM
+    bits set. Future VACUUMs can skip these pages.
+
+```sql
+-- Watch VACUUM progress in real time (PG 9.6+):
+SELECT
+    pid,
+    phase,
+    heap_blks_total,
+    heap_blks_scanned,
+    heap_blks_vacuumed,
+    index_vacuum_count,
+    num_dead_tuples,
+    num_dead_item_ids
+FROM pg_stat_progress_vacuum;
+
+-- What VACUUM actually reports (VERBOSE output — run manually):
+VACUUM (VERBOSE, ANALYZE) public.orders;
+-- Output includes:
+-- "scanned X pages, removed Y row versions"
+-- "found Z removable, W nonremovable row versions"
+-- "index 'orders_pkey': pages: N in total, M newly deleted"
+```
+
+AUTOVACUUM vs MANUAL VACUUM:
+
+  Regular VACUUM (manual):
+    - Does NOT lock the table exclusively. Holds ShareUpdateExclusiveLock
+      (compatible with SELECT, INSERT, UPDATE, DELETE).
+    - Does NOT reduce table file size on disk — freed space is available for
+      future inserts but the file does not shrink.
+    - Can be cancelled without harm (VACUUM is idempotent).
+
+  VACUUM FULL:
+    - Rewrites the entire table to a new file. Table file DOES shrink.
+    - Holds AccessExclusiveLock — full table lock. Nothing can read or write.
+    - Only for scheduled maintenance when you need to reclaim disk space.
+    - For online use: pg_repack is the alternative.
+
+  VACUUM FREEZE:
+    - Forces aggressive freezing of all tuples, regardless of age thresholds.
+    - Used to reset the TXID age counter.
+    - Can be run as needed (no schema lock, just ShareUpdateExclusiveLock).
+
+  AUTOVACUUM:
+    - Automatic, scheduled by the autovacuum launcher based on scale factors.
+    - Respects cost delay throttling to avoid I/O saturation.
+    - Will be cancelled (and restarted) if a conflicting lock is requested
+      by a user session.
+
+```sql
+-- Why did VACUUM skip a table? (common causes)
+-- 1. A long-running transaction holds a conflicting lock:
+SELECT pid, usename, xact_start, now()-xact_start AS age, state, query
+FROM pg_stat_activity
+WHERE state <> 'idle'
+  AND xact_start < now() - interval '5 minutes'
+ORDER BY xact_start;
+
+-- 2. Cost throttling is too aggressive (autovacuum sleeping too much):
+SELECT name, setting FROM pg_settings
+WHERE name IN ('autovacuum_vacuum_cost_delay', 'autovacuum_vacuum_cost_limit');
+
+-- 3. Table-level autovacuum disabled:
+SELECT relname, reloptions FROM pg_class
+WHERE reloptions::text ILIKE '%autovacuum_enabled=false%';
+```
+
+THE VM AND INDEX ONLY SCANS:
+  When a page's visibility map bit is set, it means every tuple on that page
+  is known to be visible to all current and future transactions. Index Only
+  Scans use this: instead of fetching the heap page to check tuple visibility,
+  the scan only checks the VM bit. If set: return the index value directly,
+  no heap access needed. This is the fastest possible read path.
+
+  ```sql
+  -- How many Index Only Scans are benefiting from the VM?
+  SELECT relname, idx_scan, idx_tup_fetch, heap_blks_read, heap_blks_hit
+  FROM pg_statio_user_tables
+  WHERE relname = 'orders';
+  -- heap_blks_read = 0 for a perfect Index Only Scan workload.
+  ```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 05: LOCKING HIERARCHY REFERENCE
+  File: 07_knowledge_base/locking_hierarchy_reference.md
+================================================================================
+
+We've referenced this table throughout the program. Here it is — the complete,
+canonical locking hierarchy. Print this and keep it. Every DDL decision, every
+VACUUM, every migration runs through this chart.
+
+PostgreSQL has two classes of locks: relation-level locks (what we're covering
+here) and row-level locks (used internally, not directly settable in SQL).
+
+RELATION-LEVEL LOCK MODES (weakest to strongest):
+
+```
+Lock Mode                  Conflicts With
+─────────────────────────────────────────────────────────────────────────────
+AccessShareLock            AccessExclusiveLock only
+  Acquired by: SELECT
+
+RowShareLock               ExclusiveLock, AccessExclusiveLock
+  Acquired by: SELECT FOR SHARE, SELECT FOR UPDATE
+
+RowExclusiveLock           ShareLock, ShareRowExclusiveLock,
+                           ExclusiveLock, AccessExclusiveLock
+  Acquired by: INSERT, UPDATE, DELETE, MERGE
+
+ShareUpdateExclusiveLock   ShareUpdateExclusiveLock, ShareRowExclusiveLock,
+                           ExclusiveLock, AccessExclusiveLock
+  Acquired by: VACUUM, ANALYZE, CREATE INDEX CONCURRENTLY,
+               REINDEX CONCURRENTLY, certain ALTER TABLE variants
+
+ShareLock                  RowExclusiveLock, ShareRowExclusiveLock,
+                           ExclusiveLock, AccessExclusiveLock
+  Acquired by: CREATE INDEX (without CONCURRENTLY)
+
+ShareRowExclusiveLock      RowExclusiveLock, ShareUpdateExclusiveLock,
+                           ShareLock, ShareRowExclusiveLock,
+                           ExclusiveLock, AccessExclusiveLock
+  Acquired by: CREATE TRIGGER, some reference actions
+
+ExclusiveLock              RowShareLock, RowExclusiveLock,
+                           ShareUpdateExclusiveLock, ShareLock,
+                           ShareRowExclusiveLock, ExclusiveLock,
+                           AccessExclusiveLock
+  Acquired by: pg_advisory_lock, REFRESH MATERIALIZED VIEW CONCURRENTLY
+
+AccessExclusiveLock        ALL other lock modes (blocks everything)
+  Acquired by: DROP TABLE, TRUNCATE, REINDEX, VACUUM FULL, CLUSTER,
+               ALTER TABLE (many variants), LOCK TABLE
+─────────────────────────────────────────────────────────────────────────────
+```
+
+PRACTICAL IMPLICATIONS:
+
+```sql
+-- The most important locks to understand as a DBA:
+
+-- SELECT: AccessShareLock — only conflicts with AccessExclusiveLock.
+-- This means DROP TABLE or TRUNCATE will block all SELECTs (and vice versa).
+-- Normal reads and writes DO NOT conflict with each other.
+
+-- CREATE INDEX (without CONCURRENTLY): ShareLock
+-- Conflicts with RowExclusiveLock (INSERT/UPDATE/DELETE).
+-- All writes to the table block while the index is being built.
+-- Solution: always use CONCURRENTLY.
+
+-- CREATE INDEX CONCURRENTLY: ShareUpdateExclusiveLock
+-- Conflicts ONLY with itself. Reads and writes continue normally.
+-- Cost: runs through multiple phases, takes longer than non-concurrent.
+
+-- ALTER TABLE: Usually AccessExclusiveLock
+-- This is the DDL that causes most production incidents.
+-- Some ALTER TABLE variants in PG 12+ only need ShareUpdateExclusiveLock.
+-- Check with BEGIN; SELECT * FROM pg_locks WHERE pid=pg_backend_pid(); ROLLBACK;
+
+-- VACUUM: ShareUpdateExclusiveLock
+-- Can run concurrently with all user queries.
+-- VACUUM FULL: AccessExclusiveLock — full table lock.
+```
+
+LOCK QUEUE DYNAMICS — the most important thing people don't understand:
+
+  Imagine this sequence:
+  1. Reader (SELECT) holds AccessShareLock on orders.
+  2. DDL (ALTER TABLE) arrives, needs AccessExclusiveLock. It WAITS.
+  3. Another Reader (SELECT) arrives. Normally AccessShareLock is compatible
+     with itself — but the DDL is already in the queue!
+
+  PostgreSQL is queue-fair: once an AccessExclusiveLock is WAITING, all
+  subsequent requests — even compatible ones — queue behind it.
+
+  Result: one DDL operation waiting for one long query can block ALL subsequent
+  queries against that table. The table appears completely frozen.
+
+  This is why you must:
+  a) Set lock_timeout on your migration session.
+  b) Kill long-running queries before running DDL.
+  c) Run DDL in low-traffic windows.
+
+```sql
+-- See the full lock queue including waits:
+SELECT
+    pid,
+    locktype,
+    relation::regclass,
+    mode,
+    granted,
+    left(query, 80) AS query
+FROM pg_locks
+JOIN pg_stat_activity USING (pid)
+WHERE relation = 'orders'::regclass
+ORDER BY granted DESC, pid;
+-- granted = true: currently holding the lock
+-- granted = false: waiting for the lock (in the queue)
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 06: POSTGRES WAIT EVENT ANALYSIS
+  File: 07_knowledge_base/postgres_wait_event_analysis.md
+================================================================================
+
+Wait events are what a PostgreSQL backend is doing while it's not running
+query code. When a query is slow and you can't figure out why from EXPLAIN,
+check the wait event. It tells you exactly where time is being spent.
+
+```sql
+-- Current wait events across all sessions:
+SELECT
+    wait_event_type,
+    wait_event,
+    count(*)                          AS sessions,
+    array_agg(left(query,60))         AS sample_queries
+FROM pg_stat_activity
+WHERE state <> 'idle'
+  AND pid <> pg_backend_pid()
+GROUP BY wait_event_type, wait_event
+ORDER BY sessions DESC;
+```
+
+WAIT EVENT TAXONOMY AND MEANING:
+
+```
+WAIT EVENT TYPE: Lock
+  Row, Relation, Page, TransactionId, Tuple, VirtualXID, Extension, Object
+  → A session is waiting for a lock held by another session.
+  → Diagnosis: run the lock chain query from Reference 05.
+  → Fix: kill the blocker or add lock_timeout.
+
+WAIT EVENT TYPE: LWLock (Lightweight Lock)
+  BufferMapping, WALWrite, WALInsert, ProcArray, SInvalRead, etc.
+  → Internal PostgreSQL engine contention. Usually indicates high concurrency
+    stress on a specific internal structure.
+  → WALWrite: high WAL generation rate, possibly too many WAL flushes.
+    Fix: increase wal_writer_delay, increase commit_delay.
+  → BufferMapping: lots of buffer lookups; shared_buffers too small.
+    Fix: increase shared_buffers.
+  → ProcArray: too many concurrent transactions causing shared state contention.
+    Fix: reduce max_connections or use PgBouncer.
+
+WAIT EVENT TYPE: IO
+  DataFileRead, DataFileWrite, WALRead, WALWrite, etc.
+  → Session is waiting for I/O to complete.
+  → DataFileRead: reading heap or index pages from disk (cache miss).
+    Fix: increase shared_buffers or optimize query to reduce reads.
+  → WALWrite: waiting for WAL to be written (commit latency).
+    Fix: reduce synchronous_commit level OR get faster storage.
+  → BufFileRead/Write: temp files — work_mem is too small.
+    Fix: increase work_mem for the heavy sessions.
+
+WAIT EVENT TYPE: IPC
+  BgWorkerShutdown, ClientRead, MessageQueueReceive, etc.
+  → Client/backend communication or background process coordination.
+  → ClientRead: the backend is waiting for the client to send more data
+    (or read the response). Usually means a slow client or network issue.
+    Not a database problem.
+
+WAIT EVENT TYPE: Timeout
+  PgSleep, VacuumDelay
+  → Deliberate waits. VacuumDelay is autovacuum respecting its cost delay.
+    Normal. If you see many VacuumDelay events, autovacuum is throttled.
+    Adjust autovacuum_vacuum_cost_delay if needed.
+
+WAIT EVENT TYPE: CPU
+  (None — wait_event IS NULL and state IS 'active')
+  → The backend is actively running on CPU. This is normal for active queries.
+  → If a CPU wait lasts unusually long: the query is CPU-bound.
+    Check for: large sorts, hash joins, complex expressions, regex matching.
+```
+
+```sql
+-- Sample wait events every 1 second for 10 seconds (poor man's profiler):
+-- Run this in a loop from bash:
+
+for i in $(seq 1 10); do
+    psql -At -c "
+        SELECT wait_event_type || ':' || COALESCE(wait_event,'cpu') AS event,
+               count(*) AS cnt
+        FROM pg_stat_activity
+        WHERE state <> 'idle' AND pid <> pg_backend_pid()
+        GROUP BY event ORDER BY cnt DESC LIMIT 5;
+    "
+    echo "---"
+    sleep 1
+done
+# The most common wait event across the 10 samples is your bottleneck.
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 07: ROLES, GRANTS, AND PERMISSIONS
+  File: 07_knowledge_base/roles_grants_permissions.md
+================================================================================
+
+PostgreSQL's security model is role-based. Everything is a role — users are
+roles. Groups are roles. The difference: LOGIN privilege. A role with LOGIN
+can connect to the database. A role without LOGIN is a group role used to
+collect privileges.
+
+```sql
+-- See all roles:
+SELECT
+    rolname,
+    rolsuper,
+    rolcreatedb,
+    rolcreaterole,
+    rolcanlogin,
+    rolreplication,
+    rolbypassrls,
+    rolconnlimit,
+    array_agg(m.rolname) AS member_of
+FROM pg_roles r
+LEFT JOIN pg_auth_members am ON am.member = r.oid
+LEFT JOIN pg_roles m ON m.oid = am.roleid
+GROUP BY r.rolname, r.rolsuper, r.rolcreatedb, r.rolcreaterole,
+         r.rolcanlogin, r.rolreplication, r.rolbypassrls, r.rolconnlimit
+ORDER BY rolname;
+```
+
+ROLE CREATION PATTERNS:
+
+```sql
+-- Application user (minimal privileges):
+CREATE ROLE app_user LOGIN ENCRYPTED PASSWORD 'strongpassword'
+    CONNECTION LIMIT 100;
+
+-- Read-only user for analytics/reporting:
+CREATE ROLE readonly LOGIN ENCRYPTED PASSWORD 'readpass';
+GRANT CONNECT ON DATABASE mydb TO readonly;
+GRANT USAGE ON SCHEMA public TO readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT ON TABLES TO readonly;
+
+-- Group role for shared privileges:
+CREATE ROLE developers;   -- no LOGIN
+GRANT CONNECT ON DATABASE mydb TO developers;
+GRANT USAGE, CREATE ON SCHEMA public TO developers;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO developers;
+
+-- Add a user to the group:
+GRANT developers TO alice;
+GRANT developers TO bob;
+
+-- Monitoring user (read-only on monitoring views):
+CREATE ROLE monitoring LOGIN ENCRYPTED PASSWORD 'monitorpass';
+GRANT pg_monitor TO monitoring;   -- built-in monitoring role (PG 10+)
+
+-- Backup user:
+CREATE ROLE backup_user LOGIN REPLICATION ENCRYPTED PASSWORD 'backuppass';
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO backup_user;
+
+-- DBA role (superuser equivalent — use sparingly):
+CREATE ROLE dba_team;
+GRANT pg_monitor TO dba_team;
+GRANT CREATE ON DATABASE mydb TO dba_team;
+-- Prefer specific grants over superuser. Never give app users superuser.
+```
+
+PRIVILEGE MATRIX — what each grant allows:
+
+```
+PRIVILEGE       ON OBJECT TYPE    EFFECT
+──────────────────────────────────────────────────────────────────────────
+SELECT          table/view        Read rows
+INSERT          table             Add rows
+UPDATE          table             Modify rows (optionally specific columns)
+DELETE          table             Remove rows
+TRUNCATE        table             TRUNCATE TABLE (does not cascade like DELETE)
+REFERENCES      table/column      Create foreign key constraints referencing this
+TRIGGER         table             Create triggers on this table
+USAGE           schema            Access objects within the schema (required!)
+CREATE          schema/database   Create objects within
+CONNECT         database          Establish a connection
+TEMPORARY       database          Create temp tables
+EXECUTE         function          Call the function
+──────────────────────────────────────────────────────────────────────────
+```
+
+COMMON MISTAKES:
+
+```sql
+-- MISTAKE 1: Granting table access but forgetting SCHEMA USAGE.
+-- The user can't see the table because they can't access the schema.
+GRANT SELECT ON public.orders TO alice;
+-- ALSO NEED:
+GRANT USAGE ON SCHEMA public TO alice;
+
+-- MISTAKE 2: Using GRANT ALL on public schema.
+-- This grants CREATE to everyone, allowing anyone to create tables.
+-- Revoke this (it's a default that PostgreSQL ships with):
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+-- PUBLIC is a special role meaning "all users."
+
+-- MISTAKE 3: Not using DEFAULT PRIVILEGES.
+-- Granting on ALL TABLES only covers existing tables.
+-- Tables created later don't inherit those grants.
+-- Fix:
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
+
+-- MISTAKE 4: GRANT to PUBLIC accidentally:
+-- This means every user in the database can do this.
+-- Check for accidental PUBLIC grants:
+SELECT grantee, table_schema, table_name, privilege_type
+FROM information_schema.table_privileges
+WHERE grantee = 'PUBLIC';
+```
+
+ROW LEVEL SECURITY (RLS):
+
+```sql
+-- Enable RLS on a table:
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+-- Policy: users can only see their own orders:
+CREATE POLICY user_isolation ON orders
+    USING (customer_id = current_setting('app.current_user_id')::bigint);
+
+-- Policy for superusers to bypass:
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+-- Even table owner must comply with policies (use BYPASSRLS to exempt).
+
+-- Test a policy as a specific role:
+SET ROLE alice;
+SELECT count(*) FROM orders;   -- should only see alice's orders
+RESET ROLE;
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 08: COMMON ERROR CODES
+  File: 07_knowledge_base/common_error_codes.md
+================================================================================
+
+PostgreSQL error codes follow the SQLSTATE standard: five characters, two-letter
+class + three-letter subcode. Knowing these lets you handle errors programmatically
+and diagnose log entries faster. Here are the ones you'll see most.
+
+```
+CONNECTION ERRORS:
+  08000  connection_exception
+  08001  sqlclient_unable_to_establish_sqlconnection
+  08006  connection_failure
+  08P01  protocol_violation
+  → Check pg_hba.conf, network, password, max_connections.
+
+AUTHENTICATION:
+  28000  invalid_authorization_specification  (wrong user, pg_hba denied)
+  28P01  invalid_password                     (wrong password)
+  → Check pg_hba.conf auth method, verify user exists, check password.
+
+RESOURCE ERRORS:
+  53000  insufficient_resources
+  53100  disk_full                   → CRITICAL: disk is full
+  53200  out_of_memory              → OOM: increase memory or reduce work_mem
+  53300  too_many_connections       → max_connections hit: use PgBouncer
+  → See incident response runbooks for each.
+
+TRANSACTION ERRORS:
+  25001  active_sql_transaction    (command not allowed in transaction)
+  25006  read_only_sql_transaction (standby or read-only transaction)
+  40000  transaction_rollback
+  40001  serialization_failure     → IMPORTANT: retry the transaction
+  40P01  deadlock_detected         → See deadlock runbook
+
+OBJECT ERRORS:
+  23000  integrity_constraint_violation
+  23001  restrict_violation         (FK constraint)
+  23502  not_null_violation         (NOT NULL constraint)
+  23503  foreign_key_violation      (FK constraint)
+  23505  unique_violation           → duplicate key (most common in OLTP)
+  23514  check_violation            (CHECK constraint)
+  → Application should handle 23505 and retry with different values.
+
+OPERATOR ERRORS:
+  22000  data_exception
+  22001  string_data_right_truncation  (value too long for column)
+  22012  division_by_zero
+  22P02  invalid_text_representation   (e.g., 'abc' cast to INT)
+
+LOCK ERRORS:
+  55P03  lock_not_available         (lock_timeout expired)
+  57014  query_canceled             (statement_timeout, or pg_cancel_backend)
+  57P01  admin_shutdown             (pg_terminate_backend or server shutdown)
+  → For 55P03: retry the operation later. For 57014: investigate what caused
+    the timeout (lock contention, statement_timeout, or manual cancel).
+
+SYSTEM ERRORS:
+  XX000  internal_error             (PostgreSQL bug or serious problem)
+  XX001  data_corrupted             → CRITICAL: see data corruption runbook
+  XX002  index_corrupted            → CRITICAL: run amcheck, then REINDEX
+```
+
+```sql
+-- Find errors in pg_log quickly:
+grep "ERROR\|FATAL\|PANIC" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    | awk '{print $5}' | sort | uniq -c | sort -rn | head -20
+-- Shows which SQLSTATE codes are most frequent today.
+
+-- Map error codes to runbooks:
+-- 53100 (disk_full) → 01_incident_response/disk_usage_85_percent.md
+-- 40P01 (deadlock)  → 01_incident_response/deadlock.md
+-- 53300 (too_many_connections) → 01_incident_response/connection_pool_exhaustion.md
+-- 55P03 (lock_timeout)        → 04_performance_tuning/lock_contention_analysis.md
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 09: LOG ANALYSIS — PGBADGER, PGBOUNCER, PATRONI
+  File: 07_knowledge_base/log_analysis_pgbouncer_patroni.md
+================================================================================
+
+PGBADGER — AUTOMATED QUERY LOG ANALYSIS:
+
+pgBadger parses PostgreSQL log files and produces HTML reports with: top slow
+queries, lock waits, connections, errors, checkpoint activity, and more.
+It is the fastest way to get a structured view of what your database has been
+doing over the past day/week.
+
+```bash
+# Install:
+apt-get install -y pgbadger
+
+# Required postgresql.conf settings for maximum pgBadger value:
+# log_min_duration_statement = 1000    # log queries > 1s
+# log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+# log_checkpoints = on
+# log_connections = on
+# log_disconnections = on
+# log_lock_waits = on
+# log_temp_files = 0
+# log_autovacuum_min_duration = 0
+
+# Generate report for today's log:
+pgbadger \
+    --format stderr \
+    --prefix '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ' \
+    --outfile /var/www/html/pgbadger/report_$(date +%Y%m%d).html \
+    /var/log/postgresql/postgresql-$(date +%Y-%m-%d)*.log
+
+# Incremental mode (add to cron, runs quickly, only processes new log lines):
+pgbadger \
+    --incremental \
+    --outdir /var/www/html/pgbadger/ \
+    /var/log/postgresql/postgresql-*.log
+
+# Key sections to review in pgBadger output:
+# 1. "Overall statistics" — total queries, errors, duration distribution
+# 2. "Slowest queries" — candidates for optimization
+# 3. "Time consuming queries" — total time, not just individual time
+# 4. "Lock waits" — what was waiting, for how long
+# 5. "Vacuuming queries" — autovacuum runtime patterns
+```
+
+PGBOUNCER LOG ANALYSIS:
+
+```bash
+# PgBouncer logs go to stderr/syslog. Check:
+cat /var/log/postgresql/pgbouncer.log | grep -E "ERROR|WARNING|pooler" | tail -50
+
+# Key PgBouncer log events and their meaning:
+# "too many clients" → max_client_conn reached; increase it or add pool
+# "server login failed" → PostgreSQL rejected PgBouncer connection
+# "client close request" → normal client disconnect
+# "query_wait_timeout" → client waited too long for a server connection
+#   Fix: increase default_pool_size
+
+# PgBouncer statistics (run from PgBouncer admin console):
+psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer << 'EOF'
+SHOW POOLS;    -- current pool utilisation
+SHOW STATS;    -- request rate, avg wait time
+SHOW CLIENTS;  -- connected clients
+SHOW SERVERS;  -- backend server connections
+SHOW CONFIG;   -- current configuration
+EOF
+```
+
+PATRONI LOG ANALYSIS:
+
+```bash
+# Patroni logs to systemd journal by default:
+journalctl -u patroni -n 100 --no-pager
+
+# Key Patroni log events:
+# "promoted self to leader"       → failover/switchover completed
+# "demoted self to replica"       → lost leadership
+# "no action. i am the leader"    → normal heartbeat
+# "member ... is not reachable"   → node connectivity issue
+# "failover is not possible"      → DCS quorum lost, cluster in safe mode
+
+# Patroni REST API provides structured state:
+curl http://localhost:8008/patroni | jq .
+# {state, role, timeline, xlog.location, replication}
+
+curl http://localhost:8008/cluster | jq .
+# Full cluster state: all members, their roles, LSNs, health
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 10: LINUX TROUBLESHOOTING TOOLKIT
+  File: 07_knowledge_base/linux_troubleshooting_toolkit.md
+================================================================================
+
+A DBA who can't work the OS is a DBA who relies on someone else for half their
+incidents. PostgreSQL runs on Linux. Linux problems become database problems.
+Here is the toolkit you need, with the PostgreSQL-specific angle on each.
+
+```bash
+# ═══════════════════════════════════════════════════════════════════
+# MEMORY
+# ═══════════════════════════════════════════════════════════════════
+
+# Total memory layout:
+free -h
+# Check: MemAvailable — how much the OS can use without swapping.
+# PostgreSQL's shared_buffers should be 25% of MemTotal.
+# available = MemFree + Buffers + Cached (roughly).
+
+# Are we swapping? (PostgreSQL + swap = disaster):
+vmstat 1 5
+# si (swap in) + so (swap out) > 0 = swapping. CRITICAL for a database.
+
+# What's using memory?
+ps aux --sort=-%mem | head -20
+# Look for postgres processes with high %MEM.
+
+# Huge pages status:
+grep -i huge /proc/meminfo
+# AnonHugePages > 0 = transparent huge pages active (can cause latency spikes)
+# Disable THP for PostgreSQL:
+echo never > /sys/kernel/mm/transparent_hugepage/enabled
+echo never > /sys/kernel/mm/transparent_hugepage/defrag
+
+# ═══════════════════════════════════════════════════════════════════
+# CPU
+# ═══════════════════════════════════════════════════════════════════
+
+# Overall CPU:
+top -bn1 | head -10
+
+# PostgreSQL process CPU usage:
+top -bn1 -u postgres | head -20
+
+# CPU saturation (load average vs CPU count):
+uptime
+nproc                  # how many CPUs available
+# load average > nproc = CPU saturation
+
+# Which PostgreSQL PID is burning CPU:
+ps -aux --sort=-%cpu | grep postgres | head -10
+# Take the PID and map it to pg_stat_activity:
+# SELECT pid, query FROM pg_stat_activity WHERE pid = <linux_pid>;
+
+# ═══════════════════════════════════════════════════════════════════
+# I/O
+# ═══════════════════════════════════════════════════════════════════
+
+# Device-level I/O (the key one):
+iostat -xz 1 5
+# %util: device utilization. > 80% = saturated.
+# await: average wait time per I/O request (ms). > 20ms = slow device.
+# r/s, w/s: reads and writes per second.
+
+# Which processes are doing the I/O:
+iotop -o -b -n 3 -d 1
+# Look for postgres processes at the top.
+
+# I/O wait in CPU stats (from vmstat):
+vmstat 1 5
+# wa column = % CPU time spent waiting for I/O. > 10% = I/O bound.
+
+# ═══════════════════════════════════════════════════════════════════
+# DISK
+# ═══════════════════════════════════════════════════════════════════
+
+# Disk usage:
+df -h
+# Check: the filesystem containing pg data dir AND pg_wal.
+
+# Inode usage (can fill independently of space):
+df -i
+# If inode usage is 100%, you can't create new files even with space available.
+# PostgreSQL WAL segments are 16MB each — rarely an inode problem.
+
+# What's consuming space:
+du -sh /var/lib/postgresql/*/main/*/  | sort -h | tail -20
+du -sh /var/lib/postgresql/*/main/pg_wal/
+du -sh /var/lib/postgresql/*/main/base/pgsql_tmp/   # temp files!
+
+# Check for deleted files still held open (space not released):
+lsof | grep deleted | grep postgresql
+# If a large file is deleted but still open by a process, space isn't freed.
+# Kill the holding process to release the space.
+
+# ═══════════════════════════════════════════════════════════════════
+# NETWORK
+# ═══════════════════════════════════════════════════════════════════
+
+# Active connections to PostgreSQL port:
+ss -tn | grep :5432 | wc -l
+
+# Connection states:
+ss -tn | grep :5432 | awk '{print $1}' | sort | uniq -c
+
+# Network throughput to replica (during initial sync):
+iftop -i eth0 -f "port 5432"
+
+# Test bandwidth between primary and replica:
+iperf3 -s                    # on one server
+iperf3 -c <other_server>     # on the other
+
+# ═══════════════════════════════════════════════════════════════════
+# SYSTEM CALLS AND KERNEL (advanced)
+# ═══════════════════════════════════════════════════════════════════
+
+# Which system calls is a PostgreSQL process making?
+strace -p <postgres_pid> -c -f -e trace=read,write,fsync 2>&1 | head -30
+# fsync calls = checkpoint/WAL writes. High fsync = I/O bound.
+
+# Open file descriptors per PostgreSQL process:
+ls -la /proc/$(pgrep -f "postgres.*checkpointer")/fd | wc -l
+# Each connection holds multiple FDs (sockets, files, pipes).
+
+# System-level PostgreSQL limits:
+cat /proc/$(pgrep postmaster | head -1)/limits | grep -i "open files\|max processes"
+# "Max open files" should be >> max_connections * 3.
+# If too low: set in /etc/security/limits.conf:
+# postgres soft nofile 65536
+# postgres hard nofile 65536
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 11: CUSTOMER COMMUNICATION TEMPLATES
+  File: 07_knowledge_base/customer_communication_templates.md
+================================================================================
+
+I know what some of you are thinking. "This is a DBA course, not a
+communications course." And you are right. But I am going to tell you something
+from twenty years of watching incidents play out:
+
+The most technically brilliant incident response I ever witnessed still resulted
+in the lead DBA being put on a performance improvement plan — because while they
+had the database back up in fourteen minutes, they said nothing to anyone for
+the first forty. Stakeholders assumed the worst. Leadership assumed no one was
+working on it. The DBA was head-down, fixing. Perfectly. And it didn't matter.
+
+Communication IS part of incident response. It is Tier 1 on the human side.
+
+These templates are not meant to be sent verbatim. They are frameworks.
+Modify them for your organisation, your tone, your audience.
+
+TEMPLATE 1 — INITIAL INCIDENT NOTIFICATION (within 10 minutes of declaring):
+
+```
+SUBJECT: [DATABASE INCIDENT] <Service> degraded — Investigation in progress
+
+SEVERITY: SEV-<N>
+STARTED: <YYYY-MM-DD HH:MM UTC>
+AFFECTED: <What service/feature is affected>
+STATUS: Investigating
+
+CURRENT IMPACT:
+  <1-2 sentences: what users can and cannot do right now>
+
+WHAT WE KNOW:
+  <1-2 sentences: what the symptom is, without speculation about cause>
+
+WHAT WE'RE DOING:
+  <1-2 sentences: immediate actions being taken>
+
+NEXT UPDATE: <time, typically 20-30 minutes>
+
+DBA ON CALL: <name>
+ESCALATED TO: <name if applicable>
+```
+
+TEMPLATE 2 — STATUS UPDATE (every 20-30 minutes during an incident):
+
+```
+SUBJECT: [UPDATE] Database incident — <HH:MM UTC>
+
+INCIDENT: <link or ID>
+STATUS: <Investigating / Identified / Monitoring / Resolved>
+
+PROGRESS SINCE LAST UPDATE:
+  <What actions were taken, what was found>
+
+CURRENT STATE:
+  <Is the issue improving, stable, or worsening?>
+
+ROOT CAUSE (preliminary):
+  <Only if confirmed. If not confirmed: "Under investigation.">
+
+EXPECTED RESOLUTION:
+  <ETA if known. "Unknown at this time" is acceptable and preferred over a
+   wrong estimate.>
+
+NEXT UPDATE: <time>
+```
+
+TEMPLATE 3 — RESOLUTION NOTIFICATION:
+
+```
+SUBJECT: [RESOLVED] Database incident — <Service> restored
+
+INCIDENT: <link or ID>
+RESOLVED AT: <YYYY-MM-DD HH:MM UTC>
+TOTAL DURATION: <X hours Y minutes>
+
+IMPACT SUMMARY:
+  <What was affected, for how long, estimated number of users impacted>
+
+ROOT CAUSE:
+  <1-3 sentences explaining what caused the incident, in plain language>
+
+RESOLUTION:
+  <What was done to resolve it>
+
+IMMEDIATE PREVENTIVE ACTIONS TAKEN:
+  <Any changes made during resolution to prevent immediate recurrence>
+
+FOLLOW-UP ACTIONS (post-incident review):
+  <What the team will investigate/implement in the coming days/weeks>
+
+POST-INCIDENT REVIEW SCHEDULED: <date/time>
+```
+
+TEMPLATE 4 — MAINTENANCE WINDOW NOTICE (sent 48+ hours in advance):
+
+```
+SUBJECT: [SCHEDULED] Database maintenance — <Date> <Time> UTC
+
+WHAT: <Type of maintenance: version upgrade, schema migration, failover test>
+WHEN: <Start time UTC> — <End time UTC> (<timezone> = <local time>)
+EXPECTED DOWNTIME: <Duration, or "Zero downtime expected">
+
+IMPACT:
+  <What users will experience during the window>
+
+IF MAINTENANCE OVERRUNS:
+  <What happens — will there be an extended outage? A rollback?>
+
+TO PREPARE:
+  <Anything users/teams should do before the window>
+
+QUESTIONS: <contact email or Slack channel>
+```
+
+TEMPLATE 5 — POST-INCIDENT REVIEW (PIR) AGENDA:
+
+```
+POST-INCIDENT REVIEW — <Date>
+Incident: <Title and ID>
+
+ATTENDEES: DBA team, on-call engineer, product/engineering manager
+
+AGENDA (60 minutes):
+  1. Timeline of events (15 min) — factual, no blame
+     - When was the incident first detected?
+     - When were customers impacted?
+     - What actions were taken and when?
+     - When was the incident resolved?
+
+  2. Root cause analysis (15 min)
+     - What was the direct cause?
+     - What were the contributing factors?
+     - The "5 Whys" if needed.
+
+  3. What went well? (10 min)
+     - Detection, response, communication, tooling
+
+  4. What could have gone better? (10 min)
+     - Gaps in runbooks, tooling, communication, process
+
+  5. Action items (10 min)
+     - Specific, assigned, with due dates.
+     - Not vague ("improve monitoring") but concrete ("add TXID age alert
+       to Prometheus with threshold > 1.5B by June 30, owner: <name>")
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 12: PGBADGER RUNBOOK
+  File: 07_knowledge_base/pgbadger_runbook.md
+================================================================================
+
+We covered pgBadger briefly in the log analysis reference. Here is the full
+operational runbook — how to set it up as a regular scheduled report, how to
+interpret the output, and how to integrate it with your monitoring workflow.
+
+── PRE-FLIGHT ──────────────────────────────────────────────────────────────────
+
+```bash
+# Install pgBadger:
+apt-get install -y pgbadger
+pgbadger --version   # confirm: pgBadger version 12.x
+
+# Required PostgreSQL logging configuration (reload, not restart):
+```
+
+```sql
+ALTER SYSTEM SET log_min_duration_statement = 1000;    -- log > 1s
+ALTER SYSTEM SET log_checkpoints = on;
+ALTER SYSTEM SET log_connections = on;
+ALTER SYSTEM SET log_disconnections = on;
+ALTER SYSTEM SET log_lock_waits = on;
+ALTER SYSTEM SET log_temp_files = 0;                   -- log ALL temp files
+ALTER SYSTEM SET log_autovacuum_min_duration = 0;      -- log ALL autovacuums
+ALTER SYSTEM SET log_line_prefix = '%m [%p] %q%u@%d ';
+SELECT pg_reload_conf();
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Generate a one-time report:**
+
+   ```bash
+   pgbadger \
+       --format stderr \
+       --prefix '%m [%p] %q%u@%d ' \
+       --outfile /var/www/html/reports/pgbadger_$(date +%Y%m%d).html \
+       --jobs 4 \
+       --sample 3 \
+       /var/log/postgresql/postgresql-$(date +%Y-%m-%d)*.log
+   ```
+
+2. **Set up daily incremental reporting (add to cron):**
+
+   ```bash
+   # /etc/cron.d/pgbadger:
+   0 6 * * * postgres pgbadger \
+       --incremental \
+       --outdir /var/www/html/pgbadger/ \
+       --jobs 4 \
+       --sample 3 \
+       /var/log/postgresql/postgresql-*.log \
+       >> /var/log/pgbadger.log 2>&1
+   ```
+
+3. **Serve the reports:**
+
+   ```bash
+   # Simple nginx config to serve reports:
+   # /etc/nginx/sites-enabled/pgbadger:
+   server {
+       listen 8080;
+       root /var/www/html/pgbadger;
+       autoindex on;
+       auth_basic "DBA Reports";
+       auth_basic_user_file /etc/nginx/.htpasswd;
+   }
+   ```
+
+4. **Interpret the report — what to look for:**
+
+   ```
+   SECTION: Overall statistics
+   → Check: total queries/s, error rate, connection rate.
+     Baseline comparison: is today's rate normal vs last week?
+
+   SECTION: Top time-consuming queries (sorted by total_time)
+   → These are your optimization targets.
+     If the same query appears every day in the top 5 — fix it this week.
+
+   SECTION: Slowest individual queries (sorted by max_duration)
+   → Outliers. A query that ran for 10 minutes once.
+     Usually: missing index, stats regression, lock wait.
+
+   SECTION: Queries generating the most temporary files
+   → work_mem is too low for these queries.
+     Either increase work_mem or optimize the query.
+
+   SECTION: Lock waits
+   → Shows which queries waited for locks and for how long.
+     If the same table appears repeatedly: lock contention problem.
+
+   SECTION: Autovacuum activity
+   → How long did autovacuum run? On which tables?
+     If autovacuum runs for > 30 minutes on one table: tuning needed.
+     If the same table appears every day: scale factor needs adjustment.
+
+   SECTION: Checkpoint activity
+   → How many checkpoints were forced (checkpoints_req)?
+     Forced > timed: increase max_wal_size.
+     High checkpoint write time: disk I/O saturation.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Report generates without error:
+pgbadger --format stderr /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    --outfile /tmp/test_report.html 2>&1 | tail -5
+# Should end with "pgBadger report: /tmp/test_report.html"
+
+# Report is non-zero size:
+ls -lh /tmp/test_report.html
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+pgBadger is read-only. No rollback needed. If the logging configuration changes
+cause too much log volume: raise log_min_duration_statement back up. The cron
+job is purely reporting — it never modifies the database.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  REFERENCE 13: POSTGRES HOWTOS INDEX
+  File: 07_knowledge_base/postgres_howtos_index.md
+================================================================================
+
+This is the index that ties the entire runbook library together. When someone
+asks "how do I..." — this is the document that points them to the right place.
+Keep this current as you add to your library.
+
+```
+HOW TO...                                                 RUNBOOK FILE
+────────────────────────────────────────────────────────────────────────────────
+Add a standby to an existing cluster                      02_ha/add_standby
+Add a NOT NULL column to a 100M-row table safely          05_migrations/large_table_online
+Analyse a slow query                                      04_perf/explain_analyze_guide
+Archive WAL to S3 (WAL-G)                                 03_backup/wal_g_continuous
+Backup a PostgreSQL database (pgBackRest)                 03_backup/pgbackrest_ha_setup
+Calculate table bloat                                     04_perf/postgres_calculate_bloat
+Change an ENUM type safely                                05_migrations/enum_type_safe
+Check for missing indexes                                 04_perf/slow_query_investigation
+Check for unused indexes                                  04_perf/postgres_check_unused_indexes
+Compact a bloated table (pg_repack)                       04_perf/table_bloat_analysis
+Configure PgBouncer (connection pooling)                  04_perf/connection_pooling_patterns
+Create a Prometheus alert rule                            06_monitoring/custom_prometheus_rules
+Debug WAL archiving failure                               03_backup/wal_archiving_fails
+Do a zero-downtime switchover (Patroni)                   02_ha/switchover_zero_downtime
+Drop a replication slot safely                            02_ha/replication_slot_management
+Failover to a standby (emergency)                        02_ha/failover_procedures
+Find what's blocking a query                              01_incident/long_running_query
+Fix autovacuum not keeping up                             01_incident/autovacuum_not_keeping_up
+Fix high replication lag                                  02_ha/replication_lag_troubleshooting
+Fix synchronous replication stuck                         02_ha/synchronous_replication_stuck
+Fix transaction ID wraparound                             01_incident/txid_wraparound_imminent
+Force a VACUUM FREEZE                                     01_incident/multixact_wraparound
+Grant read-only access to a user                          07_knowledge/roles_grants_permissions
+Identify lock contention                                  04_perf/lock_contention_analysis
+Interpret an EXPLAIN ANALYZE output                       04_perf/explain_analyze_guide
+Kill a long-running query                                 01_incident/long_running_query
+Migrate from PostgreSQL 11 to 16 (zero downtime)         05_migrations/zero_downtime_upgrade
+Monitor with Prometheus (postgres_exporter)               06_monitoring/prometheus_exporter
+Perform a DR drill                                        03_backup/disaster_recovery_drill
+Perform a major version upgrade (pg_upgrade)             05_migrations/major_version_upgrade
+Perform a PITR recovery                                   03_backup/pitr_recovery_procedures
+Recover a dropped table                                   03_backup/recover_dropped_table
+Recover a single corrupted table                         03_backup/restore_single_corrupted
+Reduce connection count (PgBouncer)                       01_incident/connection_pool_exhaustion
+Reindex an index online                                   04_perf/index_bloat_analysis
+Roll back a schema migration                              05_migrations/rollback_schema_migration
+Set up Patroni cluster                                    02_ha/patroni_cluster_setup
+Set up pgBackRest with HA                                 03_backup/pgbackrest_ha_setup
+Set up logical replication for migration                  05_migrations/logical_replication_cutover
+Tune autovacuum for large tables                          04_perf/autovacuum_tuning_guide
+Tune statistics target for better plans                   04_perf/statistics_target_tuning
+Troubleshoot data corruption                             01_incident/data_corruption_suspected
+Troubleshoot OOM kills                                    01_incident/out_of_memory_kill
+Troubleshoot replication not syncing                      02_ha/replica_out_of_sync
+Upgrade an extension                                      05_migrations/extensions_upgrade
+Use pgBadger for log analysis                             07_knowledge/pgbadger_runbook
+Verify a backup                                          03_backup/backup_verification_automation
+────────────────────────────────────────────────────────────────────────────────
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+The final labs of the program. These are deliberately broader than previous
+labs — they require synthesising knowledge from multiple modules.
+
+── LAB 1: MVCC VISIBILITY INVESTIGATION ─────────────────────────────────────
+
+Start a long-running transaction in Session A, then perform an UPDATE on a
+row in Session B, then query from Session C.
+
+  a) In Session C: run the xmin/xmax query. What are the values?
+     Which transaction version do you see? Why?
+  b) In Session A: run the same query. Which version do you see?
+     Why is it different from Session C?
+  c) While Session A is still open: generate dead tuples in Session B.
+     Run VACUUM VERBOSE. What does it say about the dead tuples?
+  d) Close Session A. Run VACUUM VERBOSE again. What changed?
+  e) Write a one-paragraph explanation of why long transactions cause
+     table bloat, using the MVCC internals from this session.
+
+── LAB 2: WAL ARCHAEOLOGY ───────────────────────────────────────────────────
+
+Using pg_waldump on the lab database's pg_wal directory:
+
+  a) Find the WAL segment that contains the most recent CHECKPOINT record.
+  b) Identify the timeline the database is currently on.
+  c) Run an INSERT on the orders table, then find the corresponding WAL record.
+     What resource manager generated it? What was the LSN?
+  d) Calculate the WAL bytes generated per minute at current load.
+  e) If a crash happened right now, how long would PostgreSQL take to recover?
+     (Estimate based on: WAL bytes since last checkpoint ÷ replay throughput.)
+
+── LAB 3: PERMISSIONS AUDIT ────────────────────────────────────────────────
+
+The lab database has a security misconfiguration. Find it.
+
+  a) Run the roles and grants audit queries. List every privilege granted
+     to PUBLIC (all users). Identify which should be revoked.
+  b) Find any user who has more privileges than their role requires.
+  c) Identify the user who could DROP TABLE orders if they wanted to.
+     How would you fix that?
+  d) Implement RLS on the orders table: each app_user should only see
+     orders belonging to their customer_id (set via current_setting).
+  e) Test the policy: confirm alice can't see bob's orders.
+
+── LAB 4: FULL STACK INCIDENT SIMULATION (30 MINUTES) ───────────────────────
+
+This is the capstone lab. Your instructor will, without warning, trigger an
+incident on the lab database. It may be any combination of the following:
+  - A long-running transaction blocking autovacuum and causing bloat
+  - A replication slot holding back WAL
+  - A query plan regression due to stale statistics
+  - A lock queue cascade from a DDL operation
+  - Connection pool exhaustion
+
+You will have 30 minutes. Work as a team of three:
+  - One person owns diagnosis (running the queries)
+  - One person owns communication (writing the incident notification template)
+  - One person owns remediation (executing the fixes)
+
+After 30 minutes: present your timeline, root cause, and what you'd add to
+your runbook library based on what you found.
+
+This is the final lab of the program. Make it count.
+
+================================================================================
+  THE FINAL CLOSING — END OF PROGRAM
+================================================================================
+
+I have been teaching database administration in various forms for fifteen years.
+And I want to say something to this group that I mean genuinely, not as a
+sign-off.
+
+You are more prepared right now than most working DBAs who have been in
+production environments for two or three years. Not because you're smarter —
+though you may well be — but because you have done the one thing that most
+people skip: you sat down and wrote the documentation before the incident.
+
+Most teams' runbook library gets built reactively. An incident happens, someone
+suffers through it, and then — maybe — they write down what they learned.
+Your library was built proactively. From first principles. With rollback plans.
+
+That is the rarest thing in operations.
+
+Here is what I want you to do in the next thirty days:
+
+  WEEK 1: Get one of these runbooks into production use. Pick any one.
+          Show it to a colleague. Get their feedback. Update it.
+
+  WEEK 2: Pick one of the internals concepts from today — MVCC, WAL, or
+          vacuum — and write a one-page explanation of it in your own words,
+          aimed at a developer on your team. The act of teaching is how you
+          find the gaps in your own understanding.
+
+  WEEK 3: Run a DR drill. Time it. Write up the gaps. Fix one of them.
+
+  WEEK 4: Review your monitoring. Apply the canary alert. Test the escalation
+          path. Confirm the silences are cleared.
+
+  MONTH 2-6: Keep updating your runbooks. Every incident adds something.
+              Every unusual query plan teaches you something. The library is
+              never finished — it is always being refined.
+
+The best DBAs I know have two things in common: they have seen a lot of
+production fires, and they have thought carefully about why each one happened.
+You now have the framework to do the thinking. The fires will come with
+experience. That part you cannot accelerate.
+
+What you CAN do is ensure that when the fire comes, you are not starting from
+zero. You have the runbook. You have the escalation matrix. You have the
+baseline. You have the tested rollback. You have the communication template.
+
+You are ready.
+
+It has been a genuine pleasure. Good luck.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  FINAL QUICK-REFERENCE CARD — INTERNALS AND KNOWLEDGE BASE
+  The "why" behind every "what" you've run this year.
+================================================================================
+
+── MVCC ESSENTIALS ──────────────────────────────────────────────────────────
+
+  See MVCC columns on any row:
+    SELECT ctid, xmin, xmax, id FROM orders WHERE id = 1;
+
+  Find transactions holding back VACUUM:
+    SELECT pid, usename, backend_xmin, now()-xact_start AS age
+    FROM pg_stat_activity WHERE backend_xmin IS NOT NULL
+    ORDER BY backend_xmin ASC;
+
+  Current snapshot:
+    SELECT txid_current_snapshot(), txid_current();
+
+  Dead tuple check:
+    SELECT relname, n_dead_tup, n_live_tup,
+           round(n_dead_tup::numeric/NULLIF(n_live_tup+n_dead_tup,0)*100,2) AS dead_pct
+    FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+
+── WAL ESSENTIALS ───────────────────────────────────────────────────────────
+
+  Current LSN:           SELECT pg_current_wal_lsn();
+  WAL filename:          SELECT pg_walfile_name(pg_current_wal_lsn());
+  WAL rate (bytes/s):    SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '<lsn>'::pg_lsn)/60;
+  Checkpoint stats:      SELECT checkpoints_req, buffers_checkpoint FROM pg_stat_bgwriter;
+  Read WAL content:      pg_waldump /var/lib/postgresql/15/main/pg_wal/<segment>
+
+── VACUUM ESSENTIALS ────────────────────────────────────────────────────────
+
+  Watch VACUUM progress:
+    SELECT phase, heap_blks_scanned, num_dead_tuples
+    FROM pg_stat_progress_vacuum;
+
+  Force freeze:          VACUUM (FREEZE, VERBOSE, ANALYZE) public.<table>;
+  TXID age emergency:    SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY 2 DESC;
+  VM bit coverage:       SELECT n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE relname='orders';
+
+── LOCK MODES (FASTEST LOOKUP) ──────────────────────────────────────────────
+
+  BLOCKS EVERYTHING:      AccessExclusiveLock (TRUNCATE, DROP, ALTER TABLE)
+  BLOCKS WRITES:          ShareLock (CREATE INDEX without CONCURRENTLY)
+  SAFE WITH PRODUCTION:   ShareUpdateExclusiveLock (VACUUM, CREATE INDEX CONCURRENTLY)
+  NORMAL DML:             RowExclusiveLock (INSERT/UPDATE/DELETE)
+  NORMAL READS:           AccessShareLock (SELECT)
+
+  Check current locks:
+    SELECT relation::regclass, mode, granted, left(query,60)
+    FROM pg_locks JOIN pg_stat_activity USING (pid)
+    WHERE relation IS NOT NULL ORDER BY granted DESC;
+
+── WAIT EVENT TRIAGE ────────────────────────────────────────────────────────
+
+  Lock          → lock contention. Run lock chain query.
+  IO:DataFileRead → cache miss. Check shared_buffers.
+  IO:BufFileWrite → temp file spill. Increase work_mem.
+  IO:WALWrite   → commit I/O. Fast storage or lower synchronous_commit.
+  LWLock:BufferMapping → shared_buffers contention.
+  LWLock:WALWrite → WAL write contention.
+  (none / CPU)  → query is running. Check EXPLAIN ANALYZE.
+
+── PERMISSIONS QUICK AUDIT ──────────────────────────────────────────────────
+
+  Who can do what:
+    SELECT grantee, privilege_type, table_name
+    FROM information_schema.table_privileges
+    WHERE table_schema = 'public' ORDER BY table_name, grantee;
+
+  PUBLIC grants (usually wrong):
+    SELECT grantee, table_name, privilege_type
+    FROM information_schema.table_privileges WHERE grantee = 'PUBLIC';
+
+  Roles and memberships:
+    SELECT r.rolname, array_agg(m.rolname) AS member_of
+    FROM pg_roles r LEFT JOIN pg_auth_members am ON am.member = r.oid
+    LEFT JOIN pg_roles m ON m.oid = am.roleid
+    GROUP BY r.rolname ORDER BY r.rolname;
+
+── SQLSTATE QUICK REFERENCE ─────────────────────────────────────────────────
+
+  23505 unique_violation        → duplicate key on INSERT
+  40001 serialization_failure   → retry the transaction
+  40P01 deadlock_detected       → retry or fix lock ordering
+  53300 too_many_connections    → deploy PgBouncer
+  55P03 lock_not_available      → lock_timeout fired; retry or kill blocker
+  57014 query_canceled          → statement_timeout or manual cancel
+  XX001 data_corrupted          → CRITICAL: amcheck, then runbook 04
+
+── THE COMPLETE RUNBOOK INDEX ───────────────────────────────────────────────
+
+  01_incident_response  — 18 runbooks: autovacuum, backup failure, connection
+                          pool, data corruption, deadlock, disk, CPU, replication
+                          lag, I/O, long queries, multixact, OOM, primary down,
+                          slot bloat, slow queries, split brain, TXID wrap, WAL
+
+  02_high_availability  — 12 runbooks: add standby, cascading replication,
+                          failback, failover, patroni setup, pg_auto_failover,
+                          replica out of sync, replication lag, slot management,
+                          repmgr failover, switchover, synchronous stuck
+
+  03_backup_recovery    — 10 runbooks: integrity check, verification automation,
+                          DR drill, pg_dump troubleshooting, pgbackrest HA,
+                          PITR, recover dropped table, restore single table,
+                          WAL archiving, WAL-G
+
+  04_performance_tuning — 16 runbooks: autovacuum tuning, connection pooling,
+                          long running queries, EXPLAIN guide, index bloat,
+                          index strategy, lock contention, parallel query,
+                          calculate bloat, check unused indexes, optimization
+                          workflow, plan regression, slow query, statistics,
+                          table bloat, duplicate indexes
+
+  05_migrations         — 11 runbooks: enum migration, extensions upgrade,
+                          large table online, logical replication cutover,
+                          major version upgrade, zero downtime schema, minor
+                          upgrade, pglogical, rollback schema, tablespace, 11→16
+
+  06_monitoring         — 10 runbooks: alert thresholds, alerts not firing,
+                          critical baseline, Prometheus rules, log rotation,
+                          monitoring agent down, escalation matrix,
+                          pg_stat_statements, PMM setup, postgres_exporter
+
+  07_knowledge_base     — 13 references: error codes, communication templates,
+                          linux toolkit, locking hierarchy, log analysis,
+                          MVCC internals, pgBadger, howtos index, internals
+                          reference, wait events, roles/grants, vacuum internals,
+                          WAL internals
+
+  TOTAL: 90 runbooks and reference documents.
+
+================================================================================
+  END OF PROGRAM
+  Thank you for your time and your work. Build good systems.
+================================================================================

@@ -1,0 +1,1367 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: EXTENSIONS RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+I'm not even going to pretend to guess whether this is the last module
+anymore. Today's topic: extensions. And I want to start with a story that
+happened recently enough that I'm still a little annoyed about it.
+
+A team I was advising launched a recommendation feature backed by vector
+similarity search — embeddings stored in pgvector, cosine distance, the whole
+modern stack. They installed pgvector, wrote `CREATE INDEX ON items USING
+hnsw (embedding vector_cosine_ops)`, shipped it, and two weeks later started
+getting complaints that recommendations were "obviously wrong" — items that
+weren't remotely similar showing up as top matches. Nobody could figure out
+why, because the query worked, returned results fast, and threw no errors.
+
+The actual problem: they'd set `hnsw.ef_search` to the extension's default,
+which is tuned for a small corpus, and their actual dataset was forty million
+rows. The index was real, the search was real, but the recall — the
+probability that the index actually finds the true nearest neighbors instead
+of "close enough, fast enough" approximations — was catastrophically low for
+their data size. The extension installed cleanly. The SQL ran without error.
+And the results were silently, confidently wrong.
+
+This is the lesson of the entire extensions module, and I want to say it once
+clearly before we touch any specific extension: `CREATE EXTENSION` is the
+easiest command you will ever run in PostgreSQL, and it tells you nothing
+about whether you actually understand the thing you just installed. Every
+extension we cover today has at least one parameter, one index type choice,
+or one maintenance task that looks optional and isn't.
+
+Seven extensions today — the three the curriculum specifically asked for,
+plus four more that I'd consider essential enough that no DBA should graduate
+without at least a working knowledge of them: PostGIS, pg_cron, TimescaleDB,
+and pg_trgm. Let's go.
+
+================================================================================
+  EXTENSIONS PHILOSOPHY — THREE MINUTES OF CONTEXT
+================================================================================
+
+A few things apply to every extension we'll cover, so let's get them out of
+the way once.
+
+  INSTALLATION IS TWO STEPS, NOT ONE. Most non-trivial extensions require
+  the OS-level package to be installed (giving PostgreSQL the .so files it
+  needs to load) AND the SQL-level `CREATE EXTENSION` command to register it
+  in a specific database's catalog. Missing either step produces a different,
+  specific error — know which one you're looking at.
+
+  SOME EXTENSIONS REQUIRE shared_preload_libraries. If an extension hooks
+  into PostgreSQL's internals at a level deeper than just adding functions
+  and types — background workers, custom planner hooks, statistics
+  collectors — it needs to be loaded at server start via
+  shared_preload_libraries, which means a RESTART, not just CREATE EXTENSION.
+  pg_cron and pg_partman's background worker mode both fall into this
+  category. pgvector and pg_trgm do not.
+
+  EXTENSIONS HAVE THEIR OWN VERSIONS, INDEPENDENT OF POSTGRESQL'S VERSION.
+  We covered this in the migrations module's extensions upgrade runbook —
+  worth re-grounding here because every extension in this session has its
+  own release cadence, its own breaking changes, and its own upgrade path
+  via `ALTER EXTENSION ... UPDATE`.
+
+  "IT INSTALLED SUCCESSFULLY" IS NOT THE SAME AS "IT'S CONFIGURED CORRECTLY."
+  This is the pgvector story. Hold onto it for the rest of this session.
+
+```sql
+-- Check what's installed and available, every time, before doing anything else:
+SELECT extname, extversion FROM pg_extension ORDER BY extname;
+
+SELECT name, default_version, installed_version
+FROM pg_available_extensions
+WHERE name IN ('pg_partman', 'pg_repack', 'vector', 'postgis',
+                'pg_cron', 'timescaledb', 'pg_trgm')
+ORDER BY name;
+```
+
+Let's build the runbooks.
+
+================================================================================
+  RUNBOOK 01: PG_PARTMAN SETUP AND MAINTENANCE
+  File: 15_extensions/pg_partman_setup_and_maintenance.md
+================================================================================
+
+pg_partman automates the operational side of native PostgreSQL table
+partitioning — creating new partitions ahead of time, dropping or archiving
+old ones on a schedule, and handling the bookkeeping you'd otherwise script
+by hand. If you have any time-series or append-heavy table that you've been
+manually partitioning (we touched the manual mechanics in the migrations
+module's table bloat discussion), pg_partman is almost certainly worth
+adopting before that manual process becomes a maintenance burden.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Is it installed?
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_partman';
+
+-- What partition sets does pg_partman currently manage (if already in use)?
+SELECT parent_table, partition_type, partition_interval,
+       premake, retention, retention_keep_table
+FROM partman.part_config
+ORDER BY parent_table;
+
+-- Is the background worker running (if configured for automatic maintenance)?
+SELECT * FROM partman.part_config WHERE automatic_maintenance = 'on';
+```
+
+```bash
+# Is the background maintenance worker active at the OS process level?
+ps aux | grep "pg_partman\|partman" | grep -v grep
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install the extension:**
+
+   ```bash
+   apt-get install -y postgresql-15-partman
+   ```
+
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS partman;
+   CREATE EXTENSION pg_partman SCHEMA partman;
+   ```
+
+2. **Convert an existing table to native partitioning, or create a new
+   partitioned parent** — pg_partman manages partitions, but the parent
+   table itself must already be `PARTITION BY RANGE` (this is native
+   PostgreSQL partitioning, not a pg_partman-specific table type):
+
+   ```sql
+   -- New table, partitioned by a timestamp column, monthly:
+   CREATE TABLE events (
+       id          BIGSERIAL,
+       created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+       payload     JSONB
+   ) PARTITION BY RANGE (created_at);
+   ```
+
+3. **Register the parent table with pg_partman:**
+
+   ```sql
+   SELECT partman.create_parent(
+       p_parent_table := 'public.events',
+       p_control := 'created_at',
+       p_interval := 'monthly',
+       p_premake := 4              -- create 4 future partitions ahead of need
+   );
+   ```
+
+   This creates the current partition plus `p_premake` future ones
+   immediately, and registers the configuration in `partman.part_config`
+   for ongoing maintenance.
+
+4. **Configure retention — automatic dropping or archiving of old
+   partitions:**
+
+   ```sql
+   UPDATE partman.part_config
+   SET retention = '12 months',
+       retention_keep_table = false   -- false = DROP old partitions entirely
+                                        -- true = detach but keep the table
+                                        -- (useful if you want to archive
+                                        -- elsewhere before truly deleting)
+   WHERE parent_table = 'public.events';
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   `retention_keep_table = false` means pg_partman will genuinely DROP TABLE
+   on partitions older than your retention window, during scheduled
+   maintenance, with no extra confirmation step. This is the entire point —
+   automatic cleanup — but it means a misconfigured retention interval (off
+   by an order of magnitude, a unit mistake like days instead of months) can
+   delete real data automatically and silently. Always test retention
+   settings with `p_retention` set generously at first, watch a few
+   maintenance cycles, and only tighten it once you trust the configuration
+   and have validated it against a backup.
+
+5. **Set up automatic maintenance** — either via pg_partman's background
+   worker (requires shared_preload_libraries and a restart) or via a simple
+   cron-scheduled function call (no restart required, easier to adopt
+   incrementally):
+
+   ```bash
+   # Background worker method — postgresql.conf:
+   shared_preload_libraries = 'pg_partman_bgw'
+   pg_partman_bgw.interval = 3600        # run maintenance every hour
+   pg_partman_bgw.role = 'partman_maint_role'
+   pg_partman_bgw.dbname = 'mydb'
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main   # required — shared_preload_libraries change
+   ```
+
+   ```sql
+   -- Simpler alternative — cron-based (covered fully in Runbook 05, pg_cron):
+   SELECT cron.schedule('partman-maintenance', '0 * * * *',
+       $$SELECT partman.run_maintenance_proc()$$);
+   ```
+
+6. **Run maintenance manually to confirm it works before relying on
+   automation:**
+
+   ```sql
+   SELECT partman.run_maintenance_proc();
+
+   -- Confirm new partitions were created ahead of schedule, and old ones
+   -- were handled per your retention policy:
+   SELECT inhrelid::regclass AS partition_name,
+          pg_get_expr(c.relpartbound, c.oid) AS bound
+   FROM pg_inherits
+   JOIN pg_class c ON c.oid = inhrelid
+   WHERE inhparent = 'public.events'::regclass
+   ORDER BY partition_name;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Partition set is healthy: current partition exists, future ones are pre-made:
+SELECT inhrelid::regclass, pg_get_expr(c.relpartbound, c.oid) AS bound
+FROM pg_inherits JOIN pg_class c ON c.oid = inhrelid
+WHERE inhparent = 'public.events'::regclass
+ORDER BY 1;
+
+-- No errors in the last maintenance run:
+SELECT * FROM partman.part_config WHERE parent_table = 'public.events';
+```
+
+```bash
+# If using the background worker, confirm it's logging successful runs:
+grep "partman" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail -10
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+To stop pg_partman from managing a table without affecting existing data:
+```sql
+DELETE FROM partman.part_config WHERE parent_table = 'public.events';
+```
+The partitions themselves remain — this only stops automated maintenance.
+If a retention misconfiguration already dropped partitions in error: restore
+those specific partitions from your most recent backup using the PITR
+procedures from the backup and recovery module — dropped partitions are not
+recoverable through pg_partman itself.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: PG_REPACK RUNBOOK
+  File: 15_extensions/pg_repack_runbook.md
+================================================================================
+
+We've referenced pg_repack throughout this program as the answer to "I need
+to compact a bloated table without VACUUM FULL's exclusive lock." This is the
+dedicated, complete operational runbook for the tool itself — installation,
+the mechanics of how it actually achieves online compaction, and the failure
+modes you need to know before running it against anything large in
+production.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Is the extension installed?
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_repack';
+
+-- Confirm the table actually needs it — bloat check from the performance
+-- tuning module:
+SELECT relname,
+       pg_size_pretty(pg_relation_size(oid)) AS current_size,
+       n_dead_tup, n_live_tup
+FROM pg_stat_user_tables
+JOIN pg_class ON pg_class.relname = pg_stat_user_tables.relname
+WHERE pg_stat_user_tables.relname = 'orders';
+```
+
+```bash
+# Confirm the binary is available and matches the extension version:
+pg_repack --version
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install both the extension AND the command-line client** — pg_repack
+   uniquely requires both halves; the extension alone does nothing without
+   the client binary that drives the process:
+
+   ```bash
+   apt-get install -y postgresql-15-repack
+   ```
+
+   ```sql
+   CREATE EXTENSION pg_repack;
+   ```
+
+2. **Understand the mechanism before running it on anything important** —
+   this matters because it explains both why it's safe online AND what its
+   real constraints are:
+
+   ```
+   pg_repack works by:
+   1. Creating a new, empty table with the same structure (a "shadow" table).
+   2. Setting up a trigger on the ORIGINAL table that mirrors all new
+      INSERT/UPDATE/DELETE activity into a log table during the copy.
+   3. Copying all existing rows from the original table into the shadow
+      table (this is the bulk of the work, and it runs without blocking
+      reads or writes on the original — this is the entire value proposition).
+   4. Applying the queued log of concurrent changes to the shadow table to
+      catch it up to current state.
+   5. Performing a brief ACCESS EXCLUSIVE lock swap — renaming the shadow
+      table into place — which is fast (metadata only) but IS a real,
+      if brief, lock.
+   ```
+
+   This means: pg_repack requires roughly DOUBLE the disk space of the
+   table being repacked, temporarily (the original plus the shadow copy),
+   and it requires a primary key or unique index on the table to track
+   the concurrent change log correctly.
+
+3. **Verify prerequisites before running:**
+
+   ```sql
+   -- Must have a primary key or unique not-null index:
+   SELECT conname, contype FROM pg_constraint
+   WHERE conrelid = 'public.orders'::regclass AND contype IN ('p','u');
+
+   -- Confirm available disk space is sufficient (roughly 2x the table's
+   -- current size, plus its indexes):
+   SELECT pg_size_pretty(pg_total_relation_size('public.orders'));
+   ```
+
+   ```bash
+   df -h $(psql -At -c "SHOW data_directory;")
+   ```
+
+4. **Run pg_repack against a single table:**
+
+   ```bash
+   pg_repack -d mydb -t public.orders --no-order
+   # --no-order: pure compaction, preserves no particular row order.
+   # Omit --no-order and use -o <column> instead if you want CLUSTER-like
+   # physical reordering by a specific column during the repack — useful
+   # if range queries on that column would benefit from physical locality,
+   # but adds overhead to the operation.
+   ```
+
+5. **Monitor progress for large tables:**
+
+   ```sql
+   -- pg_repack creates intermediate objects you can observe during the run:
+   SELECT relname FROM pg_class WHERE relname LIKE 'repack%';
+
+   -- Check disk usage growth during the operation — confirm you have
+   -- the headroom you verified in step 3:
+   ```
+
+   ```bash
+   watch -n 30 "df -h $(psql -At -c 'SHOW data_directory;')"
+   ```
+
+6. **If pg_repack is interrupted (killed, connection lost, server restart)
+   mid-run:**
+
+   ```bash
+   # Re-running with the same command is generally safe — pg_repack detects
+   # and cleans up incomplete prior attempts on the same table:
+   pg_repack -d mydb -t public.orders --no-order
+
+   # If automatic cleanup doesn't resolve it, manually identify and drop
+   # leftover repack artifacts:
+   ```
+
+   ```sql
+   SELECT relname FROM pg_class WHERE relname LIKE 'repack_%orders%';
+   -- Inspect, then drop manually if confirmed orphaned — exercise caution
+   -- here and prefer letting pg_repack's own cleanup logic handle it first.
+   ```
+
+7. **Repack an entire database's bloated tables in one pass, for a
+   scheduled maintenance routine:**
+
+   ```bash
+   pg_repack -d mydb --no-order
+   # Without -t, targets all eligible tables. Consider running with
+   # --jobs=N for parallelism on multi-table runs, with N scoped to your
+   # available I/O and CPU headroom, not maxed out blindly.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Table size should have shrunk to reflect only live data:
+SELECT pg_size_pretty(pg_relation_size('public.orders'));
+
+-- Bloat check confirms compaction:
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+SELECT dead_tuple_percent, free_percent FROM pgstattuple('public.orders');
+-- Both should now be near 0.
+```
+
+```bash
+# No leftover repack artifact tables:
+psql -d mydb -c "SELECT relname FROM pg_class WHERE relname LIKE 'repack%';"
+-- Should return no rows after a clean, completed run.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+pg_repack does not modify the original table's data — it builds a new copy
+and swaps it in. If the operation is cancelled before the final swap, the
+original table is completely untouched and no rollback is needed; simply
+clean up any leftover shadow/log tables as shown above. There is no
+meaningful "rollback" after a successful swap — the new table IS the correct,
+compacted table, identical in content to the original.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: PGVECTOR OPERATIONAL GUIDE
+  File: 15_extensions/pgvector_operational_guide.md
+================================================================================
+
+This is the extension from my opening story. pgvector adds a vector data type
+and similarity search operators to PostgreSQL, letting you store embeddings
+(from an LLM, an image model, whatever) and query for nearest neighbors
+directly in your existing database instead of running a separate vector
+database. The appeal is obvious — one less system to operate. The risk is
+exactly what happened in that story: the index types involved are
+approximate, by design, and "approximate" has tunable knobs that most people
+never touch because the defaults silently produce A result, just not
+necessarily a GOOD one.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+-- Is it installed, and what version?
+SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';
+
+-- What vector columns and indexes already exist?
+SELECT
+    c.relname AS table_name,
+    a.attname AS column_name,
+    format_type(a.atttypid, a.atttypmod) AS column_type
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_type t ON t.oid = a.atttypid
+WHERE t.typname = 'vector'
+  AND a.attnum > 0;
+
+SELECT indexname, indexdef FROM pg_indexes
+WHERE indexdef ILIKE '%vector%';
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install and create the type:**
+
+   ```bash
+   apt-get install -y postgresql-15-pgvector
+   ```
+
+   ```sql
+   CREATE EXTENSION vector;
+   ```
+
+2. **Create a column with the correct dimensionality** — this must match
+   your embedding model's output exactly; there is no implicit resizing:
+
+   ```sql
+   ALTER TABLE items ADD COLUMN embedding vector(1536);
+   -- 1536 here matches a specific embedding model's output dimension —
+   -- check your model's documentation, this number varies significantly
+   -- between models (384, 768, 1536, 3072 are all common).
+   ```
+
+3. **Understand the two index types and choose deliberately — this is the
+   decision that caused the opening story's incident:**
+
+   ```
+   IVFFlat (Inverted File with Flat compression):
+     - Divides the vector space into "lists" (clusters) at index build time.
+     - At query time, searches only a subset of lists (controlled by
+       ivfflat.probes) rather than the whole index.
+     - REQUIRES DATA TO EXIST AT BUILD TIME to compute good clusters —
+       building this index on an empty or near-empty table produces a
+       poorly-clustered, low-quality index even though it builds "successfully."
+     - Faster to build, lower memory footprint than HNSW.
+     - Recall depends heavily on `lists` (chosen at build time) and `probes`
+       (chosen at query time) being sized correctly for your data volume.
+
+   HNSW (Hierarchical Navigable Small World):
+     - A graph-based structure, built incrementally — does NOT require
+       pre-existing data the way IVFFlat does, and generally gives better
+       recall for a given amount of search effort.
+     - Slower to build, higher memory footprint than IVFFlat.
+     - Recall and speed controlled by `m` and `ef_construction` (build time)
+       and `hnsw.ef_search` (query time).
+     - The generally recommended default choice for most new pgvector
+       deployments as of recent extension versions, specifically because it
+       doesn't have IVFFlat's "must have representative data before building"
+       trap.
+   ```
+
+4. **Build the index with parameters sized for YOUR data volume, not the
+   defaults** — this is the direct fix for the opening story:
+
+   ```sql
+   -- HNSW, with build-time parameters tuned upward for a large, high-recall
+   -- requirement dataset (defaults are m=16, ef_construction=64 — fine for
+   -- small corpora, often insufficient for tens of millions of rows):
+   CREATE INDEX CONCURRENTLY idx_items_embedding
+   ON items USING hnsw (embedding vector_cosine_ops)
+   WITH (m = 24, ef_construction = 100);
+   ```
+
+5. **Tune the QUERY-TIME parameter — this is the one that's easy to forget
+   even after getting the index build right, and it's a SESSION-level
+   setting, not baked into the index:**
+
+   ```sql
+   -- ef_search controls how many candidates HNSW examines at query time —
+   -- higher values mean better recall at the cost of latency. The default
+   -- (40) is often too low for large, high-stakes-accuracy datasets:
+   SET hnsw.ef_search = 100;
+
+   SELECT id, embedding <=> '[0.1, 0.2, ...]'::vector AS distance
+   FROM items
+   ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector
+   LIMIT 10;
+   ```
+
+   For IVFFlat, the equivalent query-time tuning knob is `probes`:
+
+   ```sql
+   SET ivfflat.probes = 20;   -- default is 1, frequently far too low for
+                                -- anything beyond a toy dataset
+   ```
+
+6. **Measure recall directly, don't just trust that results "look
+   reasonable"** — the only real way to catch the opening story's problem
+   before your users do:
+
+   ```sql
+   -- Compare approximate (indexed) results against exact (sequential scan)
+   -- results for a sample of queries, and calculate overlap:
+   SET enable_seqscan = off;  -- forces index usage for the approximate run
+   -- Run your query, capture top-K ids.
+   SET enable_seqscan = on; SET enable_indexscan = off;  -- forces exact scan
+   -- Run the same query, capture top-K ids again.
+   -- Calculate: (matching ids) / K = recall@K for this sample.
+   -- Do this across a representative sample of real queries, not just one.
+   ```
+
+7. **Choose the right distance operator for your embedding model** — using
+   the wrong one silently produces a valid-looking but semantically
+   meaningless ranking:
+
+   ```sql
+   -- <-> : Euclidean (L2) distance
+   -- <#> : negative inner product
+   -- <=> : cosine distance
+   -- Match this to what your embedding model was actually trained/normalized
+   -- for. Most modern text embedding models (OpenAI, many open-source
+   -- sentence transformers) expect cosine distance. Using L2 distance on
+   -- embeddings normalized for cosine similarity gives plausible-looking
+   -- but subtly wrong rankings — exactly the kind of silent failure this
+   -- whole runbook is about.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm the index is actually being used:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM items ORDER BY embedding <=> '[...]'::vector LIMIT 10;
+-- Look for "Index Scan using idx_items_embedding" — not a Seq Scan.
+
+-- Re-run the recall measurement from step 7 periodically, especially after
+-- significant data growth (recall characteristics change as the dataset
+-- grows beyond what the index was originally tuned for):
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+DROP INDEX CONCURRENTLY idx_items_embedding;
+-- Rebuild with adjusted parameters as needed; the underlying vector column
+-- and data are untouched by index changes.
+SET hnsw.ef_search = DEFAULT;   -- session-level, reverts on disconnect anyway
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: POSTGIS SPATIAL OPERATIONS GUIDE
+  File: 15_extensions/postgis_spatial_operations_guide.md
+================================================================================
+
+PostGIS is, by a wide margin, the most mature and widely deployed spatial
+extension in any open-source database — entire GIS industries run on it.
+If your organization has anything involving addresses, geofencing, mapping,
+delivery routing, or "find things near this point," PostGIS is almost
+certainly already in your stack or should be. The operational risks here are
+different from pgvector's — less about silent wrongness, more about
+forgetting the spatial-specific indexing and the SRID (coordinate system)
+discipline that everything else depends on.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+SELECT extname, extversion FROM pg_extension WHERE extname = 'postgis';
+SELECT PostGIS_version();
+SELECT PostGIS_full_version();   -- shows GEOS, PROJ, and other dependency versions
+
+-- What geometry/geography columns exist, and with what SRID?
+SELECT f_table_name, f_geometry_column, srid, type
+FROM geometry_columns;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install — note PostGIS depends on several external libraries (GEOS,
+   PROJ, GDAL) that must be present at the OS level before the PostgreSQL
+   extension itself will load:**
+
+   ```bash
+   apt-get install -y postgresql-15-postgis-3 postgresql-15-postgis-3-scripts
+   ```
+
+   ```sql
+   CREATE EXTENSION postgis;
+   -- Optional companion extensions, commonly installed alongside:
+   CREATE EXTENSION postgis_topology;
+   CREATE EXTENSION fuzzystrmatch;       -- for geocoding/address matching
+   CREATE EXTENSION postgis_tiger_geocoder;  -- US-specific geocoding, if relevant
+   ```
+
+2. **Choose geometry vs geography deliberately — this decision affects
+   every query you'll write against the column:**
+
+   ```sql
+   -- geometry: planar (flat-earth) calculations. Faster. Requires you to
+   -- choose and be consistent about a projected SRID for accurate distance/
+   -- area calculations. Standard choice for most non-global-scale use cases.
+   ALTER TABLE stores ADD COLUMN location geometry(Point, 4326);
+
+   -- geography: calculations on the actual curved surface of the earth
+   -- (great-circle distances). Slightly slower, but distances/areas in
+   -- geography are in real-world meters correctly by default, without
+   -- needing a separate projection step. Often the simpler, safer default
+   -- for "distance between two lat/lng points" use cases:
+   ALTER TABLE stores ADD COLUMN location geography(Point, 4326);
+   ```
+
+   SRID 4326 is WGS84 — standard GPS latitude/longitude. Use it unless you
+   have a specific reason for a different coordinate system, and NEVER mix
+   geometries with different SRIDs in the same comparison without an
+   explicit `ST_Transform` — PostGIS will error loudly if you try, which is
+   the one place this extension protects you well by default.
+
+3. **Always build a spatial (GiST) index — without it, every spatial query
+   is a sequential scan with per-row geometric computation, which is
+   catastrophically slow at any real scale:**
+
+   ```sql
+   CREATE INDEX CONCURRENTLY idx_stores_location
+   ON stores USING GIST (location);
+   ```
+
+4. **Populate and query — the canonical "find things near me" pattern:**
+
+   ```sql
+   INSERT INTO stores (name, location)
+   VALUES ('Downtown', ST_SetSRID(ST_MakePoint(-122.4194, 37.7749), 4326));
+
+   -- Find all stores within 5km of a point, using the index:
+   SELECT name, ST_Distance(location, ST_SetSRID(ST_MakePoint(-122.41,37.77),4326)::geography) AS meters
+   FROM stores
+   WHERE ST_DWithin(
+       location::geography,
+       ST_SetSRID(ST_MakePoint(-122.41, 37.77), 4326)::geography,
+       5000   -- meters
+   )
+   ORDER BY location <-> ST_SetSRID(ST_MakePoint(-122.41, 37.77), 4326);
+   -- The <-> operator here is the KNN distance operator that lets the GiST
+   -- index serve an efficient "nearest first" ordering — confirm with
+   -- EXPLAIN that this is using the index, not a full scan plus sort.
+   ```
+
+5. **Validate geometry integrity periodically** — imported spatial data
+   (shapefiles, external feeds) frequently contains subtly invalid
+   geometries (self-intersecting polygons, etc.) that cause confusing
+   errors much later in unrelated-seeming operations:
+
+   ```sql
+   SELECT id, ST_IsValidReason(geom) AS issue
+   FROM parcels
+   WHERE NOT ST_IsValid(geom);
+
+   -- Repair where possible:
+   UPDATE parcels SET geom = ST_MakeValid(geom) WHERE NOT ST_IsValid(geom);
+   ```
+
+6. **Monitor and vacuum spatial indexes like any other index** — GiST
+   indexes on large geometry columns can bloat just like B-trees; the
+   performance tuning module's index bloat runbook applies identically
+   here, just substitute the spatial index name.
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm index usage for a spatial query:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT name FROM stores
+WHERE ST_DWithin(location::geography, '<point>'::geography, 5000);
+-- Look for "Index Scan using idx_stores_location".
+
+-- Confirm no invalid geometries remain:
+SELECT count(*) FROM parcels WHERE NOT ST_IsValid(geom);
+-- Should be 0.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+DROP INDEX CONCURRENTLY idx_stores_location;
+-- Geometry column changes (e.g., reverting geography back to geometry)
+-- require a data rewrite — treat as a migration, following the large
+-- table online migration runbook's expand-contract pattern, not a quick
+-- ALTER COLUMN TYPE on anything non-trivial in size.
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: PG_CRON JOB SCHEDULING GUIDE
+  File: 15_extensions/pg_cron_job_scheduling_guide.md
+================================================================================
+
+pg_cron lets you schedule SQL commands to run on a cron-style schedule,
+directly inside PostgreSQL, instead of relying on an external cron job that
+SSHes in and runs psql. We've already used it implicitly in this session
+(scheduling pg_partman maintenance) — this is the dedicated runbook for the
+extension itself.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_cron';
+
+-- What jobs are currently scheduled?
+SELECT jobid, schedule, command, nodename, active
+FROM cron.job
+ORDER BY jobid;
+
+-- Recent job execution history:
+SELECT jobid, runid, job_pid, status, return_message, start_time, end_time
+FROM cron.job_run_details
+ORDER BY start_time DESC
+LIMIT 20;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install — pg_cron MUST be in shared_preload_libraries, meaning this
+   step always requires a restart, with no exceptions:**
+
+   ```bash
+   apt-get install -y postgresql-15-cron
+   ```
+
+   ```bash
+   # postgresql.conf:
+   shared_preload_libraries = 'pg_cron'   # add to existing list
+   cron.database_name = 'mydb'            # which database the scheduler
+                                            # background worker connects to —
+                                            # jobs targeting OTHER databases
+                                            # are still possible (see below)
+                                            # but this is the worker's home
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+   ```sql
+   -- In the database specified by cron.database_name:
+   CREATE EXTENSION pg_cron;
+   ```
+
+2. **Schedule a simple job — standard 5-field cron syntax:**
+
+   ```sql
+   SELECT cron.schedule(
+       'nightly-vacuum-analyze',           -- job name
+       '0 3 * * *',                         -- 3 AM daily
+       $$VACUUM ANALYZE public.orders;$$
+   );
+   ```
+
+3. **Schedule a job against a DIFFERENT database than cron.database_name** —
+   pg_cron's background worker connects to its home database, but jobs can
+   target any database on the same cluster via the multi-database syntax:
+
+   ```sql
+   SELECT cron.schedule_in_database(
+       'cleanup-other-db',
+       '0 4 * * *',
+       $$DELETE FROM logs WHERE created_at < now() - interval '90 days';$$,
+       'other_database_name'
+   );
+   ```
+
+4. **Use sub-minute scheduling for high-frequency tasks (pg_cron 1.4+):**
+
+   ```sql
+   SELECT cron.schedule('frequent-check', '*/10 * * * * *',  -- every 10 seconds
+       $$SELECT public.refresh_materialized_summary();$$
+   );
+   ```
+
+5. **Review job history routinely — pg_cron does NOT alert you on failure
+   by itself; a failed job just sits quietly in `cron.job_run_details` with
+   status 'failed' unless you build monitoring on top of it:**
+
+   ```sql
+   SELECT jobid, command, return_message, start_time
+   FROM cron.job_run_details
+   WHERE status = 'failed'
+     AND start_time > now() - interval '24 hours'
+   ORDER BY start_time DESC;
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   I have seen a pg_cron job silently fail every night for weeks — a
+   scheduled VACUUM that referenced a table renamed during a migration —
+   with absolutely no alert firing anywhere, because nobody had wired
+   `cron.job_run_details` into the monitoring stack from the monitoring
+   module. A scheduled job inside the database is invisible to your external
+   monitoring unless you deliberately make it visible. Add a Prometheus
+   custom query (per the postgres_exporter custom queries runbook) against
+   `cron.job_run_details` checking for recent failures, or you will not find
+   out about broken scheduled jobs until something downstream breaks instead.
+
+6. **Clean up old job run history** — `cron.job_run_details` grows
+   unboundedly by default and is itself a candidate for the kind of
+   retention management this whole module is about:
+
+   ```sql
+   SELECT cron.schedule(
+       'cron-history-cleanup',
+       '0 5 * * *',
+       $$DELETE FROM cron.job_run_details WHERE end_time < now() - interval '30 days';$$
+   );
+   ```
+
+7. **Unschedule a job:**
+
+   ```sql
+   SELECT cron.unschedule('nightly-vacuum-analyze');
+   -- Or by jobid:
+   SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'nightly-vacuum-analyze';
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Job is registered and active:
+SELECT jobid, schedule, command, active FROM cron.job WHERE jobname = 'nightly-vacuum-analyze';
+
+-- Most recent run succeeded:
+SELECT status, return_message, start_time, end_time
+FROM cron.job_run_details
+WHERE jobid = (SELECT jobid FROM cron.job WHERE jobname = 'nightly-vacuum-analyze')
+ORDER BY start_time DESC LIMIT 1;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+SELECT cron.unschedule('job-name');
+```
+Removing pg_cron entirely requires removing it from shared_preload_libraries
+and restarting, same as installation in reverse. Unscheduling individual jobs
+is immediate and requires no restart.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: TIMESCALEDB OPERATIONAL GUIDE
+  File: 15_extensions/timescaledb_operational_guide.md
+================================================================================
+
+TimescaleDB takes the manual partitioning approach we covered with pg_partman
+and built an entire purpose-designed time-series engine on top of native
+PostgreSQL — automatic time-based partitioning ("hypertables"), continuous
+aggregates (materialized rollups that update incrementally), and native
+compression for older data. If your workload is fundamentally "lots of
+timestamped data, mostly queried by recent time range," it's worth seriously
+evaluating against a hand-rolled pg_partman setup.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+SELECT extname, extversion FROM pg_extension WHERE extname = 'timescaledb';
+
+-- What hypertables already exist?
+SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled
+FROM timescaledb_information.hypertables;
+
+-- Chunk-level detail for a specific hypertable:
+SELECT chunk_name, range_start, range_end, is_compressed
+FROM timescaledb_information.chunks
+WHERE hypertable_name = 'sensor_data'
+ORDER BY range_start DESC
+LIMIT 10;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install — TimescaleDB requires shared_preload_libraries, so this is
+   a restart-required installation, same category as pg_cron:**
+
+   ```bash
+   apt-get install -y timescaledb-2-postgresql-15
+   timescaledb-tune --quiet --yes   # interactively tunes several
+                                      # postgresql.conf settings for
+                                      # time-series workloads — review
+                                      # the diff it proposes before accepting
+   ```
+
+   ```bash
+   # postgresql.conf (added by timescaledb-tune, or manually):
+   shared_preload_libraries = 'timescaledb'
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+   ```sql
+   CREATE EXTENSION timescaledb;
+   ```
+
+2. **Convert a regular table into a hypertable** — this is the core
+   concept: a hypertable looks and behaves like a normal table to queries,
+   but is transparently partitioned into time-based "chunks" underneath:
+
+   ```sql
+   CREATE TABLE sensor_data (
+       time        TIMESTAMPTZ NOT NULL,
+       sensor_id   INT NOT NULL,
+       value       DOUBLE PRECISION
+   );
+
+   SELECT create_hypertable('sensor_data', 'time',
+       chunk_time_interval => INTERVAL '1 day');
+   ```
+
+3. **Enable compression for older chunks** — this is one of TimescaleDB's
+   strongest differentiators versus a hand-rolled partition setup; older,
+   rarely-updated chunks can be compressed to a small fraction of their
+   original size while remaining transparently queryable:
+
+   ```sql
+   ALTER TABLE sensor_data SET (
+       timescaledb.compress,
+       timescaledb.compress_segmentby = 'sensor_id',
+       timescaledb.compress_orderby = 'time DESC'
+   );
+
+   -- Automatically compress chunks older than 7 days:
+   SELECT add_compression_policy('sensor_data', INTERVAL '7 days');
+   ```
+
+4. **Set a retention policy** — conceptually identical to pg_partman's
+   retention, native to the hypertable concept:
+
+   ```sql
+   SELECT add_retention_policy('sensor_data', INTERVAL '2 years');
+   ```
+
+5. **Create a continuous aggregate** — a materialized, incrementally-updated
+   rollup, dramatically faster than re-aggregating raw data on every query
+   for dashboards and reports:
+
+   ```sql
+   CREATE MATERIALIZED VIEW sensor_data_hourly
+   WITH (timescaledb.continuous) AS
+   SELECT
+       time_bucket('1 hour', time) AS bucket,
+       sensor_id,
+       avg(value) AS avg_value,
+       max(value) AS max_value,
+       count(*) AS reading_count
+   FROM sensor_data
+   GROUP BY bucket, sensor_id;
+
+   -- Keep it automatically refreshed:
+   SELECT add_continuous_aggregate_policy('sensor_data_hourly',
+       start_offset => INTERVAL '3 hours',
+       end_offset => INTERVAL '1 hour',
+       schedule_interval => INTERVAL '1 hour');
+   ```
+
+6. **Monitor chunk health and compression ratio** — directly analogous to
+   monitoring partition health under pg_partman:
+
+   ```sql
+   SELECT
+       hypertable_name,
+       count(*) AS total_chunks,
+       count(*) FILTER (WHERE is_compressed) AS compressed_chunks,
+       pg_size_pretty(sum(before_compression_total_bytes)) AS uncompressed_size,
+       pg_size_pretty(sum(after_compression_total_bytes)) AS compressed_size
+   FROM timescaledb_information.chunks c
+   JOIN chunk_compression_stats(c.hypertable_name::regclass) USING (chunk_name)
+   GROUP BY hypertable_name;
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm chunking is active and reasonable:
+SELECT chunk_name, range_start, range_end FROM timescaledb_information.chunks
+WHERE hypertable_name = 'sensor_data' ORDER BY range_start DESC LIMIT 5;
+
+-- Confirm compression is taking effect on older chunks:
+SELECT chunk_name, is_compressed FROM timescaledb_information.chunks
+WHERE hypertable_name = 'sensor_data' AND range_end < now() - interval '7 days';
+-- Should show is_compressed = true.
+
+-- Confirm continuous aggregate is current:
+SELECT view_name, materialization_hypertable_name FROM timescaledb_information.continuous_aggregates;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+SELECT remove_retention_policy('sensor_data');
+SELECT remove_compression_policy('sensor_data');
+DROP MATERIALIZED VIEW sensor_data_hourly;
+```
+Converting a hypertable back to a regular table is non-trivial and not a
+routinely supported "undo" — treat the hypertable conversion decision as a
+migration-grade commitment, tested thoroughly in staging first, consistent
+with the migrations module's general philosophy on irreversible-ish operations.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: PG_TRGM FUZZY SEARCH GUIDE
+  File: 15_extensions/pg_trgm_fuzzy_search_guide.md
+================================================================================
+
+pg_trgm is the smallest, simplest extension in this session, and also one of
+the most universally useful — it enables fast fuzzy text matching (typo
+tolerance, partial matches, similarity scoring) and, critically, makes
+`LIKE '%pattern%'` queries actually use an index, which they cannot do with
+a standard B-tree.
+
+── DIAGNOSIS / PRE-FLIGHT ─────────────────────────────────────────────────────
+
+```sql
+SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_trgm';
+
+-- Find existing slow LIKE/ILIKE queries that would benefit (cross-reference
+-- the performance tuning module's pg_stat_statements analysis):
+SELECT query, calls, mean_exec_time
+FROM pg_stat_statements
+WHERE query ILIKE '%LIKE%' OR query ILIKE '%ILIKE%'
+ORDER BY mean_exec_time DESC
+LIMIT 10;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Install:**
+
+   ```sql
+   CREATE EXTENSION pg_trgm;
+   -- No OS-level package install needed for most distributions — this one
+   -- ships as part of the standard postgresql-contrib package, which is
+   -- typically already present alongside the main server package.
+   ```
+
+2. **Understand the core mechanism** — trigrams break text into overlapping
+   3-character sequences, and similarity is measured by how many trigrams
+   two strings share:
+
+   ```sql
+   SELECT show_trgm('postgres');
+   -- {"  p"," po","es ",gre,ost,pos,res,stg,tgr}
+   -- This is WHY it tolerates typos and partial matches — "postgre" and
+   -- "postgres" share almost all their trigrams despite not being identical.
+   ```
+
+3. **Build a GIN (or GiST) index to make LIKE/ILIKE use an index** — this
+   is the most common reason people reach for this extension:
+
+   ```sql
+   CREATE INDEX CONCURRENTLY idx_customers_name_trgm
+   ON customers USING GIN (name gin_trgm_ops);
+
+   -- Now this query, which a plain B-tree CANNOT accelerate (leading
+   -- wildcard breaks B-tree prefix matching entirely), uses the index:
+   EXPLAIN (ANALYZE, BUFFERS)
+   SELECT * FROM customers WHERE name ILIKE '%smith%';
+   -- Look for "Bitmap Index Scan using idx_customers_name_trgm".
+   ```
+
+4. **Use similarity scoring directly for fuzzy/typo-tolerant search**,
+   beyond just accelerating LIKE:
+
+   ```sql
+   SELECT name, similarity(name, 'jon smithe') AS score
+   FROM customers
+   ORDER BY similarity(name, 'jon smithe') DESC
+   LIMIT 10;
+
+   -- Or use the % operator with a similarity threshold (default 0.3,
+   -- adjustable) to filter rather than just rank:
+   SET pg_trgm.similarity_threshold = 0.4;
+   SELECT name FROM customers WHERE name % 'jon smithe';
+   ```
+
+5. **Combine with the <-> distance operator for KNN-style "closest match"
+   queries**, useful for autocomplete/did-you-mean features:
+
+   ```sql
+   SELECT name FROM customers
+   ORDER BY name <-> 'jon smithe'
+   LIMIT 5;
+   -- With a GIST index (not GIN) on the column, this can use the index for
+   -- efficient nearest-match retrieval, similar in spirit to pgvector's KNN
+   -- operator but for text similarity rather than embeddings:
+   CREATE INDEX CONCURRENTLY idx_customers_name_trgm_gist
+   ON customers USING GIST (name gist_trgm_ops);
+   ```
+
+6. **Be aware of the index size and write-overhead tradeoff** — trigram
+   indexes are larger than B-trees on the same column and add write
+   overhead proportional to string length, since every substring
+   contributes index entries:
+
+   ```sql
+   SELECT pg_size_pretty(pg_relation_size('idx_customers_name_trgm')) AS index_size,
+          pg_size_pretty(pg_relation_size('customers')) AS table_size;
+   -- Don't be alarmed if the trigram index is a meaningful fraction of the
+   -- table's own size — this is normal and expected, not a sign of bloat.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm the index is actually used for a representative fuzzy query:
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM customers WHERE name ILIKE '%smith%';
+
+-- Confirm similarity scoring returns sensible results for a known typo case:
+SELECT name, similarity(name, 'jon smithe') FROM customers
+ORDER BY 2 DESC LIMIT 5;
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+DROP INDEX CONCURRENTLY idx_customers_name_trgm;
+SET pg_trgm.similarity_threshold = DEFAULT;
+```
+The extension itself can be dropped cleanly if no objects depend on it:
+`DROP EXTENSION pg_trgm;` — check for dependent indexes first, as PostgreSQL
+will refuse the drop (or require CASCADE) if any still reference its operators.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+── LAB 1: PARTMAN RETENTION TRAP ────────────────────────────────────────────
+
+The lab database has a pg_partman-managed hypertable-equivalent (native
+partitioned table) for an `events` table, with retention deliberately
+misconfigured using the wrong interval unit.
+
+  a) Inspect `partman.part_config` and identify the misconfiguration.
+  b) Before fixing it, determine: has it already caused incorrect partition
+     drops? Check for gaps in the partition sequence.
+  c) Correct the retention configuration.
+  d) If data was already lost: demonstrate the PITR recovery path you'd use
+     (you don't need to fully execute it, but identify the exact recovery
+     target time and the table you'd extract).
+
+── LAB 2: PG_REPACK UNDER PRESSURE ───────────────────────────────────────────
+
+The lab `orders` table is significantly bloated (pre-seeded). Disk space on
+the lab volume is deliberately constrained to be tight, but sufficient for
+this exercise.
+
+  a) Measure current bloat and table size using pgstattuple.
+  b) Calculate whether available disk space is sufficient for pg_repack's
+     roughly 2x space requirement. If not, identify what you'd need to free
+     or extend first.
+  c) Run pg_repack against the table.
+  d) Verify the size reduction and confirm no leftover repack artifact
+     tables remain.
+
+── LAB 3: PGVECTOR RECALL INVESTIGATION ─────────────────────────────────────
+
+The lab environment has a `documents` table with a pgvector embedding column
+and an HNSW index built with deliberately low parameters on a dataset sized
+to expose poor recall — recreating the opening story's scenario directly.
+
+  a) Run the recall measurement procedure from Runbook 03 (compare indexed
+     vs sequential-scan results for a sample of queries).
+  b) Quantify the recall percentage you're currently getting.
+  c) Rebuild the index with corrected `m`/`ef_construction` parameters, and
+     separately tune `hnsw.ef_search` at query time.
+  d) Re-measure recall and confirm meaningful improvement.
+  e) Document the latency cost of the improved recall — there is always a
+     tradeoff, quantify it rather than asserting it.
+
+── LAB 4: CROSS-EXTENSION DECISION EXERCISE ─────────────────────────────────
+
+You're given three workload descriptions and must choose the right
+extension (or combination) for each, with justification:
+
+  a) "We log 50 million IoT sensor readings per day, query mostly the last
+     7 days, and want automatic compression of older data." (Hint: compare
+     a pg_partman + manual approach against TimescaleDB specifically on the
+     compression dimension.)
+  b) "Customer support needs to search customer names with typo tolerance,
+     current dataset is 2 million rows." (Justify trigram GIN vs GiST for
+     this specific access pattern.)
+  c) "We're adding semantic search over product descriptions using
+     embeddings, expect to scale to 20 million products within a year."
+     (Justify HNSW vs IVFFlat specifically considering the growth trajectory,
+     not just current size.)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+I want to close this module the same way I opened it, because the lesson is
+worth repeating until it's reflexive.
+
+Every extension in this session makes something genuinely hard look
+deceptively easy. Partitioning maintenance, online table compaction,
+approximate nearest-neighbor search, spatial queries, scheduled jobs inside
+the database, time-series compression, fuzzy text matching — all of it,
+reduced to a `CREATE EXTENSION` and a few lines of SQL that run without
+complaint. That ease is the whole value proposition, and it's also exactly
+why these are some of the highest-risk-of-silent-failure tools you'll work
+with as a DBA.
+
+A bad index choice in plain PostgreSQL usually shows up as a slow query —
+loud, measurable, easy to diagnose with EXPLAIN ANALYZE, all the skills from
+the performance tuning module apply directly. A bad index choice in pgvector
+shows up as "the answer is wrong, but only sometimes, and nothing in the logs
+tells you that." A misconfigured pg_partman retention policy doesn't throw
+an error — it just quietly deletes data on schedule, exactly as configured,
+which is precisely the problem.
+
+The discipline this module asks of you: read the extension's actual
+documentation for the parameters that affect correctness, not just the ones
+that affect whether the command succeeds. Measure recall, not just latency,
+for anything approximate. Test retention policies generously before
+tightening them. And remember that `CREATE EXTENSION` succeeding is the
+beginning of your responsibility for that feature, not the end of it.
+
+Onward to whatever's next on this apparently never-ending syllabus.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — EXTENSIONS
+================================================================================
+
+── INSTALLATION TYPE CHEAT SHEET ────────────────────────────────────────────
+
+  No restart needed (just CREATE EXTENSION):
+    pgvector, postgis, pg_trgm, pg_repack (client binary + extension)
+
+  RESTART REQUIRED (shared_preload_libraries):
+    pg_cron, timescaledb, pg_partman (background worker mode only)
+
+  Always check first:
+    SELECT name, default_version, installed_version
+    FROM pg_available_extensions WHERE name = '<extension>';
+
+── PG_PARTMAN ────────────────────────────────────────────────────────────────
+
+  Register a partitioned table:
+    SELECT partman.create_parent('public.events','created_at','monthly', p_premake:=4);
+  Set retention (DANGER: drops data automatically):
+    UPDATE partman.part_config SET retention='12 months', retention_keep_table=false
+    WHERE parent_table='public.events';
+  Run maintenance manually:    SELECT partman.run_maintenance_proc();
+
+── PG_REPACK ─────────────────────────────────────────────────────────────────
+
+  Needs ~2x disk space + a primary/unique key. Online, brief lock only at final swap.
+    pg_repack -d mydb -t public.orders --no-order
+  Check for leftovers after interruption:
+    SELECT relname FROM pg_class WHERE relname LIKE 'repack%';
+
+── PGVECTOR ──────────────────────────────────────────────────────────────────
+
+  HNSW (recommended default, no pre-existing-data requirement):
+    CREATE INDEX ... USING hnsw (embedding vector_cosine_ops) WITH (m=24, ef_construction=100);
+    SET hnsw.ef_search = 100;   -- query-time, session-scoped, tune for recall
+  IVFFlat (needs representative data BEFORE building, or quality suffers):
+    SET ivfflat.probes = 20;    -- default of 1 is almost always too low
+  Distance operators: <-> L2, <#> inner product, <=> cosine — match your model.
+  ALWAYS measure recall directly — don't trust that results "look right."
+
+── POSTGIS ───────────────────────────────────────────────────────────────────
+
+  geometry = planar/flat, geography = curved-earth distances in real meters.
+  SRID 4326 = standard GPS lat/lng. Never mix SRIDs without ST_Transform.
+  Always index:  CREATE INDEX ... USING GIST (location);
+  Nearest/within: ST_DWithin(...) + ORDER BY location <-> point
+  Validate imported data: SELECT * FROM t WHERE NOT ST_IsValid(geom);
+
+── PG_CRON ───────────────────────────────────────────────────────────────────
+
+  SELECT cron.schedule('name','0 3 * * *', $$VACUUM ANALYZE orders;$$);
+  Cross-database: cron.schedule_in_database(...)
+  CHECK FAILURES MANUALLY — no built-in alerting:
+    SELECT * FROM cron.job_run_details WHERE status='failed'
+    AND start_time > now()-interval '24h';
+  Wire this into Prometheus custom queries — it will not alert you on its own.
+
+── TIMESCALEDB ───────────────────────────────────────────────────────────────
+
+  SELECT create_hypertable('sensor_data','time', chunk_time_interval=>INTERVAL '1 day');
+  SELECT add_compression_policy('sensor_data', INTERVAL '7 days');
+  SELECT add_retention_policy('sensor_data', INTERVAL '2 years');
+  Continuous aggregates = incrementally-updated materialized rollups —
+  far cheaper than re-aggregating raw data per query.
+
+── PG_TRGM ───────────────────────────────────────────────────────────────────
+
+  CREATE INDEX ... USING GIN (col gin_trgm_ops);   -- accelerates LIKE '%x%'
+  SELECT similarity(a, b);                          -- fuzzy match score 0-1
+  SET pg_trgm.similarity_threshold = 0.4;            -- tune the % operator
+  GiST variant (gist_trgm_ops) supports <-> KNN-style nearest-match queries.
+
+── THE ONE RULE FOR ALL OF THEM ─────────────────────────────────────────────
+
+  CREATE EXTENSION succeeding tells you it LOADED.
+  It tells you NOTHING about whether you configured it correctly.
+  Read the parameters that affect correctness, not just the ones that
+  affect whether the command errors.
+
+================================================================================
+  END OF SESSION
+================================================================================

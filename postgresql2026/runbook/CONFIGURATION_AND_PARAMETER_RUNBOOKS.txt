@@ -1,0 +1,1720 @@
+================================================================================
+  DBA TECHNICAL DIPLOMA — YEAR 2
+  MODULE: CONFIGURATION AND PARAMETERS RUNBOOKS
+  SESSION DURATION: 3 HOURS (+ LABS)
+  PLATFORM: PostgreSQL
+================================================================================
+
+I've stopped predicting when this program actually ends. At this point I just
+show up and teach whatever's on the syllabus. Today: configuration parameters.
+And honestly, out of every module we've done, this might be the one with the
+widest gap between "how simple this looks" and "how much damage gets done by
+people who don't understand it."
+
+Here's the story. Years ago I was brought in to a company running PostgreSQL
+on hardware with 256GB of RAM. Beautiful machine. Sixty-four cores. NVMe
+storage. And the database was crawling — worse than a database I'd seen
+running on a laptop for a side project. I opened postgresql.conf expecting to
+find some exotic misconfiguration.
+
+shared_buffers was set to 128MB.
+
+That is not a typo. 128 megabytes, on a 256 gigabyte machine. Why? Because
+nobody had ever touched the file since the day PostgreSQL was installed, and
+PostgreSQL's out-of-the-box defaults are deliberately, intentionally
+conservative — designed so the database can start successfully on almost any
+machine, including ones with very little memory. They are NOT designed to
+perform well. They are designed to not crash on a tiny VM. Running production
+workloads on default postgresql.conf values is one of the most common,
+most damaging, and most invisible mistakes in this entire profession, because
+the database doesn't error out. It just quietly performs at a fraction of
+what the hardware is capable of, for years, and nobody notices because
+"it's always been kind of slow" becomes the accepted baseline.
+
+Today we fix that mental model permanently. Nine runbooks, each one a
+parameter or parameter group that gets misconfigured constantly, and the
+playbook for diagnosing and correcting each one.
+
+Let's go.
+
+================================================================================
+  CONFIGURATION PHILOSOPHY — THREE MINUTES OF CONTEXT
+================================================================================
+
+Before the runbooks, three things every DBA needs to internalize about
+PostgreSQL configuration:
+
+  1. RELOAD VS RESTART. Some parameters take effect on `SELECT
+     pg_reload_conf()` — no interruption. Others require a full restart of
+     the PostgreSQL process. Getting this wrong in either direction costs
+     you: either an unplanned outage (you restarted when you didn't need to)
+     or a change that silently isn't applied (you reloaded when a restart
+     was required, and you walk away thinking you fixed something you didn't).
+
+  2. SCOPE. Settings can apply at the system level (postgresql.conf or
+     ALTER SYSTEM), the database level (ALTER DATABASE ... SET), the role
+     level (ALTER ROLE ... SET), or the session level (SET, only for the
+     current connection). Most incidents I see involve someone setting
+     something at the wrong scope — a session-level SET that they think is
+     permanent, or a system-wide change that should have been scoped to one
+     application's role.
+
+  3. THE CONFIGURATION IS A SYSTEM, NOT A LIST. shared_buffers,
+     effective_cache_size, work_mem, and max_connections are not independent
+     knobs — they interact. Set work_mem too high relative to
+     max_connections and you OOM. Set shared_buffers without adjusting
+     effective_cache_size and the planner makes bad decisions. We will keep
+     coming back to these interactions throughout today.
+
+```sql
+-- The single most useful query in this entire module — context column
+-- tells you EXACTLY what's required to change each setting:
+SELECT name, setting, unit, context, source
+FROM pg_settings
+WHERE name = 'shared_buffers';
+
+-- context values and what they mean:
+--   internal    — cannot be changed at all after compile time (rare)
+--   postmaster  — requires a full restart
+--   sysadmin    — requires a reload (ALTER SYSTEM + pg_reload_conf, or SIGHUP)
+--   superuser   — superuser can SET it live, per session or via ALTER SYSTEM
+--   user        — any user can SET it for their own session
+--   backend     — takes effect for new connections only, not existing ones
+```
+
+Memorize that query. We will use it constantly today.
+
+================================================================================
+  RUNBOOK 01: SHARED_BUFFERS MISCONFIGURATION
+  File: 10_configuration_parameters/shared_buffers_misconfiguration.md
+================================================================================
+
+shared_buffers is the size of PostgreSQL's own dedicated page cache — the
+memory area where table and index pages live while being actively read and
+written. This is the parameter from my opening story, and it's the one I see
+misconfigured most often, in both directions: too low (the 128MB-on-256GB
+disaster) and, less commonly but still painfully, too high (taking so much
+memory that the OS page cache and other processes starve).
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Current setting and how it was set:
+SELECT name, setting, unit, context, source
+FROM pg_settings WHERE name = 'shared_buffers';
+
+-- Cache hit ratio — the primary signal that shared_buffers may be undersized:
+SELECT
+    round(sum(blks_hit)::numeric /
+          NULLIF(sum(blks_hit) + sum(blks_read), 0) * 100, 2) AS cache_hit_pct
+FROM pg_stat_database
+WHERE datname NOT IN ('template0', 'template1');
+-- Target: > 99% for OLTP workloads with a properly sized shared_buffers.
+-- Below 95% on a system with adequate RAM is a strong signal to investigate.
+
+-- Per-table cache hit ratio — find which specific tables are suffering:
+SELECT
+    relname,
+    heap_blks_hit,
+    heap_blks_read,
+    round(heap_blks_hit::numeric /
+          NULLIF(heap_blks_hit + heap_blks_read, 0) * 100, 2) AS hit_pct
+FROM pg_statio_user_tables
+WHERE heap_blks_read > 0
+ORDER BY heap_blks_read DESC
+LIMIT 15;
+```
+
+```bash
+# How much RAM does this machine actually have?
+free -h
+
+# How much is currently used by PostgreSQL's shared memory segment?
+ipcs -m | grep postgres
+# Or, more reliably on modern PostgreSQL using mmap:
+ps aux | grep "postgres.*shared" | head -5
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Apply the standard sizing rule** — this is a starting point, not gospel,
+   but it's the right starting point for the overwhelming majority of
+   dedicated database servers:
+
+   ```
+   shared_buffers = 25% of total system RAM
+   (for a server dedicated entirely to PostgreSQL)
+
+   On a 256GB machine: shared_buffers = 64GB
+   On a 16GB machine: shared_buffers = 4GB
+   On a 2GB machine: shared_buffers = 512MB (and seriously reconsider
+       running production workloads on 2GB)
+   ```
+
+   Going meaningfully above 40% rarely helps and can start hurting — the OS
+   page cache also caches your data files, and double-buffering (the same
+   page cached in both shared_buffers AND the OS cache) wastes memory beyond
+   a certain point. There are workload-specific exceptions (some teams run
+   higher on systems with huge_pages and careful tuning) but 25% is the
+   correct default assumption.
+
+2. **Apply the change** — this parameter has context = postmaster, meaning
+   it REQUIRES A FULL RESTART, not just a reload:
+
+   ```bash
+   # postgresql.conf:
+   shared_buffers = 16GB
+   ```
+
+   ```sql
+   -- Confirm via the context column before you even try to reload —
+   -- save yourself the wasted step:
+   SELECT name, context FROM pg_settings WHERE name = 'shared_buffers';
+   -- context: postmaster — confirms restart is mandatory.
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+3. **Adjust effective_cache_size in tandem** — this is the interaction I
+   warned you about in the philosophy section. effective_cache_size doesn't
+   allocate any memory itself; it's a hint to the query planner about TOTAL
+   memory available for caching (shared_buffers + OS page cache combined).
+   If you raise shared_buffers without revisiting this, the planner's cost
+   estimates can be subtly wrong:
+
+   ```sql
+   -- Rule of thumb: shared_buffers + most of the remaining RAM
+   -- (minus OS overhead and other processes):
+   ALTER SYSTEM SET effective_cache_size = '48GB';  -- on a 64GB machine
+                                                      -- with 16GB shared_buffers
+   SELECT pg_reload_conf();
+   -- effective_cache_size context = user — reload only, no restart needed.
+   ```
+
+4. **If you suspect shared_buffers is set TOO HIGH** (less common, but
+   happens on misconfigured cloud instances or after a "more is always
+   better" mistake): check for memory pressure symptoms:
+
+   ```bash
+   # Is the OS swapping? PostgreSQL + swap is one of the worst performance
+   # combinations possible — never let this happen on a database server:
+   vmstat 1 5
+   # si/so columns > 0 means active swapping. If shared_buffers leaves too
+   # little RAM for everything else, this is your signal to reduce it.
+
+   free -h
+   # If "available" is very low relative to total, and shared_buffers is a
+   # large fraction of total RAM, that's your culprit.
+   ```
+
+5. **Validate with a real workload comparison, not just the cache hit ratio
+   in isolation** — run your standard benchmark or representative query
+   workload before and after, and compare actual latency, not just the
+   cache statistic:
+
+   ```sql
+   SELECT pg_stat_statements_reset();
+   -- Run your workload for a representative period (15-30 minutes minimum),
+   -- then compare mean_exec_time across the top queries to your pre-change
+   -- baseline from the performance tuning module's pg_stat_statements work.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SELECT name, setting, unit FROM pg_settings WHERE name = 'shared_buffers';
+
+SELECT round(sum(blks_hit)::numeric /
+             NULLIF(sum(blks_hit)+sum(blks_read),0)*100, 2) AS cache_hit_pct
+FROM pg_stat_database WHERE datname NOT IN ('template0','template1');
+-- Should now be trending toward 99%+ after sufficient warm-up time.
+```
+
+```bash
+# Confirm no swapping under normal load:
+vmstat 1 5
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Revert the value in postgresql.conf to the previous setting and restart again.
+Because this requires a restart either direction, treat both the change AND
+the potential rollback as planned maintenance windows, not something to
+iterate on casually during business hours.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 02: WORK_MEM MISCONFIGURATION
+  File: 10_configuration_parameters/work_mem_misconfiguration.md
+================================================================================
+
+work_mem is the most dangerous parameter in PostgreSQL to get wrong, and I
+mean that specifically: it's the easiest one to misconfigure in a way that
+takes down the entire server, not just degrades performance. The reason:
+unlike shared_buffers, which is one fixed allocation, work_mem is PER
+OPERATION, and a single complex query can use MULTIPLE multiples of it
+simultaneously (one allocation per sort, per hash join, per window function).
+Multiply that by max_connections and you have a memory bomb with a long fuse.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Current global setting:
+SELECT name, setting, unit FROM pg_settings WHERE name = 'work_mem';
+
+-- The danger calculation — do this math BEFORE touching the value:
+SELECT
+    (SELECT setting::int FROM pg_settings WHERE name = 'work_mem') AS work_mem_kb,
+    (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max_conn,
+    (SELECT setting::int FROM pg_settings WHERE name = 'work_mem') *
+    (SELECT setting::int FROM pg_settings WHERE name = 'max_connections')
+        / 1024 / 1024 AS worst_case_single_op_gb;
+-- This is ONE operation per connection. Complex queries with multiple
+-- sorts/joins can multiply this further. If this number approaches or
+-- exceeds your total RAM, you are one bad query away from OOM.
+
+-- Find queries currently using temp files (work_mem is too low for them):
+SELECT
+    left(query, 100) AS query,
+    calls,
+    temp_blks_written,
+    pg_size_pretty(temp_blks_written * 8192) AS temp_size,
+    round(mean_exec_time::numeric, 2) AS mean_ms
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 15;
+```
+
+```bash
+# Has PostgreSQL been OOM-killed recently? (the worst-case outcome of
+# misconfigured work_mem combined with high connection counts):
+dmesg | grep -i "out of memory\|killed process.*postgres" | tail -10
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Never set work_mem high globally on a system with many connections.**
+   This is the single rule that prevents the most incidents in this runbook.
+   Use a conservative global default, then raise it selectively:
+
+   ```sql
+   -- Conservative global default — safe baseline for most OLTP systems:
+   ALTER SYSTEM SET work_mem = '16MB';   -- or 32MB depending on RAM/connections
+   SELECT pg_reload_conf();
+   -- context = user — reload only, takes effect for new operations.
+   ```
+
+2. **Raise it selectively for specific sessions or roles that genuinely need
+   it** — reporting/analytics connections, batch jobs, ETL processes:
+
+   ```sql
+   -- Per-session, for the duration of one connection (cleanest, safest):
+   SET work_mem = '512MB';
+   -- Run your heavy analytical query here.
+   RESET work_mem;   -- or just disconnect — session-level settings don't persist
+
+   -- Per-role, applies automatically every time that role connects:
+   ALTER ROLE reporting_user SET work_mem = '256MB';
+   -- This is much safer than a global increase because it only affects
+   -- connections authenticated as reporting_user — your OLTP app connections
+   -- using app_user are unaffected.
+   ```
+
+3. **For batch/maintenance operations, use maintenance_work_mem instead** —
+   this is a SEPARATE parameter specifically for VACUUM, CREATE INDEX, and
+   similar operations, and can safely be set much higher than work_mem since
+   these operations are typically not running with high concurrency:
+
+   ```sql
+   ALTER SYSTEM SET maintenance_work_mem = '2GB';
+   SELECT pg_reload_conf();
+
+   -- Or scoped to just one session before a big index build:
+   SET maintenance_work_mem = '4GB';
+   CREATE INDEX CONCURRENTLY idx_big_table_col ON big_table(col);
+   ```
+
+4. **Fix queries causing temp file spill identified in diagnosis** — for
+   each query found, decide between raising work_mem for that specific
+   role/session, or optimizing the query itself (often the better long-term
+   fix — a query doing an unnecessarily large sort might be fixable with a
+   better index instead):
+
+   ```sql
+   EXPLAIN (ANALYZE, BUFFERS)
+   <the query found with high temp_blks_written>;
+   -- Look for: "Sort Method: external merge  Disk: NNNNkB"
+   -- This confirms work_mem was insufficient for this specific sort/hash.
+   ```
+
+5. **Re-verify the worst-case math after any global change** — this is not
+   optional, do this every time:
+
+   ```sql
+   SELECT
+       (SELECT setting::int FROM pg_settings WHERE name='work_mem') *
+       (SELECT setting::int FROM pg_settings WHERE name='max_connections')
+           / 1024 / 1024 AS worst_case_gb,
+       (SELECT round(setting::numeric/1024/1024,1) FROM pg_settings
+        WHERE name = 'shared_buffers') AS shared_buffers_gb;
+   -- worst_case_gb + shared_buffers_gb + OS overhead should comfortably
+   -- fit within total system RAM, with room to spare.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Temp file generation should drop for the queries you addressed:
+SELECT pg_stat_statements_reset();
+-- After a representative workload period:
+SELECT left(query,80), temp_blks_written FROM pg_stat_statements
+WHERE temp_blks_written > 0 ORDER BY temp_blks_written DESC LIMIT 10;
+```
+
+```bash
+# No new OOM kills:
+dmesg | grep -i "out of memory" | tail -5
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+ALTER ROLE reporting_user RESET work_mem;
+ALTER SYSTEM RESET work_mem;
+SELECT pg_reload_conf();
+```
+All work_mem-related changes (global, role, session) are reload-only or
+immediate — no restart required in any direction.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 03: MAX_CONNECTIONS TOO LOW
+  File: 10_configuration_parameters/max_connections_too_low.md
+================================================================================
+
+We covered the incident-response side of connection exhaustion already — the
+"FATAL: too many clients" emergency. This runbook is the configuration-level
+companion: how to correctly size max_connections in the first place, rather
+than reactively raising it every time it's hit, which (as I told you back
+then) is a band-aid, not a fix.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+SELECT name, setting, context FROM pg_settings WHERE name = 'max_connections';
+
+-- Historical connection usage pattern — peak vs typical:
+SELECT count(*) AS current_connections,
+       (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS max_conn
+FROM pg_stat_activity;
+
+-- Are connections mostly idle (a pooling problem) or mostly active
+-- (a genuine concurrency need)?
+SELECT state, count(*) FROM pg_stat_activity GROUP BY state ORDER BY count(*) DESC;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Diagnose WHY connections are exhausted before just raising the number** —
+   this determines whether the fix is "raise max_connections" or "fix the
+   real problem," and they are very different fixes:
+
+   ```
+   Mostly IDLE connections exhausting the limit:
+     → This is a connection pooling / application problem, not a capacity
+       problem. Raising max_connections treats the symptom. The fix is
+       PgBouncer (see the performance tuning module) or fixing application
+       connection lifecycle management.
+
+   Mostly ACTIVE connections, genuine concurrent workload:
+     → This may be a legitimate capacity need. Before raising
+       max_connections, confirm the SERVER actually has the memory to
+       support more connections (each one costs real memory — see the
+       calculation below) and that increasing concurrency won't just shift
+       the bottleneck to CPU or I/O instead.
+   ```
+
+2. **Calculate the real memory cost before raising the limit** — this ties
+   directly back to Runbook 02's work_mem warning:
+
+   ```sql
+   SELECT
+       (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS current_max,
+       (SELECT setting::int FROM pg_settings WHERE name='work_mem') AS work_mem_kb,
+       -- rough per-connection overhead beyond work_mem (process memory,
+       -- local buffers, etc.) — conservatively estimate 5-10MB baseline:
+       ((SELECT setting::int FROM pg_settings WHERE name='max_connections') * 10)
+           / 1024 AS baseline_overhead_gb_estimate;
+   ```
+
+   If raising max_connections from 100 to 300 without also reducing work_mem,
+   you've potentially tripled your worst-case memory exposure from Runbook 02.
+   These two parameters must be considered together, every time.
+
+3. **The correct fix in most cases — deploy connection pooling rather than
+   raising the limit:**
+
+   ```
+   max_connections (PostgreSQL) should typically stay in the 100-300 range
+   even for large systems. The PgBouncer layer absorbs thousands of CLIENT
+   connections and multiplexes them down to a much smaller number of actual
+   PostgreSQL backend connections. Refer to the performance tuning module's
+   connection_pooling_patterns runbook for the full PgBouncer setup —
+   that runbook IS the long-term fix for "max_connections too low" in the
+   majority of cases you'll encounter.
+   ```
+
+4. **If you've confirmed this is a genuine capacity need (not a pooling
+   gap) and the server has the memory — raise it, but conservatively and
+   with the math checked:**
+
+   ```bash
+   # postgresql.conf:
+   max_connections = 200   # raised from 100, after confirming memory budget
+   ```
+
+   ```sql
+   SELECT name, context FROM pg_settings WHERE name = 'max_connections';
+   -- context: postmaster — this REQUIRES A RESTART.
+   ```
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+5. **Adjust dependent shared memory parameters if needed** — some other
+   settings scale their memory allocation based on max_connections (e.g.,
+   max_prepared_transactions, max_locks_per_transaction), so a large jump
+   in max_connections can increase total shared memory requirements beyond
+   just the per-connection cost:
+
+   ```sql
+   SELECT name, setting FROM pg_settings
+   WHERE name IN ('max_locks_per_transaction', 'max_pred_locks_per_transaction');
+   -- These multiply by max_connections internally for shared memory sizing.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SELECT name, setting FROM pg_settings WHERE name = 'max_connections';
+
+-- Confirm headroom under typical peak load:
+SELECT count(*),
+       (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS max_conn
+FROM pg_stat_activity;
+```
+
+```bash
+# Confirm no memory pressure after the change, observed over a real peak period:
+free -h
+vmstat 1 5   # check for swapping
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+Revert max_connections in postgresql.conf to the previous value and restart
+again. If PgBouncer was deployed as the actual fix instead, it can be
+disabled by repointing application connection strings back to PostgreSQL
+directly — no PostgreSQL-side change required for that rollback path.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 04: CHECKPOINT TOO FREQUENT OR TOO RARE
+  File: 10_configuration_parameters/checkpoint_too_frequent_or_rare.md
+================================================================================
+
+We touched checkpoints in the WAL internals reference and the I/O saturation
+runbook. This is the dedicated tuning runbook: how to recognize which
+direction your checkpoint configuration is wrong, and the specific parameter
+changes for each case. Checkpoints sit at the intersection of crash-recovery
+time, WAL volume, and I/O smoothness — getting this wrong affects all three.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The single most important diagnostic ratio in this runbook:
+SELECT
+    checkpoints_timed,    -- triggered by checkpoint_timeout (time-based, expected)
+    checkpoints_req,      -- triggered by max_wal_size being reached (forced — bad if frequent)
+    round(checkpoints_req::numeric /
+          NULLIF(checkpoints_timed + checkpoints_req, 0) * 100, 1)
+          AS pct_forced,
+    checkpoint_write_time,
+    checkpoint_sync_time,
+    buffers_checkpoint,
+    buffers_clean,
+    buffers_backend       -- high relative to the other two = bgwriter/checkpointer
+                           -- can't keep up, backends forced to write themselves
+FROM pg_stat_bgwriter;
+
+-- Current settings:
+SELECT name, setting, unit FROM pg_settings
+WHERE name IN ('checkpoint_timeout', 'max_wal_size', 'min_wal_size',
+               'checkpoint_completion_target')
+ORDER BY name;
+
+-- How often are checkpoints actually happening? (check the logs if
+-- log_checkpoints = on, which it should be):
+```
+
+```bash
+grep "checkpoint starting\|checkpoint complete" \
+    /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail -20
+# "checkpoint starting: xlog" means it was forced by WAL volume (too rare =
+# WAL piling up between time-based checkpoints, OR max_wal_size too small).
+# "checkpoint starting: time" means the normal time-based trigger fired.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+DIAGNOSING TOO FREQUENT (checkpoints_req is a high percentage of total):
+
+  This means max_wal_size is too small for your write volume — the database
+  is generating WAL faster than your checkpoint_timeout interval would
+  naturally trigger checkpoints, so it's forced to checkpoint early and
+  often. Symptoms: I/O spikes correlating with checkpoint activity, full
+  page write overhead repeating more often than necessary.
+
+1. **Raise max_wal_size to reduce forced checkpoint frequency:**
+
+   ```sql
+   ALTER SYSTEM SET max_wal_size = '8GB';   -- raised from the 1GB default
+   SELECT pg_reload_conf();
+   -- context = sysadmin, reload only, no restart needed.
+   ```
+
+   Tradeoff: a larger max_wal_size means more WAL accumulates between
+   checkpoints, which means longer crash recovery time (more WAL to replay)
+   and more disk space consumed by pg_wal under normal operation. This is
+   almost always a worthwhile tradeoff versus the I/O smoothness gained,
+   but be aware of it, especially on disk-constrained systems (cross-
+   reference the storage module).
+
+2. **Smooth the I/O impact of whichever checkpoints DO occur:**
+
+   ```sql
+   ALTER SYSTEM SET checkpoint_completion_target = 0.9;
+   SELECT pg_reload_conf();
+   -- Spreads the checkpoint's dirty-page writes over 90% of the interval
+   -- to the next checkpoint, rather than writing as fast as possible. This
+   -- smooths I/O regardless of whether checkpoints are time- or WAL-triggered.
+   ```
+
+DIAGNOSING TOO RARE / TOO LARGE AN INTERVAL (checkpoints_timed dominates,
+but checkpoint_write_time is very high, or crash recovery has been
+observed to take a long time):
+
+  This means checkpoint_timeout and/or max_wal_size are set so high that an
+  enormous amount of dirty data accumulates between checkpoints. The
+  checkpoint itself, when it finally happens, has a huge amount of work to
+  do — long write_time, long sync_time, a big I/O spike anyway despite being
+  "infrequent." And if the server crashes, recovery has to replay a large
+  volume of WAL since the last checkpoint, extending downtime.
+
+3. **Reduce checkpoint_timeout to force more frequent, smaller checkpoints:**
+
+   ```sql
+   ALTER SYSTEM SET checkpoint_timeout = '10min';   -- reduced from a much
+                                                       -- larger custom value
+   SELECT pg_reload_conf();
+   ```
+
+4. **Reduce max_wal_size correspondingly** if it had been set very large
+   specifically to avoid frequent checkpoints — that reasoning no longer
+   applies once checkpoint_timeout itself is tuned correctly:
+
+   ```sql
+   ALTER SYSTEM SET max_wal_size = '4GB';
+   SELECT pg_reload_conf();
+   ```
+
+5. **Recalculate expected crash recovery time** as a sanity check after any
+   checkpoint tuning change — this is the metric that actually matters for
+   your RTO commitments:
+
+   ```bash
+   # Approximate: WAL volume generated between checkpoints ÷ replay throughput.
+   # Measure WAL generation rate (from the WAL internals reference module):
+   psql -c "SELECT pg_current_wal_lsn();"
+   # wait N minutes
+   psql -c "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '<earlier_lsn>'::pg_lsn);"
+   # Compare against your checkpoint_timeout interval to estimate worst-case
+   # WAL volume needing replay after a crash just before the next checkpoint.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- After a day of normal operation, re-check the ratio:
+SELECT checkpoints_timed, checkpoints_req,
+       round(checkpoints_req::numeric /
+             NULLIF(checkpoints_timed+checkpoints_req,0)*100,1) AS pct_forced
+FROM pg_stat_bgwriter;
+-- pct_forced should be low (ideally close to 0) after correcting "too frequent."
+
+SELECT checkpoint_write_time, checkpoint_sync_time FROM pg_stat_bgwriter;
+-- Should show more consistent, less extreme per-checkpoint values after
+-- correcting "too rare/too large."
+```
+
+```bash
+# Confirm log entries show mostly "time" triggers, not "xlog" triggers:
+grep "checkpoint starting" /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log \
+    | awk '{print $NF}' | sort | uniq -c
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+All checkpoint-related parameters (checkpoint_timeout, max_wal_size,
+min_wal_size, checkpoint_completion_target) are reload-only:
+```sql
+ALTER SYSTEM RESET checkpoint_timeout;
+ALTER SYSTEM RESET max_wal_size;
+SELECT pg_reload_conf();
+```
+No restart required in either direction.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 05: WAL CONFIGURATION GUIDE
+  File: 10_configuration_parameters/wal_configuration_guide.md
+================================================================================
+
+This is the broader companion to Runbook 04 — checkpoints are one piece of
+WAL configuration, but there's a full set of parameters around WAL behavior,
+volume, and durability that deserve their own systematic walkthrough.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- The full WAL configuration surface area:
+SELECT name, setting, unit, context
+FROM pg_settings
+WHERE name IN (
+    'wal_level', 'wal_buffers', 'wal_writer_delay', 'wal_writer_flush_after',
+    'wal_compression', 'wal_init_zero', 'wal_recycle',
+    'max_wal_size', 'min_wal_size', 'wal_keep_size',
+    'archive_mode', 'archive_timeout', 'max_wal_senders', 'max_replication_slots',
+    'synchronous_commit', 'commit_delay', 'commit_siblings'
+)
+ORDER BY name;
+```
+
+```bash
+# Current WAL generation rate (the demand side of this whole equation):
+psql -c "SELECT pg_current_wal_lsn();"
+sleep 60
+psql -c "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '<lsn_from_above>'::pg_lsn)
+                / 1024 / 1024 AS wal_mb_per_minute;"
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **wal_level — set to the minimum that supports what you actually need:**
+
+   ```sql
+   SHOW wal_level;
+   -- 'replica': sufficient for streaming replication, PITR, pg_basebackup.
+   --   This is correct for the vast majority of production deployments.
+   -- 'logical': required ONLY if you use logical replication, pglogical,
+   --   or CDC tools (Debezium). Generates more WAL than 'replica'.
+   -- 'minimal': crash recovery only, breaks replication/PITR entirely.
+   --   Essentially never appropriate for production.
+   ```
+
+   Setting wal_level to 'logical' when you don't actually use logical
+   replication is a surprisingly common waste — it increases WAL volume for
+   no benefit. Audit whether you actually have active logical subscriptions
+   before assuming you need it:
+
+   ```sql
+   SELECT count(*) FROM pg_replication_slots WHERE slot_type = 'logical';
+   -- If 0 and you don't have planned logical replication work, 'replica'
+   -- is sufficient and will reduce WAL volume.
+   ```
+
+   Changing wal_level requires a restart (context = postmaster).
+
+2. **wal_buffers — usually fine at default, rarely needs manual tuning:**
+
+   ```sql
+   SHOW wal_buffers;
+   -- Default of -1 auto-sizes to 1/32 of shared_buffers, capped reasonably.
+   -- Manual override is rarely necessary; only consider increasing on
+   -- extremely high-write-throughput systems where you've specifically
+   -- observed WALWriteLock contention in wait event analysis.
+   ```
+
+3. **wal_compression — generally worth enabling, trades a small amount of
+   CPU for reduced WAL volume:**
+
+   ```sql
+   ALTER SYSTEM SET wal_compression = 'lz4';   -- PG 15+ supports lz4, zstd;
+                                                 -- earlier versions: 'on' for pglz
+   SELECT pg_reload_conf();
+   -- Particularly beneficial for full-page writes after checkpoints —
+   -- directly reduces the I/O spike pattern discussed in Runbook 04.
+   ```
+
+4. **synchronous_commit and commit_delay — the durability/latency tradeoff
+   knob** — covered in depth in its own dedicated runbook (Runbook 06
+   below), but as part of the overall WAL picture: this controls whether a
+   transaction COMMIT waits for WAL to be flushed to disk (and optionally
+   to a synchronous replica) before returning success to the client.
+
+5. **archive_timeout — forces a WAL switch even during low-activity
+   periods, ensuring your archive (and therefore your PITR granularity)
+   doesn't go stale during quiet periods:**
+
+   ```sql
+   ALTER SYSTEM SET archive_timeout = '60';   -- force a WAL segment switch
+                                                -- at least every 60 seconds
+                                                -- even with minimal write activity
+   SELECT pg_reload_conf();
+   ```
+
+   Without this, a quiet database (low write volume) might not fill a full
+   16MB WAL segment for hours, meaning your most recent committed data
+   sits unarchived in an incomplete segment for that entire window — a real
+   exposure to your RPO if disaster strikes during a quiet period.
+
+6. **max_wal_senders and max_replication_slots — size for your actual
+   topology, with headroom:**
+
+   ```sql
+   SELECT count(*) FROM pg_stat_replication;   -- current active senders
+   SELECT count(*) FROM pg_replication_slots;  -- current slots
+
+   -- Size with headroom for: planned new replicas, a temporary backup-from-
+   -- standby connection, a logical replication subscriber you're about to add:
+   ALTER SYSTEM SET max_wal_senders = 10;
+   ALTER SYSTEM SET max_replication_slots = 10;
+   -- Both require a restart (context = postmaster) — plan ahead, don't
+   -- discover you're at the limit during an urgent failover/migration.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SELECT name, setting FROM pg_settings
+WHERE name IN ('wal_level', 'wal_compression', 'archive_timeout',
+               'max_wal_senders', 'max_replication_slots');
+```
+
+```bash
+# Confirm WAL generation rate is reasonable and archiving keeps pace:
+psql -c "SELECT last_archived_time, now()-last_archived_time AS archive_age
+         FROM pg_stat_archiver;"
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+wal_compression, archive_timeout: reload-only, revert via ALTER SYSTEM RESET
++ pg_reload_conf(). wal_level, max_wal_senders, max_replication_slots:
+require a restart in either direction — plan the rollback as a maintenance
+window just like the forward change.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 06: SYNCHRONOUS_COMMIT TRADEOFFS
+  File: 10_configuration_parameters/synchronous_commit_tradeoffs.md
+================================================================================
+
+We encountered synchronous_commit briefly in the high availability module's
+"synchronous replication stuck" incident. This runbook is the dedicated,
+proactive walkthrough of the parameter itself — the full spectrum of
+durability levels available and how to choose correctly for different
+workloads within the same database.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+SHOW synchronous_commit;
+SHOW synchronous_standby_names;
+
+-- Is this database currently using synchronous replication at all?
+-- If synchronous_standby_names is empty, synchronous_commit's replica-
+-- related levels (remote_write, remote_apply, on) have no replica to wait
+-- for and effectively behave like 'local'.
+```
+
+```bash
+# Measure current commit latency — this is the metric synchronous_commit
+# directly trades against durability:
+pgbench -c 10 -j 2 -T 30 -P 5 mydb
+# Look at the latency average and tps figures as your baseline.
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Understand the full spectrum — from weakest to strongest durability
+   guarantee, and the corresponding latency cost:**
+
+   ```
+   off
+     COMMIT returns immediately without waiting for WAL to even be flushed
+     to local disk. Fastest possible commits. Risk: a crash within the
+     wal_writer_delay window (default 200ms) can lose recently committed
+     transactions that the application believes succeeded. Appropriate ONLY
+     for workloads where some data loss on crash is genuinely acceptable
+     (e.g., a high-volume metrics/events table where losing the last
+     fraction of a second is tolerable, never for financial transactions).
+
+   local
+     COMMIT waits for WAL to be flushed to LOCAL disk only — no waiting on
+     any replica, even if synchronous_standby_names is configured. Protects
+     against data loss from a local crash, but a full server/storage loss
+     could still lose the most recent transactions if no replica had
+     received them yet.
+
+   remote_write
+     COMMIT waits for local flush AND for the synchronous standby to have
+     WRITTEN the WAL to its OS (not necessarily fsynced to its disk yet).
+     Protects against primary failure assuming the standby's OS cache
+     survives — does not protect against the standby losing power before
+     its own fsync completes.
+
+   on  (the default when synchronous_standby_names is set)
+     COMMIT waits for local flush AND for the standby to have FLUSHED
+     (fsynced) the WAL to its own disk. Strong guarantee — survives primary
+     failure AND standby OS-level crash, protected against by both sides
+     having durably written the data.
+
+   remote_apply
+     The strongest level. COMMIT waits for everything in 'on' PLUS for the
+     standby to have actually REPLAYED (applied) the WAL, meaning a query
+     against the standby immediately after commit would see the new data.
+     Highest latency cost, but guarantees zero visible lag for read-after-
+     write consistency against the replica, and the strongest failover
+     safety (a promoted standby is guaranteed current).
+   ```
+
+2. **Choose the right level for your DEFAULT, system-wide setting** — for
+   most production OLTP systems with a synchronous standby configured for
+   HA, 'on' is the correct default: a strong balance of durability and
+   acceptable latency overhead.
+
+   ```sql
+   ALTER SYSTEM SET synchronous_commit = 'on';
+   SELECT pg_reload_conf();
+   -- context = user — reload only, takes effect for new transactions.
+   ```
+
+3. **Override per-transaction for genuinely latency-insensitive or
+   loss-tolerant workloads** — this is where synchronous_commit really
+   shines: you don't have to choose one durability level for the whole
+   database. Set it per-session or even per-transaction:
+
+   ```sql
+   -- Within an application connection handling a non-critical bulk insert
+   -- (e.g., writing analytics events where occasional loss on crash is
+   -- acceptable, and you want maximum throughput):
+   BEGIN;
+   SET LOCAL synchronous_commit = 'off';
+   INSERT INTO analytics_events (...) VALUES (...);
+   COMMIT;
+   -- SET LOCAL scopes the change to just this transaction — subsequent
+   -- transactions on the same connection revert to the session/system default
+   -- automatically. This is the safest way to apply a weaker durability
+   -- level without accidentally leaving the whole session in that mode.
+   ```
+
+4. **Use remote_apply selectively for workflows that need read-after-write
+   consistency against a replica** — for example, a workflow where the
+   application writes to the primary and then immediately reads from a
+   replica (perhaps via a load balancer that doesn't guarantee routing back
+   to the primary) and needs to be certain the write is visible:
+
+   ```sql
+   BEGIN;
+   SET LOCAL synchronous_commit = 'remote_apply';
+   UPDATE orders SET status = 'confirmed' WHERE id = 12345;
+   COMMIT;
+   -- Now a subsequent SELECT against the replica is guaranteed to see this update.
+   ```
+
+5. **Measure the actual latency cost of your chosen level before and after,
+   on a representative workload** — the tradeoff is real and worth
+   quantifying, not just assuming:
+
+   ```bash
+   # Compare commit latency across levels using pgbench against a test database:
+   pgbench -c 10 -j 2 -T 30 -P 5 mydb   # with synchronous_commit = on
+   # Change setting, repeat:
+   psql -c "ALTER SYSTEM SET synchronous_commit = 'remote_write'; SELECT pg_reload_conf();"
+   pgbench -c 10 -j 2 -T 30 -P 5 mydb
+   # Compare tps and latency average between runs.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Confirm the setting in effect for the system default:
+SHOW synchronous_commit;
+
+-- For a specific session/transaction override, confirm it was scoped
+-- correctly and didn't leak into subsequent transactions:
+SHOW synchronous_commit;   -- run again after the SET LOCAL transaction
+                            -- committed — should show the session/system
+                            -- default again, not the LOCAL override.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+ALTER SYSTEM RESET synchronous_commit;
+SELECT pg_reload_conf();
+```
+SET LOCAL changes never need rollback — they expire automatically at
+transaction end by design. This is one of the safest configuration knobs
+in PostgreSQL to experiment with for exactly that reason.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 07: POSTGRESQL.CONF CHANGE — RELOAD VS RESTART
+  File: 10_configuration_parameters/postgresql_conf_change_restart.md
+================================================================================
+
+This runbook is the meta-reference that ties together every other runbook in
+this module: the systematic process for determining, BEFORE you make any
+configuration change, whether it requires a reload or a full restart — and
+the correct procedure for applying it safely either way, including handling
+multiple pending changes at once.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- THE definitive answer for any parameter, every time:
+SELECT name, setting, unit, context, source, pending_restart
+FROM pg_settings
+WHERE name = 'shared_buffers';   -- substitute any parameter name
+
+-- context values, in order of increasing impact:
+--   internal    — fixed at compile time, cannot be changed at all
+--   postmaster  — REQUIRES FULL RESTART
+--   sysadmin    — reload (SIGHUP / pg_reload_conf()) is sufficient
+--   superuser   — superuser can change live via ALTER SYSTEM or SET; reload
+--                 (for ALTER SYSTEM) or immediate (for SET) depending on method
+--   user        — any user can SET for their own session, immediate
+--   backend     — takes effect only for NEW connections after the change
+
+-- pending_restart = true means: this value has been changed in the
+-- configuration file (or via ALTER SYSTEM), but PostgreSQL hasn't picked
+-- it up yet because it requires a restart that hasn't happened. THIS IS
+-- THE MOST IMPORTANT COLUMN IN THIS ENTIRE RUNBOOK.
+
+-- Find ALL settings currently pending a restart, system-wide — run this
+-- before AND after every maintenance window:
+SELECT name, setting AS currently_active_value
+FROM pg_settings
+WHERE pending_restart = true;
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Before changing ANYTHING in postgresql.conf, check the context column
+   for every parameter you're about to touch:**
+
+   ```sql
+   SELECT name, setting, context
+   FROM pg_settings
+   WHERE name IN ('shared_buffers', 'work_mem', 'max_connections',
+                   'wal_level', 'checkpoint_timeout');
+   -- Mixed results here are completely normal and exactly why this check
+   -- matters: shared_buffers/max_connections/wal_level need a restart,
+   -- work_mem/checkpoint_timeout only need a reload. Don't assume they're
+   -- all the same just because you're editing them in the same file at
+   -- the same time.
+   ```
+
+2. **Make the changes in postgresql.conf** (or via ALTER SYSTEM SET, which
+   writes to postgresql.auto.conf — functionally equivalent for this
+   purpose):
+
+   ```bash
+   # Direct file edit:
+   nano /etc/postgresql/15/main/postgresql.conf
+   ```
+
+   ```sql
+   -- Or via ALTER SYSTEM (often preferable — auditable, no file editing
+   -- access needed, and pg_settings shows you the pending state cleanly):
+   ALTER SYSTEM SET work_mem = '32MB';
+   ALTER SYSTEM SET shared_buffers = '16GB';
+   ```
+
+3. **Reload first, always — even if you know some changes need a restart,
+   reloading first applies everything that CAN take effect immediately,
+   and clearly surfaces what's still pending:**
+
+   ```sql
+   SELECT pg_reload_conf();
+
+   -- Now check what's still pending — this should be EXACTLY the set of
+   -- parameters with context = postmaster that you changed, nothing more
+   -- and nothing less:
+   SELECT name, setting FROM pg_settings WHERE pending_restart = true;
+   ```
+
+4. **If the pending list is non-empty, plan the restart deliberately —
+   don't restart reactively the moment you see a pending change:**
+
+   ```
+   Questions to answer before restarting:
+   - Is this a primary or a replica? (Restart a replica first if testing
+     the impact, when topology allows.)
+   - What is the expected restart duration? (Usually seconds, but confirm
+     no long-running transactions are about to be interrupted.)
+   - Have you notified anyone who needs to know? (See the monitoring
+     module's communication templates if this is a production system with
+     real users.)
+   - Is this a good time, or should it wait for a scheduled maintenance window?
+   ```
+
+5. **Execute the restart and confirm the pending list clears:**
+
+   ```bash
+   systemctl restart postgresql@15-main
+   ```
+
+   ```sql
+   SELECT name, setting FROM pg_settings WHERE pending_restart = true;
+   -- Should now return ZERO ROWS. If anything still shows pending after a
+   -- restart, something didn't take — check for syntax errors elsewhere
+   -- in the file, or a second conflicting ALTER SYSTEM value.
+   ```
+
+6. **Batch your restart-requiring changes together** — this is a practical
+   discipline, not a technical requirement: since you're going to incur one
+   restart regardless, accumulate all your pending postmaster-context
+   changes and apply them in a SINGLE maintenance window rather than
+   restarting once per parameter across multiple days. Use the pending_restart
+   query as your running checklist of "what's queued up for the next window."
+
+7. **Watch for a subtle trap: SET (session-level) vs ALTER SYSTEM (system-
+   level) — these do NOT show the same way in pg_settings, and confusing
+   them is a common source of "I changed it but it's not working":**
+
+   ```sql
+   -- This ONLY affects YOUR current session, and ONLY for parameters
+   -- with context = user or lower:
+   SET work_mem = '64MB';
+
+   -- This changes the system-wide default for ALL future connections,
+   -- written durably to postgresql.auto.conf:
+   ALTER SYSTEM SET work_mem = '64MB';
+   -- Still requires pg_reload_conf() (or restart, if context demands it)
+   -- to take effect for NEW connections. Existing connections that already
+   -- did a plain SET are unaffected by either.
+
+   -- Check WHERE a setting's current value actually came from:
+   SELECT name, setting, source FROM pg_settings WHERE name = 'work_mem';
+   -- source: 'session' means a SET command in this session overrode
+   -- everything else. 'configuration file' or 'override' (ALTER SYSTEM)
+   -- tells you it's coming from the persistent configuration.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+-- Zero pending restarts after your maintenance window:
+SELECT count(*) FROM pg_settings WHERE pending_restart = true;
+-- Should be 0.
+
+-- Every changed parameter shows the expected new value and the expected source:
+SELECT name, setting, source FROM pg_settings
+WHERE name IN ('shared_buffers', 'work_mem', 'max_connections');
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```sql
+-- Revert a specific ALTER SYSTEM change back to the compiled-in default:
+ALTER SYSTEM RESET work_mem;
+-- Revert ALL ALTER SYSTEM overrides at once (use with extreme caution —
+-- this clears postgresql.auto.conf entirely):
+ALTER SYSTEM RESET ALL;
+SELECT pg_reload_conf();
+```
+For postmaster-context parameters, the rollback still requires a restart —
+there is no way around this in either direction, by design.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 08: TIMEZONE AND LOCALE MISCONFIGURATION
+  File: 10_configuration_parameters/timezone_locale_misconfiguration.md
+================================================================================
+
+This category of problem doesn't crash the database. It corrupts your data's
+MEANING quietly, which in some ways is worse — bad timestamps and bad sort
+orders don't throw errors, they just produce wrong answers that look
+plausible until someone notices a report is off by several hours, or that
+sorting "appears broken" in a way nobody can immediately explain.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```sql
+-- Server-level timezone and locale settings:
+SHOW timezone;
+SHOW lc_collate;
+SHOW lc_ctype;
+SHOW lc_monetary;
+SHOW lc_numeric;
+
+-- These are set AT INITDB TIME for lc_collate/lc_ctype and CANNOT BE
+-- CHANGED without recreating the database cluster — this is the single
+-- most important fact in this entire runbook. timezone CAN be changed
+-- freely; collation/ctype cannot, short of a full reinit.
+
+-- Per-database locale (set at CREATE DATABASE time, also fixed after creation):
+SELECT datname, datcollate, datctype FROM pg_database;
+
+-- Is timezone consistent between the server and what the application expects?
+SELECT now(), current_setting('timezone');
+```
+
+```bash
+# OS-level timezone, for comparison — these don't have to match PostgreSQL's
+# setting, but mismatches are a common source of confusion when debugging:
+timedatectl
+cat /etc/timezone
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Understand the critical asymmetry: timezone is flexible, collation is
+   not.** This shapes everything else in this runbook.
+
+   ```sql
+   -- timezone: a SESSION-level display/interpretation setting. It does NOT
+   -- change how TIMESTAMPTZ values are stored (always UTC internally) —
+   -- it only changes how they're DISPLAYED and how naive timestamp literals
+   -- without an explicit zone are INTERPRETED on input. Safe to change
+   -- anytime, system-wide or per-session:
+   ALTER SYSTEM SET timezone = 'UTC';
+   SELECT pg_reload_conf();
+   -- context = sysadmin for the system default — reload only.
+
+   -- Per-session override (very common — let the app set its preferred
+   -- display zone without affecting anyone else):
+   SET timezone = 'America/New_York';
+   ```
+
+2. **The standing recommendation: store and run the SERVER in UTC, always,
+   no exceptions** — let application/client layers handle local-time
+   display. This eliminates an entire category of daylight-saving-time and
+   ambiguous-offset bugs:
+
+   ```sql
+   -- Confirm your database is following this practice:
+   SHOW timezone;
+   -- If this returns anything other than 'UTC' as the system default on a
+   -- production server, that's worth a deliberate conversation about why,
+   -- not an assumption that it's fine.
+
+   -- Always use TIMESTAMPTZ, never bare TIMESTAMP, for any column
+   -- representing a real point in time:
+   SELECT column_name, data_type FROM information_schema.columns
+   WHERE table_name = 'orders' AND data_type LIKE '%timestamp%';
+   -- 'timestamp without time zone' columns storing real-world event times
+   -- are a recurring source of silent bugs — they store a naive timestamp
+   -- with NO timezone context, meaning the SAME stored value means
+   -- different real instants depending on which session's timezone setting
+   -- happens to be active when it's read. This is almost never what anyone
+   -- actually wants for "when did this happen" data.
+   ```
+
+3. **For lc_collate / lc_ctype problems** — discovered usually as "sorting
+   looks wrong" or "this index isn't being used for a LIKE query" — the
+   fix is NOT a parameter change, it's a database (or full cluster)
+   recreation with the correct locale from the start:
+
+   ```sql
+   -- Diagnose: what collation is actually in effect, and is it what you intended?
+   SELECT datname, datcollate, datctype FROM pg_database WHERE datname = current_database();
+
+   -- Common symptom: case-insensitive or accent-insensitive sorting
+   -- behaving unexpectedly because the collation is, e.g., 'C' (byte-order,
+   -- no linguistic awareness) when 'en_US.UTF-8' (linguistic ordering) was
+   -- intended, or vice versa.
+   ```
+
+   ```bash
+   # The ONLY real fix for an existing database with the wrong locale:
+   # dump, recreate with correct locale, restore.
+   pg_dump -Fc mydb > /tmp/mydb_backup.dump
+
+   # Drop and recreate with the correct locale (DESTRUCTIVE — only after
+   # confirming the backup, and only in a controlled maintenance window):
+   dropdb mydb
+   createdb mydb --locale=en_US.UTF-8 --encoding=UTF8 --template=template0
+
+   pg_restore -d mydb /tmp/mydb_backup.dump
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   There is no ALTER DATABASE ... SET LOCALE. This is fixed at creation time
+   for a reason: collation determines the physical sort order baked into
+   every B-tree index built on text columns. Changing it without rebuilding
+   every affected index would silently corrupt index correctness — rows
+   would appear in the index in an order that no longer matches what a scan
+   expects, producing wrong query results, not errors. PostgreSQL prevents
+   this entirely by not allowing the change in place.
+
+4. **For an existing database where collation must change but a full
+   dump/restore cycle is too disruptive** — consider per-column collation
+   overrides as a more surgical alternative for specific problem columns,
+   without touching the whole database's default:
+
+   ```sql
+   -- Specify collation per-column or per-expression, overriding the
+   -- database default just where needed:
+   SELECT name FROM customers ORDER BY name COLLATE "en_US.UTF-8";
+
+   -- Or build an index with an explicit, different collation than the
+   -- database default, for queries that specifically need it:
+   CREATE INDEX CONCURRENTLY idx_customers_name_en
+   ON customers (name COLLATE "en_US.UTF-8");
+   ```
+
+5. **Verify ICU collations as an alternative to libc collations if you're
+   on PostgreSQL 15+ and dealing with frequent locale pain points** — ICU
+   collations are more consistent across operating systems and offer more
+   granular control (e.g., case-insensitive comparison without a separate
+   extension):
+
+   ```sql
+   SELECT collname, collprovider FROM pg_collation WHERE collname LIKE '%icu%';
+   -- collprovider = 'i' means ICU-provided; 'c' means libc-provided.
+   -- New databases can specify --locale-provider=icu at creation time.
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```sql
+SHOW timezone;
+-- Confirm UTC (or your deliberately chosen standard) system-wide.
+
+SELECT datname, datcollate, datctype FROM pg_database WHERE datname = current_database();
+-- Confirm the locale matches what your application and indexes expect.
+
+-- Confirm timestamptz round-trips correctly regardless of session timezone:
+SET timezone = 'UTC';
+SELECT now();
+SET timezone = 'America/Los_Angeles';
+SELECT now();   -- same instant, different displayed local time — this is correct behavior.
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+timezone changes: `ALTER SYSTEM RESET timezone; SELECT pg_reload_conf();` —
+immediate, no restart, fully reversible.
+Collation/locale changes via dump-recreate-restore: the rollback IS keeping
+the pre-change dump file until the new database is fully validated. If
+something goes wrong, recreate the OLD database from that same dump with the
+original locale flags and restore application traffic to it.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  RUNBOOK 09: LINUX KERNEL TUNING FOR POSTGRES
+  File: 10_configuration_parameters/linux_kernel_tuning_for_postgres.md
+================================================================================
+
+We touched several of these individually in the storage module's I/O
+troubleshooting and earlier sessions' OOM runbook. This is the consolidated,
+proactive kernel tuning checklist — the settings you should configure
+correctly BEFORE you ever experience the incidents that would otherwise force
+you to discover them reactively.
+
+── DIAGNOSIS ──────────────────────────────────────────────────────────────────
+
+```bash
+# Run this complete audit on any new PostgreSQL server before it ever
+# takes production traffic:
+
+echo "=== Transparent Huge Pages ==="
+cat /sys/kernel/mm/transparent_hugepage/enabled
+
+echo "=== Swappiness ==="
+cat /proc/sys/vm/swappiness
+
+echo "=== Overcommit ==="
+cat /proc/sys/vm/overcommit_memory
+cat /proc/sys/vm/overcommit_ratio
+
+echo "=== Dirty ratio settings ==="
+cat /proc/sys/vm/dirty_ratio
+cat /proc/sys/vm/dirty_background_ratio
+
+echo "=== Shared memory limits ==="
+cat /proc/sys/kernel/shmmax
+cat /proc/sys/kernel/shmall
+
+echo "=== File descriptor limits ==="
+cat /proc/sys/fs/file-max
+ulimit -n
+
+echo "=== I/O scheduler (matters mainly for spinning disks, less for NVMe) ==="
+cat /sys/block/*/queue/scheduler
+```
+
+── STEP-BY-STEP PROCEDURE ─────────────────────────────────────────────────────
+
+1. **Disable Transparent Huge Pages (THP)** — THP causes unpredictable
+   latency spikes for database workloads due to how it handles page
+   compaction under memory pressure. This is one of the most well-known,
+   most consistently recommended kernel settings across virtually every
+   database engine, not just PostgreSQL:
+
+   ```bash
+   echo never > /sys/kernel/mm/transparent_hugepage/enabled
+   echo never > /sys/kernel/mm/transparent_hugepage/defrag
+
+   # Make it persistent across reboots (varies by distro — example for
+   # a systemd-based system using a oneshot service):
+   cat > /etc/systemd/system/disable-thp.service << 'EOF'
+   [Unit]
+   Description=Disable Transparent Huge Pages
+   Before=postgresql.service
+
+   [Service]
+   Type=oneshot
+   ExecStart=/bin/sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"
+   ExecStart=/bin/sh -c "echo never > /sys/kernel/mm/transparent_hugepage/defrag"
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   systemctl enable disable-thp.service
+   ```
+
+   Note: this disables conventional THP. It does NOT preclude using
+   PostgreSQL's own explicit huge_pages = on setting, which is a separate,
+   deliberate, properly-sized allocation mechanism (covered in the OOM
+   runbook from the incident response module) — that one is beneficial;
+   THP's automatic, unpredictable behavior is what you're disabling here.
+
+2. **Set vm.swappiness low** — you want the kernel to avoid swapping out
+   application memory in favor of reclaiming page cache whenever possible,
+   since PostgreSQL + swap is close to the worst-case performance scenario
+   for a database:
+
+   ```bash
+   echo "vm.swappiness=1" >> /etc/sysctl.d/99-postgresql.conf
+   sysctl -p /etc/sysctl.d/99-postgresql.conf
+   ```
+
+   Note: setting this to exactly 0 disables swap usage entirely on some
+   kernel versions, which can be too aggressive (you still want SOME swap
+   available as an absolute last-resort safety valve rather than an
+   immediate OOM kill). 1 is the conventional safe minimum for database
+   servers.
+
+3. **Configure vm.overcommit_memory and overcommit_ratio** — directly
+   relevant to the OOM kill scenario from the incident response module:
+   setting this to 2 makes the kernel refuse memory allocation requests
+   that can't actually be satisfied, rather than over-promising and then
+   killing a process later when it tries to actually use the memory:
+
+   ```bash
+   echo "vm.overcommit_memory=2" >> /etc/sysctl.d/99-postgresql.conf
+   echo "vm.overcommit_ratio=80" >> /etc/sysctl.d/99-postgresql.conf
+   sysctl -p /etc/sysctl.d/99-postgresql.conf
+   ```
+
+   *** INSTRUCTOR WARNING ***
+   This setting requires your shared_buffers, work_mem × max_connections,
+   and all other PostgreSQL memory consumption to genuinely fit within the
+   configured overcommit ratio of physical RAM. If you set overcommit_memory=2
+   without having done the memory budget math from Runbooks 01-03 in this
+   module, you can cause allocation FAILURES (PostgreSQL unable to start new
+   connections, or even fork new backend processes) rather than preventing
+   them. Do the math first, then apply this setting, not the other way around.
+
+4. **Tune dirty page ratios to avoid large write bursts during fsync** —
+   the kernel's default dirty_ratio/dirty_background_ratio settings are
+   tuned for general-purpose workloads, not for a database doing constant,
+   latency-sensitive WAL flushes:
+
+   ```bash
+   # Lower than defaults — start writing back dirty pages sooner and more
+   # gradually, rather than letting a large backlog build up and then
+   # causing a big I/O stall when it's finally forced to flush:
+   echo "vm.dirty_background_ratio=5" >> /etc/sysctl.d/99-postgresql.conf
+   echo "vm.dirty_ratio=10" >> /etc/sysctl.d/99-postgresql.conf
+   sysctl -p /etc/sysctl.d/99-postgresql.conf
+   ```
+
+5. **Verify shared memory limits are sufficient for your shared_buffers
+   sizing** — on modern PostgreSQL using mmap-based shared memory this is
+   less of a hard blocker than in older versions, but still worth checking
+   if shared_buffers is large relative to historical kernel defaults:
+
+   ```bash
+   cat /proc/sys/kernel/shmmax
+   cat /proc/sys/kernel/shmall
+   # If either is unexpectedly small relative to your target shared_buffers,
+   # raise them:
+   echo "kernel.shmmax=68719476736" >> /etc/sysctl.d/99-postgresql.conf  # 64GB example
+   sysctl -p /etc/sysctl.d/99-postgresql.conf
+   ```
+
+6. **Raise file descriptor limits** — every connection holds multiple open
+   file descriptors (sockets, relation files, temp files), and the default
+   OS limits are frequently too conservative for a busy database:
+
+   ```bash
+   # /etc/security/limits.conf:
+   postgres soft nofile 65536
+   postgres hard nofile 65536
+
+   # Confirm the systemd service inherits this (modern systemd units often
+   # need LimitNOFILE set explicitly, PAM limits aren't always inherited):
+   systemctl show postgresql@15-main | grep LimitNOFILE
+   # If not sufficient, override in the systemd unit:
+   systemctl edit postgresql@15-main
+   # Add: [Service]
+   #      LimitNOFILE=65536
+   systemctl daemon-reload
+   systemctl restart postgresql@15-main
+   ```
+
+7. **Choose an appropriate I/O scheduler if running on spinning disks**
+   (largely irrelevant for NVMe/SSD, which typically use 'none' or 'mq-deadline'
+   by default appropriately already):
+
+   ```bash
+   cat /sys/block/sdX/queue/scheduler
+   # For database workloads on spinning disk: deadline or mq-deadline tend
+   # to perform better than the default cfq on older kernels, due to more
+   # predictable latency under mixed read/write load.
+   echo deadline > /sys/block/sdX/queue/scheduler
+   ```
+
+── VERIFICATION ───────────────────────────────────────────────────────────────
+
+```bash
+# Re-run the full audit from the diagnosis section and confirm every
+# value matches your intended configuration:
+cat /sys/kernel/mm/transparent_hugepage/enabled    # should show [never]
+cat /proc/sys/vm/swappiness                          # should be 1
+cat /proc/sys/vm/overcommit_memory                   # should be 2
+ulimit -n                                            # should be 65536 (as postgres user)
+
+# Confirm settings survive a reboot (test in staging, not production):
+sudo reboot
+# After reboot:
+cat /proc/sys/vm/swappiness
+```
+
+```sql
+-- Confirm PostgreSQL itself is healthy after kernel changes — especially
+-- after the overcommit_memory=2 change, confirm normal connections work:
+SELECT version(), now();
+```
+
+── ROLLBACK ───────────────────────────────────────────────────────────────────
+
+```bash
+# Remove the sysctl override file and reapply defaults:
+rm /etc/sysctl.d/99-postgresql.conf
+sysctl --system
+
+# Re-enable THP if it causes issues with other co-located workloads on a
+# shared/non-dedicated host (rare, but possible):
+echo always > /sys/kernel/mm/transparent_hugepage/enabled
+systemctl disable disable-thp.service
+```
+Most kernel sysctl changes take effect immediately and reverse immediately
+via the same mechanism — no reboot required for rollback, only for confirming
+persistence of the original forward change.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  LAB EXERCISES
+  Allow 45–60 minutes
+================================================================================
+
+── LAB 1: THE 128MB DISASTER, RECREATED ─────────────────────────────────────
+
+The lab PostgreSQL instance is intentionally configured with shared_buffers
+at a tiny default value, on a VM with substantially more available RAM.
+
+  a) Measure the current cache hit ratio and a baseline query latency.
+  b) Calculate the correct shared_buffers value using the 25%-of-RAM rule.
+  c) Check the context column to confirm a restart is required before
+     attempting anything else.
+  d) Apply the change, restart, and re-measure cache hit ratio and latency.
+  e) Adjust effective_cache_size to match, and explain in one sentence why
+     this second step matters even though it doesn't allocate memory itself.
+
+── LAB 2: THE WORK_MEM TIME BOMB ────────────────────────────────────────────
+
+The lab environment has work_mem set to a dangerously high global value
+combined with a high max_connections setting.
+
+  a) Run the worst-case memory calculation query from Runbook 02.
+  b) Determine whether this configuration could plausibly OOM-kill
+     PostgreSQL on this machine's available RAM.
+  c) Correct it: lower the global default, then set an appropriately
+     higher value scoped ONLY to a designated "reporting" role.
+  d) Confirm a session connecting as the reporting role gets the higher
+     value, while a session connecting as the regular app role does not.
+  e) Re-run the worst-case calculation and confirm it's now within a safe
+     margin of available RAM.
+
+── LAB 3: CHECKPOINT DIRECTION DIAGNOSIS ────────────────────────────────────
+
+You're given pg_stat_bgwriter output from two different lab scenarios
+(provided as static data, not live systems) — one shows checkpoints
+overwhelmingly forced (checkpoints_req dominant), the other shows checkpoints
+overwhelmingly time-triggered but with enormous checkpoint_write_time values.
+
+  a) For each scenario, state which direction the misconfiguration is
+     (too frequent vs too rare) and explain your reasoning from the numbers.
+  b) For each scenario, write the specific ALTER SYSTEM commands you would
+     run to correct it.
+  c) For scenario two (the "too rare" case): calculate the approximate
+     worst-case crash recovery time implied by the configuration, using the
+     WAL generation rate measurement technique from Runbook 05.
+
+── LAB 4: RELOAD VS RESTART AUDIT ───────────────────────────────────────────
+
+You're handed a list of eight pending configuration changes someone wants
+made to the lab PostgreSQL instance: shared_buffers, work_mem, log_min_duration_
+statement, max_connections, wal_level, checkpoint_completion_target,
+max_wal_senders, and synchronous_commit.
+
+  a) For each one, query pg_settings and record its context value.
+  b) Sort them into two groups: "apply via reload, do immediately" and
+     "requires restart, batch for the maintenance window."
+  c) Apply the reload group now. Confirm via pending_restart that the
+     restart group is correctly still pending.
+  d) Apply the restart in one single maintenance window action. Confirm
+     pending_restart returns zero rows afterward.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  CLOSING PEP TALK
+================================================================================
+
+Here's the thought I want to leave this module with.
+
+Configuration is the quietest category of problem in this entire job. A
+replication failure announces itself. A disk-full event stops everything
+immediately and loudly. But a database running on default shared_buffers,
+or with work_mem set dangerously high "because someone needed it once for a
+report," or with synchronous_commit never reconsidered since the day it was
+copy-pasted from a tutorial — none of that throws an error. It just quietly
+costs you performance, or sits as a latent risk, for as long as nobody looks.
+
+The discipline this module asks of you is simple to state and genuinely hard
+to maintain: look anyway. Audit your configuration even when nothing is on
+fire. Run the pg_settings context query before every change, not just when
+you're not sure. Do the memory math before raising a limit, every time, even
+the tenth time, even when you're confident you remember the answer.
+
+The 128MB shared_buffers story from the start of this session wasn't a
+dramatic failure. Nothing crashed. Nobody got paged. It just sat there,
+silently wasting a 256GB machine's potential, for years, because checking
+the configuration wasn't anyone's job until I showed up and asked an
+obvious question. Be the person who asks the obvious question on your own
+systems, proactively, before a consultant has to ask it for you.
+
+Good work today. Let's see what the syllabus has waiting for us next.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+  QUICK-REFERENCE COMMAND CARD — CONFIGURATION AND PARAMETERS
+================================================================================
+
+── THE ONE QUERY TO RUN BEFORE EVERY CHANGE ─────────────────────────────────
+
+    SELECT name, setting, unit, context, source, pending_restart
+    FROM pg_settings WHERE name = '<parameter>';
+
+  context = postmaster   → REQUIRES RESTART
+  context = sysadmin     → reload only (pg_reload_conf())
+  context = user/superuser → SET (session) or ALTER SYSTEM (persistent) + reload
+
+  Find everything pending a restart, anytime:
+    SELECT name, setting FROM pg_settings WHERE pending_restart = true;
+
+── MEMORY SIZING RULES OF THUMB ─────────────────────────────────────────────
+
+  shared_buffers          = 25% of total RAM (dedicated DB server)
+  effective_cache_size    = shared_buffers + most of remaining RAM
+  work_mem (global)       = conservative (8-32MB) — NEVER size for worst case
+                             globally; raise per-role/session instead
+  maintenance_work_mem    = can be much higher (1-4GB), low concurrency op
+  max_connections         = 100-300 typical; use PgBouncer instead of raising
+
+  Worst-case memory check (run before EVERY work_mem or max_connections change):
+    SELECT (SELECT setting::int FROM pg_settings WHERE name='work_mem') *
+           (SELECT setting::int FROM pg_settings WHERE name='max_connections')
+           / 1024 / 1024 AS worst_case_gb;
+
+── CHECKPOINT TUNING DIRECTION ──────────────────────────────────────────────
+
+  checkpoints_req dominant  → TOO FREQUENT → raise max_wal_size
+  checkpoint_write_time huge → TOO RARE/LARGE → lower checkpoint_timeout
+  Always:                    checkpoint_completion_target = 0.9
+
+    SELECT checkpoints_timed, checkpoints_req, buffers_backend
+    FROM pg_stat_bgwriter;
+
+── SYNCHRONOUS_COMMIT LEVELS (WEAKEST → STRONGEST) ──────────────────────────
+
+  off          → no flush wait at all (data loss risk on crash)
+  local        → local flush only, no replica wait
+  remote_write → + standby OS write (not fsynced)
+  on (default) → + standby fsync (strong, standard for HA)
+  remote_apply → + standby has REPLAYED (read-after-write consistency)
+
+  Per-transaction override (safest way to deviate from system default):
+    BEGIN; SET LOCAL synchronous_commit = 'off'; ... COMMIT;
+
+── TIMEZONE / LOCALE ─────────────────────────────────────────────────────────
+
+  timezone     → flexible, change anytime, reload only. RUN SERVERS IN UTC.
+  lc_collate / lc_ctype → FIXED AT CREATION. No ALTER. Fix = dump/recreate/restore.
+  Always use TIMESTAMPTZ, never bare TIMESTAMP, for real-world event times.
+
+    SHOW timezone;
+    SELECT datname, datcollate, datctype FROM pg_database;
+
+── LINUX KERNEL CHECKLIST (SET BEFORE PRODUCTION TRAFFIC) ───────────────────
+
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled
+    vm.swappiness = 1
+    vm.overcommit_memory = 2  (only after doing the memory math!)
+    vm.overcommit_ratio = 80
+    vm.dirty_background_ratio = 5
+    vm.dirty_ratio = 10
+    postgres soft/hard nofile 65536
+
+── WAL CONFIGURATION ESSENTIALS ─────────────────────────────────────────────
+
+  wal_level = replica (default, sufficient unless using logical replication)
+  wal_compression = lz4   (reduces volume, small CPU cost — usually worth it)
+  archive_timeout = 60    (prevents stale unarchived segments during quiet periods)
+  max_wal_senders / max_replication_slots → size with headroom, restart required
+
+================================================================================
+  END OF SESSION
+================================================================================

@@ -1,0 +1,1097 @@
+LECTURE: Building a Production-Grade Automatic Index Reindexing Script
+Course: 2-Year DBA Technical Diploma — PostgreSQL Track
+Session Length: 3 hours (with labs)
+
+============================================================
+
+Alright, everybody, grab a seat, get your laptop open, and pull up a terminal. Today we're doing something a little different from a normal "here's a concept, here's a diagram" lecture. Today we're going to read, understand, and then rebuild — line by line — a real production bash script that DBAs actually run on real PostgreSQL servers to fix index bloat automatically. By the end of these three hours, I want you to be able to close this file, open a blank terminal, and write the whole thing yourself from memory and understanding — not from memorizing syntax, but because you'll actually get why every single line is there.
+
+This is your first lecture in this course, so I'm not assuming you know anything yet about index bloat, REINDEX, locking, or bash scripting patterns for ops work. We're starting from zero and building up. But I promise you — by the time we're done, this script is going to feel less like "magic DBA wizardry" and more like "oh, that's just common sense once you know the problem it's solving."
+
+Let me start with a story, because I think it'll set the stage for why this script exists at all.
+
+WHY DOES THIS SCRIPT EXIST? A WAR STORY.
+
+Back when I was maybe four years into doing this job, I worked at a mid-sized fintech company. We had a transactions table — nothing exotic, just a normal OLTP table getting inserts and updates all day. One day, our reporting queries that used to take 200 milliseconds started taking 4 seconds. No code deploy happened. No data migration happened. Nothing changed except time passing.
+
+I spent half a day looking at query plans, convinced something was wrong with the planner statistics. Ran ANALYZE. No improvement. Eventually one of the senior DBAs on the team — guy had been doing Postgres since version 7 — walked over, looked at my screen for ten seconds, and said "check your index bloat." I didn't even know what that meant at the time.
+
+Here's the thing about B-tree indexes in Postgres: when you update or delete rows, Postgres doesn't just neatly compact the index pages. It marks old index entries as dead and over time, especially with high update/delete churn, your index pages get full of dead space. The index file on disk keeps growing, but it's mostly empty air — half-used 8KB pages where Postgres could have fit twice as much actual data. That's bloat. Your index might report 2GB in size but only have 800MB of "real" useful data in it. The rest is dead weight that still has to get read into memory, still has to get traversed, still slows you down.
+
+And it compounds. The bigger the bloat, the more pages have to get scanned for an index lookup, the more memory pressure, the worse your cache hit ratio, the slower everything gets. It's a slow bleed. Nobody notices day to day. Then six months later everyone's wondering why the database "got slow" with no clear cause.
+
+That day I learned the painful way: bloat doesn't announce itself. It just quietly taxes you forever until somebody measures it.
+
+So the fix, conceptually, is simple: periodically detect bloated indexes and rebuild them. Rebuilding an index from scratch gives you a clean, compact structure with zero dead space. That's literally what REINDEX does. But — and this is important — running REINDEX naively in production can be dangerous, which is exactly why this script is so carefully built. We'll get to that danger in a minute, because it's one of those "must not get wrong" moments.
+
+So at a high level, here's what this script does, and I want you to hold this mental model the whole lecture:
+
+1. Connect to one or more databases.
+2. Run a SQL query that estimates how bloated every B-tree index is.
+3. Filter that list down by size thresholds and a bloat percentage threshold.
+4. For each bloated index found, rebuild it — using REINDEX CONCURRENTLY on modern Postgres, or pg_repack on old Postgres that doesn't support concurrent reindex.
+5. Do all of this safely: with locking so two copies don't run at once, with a maintenance window so it only runs when you want it to, with retries when a reindex attempt fails, and with clean logging so you have an audit trail.
+
+That's it. That's the whole story. Everything else is "how do we do that safely and professionally," which, frankly, is 90% of what separates a junior script from a script you'd trust running unattended on production at 2 AM.
+
+Now, before I touch a single line of the real script in front of you — I'm going to do something I don't always do. I'm going to hand you a runbook instead of a script. No code in it. Not one line. Because here's the trap I've watched happen to a hundred students over the years: I put a finished script on the screen, you copy it down, you nod along, you feel like you understood it — and then three weeks later you sit in front of a blank terminal for an unrelated task and you freeze, because you never actually built the muscle of going from "here's a problem" to "here's working code." You only ever built the muscle of transcription.
+
+So we're not doing that today. I'm going to give you a runbook — a sequence of milestones. Each milestone tells you WHAT to build and WHY it needs to exist, gives you something to go research, and gives you a way to test whether you actually got it right. Then you close this lecture, open your terminal, and you write it. Yourself. With your own hands, your own variable names, your own mistakes. I'll walk through the finished script's actual code with you afterward, line by line — that's the rest of today's lecture, and you're welcome to use it to check your understanding once you've already tried — but the runbook comes first, and the runbook has no code in it on purpose.
+
+One more thing before we start: at every milestone, stop. Don't move to the next one until the current one actually runs and actually does what it's supposed to do. I'd rather you finish three solid milestones today than rush through all twelve with nothing actually working. A DBA who ships fast and broken is more dangerous than one who ships slow and correct — you'll learn that lesson eventually one way or another, I'd rather you learn it here.
+
+============================================================
+THE RUNBOOK — BUILD IT YOURSELF, ONE MILESTONE AT A TIME
+============================================================
+
+Ground rules before you start:
+
+Do not copy any code from anywhere, including from later in this lecture. If you genuinely get stuck on a milestone for more than fifteen or twenty minutes, that's fine — that's normal — go look up the ONE specific concept you're stuck on (a man page, a bash builtin, a Postgres system view), understand it, then come back and write the line yourself in your own words and your own structure. Looking up "how does the colon no-op default-assignment trick work in bash" is research. Looking up "pg_auto_reindexer.sh full script" is copy-paste, and copy-paste teaches you nothing that survives past this afternoon.
+
+At the end of each milestone there's a line that says "you're done with this milestone when..." — that's your own personal test. Don't trust that you understood something because it sounds right in your head. Actually run it. Actually break it on purpose once you think it works, and watch it fail in the way you expect it to fail. That's how you know you actually own it.
+
+------------------------------------------------------------
+MILESTONE 0 — Understand the problem before you write anything
+------------------------------------------------------------
+
+Don't open an editor yet. Open a terminal and a Postgres instance instead — your lab Postgres container or VM is fine.
+
+Go research: what is index bloat, physically, on disk, inside a B-tree index page in Postgres. Find the actual system views involved — there's a stats view that tracks index usage, and there's a way to ask Postgres directly how "dead" a relation's pages are. Go look at pg_stat_user_indexes with your own eyes. Run a few SELECTs against it on your lab database. You don't need the bloat-estimation formula yet — that comes later, and honestly, even working DBAs usually borrow that formula from a known community source rather than deriving it themselves. Right now, I just want you to be able to answer, out loud, in your own words: what does it mean for an index to be bloated, and why does rebuilding it from scratch fix that.
+
+Also go research the difference between REINDEX, REINDEX CONCURRENTLY, and pg_repack. Don't write any bash yet. Just understand, conceptually, why a DBA would reach for the CONCURRENTLY version instead of a plain REINDEX on a live production table, and why older Postgres versions need an entirely different tool to get a similar non-blocking effect.
+
+You're done with this milestone when: you can explain, without notes, in two or three sentences, what index bloat is and why REINDEX CONCURRENTLY is safer than plain REINDEX on a busy table. If you can't say it cleanly out loud, you don't know it yet — go back and read more before moving on.
+
+------------------------------------------------------------
+MILESTONE 1 — A script that does almost nothing, safely
+------------------------------------------------------------
+
+Create a new empty file. Go research what the very first line of a portable bash script should look like, and why people prefer it over hardcoding a shell path directly.
+
+Then go research these three things and decide, yourself, whether you want them on: a flag that treats unset variables as errors, a flag that makes a pipeline report failure if ANY command in it fails (not just the last one), and the flag that aborts the whole script the instant any command fails. Research what each one actually does — write a tiny five-line throwaway test script and deliberately trigger each behavior so you SEE it happen, not just read about it. Then think hard about which of these three you actually want turned on for a script whose whole job, later, is going to be looping over a list of independent indexes where one bad apple shouldn't spoil the batch. You don't have to get this right immediately — but I want you to have an actual reasoned opinion, not just "the internet said turn these on."
+
+You're done with this milestone when: you have a file with a correct first line, your chosen safety flags set underneath it, and you can explain out loud WHY you chose to include or exclude each one for THIS particular kind of script — a script that processes many independent items where one failure shouldn't kill the rest.
+
+------------------------------------------------------------
+MILESTONE 2 — Talk to yourself: build the logging function
+------------------------------------------------------------
+
+Think about what you need in a log line if you were debugging a 2 AM incident six months from now with zero memory of writing this script. What has to be in every single line you write to a log? Think about timestamp precision — would second-level precision be enough if multiple things happen within the same second? Go research a date command format that gives you sub-second precision.
+
+Now think about WHERE a log line should go. Just the screen? Just a file? What if you also want this event visible to a centralized logging system your whole infrastructure team already watches — go research the standard Linux tool for sending a message into the system log, and what a "facility" and a "priority" mean in that context.
+
+Here's a slightly harder design problem, and I want you to actually wrestle with it rather than skip it: build ONE function that can log a message whether the message is passed to it as an argument, OR piped into it from another command's output. Go research how to check, inside a bash function, whether you were given a positional argument at all, and what you'd do to fall back to reading from standard input if not. Don't move forward until you've designed this — even if your first version is clumsy.
+
+Finally — and this is the part students skip and regret — build three short wrapper functions on top of your one logging function: one for plain informational messages, one for warnings that should NOT stop the script, and one for fatal errors that SHOULD stop the script immediately. Think hard about how your fatal-error wrapper is going to stop the script. What command actually halts execution? And once you've built it — ask yourself a dangerous question: what happens if I call my "stop everything" version of this function from INSIDE a loop that's supposed to keep going after one failure? Sit with that question. You'll need the answer very soon.
+
+You're done with this milestone when: you can call all three of your logging wrappers from a throwaway test script, see each one write to your terminal, see your info and warning messages get written to a log file, and correctly predict — before running it — what happens to the REST of your test script after you call your fatal-error version partway through.
+
+------------------------------------------------------------
+MILESTONE 3 — Make sure you clean up after yourself, no matter what
+------------------------------------------------------------
+
+This one's a thought experiment first, code second. Imagine your script, mid-run, gets killed — maybe someone hits Ctrl+C, maybe the server reboots, maybe it just crashes on a bug. Whatever state your script was holding onto at that moment — temp files, locks, whatever — what happens to it?
+
+Go research bash's "trap" mechanism. Specifically research what signal fires when a script exits NORMALLY versus what signals fire when someone interrupts it from the keyboard versus when something else sends it a termination request. Research the difference between trapping on EXIT versus trapping on INT or TERM specifically, and why a script might want to handle both.
+
+Don't write the lock-file logic yet — we're not there. Just build a tiny placeholder cleanup function that, for now, simply logs "cleaning up" using the logger you built in Milestone 2. Wire it up with trap so it fires no matter how your script ends. Test it three different ways: let the script finish normally, kill it with Ctrl+C, and have it deliberately exit early using one of your own logging functions from Milestone 2. Confirm your cleanup message appears every single time, regardless of which of those three paths triggered it.
+
+You're done with this milestone when: all three of those exit paths reliably trigger your cleanup function, and you can explain why a trap-based approach is more reliable than just remembering to call a cleanup function manually at the end of your script.
+
+------------------------------------------------------------
+MILESTONE 4 — One copy at a time: the lock file
+------------------------------------------------------------
+
+Now the real problem: what stops two copies of your script — say, launched by an overlapping cron schedule — from running at the exact same time and fighting over the same database work?
+
+Go research how to atomically create a file ONLY if it doesn't already exist, using a shell option that changes how output redirection behaves. The word "atomic" matters here — think about why a simple "check if file exists, then create it" two-step check has a race condition if two processes do that check at almost the same instant, and how an atomic create-only operation closes that gap.
+
+Once you can create a lock file safely, think about what should go INSIDE it. What single piece of information about the current process would let some future invocation of this script tell whether the process that created this lock is still actually alive? Go research a way to check whether a process with a given ID is still running WITHOUT actually sending it a harmful signal — there's a special signal number specifically for this kind of check-only purpose.
+
+Now design the full decision tree yourself: lock file doesn't exist — what do you do? Lock file exists and that old process is still alive — what do you do? Lock file exists but that old process is dead — what do you do? That third case has a name DBAs use — a "stale lock" — and handling it gracefully instead of just always refusing to run is what separates a robust script from one that needs a human to manually delete a lock file every time something crashes.
+
+Wire your placeholder cleanup function from Milestone 3 to actually remove this lock file now — but only if THIS run was the one that created it. Think about why that condition matters: what would go wrong if your cleanup function deleted a lock file unconditionally, even one it didn't create?
+
+You're done with this milestone when: running your script once acquires the lock cleanly and releases it on exit; running it a SECOND time while the first copy is still sleeping in the background correctly refuses to start; and manually planting a lock file containing a fake process ID that you know isn't running gets correctly detected as stale and reclaimed.
+
+------------------------------------------------------------
+MILESTONE 5 — Talking to Postgres safely from bash
+------------------------------------------------------------
+
+Go research the psql command-line flags that give you clean, scriptable output with no headers, no padding, no row counts, and no interference from a user's personal psql startup customizations. You want output that's safe to capture directly into a bash variable.
+
+Build a small function that constructs a reusable base psql connection command from a host, port, and username. Then write a function that, given that base command, asks Postgres for its own major version number — go research the system setting that exposes this as a clean integer you can do arithmetic on, rather than parsing a human-readable version string yourself.
+
+Think about why the exact major version matters so much for THIS particular script — what changed in a specific Postgres version that this whole script's strategy depends on knowing about. You already touched on this conceptually in Milestone 0; now go confirm the exact version number where it changed.
+
+You're done with this milestone when: your script can connect to your lab Postgres instance and correctly print back its major version as a clean integer, and you can explain why that number is going to control a major branch in your script's logic later.
+
+------------------------------------------------------------
+MILESTONE 6 — Configuring the session so maintenance never blocks production
+------------------------------------------------------------
+
+This is the milestone with the sharpest teeth in the whole runbook, so go slow.
+
+Go research the Postgres session setting that controls how long a query is allowed to run before Postgres kills it automatically, and think about why a maintenance operation reindexing a huge table might legitimately need that protection disabled or set very high for itself specifically — without changing it for every other connection on the server.
+
+Now go research a DIFFERENT session setting — one that controls how long Postgres will wait trying to ACQUIRE a lock before giving up, as opposed to how long a query runs once it's executing. Think hard, and try to construct for yourself a real scenario where a REINDEX CONCURRENTLY operation could end up sitting and waiting on a lock indefinitely, and what that waiting could do to OTHER, unrelated queries trying to use the same table while your maintenance operation sits there blocking. I want you to genuinely scare yourself a little here before you set a value — go find a real account of a reindex or vacuum operation that took down a production system by blocking, and read about what happened. Then decide what value you'd want this lock-wait timeout set to for an automated maintenance script, and why short is safer here than long, even though that feels backwards at first.
+
+Go research the environment variable that lets you inject extra session-level settings into a psql connection without writing explicit SET statements inside every query.
+
+You're done with this milestone when: you can demonstrate, in your lab environment, a reindex-style operation actually timing out and failing fast because of your lock-wait setting, rather than hanging — and you can explain, unprompted, why a script designed to fail fast and retry later is safer in production than one designed to wait patiently no matter how long it takes.
+
+------------------------------------------------------------
+MILESTONE 7 — Validate every number before it touches SQL
+------------------------------------------------------------
+
+Before you write a single line of bloat-detection SQL, stop and think about where your bloat-percentage threshold, your minimum and maximum size bounds, and any other numeric setting are eventually going to end up: directly inside a SQL string that gets executed against a real production database.
+
+Now think like an attacker for five minutes. If someone could control the value of one of those numbers — through a command-line flag, an environment variable, a config file, anything — what's the worst string they could feed in instead of a plain number, and what could that string make your SQL do if you just pasted it straight into a query unexamined?
+
+Go research bash's regular-expression matching operator inside a conditional test, and write yourself a small function that takes a name and a value and refuses to continue — using your fatal-error logger from Milestone 2 — unless that value is made up ENTIRELY of digits, start to finish, nothing else allowed. Test it against a handful of inputs you choose yourself: a clean integer, an empty string, a number with a decimal point, and at least one deliberately malicious-looking string containing SQL syntax. Confirm your function rejects everything except the clean integer.
+
+You're done with this milestone when: your validation function correctly accepts only pure non-negative integers and correctly, loudly, rejects everything else — including at least one input you constructed specifically to look like an injection attempt.
+
+------------------------------------------------------------
+MILESTONE 8 — Read what the operator typed, in two different styles
+------------------------------------------------------------
+
+Go research how command-line tools commonly accept both a short flag and a long flag for the same option, and how a long flag is often allowed to take its value either as a separate following argument or attached after an equals sign in the same argument.
+
+Design your own parsing loop. Go research bash's case statement for matching against a value, and the shift builtin for consuming positional arguments as you process them. Think about how many positional arguments each style of flag consumes — a flag and a separate value are two arguments; a flag with an equals sign baked in is only one.
+
+Here's the design challenge I actually want you to wrestle with, not skip: rather than writing every flag-handling branch twice — once for the space-separated style and once for the equals-sign style — can you write a small preprocessing pass that NORMALIZES every argument into one consistent shape before your real parsing loop ever sees it? Think about what string-manipulation operations would let you split something like --flag=value into two separate pieces, the flag name and the value, using nothing but bash's own built-in parameter expansion.
+
+Also build in a path for an unrecognized flag — what should happen if the operator types a flag your script has never heard of? And build in a path for a help flag that just prints usage information and exits cleanly without doing anything else.
+
+You're done with this milestone when: your script correctly captures a handful of fake test flags using BOTH the space-separated and the equals-sign style, an unrecognized flag produces a clear error instead of silently being ignored, and a help flag prints something useful and exits without trying to connect to a database.
+
+------------------------------------------------------------
+MILESTONE 9 — Defaults, in the right order
+------------------------------------------------------------
+
+Think carefully about layering before you write anything here. You may eventually have three different sources that can set the same setting: a built-in default baked into the script, an optional config file an operator can drop next to the script, and a command-line flag typed right now. Which of these three should win if more than one of them tries to set the same value? Think it through and decide the precedence order yourself.
+
+Go research the bash idiom for "assign a default value into a variable, but only if it isn't already set" — there's a parameter-expansion form that actually performs the assignment as a side effect, not just substitutes a value temporarily, and there's a particular bash builtin commonly paired with it to make the line read cleanly. Figure out the difference between substituting a default for one expression versus actually assigning a default permanently into the variable, and pick deliberately, for each setting, which behavior you actually want.
+
+Make sure your script calls your config-loading step, then your argument-parsing step, then your defaults step, in an order that actually produces the precedence you decided on above. Get this order wrong and a CLI flag the operator explicitly typed will silently get overridden by something else — go ahead, deliberately get the order wrong once on purpose, observe the bug, then fix it. That bug is worth seeing with your own eyes once.
+
+Finally, run every numeric setting you now have through the validation function you built in Milestone 7, and build one or two more validation checks of your own for any settings that aren't numeric but should only ever be one of a small fixed set of allowed words.
+
+You're done with this milestone when: you can prove, by deliberately testing all three sources at once, that a CLI flag correctly overrides a config file value, which correctly overrides your hardcoded default — and every numeric setting passes through validation before your script considers itself ready to proceed.
+
+------------------------------------------------------------
+MILESTONE 10 — Finding the actual bloated indexes
+------------------------------------------------------------
+
+This is the milestone where I want you to do real research, not just bash research — SQL research.
+
+Go look up, from a reputable community source, a known formula for ESTIMATING B-tree index bloat using only Postgres's existing planner statistics, with no extra extension required. Separately, go research the extension that lets you measure ACTUAL physical bloat by reading index pages directly, and understand why that second method costs more in I/O even though it's more accurate. You are allowed — actually, I'm telling you to — adapt a known, trusted bloat-estimation query rather than deriving the math yourself from scratch. Nobody re-derives B-tree page-utilization math from first principles in their day job; what I need YOU to understand is what the query produces and why, not microderive every term of the formula.
+
+Once you have a working bloat query for at least one of the two methods, think about how you'd safely build the table and schema name into your output without risking a malformed or unsafely-quoted identifier — go research the Postgres function built specifically for safely formatting an identifier inside a query result.
+
+Wire your bloat threshold, your minimum size, your maximum size, and your sort-order preference into this query as filters — and think about why letting the operator choose ascending versus descending size ordering is a genuinely meaningful operational decision, not just cosmetic, given that a maintenance window might run out of time partway through a list.
+
+You're done with this milestone when: running your query against your lab database returns a clean list of fully-qualified index names that are actually over your chosen bloat threshold and within your chosen size bounds, sorted the way you asked for.
+
+------------------------------------------------------------
+MILESTONE 11 — Reindexing safely, with retries
+------------------------------------------------------------
+
+Go research the exact SQL syntax for rebuilding a single index without blocking normal reads and writes on its table, and confirm for yourself which Postgres major version first introduced this capability — you already found this number back in Milestone 5, now connect it to an actual branch in your code: one approach for servers at or above that version, and a completely different external tool for servers below it.
+
+Build a function for each approach. Each one should attempt the operation, capture whatever output or error message comes back, and clearly signal success or failure to whatever calls it — go decide for yourself how you want to signal that: a return code, a variable, both, your choice, just be consistent.
+
+Now the resilience design: think about WHY a reindex attempt might fail in a way that's likely to SUCCEED if you just try again a little later — tie this back to the lock-wait timeout decision you made in Milestone 6. Build a retry loop around your reindex function that tries a few times with INCREASING delays between attempts rather than retrying instantly — go think about why a growing delay gives you a better chance of success than retrying immediately, especially right after a lock-related failure. Decide for yourself how many attempts is enough, and what should happen — which of your Milestone 2 logging functions you should call — once you've exhausted every attempt without success on one particular index.
+
+Here's a sharper edge to research, because it's the kind of thing that only shows up once you actually try this against real concurrent operations: go find out what happens to an index's state in Postgres if a concurrent reindex operation gets interrupted partway through — what gets left behind, what does it look like in the system catalogs, and why might it block a FUTURE reindex attempt on that same index until it's cleaned up. Build a small function that detects and removes that leftover mess safely, using the same non-blocking philosophy as your main reindex operation itself.
+
+You're done with this milestone when: you can deliberately interrupt a reindex attempt in your lab environment, confirm your script detects and cleans up whatever gets left behind, and confirm your retry loop correctly gives up after a bounded number of attempts and lets your script move on rather than hanging forever on one stubborn index.
+
+------------------------------------------------------------
+MILESTONE 12 — Respect the operator's boundaries: the maintenance window
+------------------------------------------------------------
+
+Think through the time-window problem fully before writing anything. An operator gives you a start time and a stop time, both in 24-hour HHMM format. Most of the time the window doesn't cross midnight — start is numerically less than stop, simple comparison. But what about a window like 11 PM to 4 AM? Think through, on paper, what "outside the window" actually means when the window itself wraps across midnight, and write out, in plain English first, the two different comparison rules you'd need for the two different cases.
+
+Go research a sneaky bash arithmetic gotcha around numbers that have a leading zero — there's a default numeric interpretation in bash that will quietly misbehave on a time like 0800 if you're not careful, and a way to force the interpretation you actually want. Test this specifically with a leading-zero time value — don't just test with something like 1300 where the bug would never show up; deliberately pick a value that would trigger it, and watch it fail before you fix it.
+
+Decide where in your overall script this maintenance-window check needs to be called — just once, right at the start? Or somewhere else too? Think about a long-running batch that might still be working through a list of indexes well after the window technically closed, and decide for yourself whether checking only once at the beginning is good enough.
+
+You're done with this milestone when: your function correctly identifies "outside the window" for both a same-day window and a window that crosses midnight, correctly handles a maintenance start or stop time with a leading zero without misbehaving, and you've decided — with a reason you can defend — everywhere in your script this check needs to be called.
+
+------------------------------------------------------------
+MILESTONE 13 — Assemble the whole thing yourself
+------------------------------------------------------------
+
+No new research in this milestone. This is where you go back through everything you built — Milestones 1 through 12 — and assemble it into one coherent main flow, in your own structure, with your own ordering, calling your own functions.
+
+Before you write the assembly, sit down with a blank sheet of paper, away from the keyboard, and write out the ORDER you think these steps need to happen in — and for each ordering decision, write one sentence explaining why that step has to come before or after the one next to it. Only once you've written that ordering out and can defend it, go build it.
+
+Think about looping over more than one database if the operator didn't specify just one — go decide for yourself how you discover the full list of real databases on a server, and what you need to deliberately exclude from that list. Think about what running totals you want to track across the whole run — how many failures happened, how much disk space got reclaimed — and where in your loop structure each of those totals needs to be updated.
+
+And think about the very last line of your finished file — the one line that actually starts everything running, as opposed to all the function definitions sitting above it that do nothing until something calls them.
+
+You're done with this milestone when: you can run your finished script against your lab Postgres instance, end to end, with no manual intervention, and it correctly finds bloated indexes, respects your maintenance window and your lock file, retries failures sensibly, logs everything clearly, and cleans up after itself no matter how it exits — and you wrote every line of it yourself, milestone by milestone, without copying a single line from this lecture or from anywhere else.
+
+------------------------------------------------------------
+AFTER THE RUNBOOK
+------------------------------------------------------------
+
+Once — and only once — you've got your own version running end to end, THAT is the moment to go read the line-by-line walkthrough of the real production script later in this lecture. Read it the way you'd read someone else's solution to a problem you've already solved yourself: not to find out what to write, but to compare their reasoning to your reasoning. Where did they make the same call you made? Where did they make a different call, and why might theirs be better, or why might yours actually be just as good a different way? That comparison — your own working solution sitting next to a seasoned DBA's solution to the exact same problem — is worth more than any amount of reading code you haven't earned the right to understand yet.
+
+And here's the actual point of this whole runbook, the thing I most want you to walk away with: the next time you're handed a completely different ops problem — not reindexing, something I've never shown you — you should be able to run this exact same process on yourself. Understand the real-world problem first. Break it into milestones. At each milestone, ask what you need to research, build the smallest piece that could possibly work, test it in isolation, and only then move to the next piece. That sequence — understand, research, build small, test, repeat — is the actual skill. The bash syntax is just vocabulary. You can look up vocabulary any day of the week. What I can't hand you is the instinct for breaking an unfamiliar, intimidating problem down into a path you can actually walk. That instinct is what today was for.
+
+Alright — NOW let's build it. I'm going to walk through the finished script with you, line by line, the same way I would if I'd just opened it up at your desk during an incident.
+
+THE SHEBANG AND THE SAFETY FLAGS
+
+Go ahead and create a new file called pg_auto_reindexer.sh, and type this as the very first line:
+
+#!/usr/bin/env bash
+
+This tells the operating system "run this file using bash, wherever bash happens to live on this system's PATH." We use /usr/bin/env bash instead of hardcoding /bin/bash because on some systems — particularly some BSD or macOS setups — bash might live somewhere else. Using env makes the script portable.
+
+Now type this:
+
+set -uo pipefail
+
+Let's break this apart because every flag here matters and I want you to understand exactly what each one buys you.
+
+set -u means "if I reference a variable that was never set, treat that as an error and stop." This catches typos. If you typo a variable name somewhere in a three-hundred-line script, without -u, bash just silently treats it as an empty string and keeps going — and now you're running commands with blank values where real values should be. With -u, it blows up immediately and loudly. This is one of those things that saves you hours of confused debugging.
+
+set -o pipefail means "in a pipeline like command1 | command2, if command1 fails, the whole pipeline reports failure" — not just the exit status of the last command in the chain. Without this, if your first command in a pipe silently fails, bash only looks at the last command's exit code, and if that last command succeeds, the whole pipeline looks like a success even though something upstream actually broke.
+
+Now here's the interesting part, and I want you to notice what's NOT here: we are deliberately not using set -e.
+
+Most bash tutorials tell you "always use set -e, it stops the script on any error." And for a lot of scripts, that's the right call. But for THIS script, that would be the wrong call, and here's why: this script's entire design is "try to reindex this index, and if it fails, retry it a few times, and if it still fails, log it and move on to the next index." If we had set -e turned on, the very first failed reindex attempt anywhere in a multi-thousand-index run would kill the whole script. That's not what we want. We want resilience — keep going, skip the troublemakers, report at the end what failed.
+
+So instead, every command in this script whose failure should NOT stop everything gets an explicit check right there at the call site — you'll see patterns like "if ! command; then handle_it; fi" everywhere. That's intentional defensive design, not sloppiness. I want you to get comfortable with this distinction early in your career: set -e is a blunt instrument. Sometimes you want surgical error handling instead, especially in long-running batch jobs that process many independent items.
+
+INSTRUCTOR WARNING — and I mean this one seriously, write it down: never assume set -e protects you in scripts that process a list of independent items, like a list of tables or indexes. I've seen production cron jobs that were supposed to vacuum forty tables overnight, hit one corrupted or locked table, die on set -e, and then the other thirty-nine tables silently never got vacuumed for weeks because nobody was watching the cron output. That's how you end up with a transaction ID wraparound emergency at 3 AM — and some of you have already built runbooks for exactly that scenario, so you know how ugly that day gets. The lesson: when you're looping over many things, decide deliberately whether one failure should kill the whole batch or just that one item. Don't let it be an accident of whether you happened to type set -e at the top.
+
+GLOBAL VARIABLES AND PATHS
+
+Next block. Type this:
+
+declare SCRIPT_NAME
+SCRIPT_NAME="$(basename "$0")"
+declare SCRIPT_DIR
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+$0 in bash is "the name this script was invoked as." basename "$0" strips the directory part and gives you just the filename, like pg_auto_reindexer.sh. That's useful for log messages and for naming the lock file and log file dynamically off the script's own name — so if you ever rename the script or run a copy of it under a different name, the lock file and log naming follow automatically.
+
+readlink -f "$0" resolves the full, absolute path to the script — and critically, it resolves through symlinks. So if someone calls this script through a symlink in /usr/local/bin that actually points to /opt/dba-tools/pg_auto_reindexer.sh, readlink -f gives you the real underlying path, not the symlink path. Then dirname strips the filename and leaves you with just the directory. Why do we care? Because we use SCRIPT_DIR right after this to find a config file that's supposed to live next to the script. If you didn't resolve the symlink, and someone called the script via a symlink sitting in a totally different directory, you'd go looking for the config file in the wrong place.
+
+Next:
+
+declare CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/.dba_config}"
+
+This is the bash "default value" pattern, and you are going to use this constantly in every ops script you ever write, so get comfortable with it now. The syntax ${VAR:-default} means "use VAR if it's already set in the environment, otherwise use this default." So this line says: "if someone already exported a CONFIG_FILE environment variable before running this script, respect that. Otherwise, default to a hidden file called .dba_config sitting right next to the script." This gives you three ways to configure something — a sensible built-in default, a config file, or an environment variable override — without writing three separate code paths.
+
+Continue with:
+
+declare LOG_DIR="${LOG_DIR:-/var/log/dba}"
+declare LOG_FILE="${LOG_DIR}/${SCRIPT_NAME%.sh}.log"
+
+Same pattern for the log directory. Now look at ${SCRIPT_NAME%.sh} — this is parameter expansion stripping a suffix. The % operator removes the shortest matching pattern from the END of the string. So if SCRIPT_NAME is "pg_auto_reindexer.sh", this expression strips off ".sh" and gives you "pg_auto_reindexer". That's how the log file ends up named pg_auto_reindexer.log instead of pg_auto_reindexer.sh.log. Small detail, but it's the kind of polish that makes a script feel professional instead of slapped together.
+
+declare LOCK_FILE="${LOCK_FILE:-/var/run/dba/${SCRIPT_NAME%.sh}.lock}"
+declare LOCK_ACQUIRED=0
+
+declare DEBUG="${DEBUG:-0}"
+
+declare version="1.6"
+
+Same pattern again for the lock file — we'll talk about why we need a lock file in a few minutes, it's actually one of the more important safety mechanisms in here. LOCK_ACQUIRED starts at 0 as a flag we'll flip to 1 once we successfully grab the lock — that flag matters later in cleanup, so we know whether it's safe to delete the lock file. DEBUG defaults to 0, off. And version is just a literal string for the --version flag.
+
+LOGGING FUNCTIONS
+
+This next part is one of my favorite bits of script design to teach, because good logging is the difference between debugging a 2 AM production incident in five minutes versus two hours.
+
+log() {
+    local level="$1"
+    local priority="$2"
+    shift 2
+    local msg
+    if [[ -n "${1:-}" ]]; then
+        msg="$*"
+    else
+        read -r msg
+    fi
+    local timestamp
+    timestamp="$(date "+%F %T.%3N")"
+    echo -e "${timestamp} ${level}: ${msg}" | tee -a "$LOG_FILE"
+    logger -p "${priority}" -t "${SCRIPT_NAME}" "${msg}" 2>/dev/null || true
+}
+
+Let's go slow here because there's a clever trick hidden in this function.
+
+local level="$1" and local priority="$2" capture the first two arguments — something like "INFO" and "user.notice". Then shift 2 discards those first two positional arguments, so $1 onward now refers to whatever comes after.
+
+Here's the clever part: if [[ -n "${1:-}" ]] checks "is there still a positional argument left after the shift?" If yes, we join everything remaining into msg using "$*". But if there's nothing left — meaning the caller didn't pass a message as an argument — we fall into the else branch and do read -r msg, which reads a line from standard input instead.
+
+Why would you want that? Because this lets the SAME logging function support two completely different calling styles: log_info "some message" works fine, the message is an argument. But you can ALSO do something like some_command 2>&1 | log_error, piping output INTO the logger, and it'll read that piped text as the message. That's a really elegant bit of bash design — one function, two ergonomic calling conventions.
+
+Then we build a timestamp with millisecond precision using date "+%F %T.%3N" — %F gives you YYYY-MM-DD, %T gives you HH:MM:SS, and %3N gives you milliseconds. That precision matters when you're trying to correlate a script's log against Postgres's own log files during an incident review — if your timestamps only have second-level precision, you can't always tell which event happened first when things are firing rapidly.
+
+echo -e "${timestamp} ${level}: ${msg}" | tee -a "$LOG_FILE" — tee does something special: it writes to the log file AND still prints to your terminal at the same time, so you get live visibility while also building a permanent record. The -a flag means append, not overwrite, so each run adds to the log rather than destroying history.
+
+Last line: logger -p "${priority}" -t "${SCRIPT_NAME}" "${msg}" 2>/dev/null || true. logger sends the message into syslog, tagged with the script's name, at the given priority. This means if your organization has centralized log shipping — syslog forwarding to something like a SIEM or a log aggregation platform — this script's events automatically flow into that pipeline without any extra integration work. The 2>/dev/null || true at the end means "if logger isn't installed or fails for any reason, don't let that crash the whole logging function." Logging should never be the thing that takes down your script.
+
+Now the three wrapper functions:
+
+log_info()  { log "INFO"  "user.notice" "$@"; }
+log_warn()  { log "WARN"  "user.notice" "$@"; return 1; }
+log_error() { log "ERROR" "user.error"  "$@"; exit 1; }
+
+log_info just logs and returns normally. log_warn logs the message AND returns exit code 1 — this is intentional, because callers can do things like log_warn "something's wrong" || true to log a warning without that nonzero return code propagating and tripping anything that's checking exit status. log_error logs the message and then calls exit 1 — meaning log_error is a hard stop. Anywhere in this script you call log_error, you are saying "this condition is fatal, abort the entire script right now."
+
+INSTRUCTOR WARNING here, because I've seen people get bitten by this exact pattern: notice that log_error EXITS. That means you cannot use log_error inside a loop expecting the loop to continue to the next item — calling log_error inside your per-index processing loop would kill the entire script, not just skip that one index. That's exactly why later in this script, when we're inside the per-index reindex loop and something fails, we deliberately use log_warn, not log_error. Mixing those two up is one of the most common mistakes I see junior DBAs make when adapting scripts like this — they copy-paste a logging call without thinking about whether they're inside a "this should be fatal" context or a "this should be survivable" context. Always ask yourself that question before you choose which one to call.
+
+CLEANUP AND SIGNAL TRAPS
+
+cleanup() {
+    local exit_code=$?
+    if [[ "$LOCK_ACQUIRED" -eq 1 ]] && [[ -f "$LOCK_FILE" ]]; then
+        rm -f "$LOCK_FILE"
+        log_info "Released lock $LOCK_FILE" >/dev/null 2>&1 || true
+    fi
+    exit "$exit_code"
+}
+trap cleanup EXIT
+
+This is a pattern every single one of you needs to internalize: trap cleanup EXIT registers a function that runs automatically no matter HOW the script exits — whether it finishes normally, hits a log_error and calls exit 1, or gets killed by a signal. The very first line, local exit_code=$?, captures whatever the exit code was at the moment cleanup got triggered, BEFORE we run any more commands that might reset $? to something else. Then we check: did we actually acquire the lock, and does the lock file still exist? If so, remove it. Then finally we re-exit using that originally captured exit code, so the script's final exit status to the outside world — to cron, to systemd, to whatever's monitoring it — is accurate.
+
+Why does this matter so much? Because if this script crashes halfway through without releasing its lock file, the NEXT scheduled run will think another instance is still running and refuse to start. You'd end up needing someone to manually go delete a stale lock file at 3 AM. This trap pattern guarantees that cleanup happens on every exit path, which is exactly the kind of thing that separates "script that works when I tested it" from "script that's been running reliably in production for two years."
+
+on_signal() {
+    echo "Interrupted by signal" >&2
+    exit 130
+}
+trap on_signal INT TERM
+
+This catches Ctrl+C (SIGINT) and termination requests (SIGTERM, what you get from a normal kill command) and exits with code 130, which is the conventional Unix exit code for "terminated by Ctrl+C." Notice that calling exit here STILL triggers the EXIT trap we just defined above — traps chain together, so even when you Ctrl+C this script mid-run, the lock file still gets cleaned up properly. That's not an accident, that's the whole point of layering these two traps.
+
+USAGE / HELP TEXT
+
+This one's straightforward but let's talk about why we bother:
+
+usage() {
+cat << EOF
+pg_auto_reindexer - Automatic reindexing of B-tree indexes
+...
+EOF
+}
+
+The heredoc syntax — cat << EOF, then your text, then a line with just EOF — lets you write a multi-line block of text cleanly without escaping quotes or concatenating strings. Inside that block you'll notice we reference variables like ${SCRIPT_NAME} and ${CONFIG_FILE} — those get interpolated because this is an unquoted heredoc. If you wanted the text to be literal with no variable substitution, you'd write << 'EOF' with quotes around the delimiter — that's a detail worth remembering, because I've debugged scripts where someone wanted literal dollar signs in their output and got tripped up by accidental variable expansion in a heredoc.
+
+Why have a usage function at all, separate from inline comments? Because every professional CLI tool needs a -? or --help flag that prints exactly this kind of summary. It's basic professional courtesy to whoever runs your script six months from now and doesn't remember the flags — possibly future you.
+
+CONFIG FILE LOADING
+
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+        log_info "Loaded configuration from $CONFIG_FILE"
+    fi
+}
+
+source — also writable as a single dot — runs another file's contents directly inside the current shell's environment, as if you'd typed those lines yourself. So if .dba_config contains a line like PGHOST=dbprod03.internal, after sourcing it, the variable PGHOST is now set in this script exactly as if you'd assigned it yourself. This is how we let operators customize behavior per-server without editing the script itself — you keep one script, and a different tiny config file on each server.
+
+The # shellcheck source=/dev/null comment is a directive for the shellcheck static analysis tool — it tells shellcheck "don't try to follow and lint this sourced file, because its path isn't known until runtime." That's a nice habit to build: even in throwaway scripts, write your code so static analyzers can check it cleanly.
+
+And notice — deliberately — there's no else branch here, no error if the config file doesn't exist. That's intentional, and the comment in the original even says so. This script is commonly invoked from cron with no config file present at all, relying purely on defaults and CLI flags. A missing optional config file should never be treated as an error condition.
+
+DEPENDENCY CHECKING
+
+require_cmd() {
+    local missing=0
+    for c in "$@"; do
+        if ! command -v "$c" >/dev/null 2>&1; then
+            echo "Required command not found: $c" >&2
+            missing=1
+        fi
+    done
+    [[ "$missing" -eq 0 ]] || exit 1
+}
+
+command -v is the portable, correct way to check "does this executable exist somewhere on PATH." Avoid which for this — which behaves inconsistently across different systems and shells, doesn't reliably report exit codes the same way everywhere, and isn't even guaranteed to be installed on minimal systems. command -v is a POSIX builtin, it's always there, always behaves predictably. This is one of those small habits that signals someone who's written portable scripts across many environments versus someone who's only ever tested on their own laptop.
+
+We loop over every command name passed in, check each one, and only exit at the very end after checking ALL of them — that way if you're missing three dependencies, you see all three in one run instead of fixing one, rerunning, discovering the next missing one, fixing that, rerunning again. Small thing, saves real time.
+
+INPUT VALIDATION — AND WHY THIS PROTECTS YOU FROM SQL INJECTION
+
+validate_int() {
+    local name="$1" value="$2"
+    if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid value for ${name}: '${value}' (expected a non-negative integer)"
+    fi
+}
+
+validate_hhmm() {
+    local name="$1" value="$2"
+    if [[ ! "$value" =~ ^[0-9]{4}$ ]]; then
+        log_error "Invalid value for ${name}: '${value}' (expected 24h HHMM, e.g. 0130)"
+    fi
+}
+
+This uses bash's regex match operator =~. The pattern ^[0-9]+$ means "from start to end, one or more digits, nothing else." If the value doesn't match that pattern entirely, we call log_error, which — remember — kills the script immediately.
+
+Now here's the part I really want you to sit with, because this is a genuinely important security lesson disguised as a boring validation function. Later in this script, values like INDEX_BLOAT and INDEX_MINSIZE and INDEX_MAXSIZE get directly interpolated into SQL query strings that get executed against the database. Look ahead briefly at a fragment like this in the bloat-detection SQL:
+
+where bloat_ratio >= ${INDEX_BLOAT}
+
+If INDEX_BLOAT were allowed to be ANY arbitrary string from a command-line flag — say someone passed --index-bloat="30; drop table users; --" — and we just blindly stuck that into the SQL string with no validation, we'd be executing attacker-controlled SQL against our production database. That's a classic SQL injection vulnerability.
+
+INSTRUCTOR WARNING, and this is the single most important security lesson in this entire lecture: any time you build a SQL string by interpolating a value that came from outside your script — a CLI flag, an environment variable, a config file, anything a human or an automated caller controls — you must validate that value BEFORE it touches your SQL string. In this script, the fix is simple because these particular values only need to be plain non-negative integers, so a tight regex match closes the door completely — there is no string that matches ^[0-9]+$ that could also contain SQL syntax. That's the right level of paranoia for this case. If a value needed to be more flexible, like a free-text string, you would not roll your own escaping — you'd use parameterized queries instead, the same way you would in any application code talking to Postgres. But for an integer that's going to flow into a numeric comparison, validate-as-integer is clean, sufficient, and exactly what good production bash looks like. I want every script you write from this point in your career onward to ask this exact question about every external input: "where does this value end up, and have I made sure it can't carry anything dangerous by the time it gets there?"
+
+ARGUMENT PARSING
+
+This is the part of the script that intimidates people most when they first see it, but it's actually very mechanical once you see the pattern.
+
+parse_args() {
+    local newargs=()
+    for arg in "$@"; do
+        if [[ "${arg}" == --*=* ]]; then
+            local opt="${arg%%=*}"
+            local val="${arg#*=}"
+            newargs+=("${opt}" "${val}")
+        else
+            newargs+=("${arg}")
+        fi
+    done
+    set -- "${newargs[@]}"
+
+Before we even get to the main parsing loop, there's a normalization pass happening here. Why? Because we want to support BOTH styles of long option: --index-bloat 40 (space-separated) AND --index-bloat=40 (equals-separated). Most people only build one or the other. This script supports both by pre-processing: for any argument matching the pattern --*=*, meaning it starts with two dashes and contains an equals sign somewhere after, we split it apart. ${arg%%=*} strips everything from the first equals sign onward, leaving just the option name. ${arg#*=} strips everything up to and including the first equals sign, leaving just the value. So --index-bloat=40 gets split into two separate array entries: "--index-bloat" and "40" — exactly as if the user had typed them space-separated to begin with. Then set -- "${newargs[@]}" replaces the script's positional parameters with this newly normalized array, so the actual parsing loop below only ever has to deal with ONE format.
+
+That's a genuinely elegant piece of design — rather than writing every single case in the parsing switch twice to handle both formats, you normalize once up front and write the parsing logic only once.
+
+Now the main loop:
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--host)                  PGHOST="$2"; shift 2;;
+            -p|--port)                  PGPORT="$2"; shift 2;;
+            -d|--dbname)                DBNAME="$2"; shift 2;;
+            -U|--username)              DBUSER="$2"; shift 2;;
+            -b|--index-bloat)           INDEX_BLOAT="$2"; shift 2;;
+            -m|--index-minsize)         INDEX_MINSIZE="$2"; shift 2;;
+            -M|--index-maxsize)         INDEX_MAXSIZE="$2"; shift 2;;
+            -s|--maintenance-start)     MAINTENANCE_START="$2"; shift 2;;
+            -S|--maintenance-stop)      MAINTENANCE_STOP="$2"; shift 2;;
+            -t|--bloat-search-method)   BLOAT_SEARCH_METHOD="$2"; shift 2;;
+            -l|--failed-reindex-limit)  FAILED_REINDEX_LIMIT="$2"; shift 2;;
+            -j|--jobs)                  PARALLEL_JOBS="$2"; shift 2;;
+            -o|--sorting-order)         SORTING_ORDER="$2"; shift 2;;
+            -c|--config)                CONFIG_FILE="$2"; shift 2;;
+            --lock-file)                LOCK_FILE="$2"; shift 2;;
+            --verbose)                  DEBUG=1; set -x; shift;;
+            -v|--version)               echo "pg_auto_reindexer v${version}"; exit 0;;
+            -\?|--help)                 usage; exit 0;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage
+                exit 2
+                ;;
+        esac
+    done
+}
+
+while [[ $# -gt 0 ]] just means "keep going while there are still positional arguments left to process." Inside, a case statement checks $1 — the current argument — against each possible flag. Most branches follow the same shape: assign $2 (the value that comes right after the flag) into the appropriate variable, then shift 2 to consume both the flag and its value and move to the next pair.
+
+A few branches are special. --verbose doesn't take a value — it just sets DEBUG=1 and then calls set -x, which turns on bash's execution tracing, printing every command as it actually runs, with variable values substituted in. That's invaluable when you're debugging exactly what a script did in production. Notice it only shift 1 — there's no value argument to consume.
+
+-v|--version just prints the version string and exits immediately — code 0, success, because asking for version info isn't an error.
+
+-\?|--help — notice the backslash before the question mark. That's there because in bash, an unescaped ? inside a case pattern is a glob wildcard meaning "any single character," so without escaping it, -? would accidentally match almost anything. Escaping it makes bash treat it as a literal question mark character.
+
+The catch-all * branch handles anything that didn't match any known flag — prints an error to stderr, shows usage, and exits with code 2. Exit code 2 here, as opposed to 1, is a convention some tools use to distinguish "user gave bad input" from "something internally went wrong" — worth knowing as a pattern even if not every tool follows it strictly.
+
+APPLYING DEFAULTS AND VALIDATING EVERYTHING TOGETHER
+
+apply_defaults() {
+    : "${PGHOST:=/var/run/postgresql}"
+    : "${PGPORT:=5432}"
+    : "${DBUSER:=postgres}"
+    : "${INDEX_BLOAT:=30}"
+    : "${BLOAT_SEARCH_METHOD:=estimate}"
+    : "${INDEX_MINSIZE:=1}"
+    : "${INDEX_MAXSIZE:=1000000}"
+    : "${FAILED_REINDEX_LIMIT:=0}"
+    : "${SORTING_ORDER:=asc}"
+
+This is a different flavor of the default-value pattern than what we saw earlier. The colon : is bash's "do nothing" builtin — it evaluates its arguments but doesn't actually run anything as a command. The trick is the := operator instead of :-. The difference matters: ${VAR:-default} just SUBSTITUTES the default for that one expression without changing VAR itself. ${VAR:=default} actually ASSIGNS the default INTO VAR if it wasn't already set. We're using the colon-no-op trick specifically because we want the side effect — permanently setting the variable — without needing an actual command to run. This is an extremely common bash idiom for "set this variable to a default if the user didn't already give it a value via CLI flag or config file," and you'll see it constantly in production ops scripts.
+
+Notice WHY defaults are applied here, AFTER both config loading and argument parsing, rather than at the very top of the script. Order of precedence matters: if we set defaults first, then a config file's values would override them, then CLI flags would override the config file. That's exactly the layering you want — sensible built-in defaults, optionally overridden by a config file, optionally overridden again by whatever the operator typed on the command line right now. Each layer gets more specific and more recent. Get this ordering backwards and your CLI flags silently get ignored because the config file already "claimed" the variable.
+
+    if [[ "${SORTING_ORDER}" != "asc" && "${SORTING_ORDER}" != "desc" ]]; then
+        log_error "Invalid sorting order: ${SORTING_ORDER}. Allowed values: asc, desc."
+    fi
+
+    if [[ "${BLOAT_SEARCH_METHOD}" != "estimate" && "${BLOAT_SEARCH_METHOD}" != "pgstattuple" ]]; then
+        log_error "Invalid bloat search method: ${BLOAT_SEARCH_METHOD}. Allowed values: estimate, pgstattuple."
+    fi
+
+These are simple allow-list checks — "this value must be exactly one of these known strings, or we abort." We'll talk about what these two bloat search methods actually mean shortly when we get to the SQL.
+
+    validate_int "--index-bloat"          "${INDEX_BLOAT}"
+    validate_int "--index-minsize"        "${INDEX_MINSIZE}"
+    validate_int "--index-maxsize"        "${INDEX_MAXSIZE}"
+    validate_int "--failed-reindex-limit" "${FAILED_REINDEX_LIMIT}"
+    [[ -n "${PARALLEL_JOBS:-}" ]] && validate_int "--jobs" "${PARALLEL_JOBS}"
+    [[ -n "${MAINTENANCE_START:-}" ]] && validate_hhmm "--maintenance-start" "${MAINTENANCE_START}"
+    [[ -n "${MAINTENANCE_STOP:-}"  ]] && validate_hhmm "--maintenance-stop"  "${MAINTENANCE_STOP}"
+}
+
+Here's where we actually call those validation functions we wrote earlier — exactly the integer-only values that we said get interpolated into SQL later get checked here, before they ever touch a query string. Notice PARALLEL_JOBS, MAINTENANCE_START, and MAINTENANCE_STOP are only validated IF they're set — these three don't have hard defaults applied above, because they're genuinely optional. An operator might not want a maintenance window restriction at all, and that's a valid choice, not a missing value that needs a fallback.
+
+LOCKING — PREVENTING TWO COPIES FROM RUNNING AT ONCE
+
+acquire_lock() {
+    mkdir -p "$(dirname "$LOCK_FILE")"
+
+    if ( set -o noclobber; echo "$$" > "$LOCK_FILE" ) 2>/dev/null; then
+        LOCK_ACQUIRED=1
+        log_info "Acquired lock $LOCK_FILE (pid $$)"
+        return 0
+    fi
+
+Let's slow way down here because this is genuinely clever and worth understanding deeply, not just copying.
+
+$$ in bash is the process ID of the currently running script. The core trick is set -o noclobber combined with a redirect. Normally, echo "$$" > "$LOCK_FILE" would happily overwrite the lock file if it already existed. But noclobber changes that behavior: with noclobber on, if you try to redirect output to a file that ALREADY EXISTS, bash refuses and the redirect fails instead of overwriting it. This gives us an atomic "create this file only if it doesn't already exist" check — and atomicity matters enormously here, because we're trying to prevent a race condition where two instances of this script start at almost the exact same moment and both think they're the first one.
+
+Wrapping the whole thing in parentheses ( ... ) runs it in a subshell, so the noclobber setting doesn't leak out and affect the rest of the script's behavior afterward — it's scoped just to this one check.
+
+If that succeeds — meaning the lock file genuinely didn't exist before and we just created it containing our process ID — we set LOCK_ACQUIRED=1 and we're done, we own the lock.
+
+    local old_pid
+    old_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+
+    if [[ -n "$old_pid" ]] && ! kill -0 "$old_pid" 2>/dev/null; then
+        log_info "Stale lock found (pid $old_pid no longer running). Reclaiming lock."
+        rm -f "$LOCK_FILE"
+        echo "$$" > "$LOCK_FILE"
+        LOCK_ACQUIRED=1
+        return 0
+    fi
+
+    log_error "Another instance of ${SCRIPT_NAME} is already running (pid ${old_pid:-unknown}, lock $LOCK_FILE)"
+}
+
+If the lock file DID already exist, we don't just give up immediately — we check whether the process that supposedly owns that lock is actually still alive. kill -0 doesn't actually send a kill signal — signal 0 is special, it just checks "does a process with this PID currently exist," without harming it in any way. If kill -0 fails, that process is dead — meaning the lock file is "stale," left behind by a previous run that probably crashed or got killed without going through normal cleanup. In that case, it's safe to reclaim the lock: delete the old stale file, write our own PID in fresh, and proceed.
+
+If kill -0 succeeds — meaning that old PID genuinely is still alive and presumably still running this exact script — then we have a real conflict, and we call log_error to abort, refusing to run a second instance concurrently.
+
+Why does any of this matter so much? Picture what happens WITHOUT this locking logic: your cron job is scheduled to run this script every night at 1 AM. One particular night, the run takes much longer than usual — maybe there's an unusually large bloated index, maybe the database is under heavy load — and it's still running when 1 AM rolls around again the NEXT night. Now you've got two instances of pg_auto_reindexer simultaneously trying to reindex things on the same database, potentially even fighting over the exact same index, doubling lock contention, doubling load, and producing genuinely confusing log output where you can't tell which run logged which line. The lock file turns "maybe runs twice, who knows" into a hard, guaranteed, single-instance-at-a-time invariant. This exact pattern — PID-aware, stale-lock-tolerant file locking — shows up constantly in cron-driven ops scripts, way beyond just Postgres tooling, so I want this one to stick with you as a general-purpose technique.
+
+CONNECTING TO POSTGRES AND DETECTING THE SERVER VERSION
+
+build_psql_cmd() {
+    _PSQL="psql -h ${PGHOST} -p ${PGPORT} -U ${DBUSER}"
+}
+
+This builds a reusable base psql command string that every later query will use as its starting point, so we're not repeating the host/port/user flags everywhere. Quick note on naming: the leading underscore on _PSQL is a common convention some shops use to signal "this is an internal, script-scoped helper variable, not meant to be set externally" — it's a style choice, not a bash requirement, but it's worth recognizing when you see it in other people's scripts.
+
+resolve_dbname_and_version() {
+    if [[ -z "${DBNAME:-}" ]]; then
+        if ! DBNAME=$(${_PSQL} -d postgres -tAXc "select datname from pg_database where not datistemplate"); then
+            log_error "Unable to connect to database postgres on ${PGHOST}:${PGPORT}"
+        fi
+    fi
+
+If the operator didn't specify a particular database with -d, we go fetch the list of ALL non-template databases on this server — pg_database.datistemplate filters out template0 and template1, the internal databases you'd never want to reindex directly. This means by default, this script will walk through every real database on the instance, not just one. That's a meaningful default behavior to understand — if you only want it to touch ONE specific database, you must pass -d explicitly.
+
+Notice the psql flags here: -t strips column headers and row counts from the output, -A turns off aligned formatting so you don't get padding whitespace, -X skips reading any .psqlrc startup file so behavior is predictable and not influenced by someone's personal psql customizations, and -c runs the given SQL command and exits. Together, -tAXc is the standard combination for "give me clean, scriptable, unpadded output" — you'll use that combination constantly whenever you're capturing psql output into a shell variable.
+
+    PG_VERSION=$(
+        $_PSQL \
+            -d "$(echo "${DBNAME}" | awk 'NR==1')" \
+            -tAXc "select setting::integer/10000 from pg_settings where name = 'server_version_num'"
+    )
+}
+
+This grabs the Postgres major version number. server_version_num is a numeric setting Postgres exposes, formatted as a number like 150003 for version 15.3, or 120010 for version 12.10. Dividing by 10000 with integer arithmetic and casting to integer gives you just the major version — 15, or 12. Why do we need this? Because the entire reindexing STRATEGY changes depending on the major version, which we'll see in just a moment — this is genuinely one of the most important branches in the whole script.
+
+The awk 'NR==1' part takes only the FIRST line of whatever DBNAME contains. Remember, DBNAME might be a multi-line list of every database on the server. We just need ANY single valid database name to connect to in order to check the server's version — the version is a server-level property, identical no matter which database you connect through, so picking just the first one in the list is perfectly correct and avoids unnecessary connections.
+
+CONFIGURING SESSION OPTIONS FOR SAFE MAINTENANCE
+
+build_pgoptions() {
+    PGOPTIONS="-c statement_timeout=0 -c lock_timeout=1s"
+
+PGOPTIONS is a special environment variable that psql and other libpq-based clients read to pass extra configuration settings into the Postgres session, as if you'd run SET commands right after connecting.
+
+Two settings here, and they deserve real attention. statement_timeout=0 disables the statement timeout entirely for this session — meaning queries are allowed to run as long as they need, with no automatic cutoff. That makes sense here because reindexing a genuinely massive index can legitimately take a long time, and we don't want Postgres to kill our own maintenance operation partway through just because it crossed some default timeout threshold.
+
+lock_timeout=1s is the one I really want you to understand deeply, because it's connected to one of the most dangerous mistakes a DBA can make in production.
+
+REINDEX CONCURRENTLY is specifically designed to avoid blocking normal reads and writes on the table while it rebuilds the index — that's the entire point of the word "concurrently." But it still needs to briefly acquire certain lightweight locks at specific points during its process — for instance, very briefly when it's validating the new index and swapping it in to replace the old one. If something else is already holding a conflicting lock on that table at that exact moment — say, a long-running transaction that's been sitting open for ten minutes — REINDEX CONCURRENTLY would normally just sit there and wait, indefinitely, for that lock to become available.
+
+By setting lock_timeout=1s, we tell Postgres: "if you can't acquire whatever lock you need within one second, give up and throw an error instead of waiting." That sounds like it would make the script LESS reliable — more things fail — but it's actually a deliberate, very experienced safety choice. Here's why: a REINDEX operation that's been sitting around for a while patiently waiting to acquire a lock is ALSO, while it waits, potentially queued up BEHIND other incoming queries that need conflicting locks on that same table — and depending on lock queue ordering, that can create a pile-up where normal application queries start queuing up behind your maintenance lock request too. A short lock_timeout converts "maintenance operation silently jams up production traffic for an unknown and possibly long duration" into "maintenance operation fails fast with a clear error in one second, gets logged, gets retried later by this very script's retry logic." Failing fast and retrying is dramatically safer than blocking indefinitely on a production table.
+
+INSTRUCTOR WARNING — write this one down too, because I have genuinely seen this exact mistake bring down a production system: never run index or table maintenance against a busy production database without a lock_timeout set. I watched a junior DBA at a previous job run a manual, ad hoc REINDEX directly in a psql session, no lock_timeout, no concurrent flag even, during business hours, "because it'll only take a minute." It blocked behind a long-running report query that had been left open by someone's forgotten BI tool connection. Every subsequent query against that table queued up behind it. Within four minutes, the connection pool was saturated with queries all waiting on that one lock, the application's health checks started failing, and we had a full outage on our hands — for a maintenance operation that was supposed to be invisible. A one-line lock_timeout setting would have turned that entire incident into a single harmlessly-failed command in a log file instead of a customer-facing outage. Always set a lock_timeout for maintenance work. Always.
+
+    if [[ "${PG_VERSION}" -ge 11 ]]; then
+        if [[ -z "${PARALLEL_JOBS:-}" ]]; then
+            PGOPTIONS+=" -c max_parallel_maintenance_workers=0"
+        else
+            PGOPTIONS+=" -c max_parallel_maintenance_workers=$((PARALLEL_JOBS - 1))"
+        fi
+    else
+        if [[ -n "${PARALLEL_JOBS:-}" ]]; then
+            log_error "Parallel workers option (-j/--jobs) is not supported for PostgreSQL ${PG_VERSION}."
+        fi
+    fi
+}
+
+max_parallel_maintenance_workers is a Postgres setting — available starting in version 11 — controlling how many background worker processes can assist a single maintenance operation, like building an index. If the operator didn't ask for parallel jobs, we explicitly disable it by setting it to 0, rather than just leaving Postgres's own default in place — explicit beats implicit, especially in scripts meant to behave identically and predictably across many different servers that might have different postgresql.conf defaults configured. If they DID ask for N jobs via -j, we configure N-1 parallel workers — because the calling process itself counts as one "worker" in the total, so requesting "3 jobs total" means 1 main process plus 2 additional parallel background workers, hence PARALLEL_JOBS - 1.
+
+If we're on an older Postgres that doesn't support this setting at all, and the operator tried to pass -j anyway, we hard-fail with log_error rather than silently ignoring their request — silently ignoring a flag the user explicitly asked for is a sneaky kind of bug, because the script appears to succeed while quietly not doing what was asked. Far better to fail loudly and immediately tell them "this won't work on this version" than to let them discover that confusion days later.
+
+THE BLOAT-DETECTION SQL — TWO DIFFERENT METHODS
+
+build_bloat_sql() {
+    if [[ "${BLOAT_SEARCH_METHOD}" = "pgstattuple" ]]; then
+        ...
+    elif [[ "${BLOAT_SEARCH_METHOD}" = "estimate" ]]; then
+        ...
+    fi
+}
+
+There are two fundamentally different ways to measure how bloated an index is, and the script supports both — let's talk about the tradeoff, because understanding WHY there are two methods is more important than memorizing either query verbatim.
+
+The pgstattuple method uses an actual Postgres extension called pgstattuple, which physically walks through the index pages on disk and tells you, precisely, how much of each page is actually used versus dead space. It's the ground truth — completely accurate. But it's expensive: it has to read every page of every index you're checking, which means real I/O and real time, especially on a large database. Running this against your whole production database during business hours is itself a risk you have to weigh.
+
+The estimate method is a statistical formula — it doesn't touch the index pages on disk at all. Instead, it uses information already sitting in Postgres's planner statistics — row counts, average row widths, page counts — that get refreshed by ANALYZE, and from those it calculates a mathematical ESTIMATE of how bloated the index probably is, without ever reading the actual index file. It's much, much cheaper to run because there's essentially no extra I/O involved. The tradeoff is it's an estimate, not ground truth — it can be slightly off, especially if your table statistics are stale.
+
+In practice, most DBAs default to the estimate method for routine automated runs — which is exactly why "estimate" is the script's default — and reserve pgstattuple for situations where they specifically want to verify the true bloat number on a particular suspicious index, maybe before deciding whether to manually intervene.
+
+I'm not going to read every line of either SQL query out loud with you character by character — they're long, and frankly the formulas for index-bloat-estimation are something you look up and adapt from known-good community sources rather than deriving from scratch, the same way you wouldn't derive a cryptographic hash function from first principles. What I DO want you to understand is the shape of the output both queries produce, because that shape is what the REST of the script depends on.
+
+Both queries ultimately produce a list of fully-qualified index names — formatted like schema.indexname using format('%I.%I', schemaname, indexrelname) — filtered down to only the indexes whose bloat ratio meets or exceeds your --index-bloat threshold, AND whose size in megabytes falls between your --index-minsize and --index-maxsize bounds, ordered by size according to your chosen --sorting-order.
+
+That last bit — sorting order — is actually a meaningful operational decision, not just cosmetic. If you sort ascending, you knock out a lot of small, quick wins first, which is good if you're not sure how much time you'll have in your maintenance window and want to guarantee you make SOME progress. If you sort descending, you tackle the biggest, most impactful bloat first, which is good if you're confident you have enough time and want to prioritize the indexes causing the most pain. Neither is universally "correct" — it depends on your maintenance window length and your risk tolerance, and that's exactly why it's exposed as a configurable flag rather than hardcoded.
+
+Notice also, very deliberately: format('%I.%I', ...) is Postgres's own safe identifier-quoting function — %I means "quote this as an identifier," automatically adding double quotes and escaping correctly if the schema or index name needs it, like if it contains mixed case or special characters. That's the SQL-side equivalent of the input validation lesson from earlier — never just concatenate raw identifier names into a string you're going to execute later; let the database quote them safely for you.
+
+DETECTING WHETHER THE SERVER IS A REPLICA
+
+check_pg_connection() {
+    if ! ${_PSQL} -d "$(echo "${DBNAME}" | awk 'NR==1')" -tAXc "select 1" 1> /dev/null; then
+        log_error "PostgreSQL server ${PGHOST}:${PGPORT} no response"
+    else
+        state=$(${_PSQL} -d "$(echo "${DBNAME}" | awk 'NR==1')" -tAXc 'select pg_is_in_recovery()') 2>/dev/null
+        if [[ "${state}" = "t" ]]; then
+            log_warn "This server is in recovery mode. Index maintenance will not be performed on that server." || true
+            exit 0
+        fi
+    fi
+}
+
+First check: can we even reach the server and run a trivial select 1? If not, that's fatal — log_error, abort.
+
+Second check, and this one's important conceptually: pg_is_in_recovery() is a Postgres function that returns true if the server you're connected to is currently a streaming replica — a standby — rather than the primary. Why does that matter for reindexing? Because you cannot write to a replica. REINDEX is fundamentally a write operation — it modifies the index on disk. If you accidentally point this script at a read replica instead of the primary, attempting to reindex there would simply fail, or worse, depending on configuration, cause replication conflicts. So this script proactively checks, and if it discovers it's talking to a replica, it logs a warning and exits cleanly with code 0 rather than treating it as an error — because "I was pointed at a replica" isn't really a failure of the script, it's just the wrong target, and exiting 0 means your monitoring or cron alerting won't flag this as a broken run.
+
+Notice that exit 0 here — combined with our earlier EXIT trap — still properly releases the lock file on the way out, because trap cleanup EXIT fires regardless of what exit code triggered it. That consistency is exactly why we built cleanup as a trap instead of manually calling it at every single exit point in the script.
+
+EXTENSIONS, INDEX SIZE, AND THE MAINTENANCE WINDOW
+
+create_extension_pgstattuple(){
+    ${_PSQL} -d "${db}" -tAXc "create extension if not exists pgstattuple;" &>/dev/null
+}
+
+create_extension_pg_repack(){
+    ${_PSQL} -d "${db}" -tAXc "create extension if not exists pg_repack" &>/dev/null
+}
+
+These ensure the necessary Postgres extension is installed in whichever database we're about to operate on, conditionally — create extension if not exists is itself idempotent, meaning running it repeatedly causes no harm if the extension's already there. We're calling these per-database because extensions in Postgres are installed at the per-database level, not instance-wide — having pgstattuple in one database tells you nothing about whether it's available in another database on the same server.
+
+check_index_size(){
+    ${_PSQL} -d "${db}" -tAXc "select pg_relation_size('$1')/1024/1024"
+}
+
+A small helper used to report index size in megabytes before and after a reindex, purely for the human-readable log output showing how much space got reclaimed — we'll see it called from inside the main loop shortly.
+
+maintenance_window(){
+    if [[ -n "${MAINTENANCE_START:-}" ]] && [[ -n "${MAINTENANCE_STOP:-}" ]]; then
+        currentTime=$((10#$(date "+%H%M")))
+        start=$((10#${MAINTENANCE_START}))
+        stop=$((10#${MAINTENANCE_STOP}))
+        out_of_window=false
+
+There's a sneaky little bash gotcha hiding right here, and I want to call it out explicitly because it'll bite you eventually if you don't know about it: the 10# prefix. Bash, by default, treats any number with a leading zero as OCTAL, not decimal. If MAINTENANCE_START were "0800" and you did plain arithmetic on it without that prefix, bash would try to interpret "0800" as an octal number — and 8 isn't even a valid octal digit, so you'd get an outright error. The 10# prefix explicitly forces bash to interpret the following digits in BASE 10, decimal, regardless of leading zeros. This is exactly the kind of bug that only shows up for SOME input values — anyone testing with a time like 1300 would never trigger it, but the very first time someone configures a maintenance window starting at 0100 or 0800, the script would mysteriously break. That's a fantastic example of why testing edge cases — specifically things with leading zeros — matters so much in scripts that parse numbers from text.
+
+        if [[ "${start}" -le "${stop}" ]]; then
+            if [[ "${currentTime}" -lt "${start}" || "${currentTime}" -gt "${stop}" ]]; then
+                out_of_window=true
+            fi
+        else
+            if [[ "${currentTime}" -gt "${stop}" && "${currentTime}" -lt "${start}" ]]; then
+                out_of_window=true
+            fi
+        fi
+
+This handles two genuinely different cases, and it's worth thinking through both. If start is less than or equal to stop — like a window from 0100 to 0600 — that's a normal same-day window, and we're simply outside it if the current time is before the start or after the stop.
+
+But what about a maintenance window like 2300 to 0400 — eleven PM to four AM, crossing midnight? In that case, start (2300) is numerically GREATER than stop (0400), which tells us we're dealing with a window that wraps across midnight. The logic flips: now we're OUT of the window only if the current time falls strictly between stop and start — meaning, strictly after 4 AM and strictly before 11 PM, the "daytime" gap that's NOT covered by the overnight window. This little bit of conditional logic is a really common real-world pattern any time you're dealing with time ranges that might cross a boundary — it comes up with maintenance windows, business hours checks, shift schedules, anything cyclical.
+
+        if [[ "${out_of_window}" == true ]]; then
+            log_warn "Current time: $(date "+%R %Z"). This is outside of the maintenance window: $(date --date="${MAINTENANCE_START}" "+%R")-$(date --date="${MAINTENANCE_STOP}" "+%R"). Exit." || true
+            exit 0
+        fi
+    fi
+}
+
+If we're outside the configured window, we log a clear, human-readable message — converting the raw HHMM values back into a nicely formatted time using date --date, and exit cleanly with code 0, same reasoning as the replica check: being outside your maintenance window isn't a failure, it's the script correctly respecting its configuration.
+
+Notice this function gets called not just once at the start of the run, but repeatedly — once before we begin, and then AGAIN right before processing each individual index inside the main loop. That's deliberate. If a maintenance window closes WHILE the script is mid-run — say your window was 0100 to 0300 and it's now 0301 and we're still chugging through a long list of indexes — we want the script to notice and stop gracefully rather than barreling on past the window operators specifically configured to bound this work.
+
+HANDLING INVALID INDEXES LEFT BEHIND BY FAILED CONCURRENT OPERATIONS
+
+This next function deals with a genuinely gnarly edge case of REINDEX CONCURRENTLY that catches a lot of people off guard.
+
+drop_invalid_index() {
+    local index="$1"
+    local status="$2"
+    local invalid_index_name
+
+    if [[ ${PG_VERSION} -le 11 ]]; then
+        invalid_index_name="index_${index}"
+    else
+        invalid_index_name="${index}_cc(new|old)[0-9]*$"
+    fi
+
+Here's the background you need: when REINDEX CONCURRENTLY builds a new index to replace an old one, it does this by actually creating a brand-new index object behind the scenes — temporarily named with a suffix like _ccnew — and only swaps it in to replace the original once the build succeeds. If that operation gets interrupted — say the script gets killed, or the connection drops, or the server crashes mid-build — you can be left with a leftover index marked INVALID sitting in pg_index, usually with that telltale _ccnew or _ccold suffix. An invalid index doesn't get used by the query planner, but it still takes up disk space and, worse, it can actually BLOCK a future REINDEX CONCURRENTLY attempt on that same underlying index, because Postgres sees there's already a conflicting concurrent build artifact present.
+
+So before attempting a reindex, and again if a reindex attempt fails, this function proactively goes hunting for any leftover invalid indexes matching that naming pattern and cleans them up.
+
+    invalid_indexes=$(${_PSQL} -d "${db}" -tAXc "
+        select format('%I.%I', schemaname, indexrelname)
+        from pg_stat_user_indexes
+        join pg_index using (indexrelid)
+        where not indisvalid
+          and format('%I.%I', schemaname, indexrelname) ~ '${invalid_index_name}'
+    ")
+
+We query pg_stat_user_indexes joined to pg_index, filtering for not indisvalid — invalid indexes — and matching the naming pattern with the regex match operator ~ inside SQL itself, which lets Postgres do the pattern filtering server-side.
+
+    if [[ -n "${invalid_indexes}" ]]; then
+        while IFS= read -r invalid_index; do
+            log_info " Invalid index detected: ${invalid_index}. Dropping."
+            if ! output=$(${_PSQL} -d "${db}" -tAXc "DROP INDEX CONCURRENTLY ${invalid_index}" 2>&1); then
+                log_warn " Failed to drop invalid index ${invalid_index}: ${output}" || true
+            fi
+
+For each one found, we log it and attempt to drop it — notice we use DROP INDEX CONCURRENTLY here too, not a plain DROP INDEX. That matters for exactly the same reason REINDEX CONCURRENTLY matters: a plain DROP INDEX takes a heavier lock that blocks reads and writes on the table while it runs, even for something as seemingly trivial as dropping an already-broken, already-unused invalid index. DROP INDEX CONCURRENTLY avoids that, staying consistent with this whole script's "never block production traffic" philosophy.
+
+            if [[ "${status}" == false ]] && [[ "$(echo "$invalid_indexes" | wc -w)" -eq 1 ]]; then
+                if [[ "${invalid_index}" == *_ccold ]]; then
+                    log_info " Invalid index has a name with the suffix \"_ccold\". Stopping the reindex attempt."
+                    ccold_index=true
+                else
+                    ccold_index=false
+                fi
+            fi
+        done <<< "${invalid_indexes}"
+    fi
+}
+
+This last bit handles a particularly subtle situation. A status of false means we're calling this AFTER a failed reindex attempt — the second call site in the retry loop, not the precautionary call beforehand. If there's exactly one invalid leftover, and its name ends specifically in _ccold rather than _ccnew, that tells us something meaningful: a _ccold index is the OLD index that REINDEX CONCURRENTLY was in the process of swapping out and dropping when something went wrong — meaning the new index build may have actually mostly succeeded, and we're in a delicate partial state. The script flags this with ccold_index=true so the calling retry loop knows to stop retrying immediately rather than hammering away at an index that's in this unusual, already-mostly-transitioned state. That's a level of operational nuance that usually only comes from someone having actually hit this exact scenario in production and having to figure out, painfully, what was really going on.
+
+THE ACTUAL REINDEX AND REPACK OPERATIONS
+
+run_repack() {
+    local index=$1
+
+    if ! output=$(PGOPTIONS="${PGOPTIONS}" pg_repack -h "${PGHOST}" -p "${PGPORT}" -U "${DBUSER}" -d "${db}" -i "${index}" --elevel=WARNING 2>&1); then
+        log_warn "${output}" || true
+        success=false
+        return 1
+    else
+        success=true
+        return 0
+    fi
+}
+
+run_reindex() {
+    local index=$1
+
+    if ! output=$(PGOPTIONS="${PGOPTIONS}" ${_PSQL} -d "${db}" -tAXc "REINDEX INDEX CONCURRENTLY ${index}" 2>&1); then
+        log_warn "${output}" || true
+        success=false
+        return 1
+    else
+        success=true
+        return 0
+    fi
+}
+
+Two parallel functions, same shape, doing the actual maintenance work. run_reindex runs on Postgres 12 and above, using native REINDEX INDEX CONCURRENTLY support — this was added to Postgres in version 12, which is exactly why this script branches on PG_VERSION the way it does throughout. run_repack runs on Postgres 11 and below, calling the external pg_repack utility instead, because older Postgres versions simply don't HAVE a concurrent reindex option built in — pg_repack is a well-established third-party tool that achieves a similar non-blocking rebuild by creating a shadow table or index and swapping it in, conceptually similar to what REINDEX CONCURRENTLY does natively in newer versions, just implemented as an external tool rather than a core feature.
+
+Notice PGOPTIONS="${PGOPTIONS}" prefixing both commands — that's how we inject our earlier statement_timeout and lock_timeout and parallel worker settings into THIS specific command's environment, scoped to just this one invocation, rather than exporting it globally and affecting every psql call in the whole script indiscriguishably.
+
+Both functions follow the exact same success/failure signaling convention: a global success variable gets set to true or false, AND the function also returns a matching exit code. Having both gives callers flexibility — some calling code can check the return code directly with if run_reindex "$index"; then, and other calling code, especially in more complex branches, can just check the success variable. You'll see both styles used as we move into the retry loop next.
+
+THE RETRY LOOP — WHERE RESILIENCE ACTUALLY HAPPENS
+
+process_reindex() {
+    local index=$1
+    local retry_n=0
+    local delays=(0 10 30 60)
+
+    drop_invalid_index "${index}"
+
+    for delay in "${delays[@]}"; do
+        sleep "${delay}"
+
+        if (( retry_n > 0 )); then
+            log_info " [retry ${retry_n}/3] reindex index ${index}"
+        fi
+
+This is the heart of the script's resilience story, and it's a beautiful, simple pattern that you should absolutely steal for your own scripts going forward: exponential-ish backoff using a plain array of delay values. delays=(0 10 30 60) means: first attempt happens immediately with zero delay, then if that fails, wait 10 seconds and try again, then 30 seconds, then 60 seconds. Four attempts total, with increasing gaps between them.
+
+Why increasing delays instead of just retrying immediately four times in a row? Because if a reindex attempt failed due to lock contention — remember our lock_timeout=1s setting from earlier — retrying instantly is very likely to just hit the exact same busy lock again. Waiting longer between attempts gives whatever was holding that conflicting lock a real chance to finish and release it naturally. This pattern — array of escalating delays, loop through them — is genuinely one of the most broadly useful small patterns in all of ops scripting; I'd encourage you to keep this exact four-line shape in your back pocket for any retry logic you ever write in bash again.
+
+        if [[ ${PG_VERSION} -le 11 ]]; then
+            run_repack "${index}"
+        else
+            run_reindex "${index}"
+        fi
+
+        if [[ "${success}" == true ]]; then
+            return 0
+        else
+            drop_invalid_index "${index}" "${success}"
+            if [[ "${ccold_index}" == true ]]; then
+                return 0
+            else
+                retry_n=$((retry_n + 1))
+            fi
+        fi
+
+After each attempt, we branch on the resulting success flag. If it succeeded, we're done — return immediately, no point burning through remaining retry delays. If it failed, we call drop_invalid_index again, passing the failure status, to clean up any leftover artifacts from this failed attempt before trying again — and remember, this is exactly where that _ccold detection logic from before comes into play: if we land in that special "_ccold leftover" state, we stop retrying altogether rather than continuing to hammer an index that's in an ambiguous partial state.
+
+        if [[ "${delay}" -eq 60 ]]; then
+            failed_reindex_count=$((failed_reindex_count + 1))
+            log_warn " Failed to reindex index \"${index}\" after all attempts. Skipping." || true
+            return 1
+        fi
+    done
+}
+
+Once we've exhausted all four delay values without success, we increment a running failed_reindex_count counter, log a clear warning, and return failure — but critically, we do NOT call log_error here. Remember our earlier discussion about log_error being a hard stop versus log_warn letting things continue? This is exactly the moment that distinction matters most in the entire script. One stubbornly bloated index that refuses to reindex cleanly should not take down the whole maintenance run for every OTHER index across every OTHER database. We log it, we count it, and we move on.
+
+THE MAIN FUNCTION — TYING EVERYTHING TOGETHER
+
+main() {
+    load_config
+    parse_args "$@"
+    apply_defaults
+
+    require_cmd psql logger
+
+    mkdir -p "$LOG_DIR"
+    acquire_lock
+
+    build_psql_cmd
+    resolve_dbname_and_version
+    build_pgoptions
+    build_bloat_sql
+
+    maintenance_window
+
+    failed_reindex_count=0
+    total_maintenance_benefit=0
+    db_count=0
+
+Look at this ordering carefully, because the SEQUENCE here is itself a lesson in defensive script design. Config loads first, then CLI args — so CLI args can override config values, as we discussed. Defaults apply after both, filling in anything still unset. THEN we check our dependencies exist. THEN we create the log directory and acquire our lock — meaning we don't even attempt to grab the lock until we know our basic configuration is sane; no point locking anything if we're about to fail on bad input anyway. Only after all of that do we actually open a connection, figure out the Postgres version, build our session options and our bloat-detection SQL, and check whether we're inside our maintenance window. Every step earns the right to proceed to the next by succeeding first. That's the whole philosophy — fail as early and as cheaply as possible, and only commit more expensive or more state-changing actions once you're confident the cheaper checks have passed.
+
+    while IFS= read -r db; do
+        db_count=$((db_count + 1))
+        db_maintenance_benefit=0
+
+        if check_pg_connection; then
+
+Here's a subtle but important point: check_pg_connection, remember, doesn't actually have a normal "return false on failure" path — if the connection genuinely fails, it calls log_error internally, which exits the ENTIRE script. So this if check_pg_connection; then is really only ever going to be true in practice within this loop — the false path here essentially never triggers under the function's actual implementation, since failure means the script is already gone. I point this out because it's a good habit to develop: read functions for what they ACTUALLY do, not just what their name implies, especially when you're tracing through somebody else's control flow under pressure during an incident.
+
+            log_info "Started index maintenance for database: ${db}"
+
+            if [[ "${PG_VERSION}" -le 11 ]]; then
+                create_extension_pg_repack
+            fi
+
+            if [[ "${BLOAT_SEARCH_METHOD}" = "pgstattuple" ]]; then
+                create_extension_pgstattuple
+            fi
+
+            bloat_indexes=$(${_PSQL} -d "${db}" -tAXc "${INDEX_BLOAT_SQL}") || true
+            if [[ -n "${bloat_indexes:-}" ]]; then
+                index_count=$(echo "$bloat_indexes" | wc -l)
+                log_info "${index_count} indexes have been found for reindexing"
+                i=1
+                while IFS= read -r index; do
+                    check_pg_connection
+                    maintenance_window
+
+                    index_size_before=$(check_index_size "${index}")
+                    log_info "[$i/${index_count}] reindex index ${index} (current size: ${index_size_before} MB)"
+
+                    process_reindex "${index}" || true
+
+Right before processing each individual index, we re-check the connection and re-check the maintenance window — exactly the "doesn't just check once at the start" point I made earlier. A long-running batch across hundreds of indexes might take hours; conditions can change mid-run, and this script keeps re-validating rather than assuming the world stayed the same since it started.
+
+                    if [[ "${success}" == true ]]; then
+                        index_size_after=$(check_index_size "${index}")
+                        if (( index_size_before > 0 )); then
+                            saved_percent=$(( (index_size_before - index_size_after) * 100 / index_size_before ))
+                        else
+                            saved_percent=0
+                        fi
+                        log_info "[$i/${index_count}] completed reindex ${index} (new size: ${index_size_after} MB, reduced: ${saved_percent}%)"
+                    fi
+
+                    db_maintenance_benefit=$((db_maintenance_benefit + index_size_before - index_size_after))
+                    ((i++)) || true
+                done < <(echo "${bloat_indexes}")
+
+If the reindex succeeded, we measure the new size and compute a saved_percent figure for nice human-readable reporting — and notice the small defensive guard (( index_size_before > 0 )) before dividing, protecting against a division-by-zero if, for some bizarre edge case, the "before" size came back as zero. That's good general habit: any time you divide by a value that came from a dynamic measurement rather than a hardcoded constant, ask "could this ever legitimately be zero," and guard for it if so.
+
+The done < <(echo "${bloat_indexes}") syntax is called process substitution — it's a way of feeding a variable's contents into a while read loop as if it were a file, without needing an actual temporary file on disk. You'll see this constantly any time someone needs to loop line-by-line over command output in bash.
+
+            else
+                log_info " no bloat indexes were found"
+            fi
+
+            if [[ "${FAILED_REINDEX_LIMIT}" -ne 0 && "${failed_reindex_count}" -ge "${FAILED_REINDEX_LIMIT}" ]]; then
+                log_warn "Exceeded ${FAILED_REINDEX_LIMIT} failed attempts. Skipping database ${db}." || true
+                break
+            else
+                log_info "Completed index maintenance for database: ${db} (released: ${db_maintenance_benefit} MB)"
+            fi
+
+This is a really sensible circuit-breaker pattern worth internalizing: --failed-reindex-limit, when set to a nonzero value, says "if we've accumulated this many total failures across this database's indexes, stop trying more indexes in THIS database and move to the next one." Why would you want that instead of just always trying every single index regardless of how many have already failed? Because a sudden wave of failures on one database often signals something systemic going on with THAT specific database — maybe unusually heavy lock contention right now, maybe a connectivity blip — and continuing to hammer away at index after index in that same troubled environment is often just wasted effort and additional load, when your time would be better spent moving on to other databases that might be perfectly healthy. The default of 0 means "no limit, always try everything" — which is a sensible default for an automated nightly run where you'd rather have full coverage attempted even if a chunk of one database is having a rough night.
+
+            total_maintenance_benefit=$((total_maintenance_benefit + db_maintenance_benefit))
+        fi
+    done < <(echo "${DBNAME}")
+
+    if (( db_count > 1 )); then
+        log_info "Total amount released during maintenance: ${total_maintenance_benefit} MB"
+    fi
+}
+
+main "$@"
+
+And finally, the outer loop closes — that's the loop iterating over every database name in DBNAME, which, remember, might be one explicitly-specified database or might be every non-template database on the whole server, depending on whether -d was passed. We accumulate a grand total of space released across all databases, and only print that summary line if more than one database was actually processed — no point in a "total across all databases" summary when there was only ever one database to begin with.
+
+And then, the very last line of the entire script: main "$@". That's it. Everything above was function definitions — nothing actually RUNS until this final line calls main, passing along whatever arguments the script itself was invoked with. This is a really common and genuinely good pattern in larger bash scripts: define everything as functions first, keep the absolute bottom of the file as a single clean entry point. It makes the script easier to read top-to-bottom as "here's all the machinery," then "here's where execution actually begins," and it also makes the script easier to test — you could, in principle, source this file without arguments and call individual functions yourself in a test harness, without main automatically firing and trying to connect to a real database.
+
+PULLING BACK TO THE BIG PICTURE
+
+Let's zoom back out for a second before we go to labs, because I want to make sure you've got the forest, not just the trees.
+
+Every single design decision we walked through today traces back to one of a small handful of core operational principles, and I want you to recognize these principles as patterns you'll apply again and again in your career, far beyond just this one script:
+
+Fail fast on bad input, before you've done anything expensive or dangerous — that's our validation functions running before any SQL ever executes.
+
+Never let one failure take down everything else — that's the deliberate avoidance of set -e, paired with surgical error handling at each risky call site.
+
+Never silently block production traffic — that's lock_timeout, that's REINDEX CONCURRENTLY and DROP INDEX CONCURRENTLY everywhere instead of their blocking counterparts.
+
+Guarantee cleanup happens no matter how you exit — that's the EXIT trap releasing the lock file under every possible circumstance.
+
+Prevent concurrent conflicting runs — that's the PID-aware lock file with stale-lock detection.
+
+Respect operational boundaries the humans configured — that's the maintenance window, re-checked continuously throughout the run, not just once at the start.
+
+Retry transient failures with sensible backoff, but know when to give up — that's the four-step delay array, and the circuit breaker on total failures per database.
+
+Log everything, to multiple destinations, with enough precision to actually debug an incident later — that's our logging function writing to both the terminal and a file and syslog simultaneously.
+
+If you genuinely understand WHY each of these principles exists — not just that the code happens to do these things — you will be able to write this script, or one just like it, from a blank file. You won't be recalling syntax from memory. You'll be reconstructing the solution from the problem, which is a completely different and far more durable skill.
+
+LAB EXERCISES
+
+Alright, laptops open, here's what I want you to do for the rest of this session, working at your own pace. I'll be walking around.
+
+Lab 1: From a totally blank file, write the shebang line, the set -uo pipefail line, and explain out loud to your lab partner — actually say it out loud, don't just think it — why we are NOT using set -e in this particular script. If you can't explain it clearly to another person, you don't actually understand it yet, you've just memorized it.
+
+Lab 2: Write the log(), log_info(), log_warn(), and log_error() functions completely from memory, no looking back at this material. Then write three lines of test code that call each of them, including at least one call that pipes command output into the logger using the no-argument input style. Confirm you understand why log_error is dangerous to call inside a loop.
+
+Lab 3: Write the acquire_lock function from scratch. Then, deliberately and manually, simulate a stale lock: create a lock file by hand containing a PID number that you know for certain doesn't correspond to any running process on your machine — something absurd like 999999 — and run your function against it. Confirm it correctly detects the lock as stale and reclaims it rather than refusing to run.
+
+Lab 4: Pick any TWO of the three "instructor warning" lessons from today — set -e in batch loops, SQL injection through unvalidated numeric flags, or lock_timeout on maintenance operations — and write a two-to-three sentence explanation, in your own words, of what could go wrong in production if you ignored that lesson, as if you were explaining it to a junior DBA who just joined your team. Save this — you'll want material like this when you're the one writing runbooks and onboarding docs down the line.
+
+Lab 5, the big one: close this lecture file completely. From an entirely blank terminal, write your own version of pg_auto_reindexer.sh from scratch. It does not need to be word-for-word identical to what we built today — I genuinely don't want it to be, variable names and minor structuring choices are yours to make. But it MUST include, at minimum: the locking mechanism, the logging functions, integer validation before any value touches a SQL string, a retry loop with increasing delays, and a maintenance window check. When you think you're done, trade laptops with your neighbor and try to break each other's scripts — bad flag values, simulated stale locks, running it twice at once. That's literally how real DBA tooling gets hardened in the real world: somebody tries to break it, on purpose, before production does it for you, unannounced, at 2 AM.
+
+CLOSING
+
+Look — I know that was a lot, and there's a real temptation after a lecture like this to think "I'll never remember all of that." You don't need to remember all of it right now. Nobody writes production-grade locking, retry logic, and SQL injection-safe validation perfectly on day one, and if anyone tells you they did, they're either lying or they'd already seen something break badly enough once to know better.
+
+What I actually want you walking out of here with today is something simpler: a set of QUESTIONS you now know to ask yourself every single time you write an ops script from this point forward. Where does this value come from, and could it carry something dangerous by the time it reaches my SQL? What happens if this script gets killed halfway through — does it clean up after itself, or does it leave a mess for the next run? What happens if one item in a list of a thousand fails — does my whole batch die, or does it survive and keep going? Could this operation block real production traffic, even for a second, and if so, how do I bound that?
+
+You ask those questions on every script, for the rest of your career, and you will write resilient, professional, trustworthy automation — even on day one of a brand new task you've never seen before. That instinct is worth more than memorizing any single script, including this one.
+
+Go build something in lab. I'll be around if you get stuck. See you next session.
+
+============================================================
+QUICK-REFERENCE COMMAND CARD
+============================================================
+
+SCRIPT INVOCATION
+  ./pg_auto_reindexer.sh [OPTIONS]
+
+CONNECTION FLAGS
+  -h, --host=HOSTNAME              default: /var/run/postgresql
+  -p, --port=PORT                  default: 5432
+  -U, --username=USERNAME          default: postgres
+  -d, --dbname=DBNAME              default: all non-template databases
+
+REINDEXING FLAGS
+  -b, --index-bloat=PERCENT        default: 30
+  -m, --index-minsize=MB           default: 1
+  -M, --index-maxsize=MB           default: 1000000
+  -s, --maintenance-start=HHMM     24h format, optional
+  -S, --maintenance-stop=HHMM      24h format, optional
+  -t, --bloat-search-method        estimate | pgstattuple   (default: estimate)
+  -l, --failed-reindex-limit=N     default: 0 (no limit)
+  -j, --jobs=N                     parallel maintenance workers (PG >= 11 only)
+  -o, --sorting-order              asc | desc                (default: asc)
+
+OPS / TEMPLATE FLAGS
+  -c, --config=FILE                default: <script_dir>/.dba_config
+      --lock-file=FILE             default: /var/run/dba/<script>.lock
+  -v, --version
+      --verbose                    enables set -x tracing
+  -?, --help
+
+KEY BASH PATTERNS USED IN THIS SCRIPT
+  ${VAR:-default}      use default if VAR unset, don't assign it
+  ${VAR:=default}       assign default into VAR if unset (used with `: ` no-op)
+  ${str%.sh}             strip shortest matching suffix
+  ${str%%=*} / ${str#*=} split a --opt=value into opt and value
+  10#$value              force base-10 interpretation (avoid octal bug on leading zeros)
+  set -o noclobber       atomic "create only if not exists" for lock files
+  kill -0 $pid            check if a process is alive without signaling it
+  trap cleanup EXIT       guarantee cleanup runs on every exit path
+  done < <(echo "$var")   process substitution, loop over a variable line by line
+
+CORE SAFETY PRINCIPLES (the "why" behind this whole script)
+  1. Validate all numeric input before it touches a SQL string.
+  2. Never block production traffic — use CONCURRENTLY operations + lock_timeout.
+  3. One failure should not kill an entire batch run — avoid set -e, handle errors locally.
+  4. Always guarantee lock cleanup via an EXIT trap.
+  5. Re-check connection + maintenance window before each unit of work, not just once.
+  6. Retry transient failures with increasing delays; give up and log after a bounded number of attempts.
+  7. Log to terminal, file, AND syslog simultaneously for incident-review-grade traceability.
+
+PG VERSION BRANCHING
+  PG >= 12 : REINDEX INDEX CONCURRENTLY (native)
+  PG <= 11 : pg_repack (external tool, requires extension)
+  PG >= 11 : max_parallel_maintenance_workers supported (-j flag)
+
+============================================================
+END OF LECTURE TRANSCRIPT
+============================================================

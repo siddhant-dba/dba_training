@@ -1,0 +1,1486 @@
+================================================================================
+         DBA TRAINING PROGRAM — ALL AREAS — LEVEL 5 (PRINCIPAL / STAFF)
+         PostgreSQL on Debian Linux
+         Complete ALL tasks before requesting L6
+================================================================================
+
+LEVEL 5 OVERVIEW
+-----------------
+At L1 you identified. At L2 you understood. At L3 you operated.
+At L4 you designed and led. At L5 you INFLUENCE BEYOND YOUR ORGANISATION.
+
+L5 is the Principal / Staff Engineer level. Your scope is no longer "make
+this organisation's databases work well." It is "shape how the industry
+approaches database problems." This means contributing to open source,
+publishing your thinking, building reusable frameworks others adopt,
+advising organisations beyond your own, and architecting for scale most
+people never encounter.
+
+L5 tasks have no answer key. They are evaluated on rigor of reasoning,
+originality, and whether the output could withstand scrutiny from the
+PostgreSQL global community — core contributors, other Staff Engineers,
+and conference audiences. Where L4 asked you to design for your organisation,
+L5 asks you to produce work generalisable enough that strangers would
+benefit from it.
+
+L5 Promotion Criteria: You will be ready for L6 when you have produced
+artifacts that exist independently of your employer — a patch, a published
+standard, a framework with external adopters, a talk that changed how
+people think. Competence is assumed at L5. What is being tested is
+contribution and judgment under genuine ambiguity.
+
+PROGRESS DASHBOARD (L5 Start)
+------------------------------
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L5/10  ║ 0            ║ ~9            ║ 40%          ║
+║ 2. Provision ║ L5/10  ║ 0            ║ ~8            ║ 40%          ║
+║ 3. Security  ║ L5/10  ║ 0            ║ ~8            ║ 40%          ║
+║ 4. Data Mgmt ║ L5/10  ║ 0            ║ ~9            ║ 40%          ║
+║ 5. Perf/Mon  ║ L5/10  ║ 0            ║ ~9            ║ 40%          ║
+║ 6. Maint/Com ║ L5/10  ║ 0            ║ ~8            ║ 40%          ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~40%                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Total estimated L5 tasks: ~51 tasks
+Format: Investigate → Originate → Publish/Contribute → Defend Publicly
+
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 1 — DATABASE SERVER / INSTANCE
+   Level 5 — Principal / Staff (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~9
+TIME   : Multi-day (research-grade)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Investigate and Document a PostgreSQL Source-Level Behaviour
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you used PostgreSQL's documented behaviour to design systems. At L5
+you go beyond documentation when it is incomplete or you suspect a gap
+between documented and actual behaviour. This requires reading the C source,
+forming a hypothesis, and proving it experimentally — the same skill that
+underlies bug reports accepted by the PostgreSQL project.
+
+SCENARIO
+You have observed in production that checkpoint timing under
+checkpoint_completion_target does not behave exactly as the documentation
+describes under heavy concurrent write load. You suspect the actual pacing
+algorithm has edge cases not covered in the docs.
+
+YOUR TASK (Source investigation and documentation)
+1. Read the documented behaviour:
+   - PostgreSQL docs on checkpoint_completion_target
+   - Note what is promised: checkpoint I/O spread evenly across the interval
+
+2. Locate the relevant source:
+   - Clone the PostgreSQL source (git clone the official repo)
+   - Find the checkpointer process code (src/backend/postmaster/checkpointer.c)
+   - Trace the pacing logic (CheckpointWriteDelay function and callers)
+
+3. Form a hypothesis:
+   - Example: "Under high WAL generation rate, the checkpointer's progress
+     calculation lags because it is based on buffer count, not WAL volume,
+     causing I/O to bunch toward the end of the checkpoint interval"
+
+4. Design an experiment to test the hypothesis:
+   - Set up a test instance with controlled, reproducible write load
+   - Instrument: log checkpoint write progress at fine granularity
+   - Vary the parameter under test (checkpoint_completion_target, workload shape)
+   - Capture: actual I/O pacing vs theoretical even distribution
+
+5. Run the experiment and analyse results:
+   - Plot actual vs expected I/O distribution over the checkpoint interval
+   - Does the data support your hypothesis?
+   - If not, revise the hypothesis and re-test (this is real research — expect
+     to be wrong at least once)
+
+6. Document your findings as if submitting to pgsql-hackers:
+   - Clear problem statement
+   - Reproducible test case (exact steps, exact PostgreSQL version)
+   - Data (graphs, raw numbers)
+   - Proposed explanation grounded in the source code (cite file/function/line)
+   - Why this matters practically (what production scenario does it affect)
+
+7. Decide on next action:
+   - If this is a genuine documentation gap: draft a doc patch
+   - If this is a genuine behaviour bug: draft a bug report
+   - If your hypothesis was wrong: document why, this is still valuable
+
+SAFETY
+Risk: Low — investigation is on test infrastructure. Caution: do not
+publish unverified claims about PostgreSQL internals; verify thoroughly
+before any public claim, as incorrect public claims damage credibility.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Source-level investigation — hypothesis formation, experimental design, technical writing for expert audiences
+
+REVIEW QUESTION
+Your experiment shows results consistent with your hypothesis, but only
+under one specific workload shape. A colleague asks: "Have you ruled out
+that this is specific to your test environment rather than a general
+PostgreSQL behaviour?" What additional experiments would close this gap,
+and how do you express appropriate uncertainty in your write-up?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Propose a PostgreSQL Extension to Solve a Generalisable Problem
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you selected and configured existing extensions. At L5 you identify
+a problem that no existing extension solves well, and you design one. This
+task takes you from extension consumer to extension author — the same path
+followed by the creators of pg_stat_statements, pgvector, and TimescaleDB.
+
+SCENARIO
+Across multiple organisations you have advised, you have noticed teams
+struggle to answer: "Which queries are about to violate their historical
+performance baseline?" pg_stat_statements gives cumulative stats, not
+trend-aware alerting. No widely-used extension solves this well at the
+database layer (most solutions are external monitoring tools, which lack
+the low-latency, in-database view).
+
+YOUR TASK (Extension design and prototype)
+1. Define the problem precisely:
+   - What specific gap exists? (cumulative stats reset on restart, no
+     built-in trend/baseline tracking inside PostgreSQL itself)
+   - Why does this matter? (early detection without external tooling
+     dependency, useful for embedded/edge PostgreSQL deployments)
+   - Who would use this? (DBAs without budget for full observability stacks)
+
+2. Survey the existing landscape:
+   - What does pg_stat_statements provide and not provide?
+   - What do external tools (pganalyze, Datadog) provide that PostgreSQL itself does not?
+   - Is there prior art (abandoned extensions, hackers list discussions)?
+   - Document why a new approach is justified, not just "not invented here"
+
+3. Design the extension architecture:
+   - Hooks needed: likely a planner/executor hook to capture per-call timing
+   - Storage: a ring buffer or summarised table of historical snapshots
+   - Computation: rolling baseline calculation (e.g. exponentially weighted
+     moving average per queryid)
+   - API: a SQL function/view exposing "queries currently deviating from baseline"
+
+4. Prototype a minimal version:
+   - Write a basic C extension skeleton (or a PL/pgSQL approximation if a
+     full C extension is out of scope for this exercise)
+   - Implement: capture, baseline calculation, deviation query
+   - Test: demonstrate it correctly flags a deliberately degraded query
+
+5. Write the extension proposal document (as if for pgsql-hackers or for
+   public GitHub release):
+   - Problem statement
+   - Design rationale (why this approach over alternatives)
+   - API specification
+   - Performance overhead analysis (what does this cost in the hot path?)
+   - Comparison to existing solutions
+
+6. Plan the contribution path:
+   - Standalone open-source extension (PGXN) — fastest, lowest barrier
+   - Proposal to pg_stat_statements core (extend existing extension) — higher
+     barrier, more impact if accepted
+   - Choose one and justify
+
+SAFETY
+Risk: Low — prototype on test systems. Any hook into planner/executor
+must be tested thoroughly for production safety before any real deployment.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Extension design and authorship — problem definition, prior art research, prototyping, contribution strategy
+
+REVIEW QUESTION
+A reviewer on pgsql-hackers responds: "This overlaps significantly with
+work already underway in pg_stat_statements for v18." How do you respond
+productively rather than defensively, and what does this reveal about the
+importance of the prior-art research step you did in step 2?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 3 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Write a Conference-Grade Talk on a Hard-Won Operational Lesson
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+The PostgreSQL community (and the broader DBA community) advances largely
+through shared war stories backed by data: PGConf, FOSDEM PGDay, local
+meetups. At L5 you are expected to be able to take a genuinely hard
+incident or architectural decision from your career and turn it into a
+talk that teaches a room full of senior engineers something they did not
+already know.
+
+SCENARIO
+You are invited to submit a talk proposal to a PostgreSQL conference. You
+must choose a real (or realistically constructed) operational story from
+your L3/L4 work and turn it into a 30-minute technical talk.
+
+YOUR TASK (Talk design and full draft)
+1. Choose your story — pick something with a genuine surprise or insight,
+   not a routine fix. Good examples from your own L3/L4 history:
+   - The replication lag incident with a non-obvious root cause
+   - The zero-downtime major version upgrade with a near-miss
+   - The data corruption recovery decision under conflicting pressures
+
+2. Write the talk abstract (150 words):
+   - The hook (what makes this interesting to a room of strangers)
+   - The promise (what will the audience leave knowing how to do)
+   - The credibility signal (why are you qualified to tell this story)
+
+3. Structure the talk (30 minutes ≈ 12-15 slides of substance):
+   - Open with the moment of crisis/decision (not a biography slide)
+   - Establish context efficiently (audience needs just enough to follow)
+   - Walk through the investigation/decision with the actual reasoning,
+     including the wrong turns (this is what makes talks credible)
+   - Reveal the insight or root cause
+   - Generalise: what should the audience do differently because of this?
+   - Close with a concrete, memorable takeaway (not "monitoring matters")
+
+4. Write the speaker notes for each slide (what you will actually say)
+
+5. Anticipate the hard questions:
+   - What will a PostgreSQL core contributor in the audience challenge you on?
+   - What will a skeptical engineer ask to test if you actually understand
+     the internals, or just followed a runbook?
+   - Prepare honest answers, including "I don't fully know" where true
+
+6. Self-review against the bar:
+   - Would this talk teach something to someone who already knows PostgreSQL well?
+   - Is there a single slide that is filler?
+   - Does the talk respect the audience's time and intelligence?
+
+SAFETY
+Risk: None (writing exercise). Reputational risk if public claims in the
+talk are not technically accurate — verify all technical claims before
+they would be presented.
+
+SKILL BUILT
+Area  : Database Server / Instance
+Skill : Technical public speaking — narrative construction for expert audiences, anticipating scrutiny
+
+REVIEW QUESTION
+During Q&A (in your imagined defence of this talk), someone asks: "You said
+the root cause was X, but couldn't Y also explain the same symptoms? How did
+you rule that out?" If you genuinely did not rule it out during the real
+incident, how do you answer honestly in a way that still maintains your
+credibility?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Server / Instance
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 4-9 (REMAINING INSTANCE L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The following L5 Instance tasks follow the established Principal/Staff
+format (investigate → originate → publish/contribute → defend publicly):
+
+TASK 4: Benchmark and Publish a Hardware/Cloud Comparison Study
+  Design a rigorous, reproducible benchmark comparing PostgreSQL performance
+  across 3+ cloud providers or storage types (e.g. gp3 vs io2 vs local NVMe).
+  Control for confounds, publish methodology and raw data, not just conclusions.
+  Deliverable: published benchmark report with reproducible methodology.
+
+TASK 5: Build and Open-Source a Reusable Operational Tool
+  Identify a gap you have hit repeatedly (e.g. a better pg_upgrade pre-check
+  script, a smarter bloat estimator). Build it properly: tests, docs, CI,
+  licence. Publish on GitHub. Deliverable: public repository with adoption-ready quality.
+
+TASK 6: Write a Definitive Guide on a Misunderstood PostgreSQL Internals Topic
+  Choose a topic that is widely misunderstood even by experienced DBAs
+  (e.g. how vacuum freezing actually interacts with wraparound, or how
+  the planner really estimates join selectivity). Write the guide that
+  out-explains existing resources. Deliverable: long-form technical article.
+
+TASK 7: Lead a Cross-Organisation Working Group on an Operational Standard
+  Identify a practice that varies wildly across companies (e.g. how to
+  define database SLOs) and convene a working group (real or simulated)
+  to propose a shared standard. Deliverable: draft standard + working group charter.
+
+TASK 8: Architect for 100x Current Scale as a Thought Experiment
+  Take your largest current production database and design, on paper,
+  the architecture required if load grew 100x. What breaks first? What
+  is the redesign? Where does PostgreSQL stop being the right tool?
+  Deliverable: scale-out architecture thought paper.
+
+TASK 9: Mentor Another Organisation's DBA Team (External Advisory)
+  Simulate or actually provide a structured advisory engagement to a
+  team outside your organisation: assessment, recommendations, knowledge
+  transfer plan. Deliverable: external advisory engagement report.
+
+[ AREA 1 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 2 — DATABASE PROVISIONING
+   Level 5 — Principal / Staff (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design an Industry-Reusable Database Provisioning Standard
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you built a DBaaS platform for one organisation. At L5 you abstract
+what you learned into something other organisations could adopt — a
+generalised standard or open framework, not a private internal tool.
+
+SCENARIO
+You have now designed DBaaS platforms (or equivalent) at L4 for a specific
+company. You suspect the core abstractions (request schema, risk
+classification, lifecycle states) are reusable across companies. Propose
+an open standard.
+
+YOUR TASK (Standard design and publication)
+1. Abstract the company-specific platform into general primitives:
+   - Remove company-specific naming, environments, tooling
+   - Identify the universal concepts: request schema, validation rules,
+     lifecycle states (provisioning → active → deprecated → retired),
+     ownership model
+
+2. Survey what already exists:
+   - Open Service Broker API (Cloud Foundry/Kubernetes ecosystem)
+   - Crossplane resource definitions
+   - Terraform module conventions
+   - Where do these fall short for the database-specific lifecycle?
+
+3. Design the standard specification:
+   - A schema (e.g. JSON Schema or OpenAPI) for a database provisioning request
+   - A defined set of lifecycle states and valid transitions
+   - A defined risk/approval classification vocabulary
+   - Extension points for organisation-specific policy
+
+4. Validate against multiple use cases:
+   - Would this standard work for a 5-person startup?
+   - Would it work for a 500-person enterprise?
+   - Would it work across PostgreSQL, MySQL, and a cloud-managed service?
+   If it only works for your original use case, it is not yet a standard.
+
+5. Write the specification document (formal, versioned):
+   - Abstract and motivation
+   - Terminology
+   - Schema definitions
+   - Conformance requirements (what must an implementation support to claim compliance?)
+   - Examples
+
+6. Plan the publication and adoption strategy:
+   - Where would this live? (a GitHub org, a foundation, a blog series)
+   - How do you get a second organisation to adopt it (validation that it
+     generalises beyond your own thinking)?
+   - What is version 1.0 vs what is left for community contribution?
+
+SAFETY
+Risk: None (specification work)
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Standards authorship — abstraction from specific to general, specification writing, adoption strategy
+
+REVIEW QUESTION
+An engineer from another company reviews your draft standard and says:
+"This assumes every database has a single clear owner team. We use a
+shared-database, many-owners model." Does this invalidate your standard,
+or does it reveal a missing extension point? How do you redesign to
+accommodate this without making the spec unusably generic?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Publish a Rigorous Comparative Study of Multi-Tenancy Strategies
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L3/L4 you chose a multi-tenancy strategy for one application. At L5 you
+produce the study that helps the entire industry choose correctly — with
+real measurements, not received wisdom repeated from blog posts.
+
+SCENARIO
+The "database per tenant vs shared schema vs RLS" debate is full of strong
+opinions and thin data. You decide to settle key open questions with a
+rigorous, reproducible benchmark and publish it.
+
+YOUR TASK (Comparative research and publication)
+1. Define the research questions precisely:
+   - At what tenant count does database-per-tenant become operationally
+     unmanageable (backup time, connection overhead, migration fan-out)?
+   - What is the actual query performance overhead of RLS at 100 / 1,000 /
+     10,000 tenants in a shared table?
+   - How does index bloat differ between shared-schema and schema-per-tenant
+     at equivalent total data volume?
+
+2. Design the experimental methodology:
+   - Build representative schemas for each strategy
+   - Generate synthetic but realistic tenant data at multiple scales
+   - Define the workload (mix of reads/writes representative of SaaS apps)
+   - Control variables: same hardware, same PostgreSQL version, same data volume
+
+3. Run the experiments and collect data:
+   - Latency distributions (not just averages) at each tenant count
+   - Resource consumption (CPU, memory, connections) per strategy
+   - Operational metrics (backup duration, migration duration, time to add
+     a new tenant)
+
+4. Analyse honestly:
+   - Where does conventional wisdom hold up?
+   - Where does it not? (This is often the most valuable finding)
+   - What are the genuine trade-off boundaries (not "it depends" — actual numbers)
+
+5. Write the study for publication:
+   - Methodology section detailed enough for independent reproduction
+   - Results with appropriate statistical treatment (not cherry-picked runs)
+   - Discussion that acknowledges limitations
+   - Clear, actionable guidance: "if your tenant count is below X, choose A;
+     above Y, choose B; the RLS overhead becomes significant when Z"
+
+6. Prepare for community scrutiny:
+   - Publish your benchmark code and data, not just conclusions
+   - Anticipate: "your hardware was unusual," "your workload doesn't match
+     mine," "did you tune PostgreSQL correctly for each scenario?"
+
+SAFETY
+Risk: None (research and publication task)
+
+SKILL BUILT
+Area  : Database Provisioning
+Skill : Rigorous comparative benchmarking — methodology design, honest analysis, reproducible publication
+
+REVIEW QUESTION
+Your results show RLS overhead is negligible until 5,000 tenants, contradicting
+a widely-cited blog post claiming significant overhead at 100 tenants. The
+original author publicly disputes your findings. How do you respond in a way
+that advances the field rather than becoming a public argument?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Database Provisioning
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 3-8 (REMAINING PROVISIONING L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Propose a Patch to a Popular Open-Source Migration Tool
+  Identify a genuine limitation in Flyway, Liquibase, or sqitch based on
+  your L4 experience. Write and submit an actual or realistic patch with
+  tests. Deliverable: pull request (real or fully-specified) with rationale.
+
+TASK 4: Design a Cross-Cloud DBaaS Abstraction Layer
+  Architect a provisioning abstraction that works identically across AWS
+  RDS, GCP Cloud SQL, and self-managed PostgreSQL, hiding provider-specific
+  quirks. Deliverable: abstraction layer design + proof-of-concept.
+
+TASK 5: Build and Publish an Open-Source Schema Migration Risk Classifier
+  Generalise your L4 risk classification logic into a standalone open-source
+  tool usable by any organisation, with tests covering edge cases like the
+  large-table ADD COLUMN trap. Deliverable: public tool repository.
+
+TASK 6: Write the Definitive Guide to Zero-Downtime PostgreSQL Migrations
+  Synthesise logical replication, blue-green, and schema versioning into
+  one authoritative, example-rich guide intended to become a community reference.
+  Deliverable: long-form publication.
+
+TASK 7: Found or Join a Working Group on Database Cost Transparency (FinOps)
+  Propose shared metrics and reporting standards for database cost attribution
+  across the industry, building on your L4 FinOps work. Deliverable: working
+  group proposal and draft metrics standard.
+
+TASK 8: Advise a Startup on Database Architecture From Zero
+  Take on an advisory engagement (real or simulated) with an early-stage
+  startup choosing their database architecture for the first time. Deliverable:
+  advisory report balancing pragmatism with future-proofing.
+
+[ AREA 2 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 3 — SECURITY
+   Level 5 — Principal / Staff (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Conduct and Responsibly Disclose Original Security Research
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you ran assessments using known frameworks. At L5 you are expected to
+be capable of finding something genuinely new — a misconfiguration pattern,
+a subtle privilege escalation path, or an interaction between features that
+creates an unintended security gap — and handling disclosure responsibly.
+
+SCENARIO
+While reviewing PostgreSQL's row-level security implementation in depth
+(building on your L4 RLS design work), you discover a scenario where a
+specific combination of RLS policies, views, and SECURITY DEFINER functions
+could allow unintended data exposure under certain query patterns.
+
+YOUR TASK (Original security research and disclosure)
+1. Investigate rigorously before claiming anything:
+   - Construct the minimal reproducible case
+   - Test against multiple PostgreSQL versions to determine scope
+   - Verify it is genuinely an unexpected interaction, not documented
+     behaviour you misunderstood
+   - Try to break your own finding (find the simplest counter-example
+     that would disprove it)
+
+2. Assess the actual severity honestly:
+   - Is this exploitable by an unprivileged user, or does it require
+     existing elevated access (which changes the severity dramatically)?
+   - What is the realistic attack scenario?
+   - Could this be a configuration anti-pattern rather than a PostgreSQL bug?
+
+3. Determine the correct disclosure path:
+   - If it is a genuine PostgreSQL bug: PostgreSQL Security Team
+     (security@postgresql.org), NOT a public mailing list or blog post first
+   - If it is a configuration anti-pattern (PostgreSQL behaving as designed,
+     but the design is a trap): appropriate for public writing, with care
+   - If you are unsure which: treat it as the former until proven otherwise
+
+4. Write the responsible disclosure report:
+   - Clear, factual description of the issue
+   - Exact reproduction steps and affected versions
+   - Your assessment of severity and reasoning
+   - Suggested fix or mitigation if you have one
+   - Your proposed disclosure timeline (standard responsible disclosure
+     practice gives the vendor time to patch before public disclosure)
+
+5. Draft what the EVENTUAL public writeup would look like (post-disclosure
+   or for the anti-pattern case):
+   - Technical detail sufficient for other DBAs to check their own systems
+   - Clear mitigation guidance
+   - Appropriate restraint (no exploit code that primarily enables attacks
+     rather than defence)
+
+6. Reflect on the ethics:
+   - At what point would publishing this cause more harm than good?
+   - How do you balance the community's right to know with the risk of
+     premature disclosure enabling attacks before defenders can patch?
+
+SAFETY
+Risk: HIGH (reputational and potentially legal if mishandled)
+This is the single area where mishandling causes the most damage. When in
+doubt, always default to private disclosure to the PostgreSQL Security Team
+and patience over public attribution and speed.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Original security research and responsible disclosure — rigor, severity assessment, ethical judgment
+
+REVIEW QUESTION
+You are confident your finding is real, but you are not 100% sure if it
+constitutes a "security bug" or "expected behaviour that is dangerously
+easy to misuse." The PostgreSQL Security Team has not responded in 2 weeks.
+A conference talk deadline is approaching where you wanted to present this.
+What do you do, and what does this scenario reveal about why disclosure
+timelines must never be driven by your own publication schedule?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Author an Industry Reference on Database Zero-Trust Implementation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you designed zero-trust for one organisation. At L5 you write the
+reference that other Staff/Principal engineers cite when designing their own
+— meaning it must survive scrutiny from security specialists, not just DBAs.
+
+SCENARIO
+Zero-trust database architecture content online is dominated by vendor
+marketing (Vault, specific cloud providers) rather than vendor-neutral
+technical depth. You decide to write the technically rigorous, vendor-neutral
+reference.
+
+YOUR TASK (Authoritative technical writing)
+1. Scope the reference precisely:
+   - What does "zero trust" mean specifically for the database layer
+     (as distinct from network or application layer, which are well covered
+     elsewhere)?
+   - What are the irreducible technical requirements vs implementation choices?
+
+2. Build the conceptual framework from first principles:
+   - Identity verification at the database connection layer
+   - The tension between connection pooling (long-lived, amortised auth)
+     and continuous verification (zero-trust ideal) — be honest that
+     these are in genuine tension, not glibly resolved
+   - Define what "least privilege" means precisely at the SQL grant level
+     vs role level vs row level
+
+3. Cover the genuinely hard, under-discussed problems:
+   - How do you implement short-lived credentials without breaking connection
+     pooling performance? (Most articles wave this away)
+   - How do you audit at the row level without prohibitive overhead?
+   - What does zero-trust mean for service accounts that legitimately need
+     broad access (backup processes, replication)?
+
+4. Provide concrete, vendor-neutral implementation guidance:
+   - PostgreSQL-native mechanisms (SCRAM, SSL client certs, RLS)
+   - Where you genuinely need external tooling and why
+   - Honest cost/complexity assessment, not "just implement zero trust"
+
+5. Include a worked example with real configuration:
+   - A complete pg_hba.conf, role structure, and RLS policy set implementing
+     a defensible zero-trust posture for a realistic scenario
+
+6. Submit it to genuine scrutiny:
+   - Have it reviewed by a security specialist who is not a DBA (do they
+     find database-specific gaps in your security reasoning?)
+   - Have it reviewed by a senior DBA (do they find your security reasoning
+     impractical operationally?)
+   - Revise based on both perspectives
+
+SAFETY
+Risk: Low (writing task), but reputational risk if technically wrong
+guidance is published and adopted.
+
+SKILL BUILT
+Area  : Security (Server Level)
+Skill : Authoritative technical writing — vendor-neutral depth, cross-disciplinary review, honest trade-off articulation
+
+REVIEW QUESTION
+The security specialist reviewer says your row-level audit logging proposal
+would generate unsustainable log volume at their company's scale (1 billion
+queries/day). Your DBA reviewer says without row-level audit, you cannot
+claim true zero-trust. Both are right. How do you resolve this in the
+published reference rather than picking one side and ignoring the other?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Security (Server Level)
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 3-8 (REMAINING SECURITY L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Build and Open-Source a Database Encryption Key Rotation Tool
+  Generalise your L4 column-encryption key management into a reusable,
+  tested open-source tool handling zero-downtime key rotation. Deliverable:
+  public repository with security review documentation.
+
+TASK 4: Propose a Cross-Industry Database Breach Disclosure Framework
+  Many organisations handle breach disclosure inconsistently. Propose a
+  shared framework (timing, content, technical detail level) specifically
+  for database breaches, informed by GDPR/HIPAA but more operationally
+  specific. Deliverable: framework proposal for industry working group.
+
+TASK 5: Conduct a Public-Good Security Audit of a Popular Open-Source Project
+  Volunteer a security review of a widely-used open-source tool in the
+  PostgreSQL ecosystem (an extension, a backup tool). Find and responsibly
+  report real issues. Deliverable: audit report and disclosure correspondence.
+
+TASK 6: Author a Threat Model Template for PostgreSQL Deployments
+  Build a reusable, generalisable threat modelling template (STRIDE or
+  similar) specifically adapted for PostgreSQL architectures, usable by
+  any organisation. Deliverable: published threat modelling template with
+  worked example.
+
+TASK 7: Lead a Public Post-Mortem of an Industry Database Breach
+  Analyse a publicly disclosed database breach (using only public information)
+  and write a rigorous technical post-mortem extracting generalisable lessons,
+  going deeper than typical news coverage. Deliverable: technical analysis publication.
+
+TASK 8: Design a Compliance-as-Code Framework for Database Controls
+  Generalise your SOC 2 control work into machine-checkable compliance code
+  (e.g. Open Policy Agent policies for database configuration) that any
+  organisation could adopt. Deliverable: open compliance-as-code framework.
+
+[ AREA 3 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 4 — DATA MANAGEMENT
+   Level 5 — Principal / Staff (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Publish a Rigorous Study on Backup Tool Performance and Reliability
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you chose pgBackRest based on its feature set. At L5 you produce the
+rigorous, data-driven comparison the community actually needs — most
+existing comparisons online are superficial feature-matrices, not real
+performance and reliability data under failure conditions.
+
+SCENARIO
+You decide to settle, with real data, an open question: how do pgBackRest,
+Barman, and WAL-G actually compare in backup speed, restore speed, and —
+critically — behaviour under failure conditions (interrupted backup,
+corrupted repository, network partition during restore)?
+
+YOUR TASK (Rigorous tool comparison and publication)
+1. Define the test matrix:
+   - Database sizes: 10GB, 100GB, 1TB (to find where behaviour changes)
+   - Network conditions: local, same-region, cross-region (latency matters)
+   - Failure injections: kill the backup process mid-run, corrupt a repository
+     file, simulate network partition during restore
+
+2. Design for fairness:
+   - Identical hardware for each tool under test
+   - Identical PostgreSQL configuration
+   - Identical backup repository storage backend (e.g. all to S3)
+   - Document any configuration tuning per tool (each tool may need
+     different settings to be used "correctly" — note this transparently)
+
+3. Run the performance benchmarks:
+   - Backup duration and resource consumption at each size
+   - Restore duration (full restore, and where supported, delta restore)
+   - Parallel backup/restore scaling (1, 4, 8, 16 workers)
+
+4. Run the failure-mode tests (the most valuable and rarest data in this space):
+   - Kill the backup process at 50% completion — what state is the repository
+     left in? Can you still restore from the last good backup?
+   - Corrupt a single WAL segment in the repository — does the tool detect
+     this, and how does it fail (gracefully or catastrophically)?
+   - Simulate a network partition mid-restore — what is the recovery procedure?
+
+5. Analyse and write up honestly:
+   - Where each tool excels and where each has rough edges
+   - Explicitly call out any tool behaviour that surprised you (most valuable
+     finding for readers)
+   - Avoid a simplistic "winner" — present trade-offs precisely
+
+6. Publish with full reproducibility:
+   - Scripts to set up the test environment
+   - Raw data, not just summary charts
+   - Clear methodology so disagreements can be investigated empirically,
+     not just argued
+
+SAFETY
+Risk: Low (test infrastructure only). Failure injection testing should
+never be run against any system containing real data.
+
+SKILL BUILT
+Area  : Data Management
+Skill : Rigorous tool benchmarking under failure conditions — methodology, honest reporting, reproducibility
+
+REVIEW QUESTION
+Your failure-injection test reveals that one popular tool leaves the backup
+repository in a state that LOOKS valid (passes its own verification command)
+but actually cannot restore correctly for a specific corruption pattern. This
+is a serious finding that could embarrass the tool's maintainers. How do you
+balance public-interest disclosure of this finding against giving the
+maintainers a chance to respond first?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Propose a Standard for Database Disaster Recovery Metrics Reporting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you measured RTO/RPO for your own organisation's DR drills. At L5
+you notice that every organisation measures and reports these differently,
+making it impossible to compare DR maturity across companies, vendors, or
+even teams within the same company. You propose a shared standard.
+
+SCENARIO
+You are advising several companies and notice each has a different
+definition of "RTO achieved" — some measure from disaster declaration,
+some from actual outage start, some exclude detection time. This makes
+DR posture impossible to compare meaningfully. You propose a standard.
+
+YOUR TASK (Metrics standard design)
+1. Audit the inconsistency:
+   - Collect (from your own experience across engagements) at least 4
+     different ways organisations have defined RTO/RPO measurement
+   - Document the specific ambiguities: does RTO start at outage, detection,
+     or declaration? Does it end at "database up" or "application fully
+     serving traffic"?
+
+2. Design the precise, unambiguous metric definitions:
+   - RTO components: Detection Time + Decision Time + Recovery Execution
+     Time + Validation Time — define each precisely, require all four
+     reported separately AND summed
+   - RPO definition: precise definition of the data-loss measurement point
+   - Define how partial/degraded service should be reported (a system that
+     is "up" but serving 10% of normal traffic is not fully recovered)
+
+3. Design the standard reporting template:
+   - A structured format for DR drill results that any organisation could
+     publish or share with auditors/customers
+   - Must support meaningful comparison: same definitions, same units,
+     same confidence intervals (a single drill is not a measurement, it
+     is a data point)
+
+4. Address the "gaming" problem:
+   - Metrics that can be reported are metrics that can be gamed
+   - Design the standard to resist superficial compliance (e.g. require
+     drills to include realistic failure injection, not just "we promoted
+     a standby that was already perfectly in sync")
+
+5. Validate against real scenarios:
+   - Apply your standard to 2-3 of your own past DR drills (from L3/L4 work)
+   - Does it produce clearer, more honest numbers than your original reporting?
+   - Where does the standard itself need refinement?
+
+6. Write the proposal for industry adoption:
+   - Target audience: SRE/DBA leadership, compliance/audit community
+   - Format: similar to how SLO frameworks (e.g. Google's SRE book) became
+     reference standards — clear, opinionated, immediately usable
+
+SAFETY
+Risk: None (standards and metrics design)
+
+SKILL BUILT
+Area  : Data Management
+Skill : Metrics standard design — precision in definitions, resistance to gaming, cross-organisation applicability
+
+REVIEW QUESTION
+A company you propose this standard to says: "Our current RTO numbers look
+much better under our old definition. Adopting your standard will make our
+reported DR posture look worse, even though nothing about our actual
+capability changed." Is this a valid objection to the standard, or exactly
+the problem the standard exists to expose? How do you respond?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Data Management
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 3-9 (REMAINING DATA MANAGEMENT L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Contribute a Patch or Documentation Fix to pgBackRest or Barman
+  Based on real friction encountered in your L4 implementation work, identify
+  a genuine gap in an open-source backup tool and contribute a fix. Deliverable:
+  submitted pull request with maintainer correspondence.
+
+TASK 4: Publish the Definitive Guide to Partitioning Strategy Selection
+  Synthesise range vs list vs hash partitioning trade-offs with real benchmark
+  data across multiple data shapes, intended to become the reference other
+  engineers cite. Deliverable: long-form publication with benchmark data.
+
+TASK 5: Design an Open Framework for Data Lineage in PostgreSQL Systems
+  Propose a generalisable approach to tracking where data originated and
+  how it has moved/transformed across a PostgreSQL-based data platform.
+  Deliverable: framework design + reference implementation.
+
+TASK 6: Research and Publish on PostgreSQL at Petabyte Scale
+  Most PostgreSQL guidance assumes terabyte scale. Investigate (via case
+  studies, your own scale-architecture thought work, and community research)
+  what genuinely changes at petabyte scale and where PostgreSQL stops being
+  viable without extensions like Citus. Deliverable: research publication.
+
+TASK 7: Build a Reference Implementation for GDPR-Compliant Data Architecture
+  Generalise your L4 retention/erasure work into an open reference architecture
+  with example schema, erasure procedures, and audit trail design usable by
+  any PostgreSQL-based system. Deliverable: open reference implementation.
+
+TASK 8: Advise a Standards Body or Regulator on Technical Feasibility
+  Simulate or pursue an advisory role helping a regulatory body understand
+  what is technically feasible/infeasible regarding a proposed data retention
+  or portability regulation. Deliverable: technical feasibility advisory memo.
+
+TASK 9: Lead an Open-Source Project's Data Migration Tooling Roadmap
+  Take a position (real or simulated) as a maintainer or major contributor
+  setting the roadmap for a migration/CDC tool's next major version.
+  Deliverable: public roadmap proposal with community feedback incorporated.
+
+[ AREA 4 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 5 — PERFORMANCE AND MONITORING
+   Level 5 — Principal / Staff (~9 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Investigate and Publish on a PostgreSQL Query Planner Edge Case
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you fixed individual query plan regressions. At L5 you find and
+explain a genuine, reproducible planner edge case clearly enough that it
+helps the entire community recognise it when they hit it — the kind of
+finding that becomes a frequently-linked blog post or a hackers-list thread.
+
+SCENARIO
+You have noticed, across your L3/L4 work, a recurring pattern: a specific
+combination of correlated columns and multi-column statistics seems to
+cause the planner to underestimate row counts in a specific, reproducible
+way. You decide to characterise this precisely and publish it.
+
+YOUR TASK (Planner research and publication)
+1. Isolate the minimal reproducible case:
+   - Strip away all production complexity
+   - Find the smallest schema and query that reliably demonstrates the
+     misestimation
+   - Test across PostgreSQL versions: is this version-specific or persistent?
+
+2. Understand the mechanism (read the relevant source):
+   - Locate the selectivity estimation code in src/backend/optimizer/
+   - Understand what statistics are being used (or not used) for this case
+   - Determine: is extended statistics (CREATE STATISTICS) the fix, and if
+     so, precisely why does it help (what does it change in the planner's
+     reasoning)?
+
+3. Quantify the practical impact:
+   - At what degree of misestimation does this actually cause a bad plan
+     choice (not all misestimation matters practically)?
+   - Build a realistic-scale example showing the actual performance impact
+
+4. Determine the correct fix and document it precisely:
+   - Is CREATE STATISTICS (functional dependencies, ndistinct, or MCV) the
+     right fix?
+   - Are there cases where even extended statistics do not fully resolve it?
+   - What are the limits of the fix?
+
+5. Write the publication:
+   - Clear problem statement with the minimal reproducible example
+   - Explanation grounded in planner internals (cite source where relevant)
+   - The fix, with before/after EXPLAIN ANALYZE showing the improvement
+   - Honest discussion of cases where this does NOT fully solve the problem
+
+6. Consider the contribution path:
+   - This may be valuable as a documentation improvement (the docs on
+     extended statistics could use more worked examples of exactly this
+     scenario)
+   - Draft a documentation patch proposal in addition to the blog-style writeup
+
+SAFETY
+Risk: Low (research and writing). Verify all technical claims rigorously
+before publication — planner internals claims are heavily scrutinised by
+the community and errors here damage credibility significantly.
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Query planner research — source-level understanding, precise characterisation, documentation contribution
+
+REVIEW QUESTION
+After publishing, a PostgreSQL core contributor responds: "This is correct
+for v15 but the situation changes in v16 due to planner improvement X."
+Your original publication is now partially outdated. How do you handle
+maintaining technical publications over time as PostgreSQL evolves, and
+what does this suggest about how you should have framed version-specificity
+in the original writeup?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~9
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Design and Open-Source a Novel Observability Primitive
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you assembled existing observability tools (Prometheus, exporters,
+dashboards) into a platform. At L5 you identify a genuinely missing
+primitive — something the ecosystem lacks — and build it well enough that
+strangers adopt it.
+
+SCENARIO
+Through your L4 fleet-observability work, you have repeatedly wanted a
+primitive that does not exist well in the current ecosystem: reliable,
+low-overhead correlation between a specific slow application request and
+the exact PostgreSQL queries/locks/wait-events it triggered, without full
+distributed tracing instrumentation (which many legacy applications cannot
+adopt quickly).
+
+YOUR TASK (Primitive design, build, and open-source release)
+1. Define the precise gap:
+   - OpenTelemetry tracing solves this but requires application instrumentation
+   - pg_stat_activity gives a snapshot but no historical correlation
+   - What is the minimal-instrumentation approach that gets 80% of the value?
+
+2. Design the approach:
+   - Likely direction: a lightweight correlation ID injected via a SQL
+     comment (e.g. /* req_id=abc123 */ prepended to queries) combined with
+     log_line_prefix capturing it, plus a tool that joins this against
+     pg_stat_activity snapshots and lock wait events
+   - Define exactly what overhead this adds (string concatenation cost,
+     log volume increase)
+
+3. Build a working prototype:
+   - A small library/wrapper that applications can adopt with minimal
+     code change to inject the correlation ID
+   - A collector that captures PostgreSQL-side state correlated to that ID
+   - A query/dashboard that lets you ask "show me everything PostgreSQL did
+     for request abc123"
+
+4. Test it on a realistic scenario:
+   - Simulate a slow application request
+   - Demonstrate that your tool correctly identifies the specific slow query,
+     lock wait, or resource contention that caused it
+   - Measure the actual overhead added (be honest if it is non-trivial)
+
+5. Prepare for open-source release:
+   - Clear README explaining the problem and approach
+   - Honest "when NOT to use this" section (if full tracing is feasible,
+     it is probably better; this is for constrained environments)
+   - Tests, licence, contribution guidelines
+
+6. Plan the dissemination:
+   - Where would this be announced? (relevant subreddit, PostgreSQL Slack/
+     Discord, a blog post, HN)
+   - What would make another engineer trust and adopt this? (clear scope,
+     honest limitations, working examples)
+
+SAFETY
+Risk: Low — prototype on test systems. Be careful that any logging changes
+proposed do not introduce injection risks (a correlation ID from
+user-controllable input must be sanitised before insertion into SQL comments
+or log output).
+
+SKILL BUILT
+Area  : Performance and Monitoring
+Skill : Identifying ecosystem gaps and building adoptable solutions — scoping, prototyping, honest limitation documentation, dissemination
+
+REVIEW QUESTION
+Six months after release, you discover that several adopters are using your
+correlation ID mechanism in a way that creates a SQL injection risk because
+they did not sanitise user input before it reached the SQL comment. This is
+a misuse of your tool, but your documentation did not warn clearly enough.
+What is your responsibility here, and what do you do?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Performance and Monitoring
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 3-9 (REMAINING PERFORMANCE L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Publish a Rigorous Study Debunking or Confirming a Popular Tuning Myth
+  Choose a widely-repeated PostgreSQL tuning claim (e.g. a specific
+  random_page_cost value, a specific work_mem rule of thumb) and test it
+  rigorously across realistic scenarios. Publish whatever the data actually
+  shows. Deliverable: research publication, reproducible benchmark.
+
+TASK 4: Design a Reference SLO Framework Specifically for Database Systems
+  Generalise your L4 SLO design work (informed by Google's SRE methodology)
+  into a PostgreSQL-specific SLO reference covering the metrics that
+  generic SRE literature does not address well (replication lag SLOs,
+  vacuum health SLOs). Deliverable: published SLO framework.
+
+TASK 5: Build and Open-Source an EXPLAIN Plan Visualisation/Diffing Tool
+  Identify the gap in existing tools (explain.depesz.com, pgMustard) and
+  build something that fills it — e.g. rigorous plan diffing across plan
+  versions for regression detection. Deliverable: open-source tool.
+
+TASK 6: Lead a Community Benchmark Initiative (TPC-style for Real Workloads)
+  Standard benchmarks (TPC-C, TPC-H) do not reflect most real applications.
+  Propose and seed a community-driven benchmark suite based on real,
+  anonymised workload patterns. Deliverable: benchmark suite proposal and
+  initial implementation.
+
+TASK 7: Write the Authoritative Guide to Connection Pooling Trade-offs
+  Synthesise PgBouncer, Pgpool-II, application-level pooling, and
+  Postgres-native connection scaling improvements into the single most
+  complete trade-off reference available. Deliverable: long-form publication.
+
+TASK 8: Research and Publish on Predictive Performance Degradation Detection
+  Investigate whether statistical/ML approaches can reliably predict query
+  performance degradation before it crosses SLA thresholds, using real or
+  synthetic historical data. Deliverable: research findings publication.
+
+TASK 9: Advise a Cloud Provider's Managed PostgreSQL Product Team
+  Simulate or pursue an advisory engagement with a cloud provider's managed
+  database team, bringing operator-perspective feedback on their service
+  limitations. Deliverable: structured product feedback document.
+
+[ AREA 5 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+████████████████████████████████████████████████████████████████████████████████
+   AREA 6 — MAINTENANCE AND COMPLIANCE
+   Level 5 — Principal / Staff (~8 Tasks)
+████████████████████████████████████████████████████████████████████████████████
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 1 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Found and Lead a Practitioner Working Group on Incident Management Maturity
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you assessed and improved your own organisation's incident management
+maturity. At L5 you recognise this is an industry-wide problem with no
+shared vocabulary, and you convene practitioners across companies to build one.
+
+SCENARIO
+You have advised multiple organisations (through your L4/L5 work) and noticed
+every company invents its own incident severity definitions, postmortem
+templates, and maturity models from scratch. You decide to found a working
+group to build something shared.
+
+YOUR TASK (Working group founding and leadership)
+1. Define the working group's scope precisely:
+   - Specifically database incident management (not general SRE incident
+     management, which has more existing prior art)
+   - What genuinely needs a shared standard vs what should remain
+     organisation-specific?
+
+2. Recruit a credible founding group (real or realistically simulated):
+   - Identify 5-8 practitioners across different company sizes/industries
+   - What makes them credible contributors? (real production experience,
+     not just enthusiasm)
+   - Draft the recruitment pitch: why should a busy Staff Engineer at
+     another company spend their time on this?
+
+3. Design the working group's operating model:
+   - Meeting cadence and format
+   - Decision-making process (consensus? voting? benevolent dictator for
+     the first version?)
+   - How is disagreement resolved without the group stalling?
+
+4. Produce the first concrete deliverable:
+   - A shared severity classification specifically for database incidents
+     (going beyond generic P1-P4, addressing database-specific dimensions:
+     data loss risk, blast radius across dependent services, reversibility)
+   - A shared postmortem template with database-specific sections (e.g.
+     a mandatory "data integrity verification" section most generic
+     templates omit)
+
+5. Pilot the deliverable:
+   - Apply it (retroactively) to 2-3 real incidents from your own L3/L4 history
+   - Does it produce more useful analysis than your original ad-hoc approach?
+   - Get feedback from at least one other working group member's pilot
+
+6. Plan dissemination and sustained governance:
+   - How does this avoid becoming "yet another framework nobody adopts"?
+   - What is the versioning and change-proposal process for the long term?
+   - How do you measure if the working group is actually achieving impact?
+
+SAFETY
+Risk: None (organisational/community task)
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Cross-organisation initiative leadership — recruitment, consensus-building, sustainable governance
+
+REVIEW QUESTION
+After the first version ships, a founding member from a large enterprise
+argues the severity classification is too simple for their regulatory
+context, while a founding member from a startup argues it is already too
+complex for their needs. How do you lead the group to a resolution that
+keeps both engaged rather than losing one perspective?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L5/10 — Principal / Staff
+TASK   : 2 of ~8
+TIME   : Multi-week
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Publish a Longitudinal Study on Database Compliance Programme Effectiveness
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY THIS MATTERS
+At L4 you built a compliance programme and passed an audit. At L5 you ask
+the harder question the industry rarely asks rigorously: does passing SOC 2/
+ISO 27001 actually correlate with fewer real incidents, or is it largely
+theatre? You investigate this with real or carefully reasoned data.
+
+SCENARIO
+You have observed (anecdotally, across your advisory work) organisations
+that are SOC 2 certified still suffering serious database incidents that
+the certification's controls should arguably have prevented. You decide to
+investigate this rigorously rather than rely on anecdote.
+
+YOUR TASK (Longitudinal research and publication)
+1. Define the research question precisely:
+   - Does SOC 2 Type II certification correlate with measurably fewer
+     database security/availability incidents?
+   - If not, where specifically does the gap lie — control design,
+     control testing rigour, or control scope (i.e. controls test things
+     that do not actually predict incidents)?
+
+2. Design the investigation methodology:
+   - If real data is available to you (anonymised incident data across
+     multiple organisations you have advised, public breach databases,
+     public post-mortems): use it
+   - If real data is insufficient: construct a rigorous case-study analysis
+     of public incidents at certified organisations, examining exactly
+     which control(s) should have prevented the specific incident and why
+     they did not
+
+3. Analyse honestly, including uncomfortable findings:
+   - Is it the case that controls test for the EXISTENCE of a process
+     (e.g. "quarterly access review occurs") rather than the EFFECTIVENESS
+     of that process (e.g. "the access review actually catches and revokes
+     unnecessary access")?
+   - Where specifically does paperwork compliance diverge from operational
+     safety?
+
+4. Propose what would actually close the gap:
+   - More outcome-based controls vs process-based controls?
+   - Specific database control additions that current frameworks miss?
+   - Be specific and actionable, not just "compliance theatre is bad"
+
+5. Write the publication with appropriate rigour and restraint:
+   - This is a sensitive topic (could be read as an attack on the
+     compliance industry) — ground every claim in specific evidence
+   - Acknowledge what compliance programmes DO achieve (forcing minimum
+     baseline hygiene, creating audit trails, organisational accountability)
+   - Do not overstate "compliance is useless" if your evidence does not
+     support that strong a claim
+
+6. Anticipate the response:
+   - Compliance professionals will scrutinise this heavily
+   - Auditors may push back hard
+   - Prepare a defensible, evidence-grounded position, not a polemic
+
+SAFETY
+Risk: Medium (reputational) — this kind of finding can be politically
+sensitive. Rigour and fairness in the analysis are essential; an
+under-evidenced version of this claim does real damage to your credibility
+and to legitimate discourse on compliance effectiveness.
+
+SKILL BUILT
+Area  : Maintenance and Compliance
+Skill : Rigorous, sensitive research publication — evidence standards, fairness, anticipating adversarial scrutiny
+
+REVIEW QUESTION
+Your analysis finds that certified organisations do have measurably fewer
+incidents on average, but the specific incidents that DO occur are not the
+ones the certification's controls target. How do you frame this nuanced
+finding so it is not misrepresented by readers as either "compliance works
+perfectly" or "compliance is worthless" — both of which would be wrong?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Maintenance and Compliance
+LEVEL  : L5/10 — Principal / Staff
+TASKS  : 3-8 (REMAINING MAINTENANCE L5 TASKS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 3: Advise a Regulator or Standards Body on Database-Specific Compliance Language
+  Many compliance frameworks were written without deep database operational
+  expertise, producing controls that are vague or poorly matched to actual
+  risk. Offer (real or simulated) expert input to a standards body revision
+  process. Deliverable: technical commentary submission.
+
+TASK 4: Build and Open-Source a Database Change Risk Classifier (Generalised)
+  Take your L4 organisation-specific risk classifier and generalise it into
+  a reusable, configurable open-source tool that parses migration files
+  across multiple migration frameworks. Deliverable: public tool with
+  documentation and test suite covering known dangerous patterns (e.g. the
+  large-table ADD COLUMN trap, unsafe type changes).
+
+TASK 5: Write the Definitive Cross-Industry Guide to Database DR Testing
+  Synthesise your L3/L4 DR drill experience into the authoritative guide
+  on how to actually test disaster recovery rigorously (not theatre drills),
+  intended to become a widely-cited reference. Deliverable: long-form
+  publication.
+
+TASK 6: Found a Mentorship Programme Connecting Senior and Junior DBAs Across Companies
+  Design and launch (or fully specify) a structured, cross-company mentorship
+  programme addressing the industry-wide shortage of senior PostgreSQL DBA
+  talent. Deliverable: programme design and launch plan.
+
+TASK 7: Lead a Public Retrospective on a Major Open-Source Database Incident
+  Analyse a significant, publicly documented incident involving an
+  open-source database project itself (not a company's use of it) and
+  extract lessons for the broader maintenance/compliance community.
+  Deliverable: public retrospective analysis.
+
+TASK 8: Propose and Pilot an Industry Certification for Database Operational Maturity
+  Existing certifications (vendor-specific) test knowledge, not operational
+  maturity. Design a practitioner-driven alternative that tests demonstrated
+  capability (closer to this training programme's own philosophy) rather
+  than rote knowledge. Deliverable: certification design proposal and pilot plan.
+
+[ AREA 6 — ALL L5 TASKS COMPLETE ]
+================================================================================
+
+
+
+
+================================================================================
+FINAL L5 PROGRESS DASHBOARD — COMPLETE
+================================================================================
+╔══════════════════════════════════════════════════════════════════════╗
+║              DBA TRAINING PROGRESS DASHBOARD                        ║
+╠══════════════╦════════╦══════════════╦═══════════════╦══════════════╣
+║ Area         ║ Level  ║ Tasks Done   ║ Est. Remaining║ Area %       ║
+╠══════════════╬════════╬══════════════╬═══════════════╬══════════════╣
+║ 1. Instance  ║ L5/10  ║ 9            ║ 0             ║ 50%          ║
+║ 2. Provision ║ L5/10  ║ 8            ║ 0             ║ 50%          ║
+║ 3. Security  ║ L5/10  ║ 8            ║ 0             ║ 50%          ║
+║ 4. Data Mgmt ║ L5/10  ║ 9            ║ 0             ║ 50%          ║
+║ 5. Perf/Mon  ║ L5/10  ║ 9            ║ 0             ║ 50%          ║
+║ 6. Maint/Com ║ L5/10  ║ 8            ║ 0             ║ 50%          ║
+╠══════════════╩════════╩══════════════╩═══════════════╩══════════════╣
+║ Overall Mastery: ~50% (L5 complete across all 6 areas — 51 tasks)   ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+TOTAL L5 TASK SUMMARY
+────────────────────────────────────────────────────────────────────────
+Area 1 — Instance            : 3 tasks fully detailed + 6 structured summaries
+Area 2 — Provisioning        : 2 tasks fully detailed + 6 structured summaries
+Area 3 — Security            : 2 tasks fully detailed + 6 structured summaries
+Area 4 — Data Management     : 2 tasks fully detailed + 7 structured summaries
+Area 5 — Performance/Monitor : 2 tasks fully detailed + 7 structured summaries
+Area 6 — Maintenance/Comp    : 2 tasks fully detailed + 6 structured summaries
+────────────────────────────────────────────────────────────────────────
+TOTAL L5 TASKS               : ~51 Principal / Staff-level tasks
+────────────────────────────────────────────────────────────────────────
+
+WHAT CHANGED FROM L4 TO L5
+────────────────────────────────────────────────────────────────────────
+L4 — You designed systems and led teams within your organisation.
+L5 — You produce contributions that exist independently of your employer:
+     patches, published research, open-source tools, industry standards,
+     conference talks, and cross-company working groups.
+
+The deliverables at L5 are judged by whether a stranger — a PostgreSQL
+core contributor, a Staff Engineer at a different company, a conference
+audience — would find genuine value in them, not just whether your own
+manager is satisfied.
+
+L5 CAPABILITY MARKERS — You are ready for L6 when you have:
+  ✓ Made a real, accepted contribution to an open-source project
+    (code, documentation, or a maintained tool with external adopters)
+  ✓ Published research or analysis that changed how practitioners think
+    about a problem, with evidence rigorous enough to withstand challenge
+  ✓ Delivered a technical talk that taught something new to an expert audience
+  ✓ Led a cross-organisation initiative to a concrete, adopted outcome
+  ✓ Handled a sensitive disclosure (security or otherwise) with documented
+    ethical judgment
+  ✓ Built something that a stranger has adopted without you persuading them
+    in person
+
+WHAT L6 BRINGS (Distinguished Engineer / Industry Authority Level)
+────────────────────────────────────────────────────────────────────────
+At L6 you are not just contributing to the field — you are shaping its
+direction:
+  - Sustained maintainership of significant open-source infrastructure
+  - Influence on the PostgreSQL project's own roadmap and design decisions
+  - Authorship of material that becomes default-cited industry reference
+  - Building and sustaining institutions (working groups, certifications,
+    conferences) that outlast your direct involvement
+  - Responsibility for judgment calls with industry-wide consequence
+
+────────────────────────────────────────────────────────────────────────
+WHEN READY: Return to Claude and say:
+"L5 complete. Ready for L6 across all areas."
+────────────────────────────────────────────────────────────────────────
+
+================================================================================
+                            LEVEL 5 COMPLETE
+        You have reached Principal / Staff Engineer level in PostgreSQL
+                        Database Administration.
+
+   The skills built across L1-L5 represent a complete trajectory: from
+   first installation, through independent operation, through enterprise
+   architecture and leadership, to original contribution that extends
+                        beyond any single employer.
+
+      Very few practitioners complete this full arc. Most careers plateau
+        comfortably at L3 or L4. Reaching L5 means your work is now
+              read, used, and cited by people who never met you.
+
+         The remaining path is not about acquiring more knowledge —
+            it is about sustained, accountable influence over time.
+
+                    Go make something that outlives the byline.
+================================================================================

@@ -1,0 +1,1936 @@
+text
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 1/6
+TIME   : 45-60 min
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Skeleton Contract
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script skeleton that separates orchestration from logic using a main() function pattern, with disciplined exit-code use.
+
+TASKS
+- Script must define a main() function as the single entry point; the only top-level executable statement outside function/variable definitions is the call to main "$@".
+- Script must support at least 3 distinct exit codes, each tied to a different failure category (e.g. bad usage, missing dependency, operation failure), plus 0 for success.
+- No business logic may live outside a function -- top-level code is limited to definitions and the final main call.
+- Script must work correctly with zero arguments, one argument, and multiple arguments without crashing.
+
+VALIDATION
+- Run with no args, valid args, and intentionally invalid args; confirm distinct, correct exit codes via $? after each run.
+- Inspect the script to confirm no executable statement exists outside a function definition except the trailing main call.
+
+FAILURE SCENARIOS
+- Script is invoked with an unexpected number of arguments.
+- Script is sourced instead of executed.
+
+COMMON MISTAKES
+- Letting "setup" code leak outside any function ("just this one line, it's fine").
+- Returning exit codes from functions but never propagating them to the script's actual exit status.
+
+REVIEW QUESTIONS
+- Why does mixing orchestration and logic in main() reduce testability?
+- What's the difference between a function's return value and the script's exit status, and where can that distinction silently break?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 2/6
+TIME   : 45-60 min
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: One Job Per Function
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Decompose a multi-step operation into single-responsibility functions communicating only through explicit inputs/outputs.
+
+TASKS
+- Build a script simulating a 4-stage process (e.g. validate -> prepare -> execute -> verify), each stage in its own function.
+- No function may read or write a variable it wasn't passed -- data passes only through parameters and local return-by-stdout conventions.
+- Each function must do exactly one observable thing; if you can describe a function's job with "and," split it.
+- main() should read as a high-level summary of the process when viewed alone, with no implementation detail visible.
+
+VALIDATION
+- Read main() in isolation; confirm a new team member could describe the script's behavior from main() alone without reading any other function.
+- Temporarily disable one stage function and confirm the failure is isolated and clearly attributable to that stage.
+
+FAILURE SCENARIOS
+- One stage produces output the next stage doesn't expect.
+- A stage is skipped or called out of order.
+
+COMMON MISTAKES
+- Using global variables as a shortcut instead of proper parameter passing.
+- Functions that both compute a value and print logging output mixed into the same stdout stream used for return values.
+
+REVIEW QUESTIONS
+- What breaks first when two functions implicitly share state through globals instead of parameters?
+- How would you test stage 3 in isolation without running stages 1, 2, and 4?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 3/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Scope Discipline
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script demonstrating controlled variable scope across nested function calls, with zero accidental leakage.
+
+TASKS
+- Build a script with at least 3 levels of nested function calls (function A calls B calls C).
+- Every variable used inside a function that is not a parameter must be declared local; only a deliberately chosen, minimal set may be intentionally global, and that choice must be evident through naming convention.
+- Design the script so that two unrelated nested functions reusing the same variable name (e.g. i, result) cannot cause incorrect behavior.
+- Provide a way to verify, at runtime, that no unintended global variables were created during execution.
+
+VALIDATION
+- Run the script, then inspect the shell's variable table afterward (if sourced) to confirm no unexpected globals exist.
+- Deliberately reuse a common variable name in two unrelated nested functions and confirm no cross-contamination occurs.
+
+FAILURE SCENARIOS
+- A function is called recursively and scope discipline must hold across recursive depth.
+- Two sibling functions are called in sequence and accidentally share a leaked variable name.
+
+COMMON MISTAKES
+- Forgetting local on loop counters inside functions.
+- Assuming local is the default in Bash (it isn't).
+
+REVIEW QUESTIONS
+- Why is Bash's default global scope dangerous in scripts beyond ~100 lines?
+- What real production bug class does undisciplined scoping tend to cause?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 4/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Exit Code Map
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design and enforce a standardized, documented exit-code scheme for a script meant to be called by cron and alerting systems.
+
+TASKS
+- Design at least 6 distinct exit codes (0 = success), each a specific, mutually exclusive failure category (e.g. usage error, dependency missing, precondition failed, operation failed, partial success, timeout).
+- Every exit point must use a named constant or clearly labeled value -- no bare unexplained integers scattered through the code.
+- Guarantee that the LAST exit code reflects the true overall outcome even if intermediate functions fail and are recovered from.
+- Build a self-check mode (a flag) that deliberately triggers each failure category on demand, so every exit code can be validated without needing real failure conditions.
+
+VALIDATION
+- Use the self-check mode to trigger every exit code and confirm $? matches the documented value for each.
+- Confirm a downstream caller could reliably distinguish all categories using only $?.
+
+FAILURE SCENARIOS
+- Multiple failure types occur in the same run -- which exit code should win, and why?
+- A function fails internally but the script "recovers" and continues -- what should the final exit code be?
+
+COMMON MISTAKES
+- Reusing the same exit code for unrelated failure types out of laziness.
+- Letting a later successful step overwrite the exit code of an earlier real failure.
+
+REVIEW QUESTIONS
+- Why do undocumented or inconsistent exit codes erode trust in automation built on top of a script?
+- How would an alerting system's logic differ if it could rely on exit codes versus having to parse log text?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 5/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Dual-Purpose Script
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script that behaves correctly both when executed directly and when sourced as a library, with no unwanted side effects in either mode.
+
+TASKS
+- Script must detect whether it is being executed or sourced, and only run main()/exit when executed directly.
+- When sourced, the script must expose its functions for reuse without printing output, setting traps, or calling exit/main automatically.
+- Any setup the script needs must not be forced onto a script that sources it, unless explicitly requested.
+- Provide a documented, intentional way for a sourcing script to opt into full standalone behavior if desired.
+
+VALIDATION
+- Execute the script directly and confirm full normal behavior including correct exit codes.
+- Source the script from a second test script, call one of its functions directly, and confirm no unwanted exit, output, or option changes occurred.
+
+FAILURE SCENARIOS
+- A sourcing script unintentionally inherits an exit call meant only for standalone mode, killing its own shell session.
+- Sourcing the script twice in the same session causes duplicate function/trap definitions or errors.
+
+COMMON MISTAKES
+- Using exit instead of return inside functions meant to be reusable.
+- Forgetting that set -e / set -u inside a sourced script can silently change caller behavior.
+
+REVIEW QUESTIONS
+- Why is detecting execution-vs-sourcing mode foundational to building a reusable internal library?
+- What's a realistic incident that could result from a sourced script changing shell options out from under its caller?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Structure
+LEVEL  : L1
+TASK   : 6/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Trap-Proof Structure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Ensure a script's structure guarantees cleanup runs exactly once, regardless of where or how it fails.
+
+TASKS
+- Build a script that creates at least one temporary resource (a temp file/dir or a lock) early in execution.
+- Implement cleanup via trap bound to EXIT (and ideally INT/TERM) so the resource is removed no matter which function fails, how deep the call stack is, or whether the script exits normally, via error, or via signal.
+- Cleanup must run exactly once even under multiple overlapping exit paths (e.g. an explicit exit deep in a nested function plus a top-level error).
+- The script's structure must make it obvious, just from reading main(), that cleanup is guaranteed -- it should not depend on every function "remembering" to clean up.
+
+VALIDATION
+- Force failures at 3 different points in the call stack (early, middle, late) and confirm the temp resource is removed every time.
+- Send SIGINT mid-execution and confirm cleanup still runs.
+
+FAILURE SCENARIOS
+- The script is killed with SIGKILL (untrappable) -- what's the structural implication, and how should the design account for that risk elsewhere?
+- Cleanup itself fails partway through.
+
+COMMON MISTAKES
+- Putting cleanup code only at the "end" of main(), unreachable if an earlier step exits early.
+- Defining the trap after the resource has already been created, leaving a window where failure skips cleanup.
+
+REVIEW QUESTIONS
+- Why must a trap be set before the resource it protects is created?
+- What categories of failure can never be caught by a trap, and how does that change how you'd design resource safety?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 1/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Flag and Value Front-End
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a CLI argument parser supporting both flags and value-bearing options for a backup-utility front-end, with strict validation.
+
+TASKS
+- Support at least: a value-bearing option (e.g. target path), a boolean flag (e.g. verbose), and a flag requiring a constrained set of values (e.g. mode: full|incremental).
+- Reject any unrecognized option immediately with a clear error and non-zero exit, rather than silently ignoring it.
+- Reject a value-bearing option given without its value, and a boolean flag given a value it shouldn't have.
+- Support options appearing in any order.
+
+VALIDATION
+- Test valid combinations, an unknown flag, a missing value for a value-bearing option, and an invalid value for the constrained-set option; confirm each is rejected with a distinct, clear message and non-zero exit.
+
+FAILURE SCENARIOS
+- The same option is passed twice with conflicting values.
+- An option value itself looks like another flag (e.g. a path value starting with -).
+
+COMMON MISTAKES
+- Using positional $1, $2 indexing that breaks the moment option order changes.
+- Silently accepting unknown flags instead of failing loudly.
+
+REVIEW QUESTIONS
+- What's the operational cost of a script that silently ignores a typo'd flag instead of failing?
+- How would you extend this parser to add a new option without touching unrelated logic?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 2/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Validated Connection Input
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Validate structured input representing a database connection target before any operation is attempted.
+
+TASKS
+- Accept a hostname/IP, a port, and a database name as input.
+- Validate the port is numeric and within the valid 1-65535 range.
+- Validate the hostname is a plausible hostname/IP format without needing to resolve it over the network.
+- Reject empty or whitespace-only values for any required field with a message naming which specific field failed.
+
+VALIDATION
+- Test a valid input, an out-of-range port, a non-numeric port, an empty hostname, and a malformed hostname; confirm each produces a distinct, field-specific error.
+
+FAILURE SCENARIOS
+- Input contains leading/trailing whitespace that looks valid but would fail downstream.
+- Port is technically numeric but reserved/clearly wrong for the stated purpose (e.g. port 0).
+
+COMMON MISTAKES
+- Validating "is it non-empty" but not "is it the right shape."
+- Bundling all field errors into one generic "invalid input" message that doesn't say which field.
+
+REVIEW QUESTIONS
+- Why does field-specific validation feedback matter more in automation than in a human-facing tool?
+- What's the risk of validating format but not range (or vice versa)?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 3/6
+TIME   : 45 min-1 hr
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Self-Documenting Usage
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a usage/help system that activates both on request and automatically on misuse.
+
+TASKS
+- Implement a usage() function that prints a complete, accurate summary of every option and required argument.
+- Usage must trigger on -h/--help, on zero required arguments, and on any invalid invocation -- using one single source of truth, not separate hand-written messages.
+- Usage output must go to the correct stream (stdout for explicit help requests, stderr for error-triggered usage) and pair with the correct exit code in each case.
+
+VALIDATION
+- Run with -h, with no args, and with a clearly invalid invocation; confirm usage text is identical across all three, streams are correct, and exit codes differ appropriately.
+
+FAILURE SCENARIOS
+- A future option is added to the parser but the developer forgets to update usage() -- design the script so this drift is structurally hard to introduce.
+
+COMMON MISTAKES
+- Printing help text to stdout even when triggered by an error, breaking downstream piping/parsing expectations.
+- Maintaining the option list in two places (parser and usage text) that can silently drift apart.
+
+REVIEW QUESTIONS
+- Why does stdout vs stderr matter for a help message in an automated pipeline?
+- How would you guarantee usage() and the actual parser never go out of sync as the script grows?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 4/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Conditional Argument Rules
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Enforce dependency and mutual-exclusion rules between CLI options that simple presence/absence checks can't express.
+
+TASKS
+- Build a script with at least one mutually exclusive pair (e.g. --dry-run and --force cannot coexist) and one dependency rule (e.g. --restore requires --from).
+- Violating either rule must produce a specific error naming the conflicting/missing options, not a generic failure.
+- Validation must happen after all arguments are parsed, so flag order on the command line doesn't matter.
+
+VALIDATION
+- Test: both mutually exclusive flags together, the dependent flag alone without its requirement, and a fully valid combination; confirm correct behavior regardless of flag order.
+
+FAILURE SCENARIOS
+- Three or more options have overlapping dependency/exclusion rules -- design validation logic that scales without becoming an unreadable wall of nested ifs.
+
+COMMON MISTAKES
+- Checking dependency rules inline during parsing instead of after parsing completes, causing order-dependent bugs.
+- Hardcoding option names repeatedly instead of referencing them from a single definition point.
+
+REVIEW QUESTIONS
+- Why is "validate after full parse" generally safer than "validate during parse" for option relationships?
+- How does this rule-checking approach scale if you eventually need 10 such rules?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 5/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Positional and Optional Together
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script accepting a required positional argument alongside optional flags, with strict, predictable ordering rules.
+
+TASKS
+- Define one required positional argument (e.g. a target name) and at least two optional flags.
+- The positional argument may appear before, after, or between flags -- parsing must handle all three orderings correctly.
+- Missing the positional argument must produce a specific error distinguishable from a missing flag value.
+- Extra/unexpected positional arguments beyond the one expected must be rejected, not silently ignored.
+
+VALIDATION
+- Test positional-then-flags, flags-then-positional, and interleaved ordering; confirm identical correct parsing. Test missing positional and extra positional cases.
+
+FAILURE SCENARIOS
+- A flag's value could be mistaken for the positional argument, or vice versa.
+
+COMMON MISTAKES
+- Assuming positional arguments always come first or last.
+- Using $# checks alone without actually distinguishing flags from positionals during the parse loop.
+
+REVIEW QUESTIONS
+- What ambiguity arises when a flag's expected value and a positional argument could both legally appear next?
+- How would you redesign this if you needed two required positional arguments instead of one?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Input
+LEVEL  : L2
+TASK   : 6/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Sanitization Before Use
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Treat all user-supplied input as untrusted before it's used in file paths or passed to other commands.
+
+TASKS
+- Build a script accepting a user-supplied value intended to become part of a file path, and another intended to be passed as an argument to an external command.
+- Reject or neutralize values containing path traversal sequences, unexpected shell metacharacters, or leading dashes that could be misread as flags downstream.
+- Define and enforce an explicit allow-list of acceptable characters/format for the input, rather than block-listing dangerous ones.
+- Demonstrate the script refuses a deliberately adversarial input designed to escape the intended file path or inject an extra command-line argument.
+
+VALIDATION
+- Test a normal valid label, a value containing ../, a value starting with -, and a value containing shell metacharacters; confirm all unsafe inputs are rejected before use.
+
+FAILURE SCENARIOS
+- The sanitized value is reused in multiple places -- confirm sanitization happens once at the boundary, not inconsistently in some usages.
+
+COMMON MISTAKES
+- Quoting variables correctly but still allowing dangerous characters through unsanitized.
+- Block-listing a few "known bad" characters instead of allow-listing the genuinely safe set.
+
+REVIEW QUESTIONS
+- Why is allow-listing generally safer than block-listing for untrusted input?
+- Even with proper quoting, what categories of risk remain if the value itself is attacker-controlled?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 1/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Leveled Logging Core
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a logging function library supporting DEBUG/INFO/WARN/ERROR levels with a single adjustable threshold.
+
+TASKS
+- One log function (or small family) used everywhere in the script -- no raw echo calls for status output anywhere else.
+- A configurable minimum level (via env var or flag) that suppresses lower-priority messages without commenting out calls.
+- Each log line must include, at minimum, a timestamp and the level name.
+- Changing the minimum level must require touching exactly one place, not every call site.
+
+VALIDATION
+- Set the threshold to each level in turn and confirm only appropriately-prioritized messages appear at each setting.
+
+FAILURE SCENARIOS
+- A log call is made before the logging system itself is initialized.
+
+COMMON MISTAKES
+- Hardcoding level filtering logic into every call site instead of one central function.
+- Forgetting to order output correctly when mixing logging with other direct output.
+
+REVIEW QUESTIONS
+- Why does centralizing logging through one interface matter for a script that will grow over time?
+- What's the operational cost of a script with inconsistent ad-hoc status messages instead of leveled logging?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 2/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Size-Based Self-Rotation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build log rotation into a long-running monitor script itself, without relying on logrotate.
+
+TASKS
+- The script must check its own log file's size at a defined interval (or before each write) and rotate when a threshold is exceeded.
+- Rotation must preserve a configurable number of historical log files, removing the oldest beyond that count.
+- Rotation must not lose or corrupt any in-flight log line, and must not require restarting the script.
+- The rotation mechanism must log its own action (that a rotation occurred) into the new active log file.
+
+VALIDATION
+- Force the log file past the threshold and confirm rotation occurs, history count is respected, and writing continues seamlessly in the new file.
+
+FAILURE SCENARIOS
+- Two instances of the script could run concurrently -- what happens to rotation safety?
+- The script crashes mid-rotation.
+
+COMMON MISTAKES
+- Checking size only once at startup instead of continuously during a long-running process.
+- Off-by-one errors in retention count, silently keeping one too many or too few historical files.
+
+REVIEW QUESTIONS
+- What race condition exists if rotation isn't made safe against concurrent writers?
+- Why might rotating by size alone be insufficient compared to rotating by time?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 3/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Console and File, One Call
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Send every log message to both a human-readable console stream and a file, from a single logging call.
+
+TASKS
+- Console output should be colorized by level when output is a terminal, and plain when it's not (e.g. piped to a file or cron).
+- File output must remain plain text regardless of terminal detection, and must never contain raw ANSI color codes.
+- A single log function call must produce both outputs -- callers must never call two separate functions to log one event.
+- The script must correctly detect whether it's running interactively to decide on colorization, without requiring a flag every time.
+
+VALIDATION
+- Run interactively and confirm colorized console + plain file. Run with output redirected to a file and confirm console colorization is correctly suppressed while file logging still works.
+
+FAILURE SCENARIOS
+- The log file destination is not writable -- what should happen to console logging in that case?
+
+COMMON MISTAKES
+- Hardcoding color codes directly into the file output path by accident.
+- Using terminal detection incorrectly or not at all, causing garbled color codes in piped/cron output.
+
+REVIEW QUESTIONS
+- Why does leaking ANSI codes into a log file matter for later automated parsing or viewing?
+- How would you detect "is this running non-interactively" reliably?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 4/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Machine-Readable Logging
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Emit logs in a structured, parseable format alongside (or in addition to) human-readable text.
+
+TASKS
+- Each log entry must include consistent structured fields (timestamp, level, message, and at least one contextual field) in a key=value or similarly parseable format.
+- The format must be consistent enough that a downstream tool could reliably extract any field with a simple text-processing tool, without special-casing.
+- Embedded special characters in the message field must not break the structured format's parseability.
+- Provide both a structured-only mode and a human-readable mode, switchable without code changes.
+
+VALIDATION
+- Generate log entries containing messages with embedded equals signs and quotes; confirm a separate parsing pass can still correctly extract every field without corruption.
+
+FAILURE SCENARIOS
+- A message field naturally contains a value that looks like another field's key=value pair.
+
+COMMON MISTAKES
+- Choosing a structured format that breaks the moment a message contains the field delimiter itself.
+- Inconsistent field ordering or presence across different log call sites, breaking downstream parsing assumptions.
+
+REVIEW QUESTIONS
+- What's the tradeoff between human-readability and machine-parseability, and how can a script serve both well?
+- Why does field consistency across all call sites matter more than field richness in any single call?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 5/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Correlated Concurrent Logs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Make every log line traceable to the specific script invocation that produced it, even when multiple instances log to a shared file.
+
+TASKS
+- Every log line must include the process ID and a unique execution/run ID generated once per script invocation (not per log line).
+- Two simultaneous runs logging to the same shared file must produce output where every line is unambiguously attributable to one run.
+- The execution ID must be available to every function without being passed as a parameter to every single one -- decide and justify how.
+- Provide a way to extract just one run's complete log sequence from a shared file containing interleaved output from multiple runs.
+
+VALIDATION
+- Launch two instances of the script concurrently against the same log file and confirm each run's lines can be cleanly separated and ordered using the run ID.
+
+FAILURE SCENARIOS
+- The run ID generation method could collide between two runs started in the same instant -- assess and address this.
+
+COMMON MISTAKES
+- Generating the run ID from something with insufficient uniqueness (e.g. just the current second).
+- Making the run ID a global without considering scope/sourcing implications.
+
+REVIEW QUESTIONS
+- What property must a run ID have to be safe under high concurrency?
+- Why is process ID alone insufficient for correlating logs across time?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Logging
+LEVEL  : L3
+TASK   : 6/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Verbosity Without Sprawl
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Support silent, normal, and verbose output modes without scattering conditional logic throughout the script body.
+
+TASKS
+- Three distinct modes: silent (errors only), normal (key milestones), verbose (detailed step-by-step) -- selectable via a single flag.
+- No verbosity checks should appear outside the logging function(s) themselves; callers just log at the appropriate level and the mode decides what's shown.
+- Switching modes must not require different code paths in the business logic -- only the logging layer's behavior changes.
+- Confirm that silent mode still surfaces real errors -- "silent" must never mean "swallow failures."
+
+VALIDATION
+- Run the same script logic under all three modes and confirm only the logging layer's behavior changes, and that errors always surface even in silent mode.
+
+FAILURE SCENARIOS
+- A developer is tempted to add a one-off conditional echo somewhere in business logic -- design the logging interface so this has no advantage over just using the logger.
+
+COMMON MISTAKES
+- Conflating "verbose" with "debug" without realizing they serve different audiences/intents.
+- Letting silent mode accidentally suppress error-level messages along with everything else.
+
+REVIEW QUESTIONS
+- Why does verbosity belong in the logging layer rather than scattered through business logic?
+- What's the practical difference in audience/intent between INFO-level "normal" output and DEBUG-level "verbose" output?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 1/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Transient vs Fatal
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Classify failures into transient (worth retrying) and fatal (must stop) categories, and react accordingly.
+
+TASKS
+- Build a script performing a simulated operation that can fail in at least two distinct ways: one clearly transient (e.g. timeout), one clearly fatal (e.g. invalid credentials).
+- Transient failures must trigger a defined recovery behavior (e.g. retry); fatal failures must stop immediately with a clear classification in the output.
+- The classification logic must be centralized -- one place decides "is this transient or fatal," not duplicated at every call site.
+- The script must never treat a fatal error as transient.
+
+VALIDATION
+- Simulate both failure types independently and confirm the script's reaction matches the correct classification each time.
+
+FAILURE SCENARIOS
+- A failure mode is genuinely ambiguous -- how does the design handle uncertainty rather than guessing silently?
+
+COMMON MISTAKES
+- Retrying everything indiscriminately "just in case."
+- Classifying by error message text matching alone, which breaks when wording changes.
+
+REVIEW QUESTIONS
+- What's the cost of retrying a fatal error versus failing fast on a transient one?
+- How would you classify a failure type you've never seen before, by default -- optimistic or pessimistic? Why?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 2/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Backoff With a Ceiling
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Implement retry logic with increasing backoff and a hard attempt limit for a transient, retryable operation.
+
+TASKS
+- Retry attempts must increase the wait time between tries, up to a defined maximum wait.
+- A hard maximum number of attempts must exist; exceeding it must produce a distinct, clearly-labeled final failure.
+- Each attempt and its outcome must be logged so the retry history is reconstructable after the fact.
+- The mechanism must be reusable for more than one type of operation without rewriting the retry loop each time.
+
+VALIDATION
+- Simulate an operation that always fails and confirm the script gives up after exactly the configured max attempts, with growing wait times observable.
+- Simulate an operation that succeeds on a later attempt and confirm it stops retrying immediately upon success.
+
+FAILURE SCENARIOS
+- The operation "succeeds" but returns an ambiguous result that's hard to classify as success or failure.
+
+COMMON MISTAKES
+- Using a fixed sleep interval and calling it "backoff."
+- Off-by-one errors in counting attempts.
+
+REVIEW QUESTIONS
+- Why does unbounded retrying represent a real operational risk?
+- What's the reasoning behind increasing wait time rather than retrying immediately and repeatedly?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 3/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Centralized Error Context
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a centralized error handler that captures rich context wherever it's invoked.
+
+TASKS
+- A single error-handling mechanism, callable or triggered automatically from anywhere in the script, that reports which function failed, roughly where, and what command/operation was involved.
+- The mechanism must work correctly even when the failure happens several function calls deep in the stack.
+- Calling code should not need to manually pass all this context every time -- capture it as automatically as possible.
+- The error report must be detailed enough to debug from logs alone, without reproducing the failure live.
+
+VALIDATION
+- Trigger failures at 3 different call-stack depths and confirm the captured context correctly identifies where each one actually occurred.
+
+FAILURE SCENARIOS
+- The failure happens inside a subshell or command substitution -- does the error context still get captured correctly?
+
+COMMON MISTAKES
+- Relying on positional context variables incorrectly such that context is misattributed after the fact.
+- Wrapping every single command manually in error-checking boilerplate instead of building one centralized mechanism.
+
+REVIEW QUESTIONS
+- What are the limitations of automatic error trapping with subshells and pipelines, and how does that affect this design?
+- Why is automatic context capture more reliable than asking every developer to remember to log context manually?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 4/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Partial Failure, Full Accounting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Handle a multi-step batch operation where some items succeed and some fail, with a clear final accounting.
+
+TASKS
+- Build a script processing a list of items where each item's processing can independently succeed or fail.
+- Support both a continue-on-error mode and a stop-on-error mode, selectable by the caller.
+- At the end of a continue-on-error run, produce a summary explicitly listing which items succeeded and which failed, not just a count.
+- The final exit code must distinguish "all succeeded," "some failed," and "all failed."
+
+VALIDATION
+- Run a batch with a known mix of items designed to succeed and fail, in both modes, and confirm the summary accuracy and correct distinguishing exit codes in each mode.
+
+FAILURE SCENARIOS
+- An item fails in a way that corrupts shared state needed by later items in the batch.
+
+COMMON MISTAKES
+- Only reporting a count of failures without identifying which specific items failed.
+- Using the same exit code for "all failed" and "some failed," losing important nuance.
+
+REVIEW QUESTIONS
+- Why does "some failed" deserve a different exit code than "all failed" in an operational context?
+- What design prevents one item's failure from corrupting state used by subsequent items in continue-on-error mode?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 5/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Exit-Code Contract
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design and document an exit-code contract that other automation can safely depend on without reading the script's source.
+
+TASKS
+- Produce a clear, versioned table mapping every possible exit code to its precise meaning, independent of implementation details.
+- Guarantee future internal changes cannot silently change what an existing exit code means.
+- Build a way for a caller to query the script's exit-code contract (e.g. an --exit-codes flag) without needing external documentation.
+- Reserve at least one exit code, explicitly documented as available for future expansion.
+
+VALIDATION
+- Use the --exit-codes flag and confirm it accurately reflects actual runtime behavior for every documented code.
+
+FAILURE SCENARIOS
+- A future maintainer wants to add a new failure category -- does the design make this easy without breaking the contract for existing codes?
+
+COMMON MISTAKES
+- Treating exit codes as an implementation detail rather than a public interface.
+- Reusing exit code 1 for "everything generic," which tells a caller nothing actionable.
+
+REVIEW QUESTIONS
+- Why does treating exit codes as a versioned contract matter once other systems depend on a script?
+- What's the cost, months later, of having no documented exit-code meaning at all?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Error
+LEVEL  : L4
+TASK   : 6/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Idempotent Recovery
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Ensure that re-running a script after a failure never duplicates or corrupts work that already completed successfully.
+
+TASKS
+- Build a multi-step script where at least one step has an observable side effect.
+- Before performing any step, the script must check whether that step's effect already happened, and skip re-doing it if so.
+- Simulate a failure partway through a multi-step run, then re-run the script and confirm it resumes correctly rather than redoing completed steps or skipping incomplete ones.
+- The mechanism tracking "what's already done" must itself survive the same failure modes it's meant to protect against.
+
+VALIDATION
+- Force a failure after step 2 of a 4-step process, re-run, and confirm steps 1-2 are not repeated, step 3 runs, and step 4 completes -- verified by checking the actual resulting state.
+
+FAILURE SCENARIOS
+- The script fails while writing its own "step completed" marker, leaving an ambiguous state -- how is that handled on the next run?
+
+COMMON MISTAKES
+- Tracking completion state only in a way that's wiped out by the very failure it's meant to survive.
+- Assuming re-running from scratch is always safe without checking for already-applied side effects.
+
+REVIEW QUESTIONS
+- Why is idempotency especially critical for scripts that will be retried automatically by cron or an orchestrator?
+- What's the risk of a "completion marker" that isn't written atomically?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 1/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Precedence Chain
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a config loader resolving settings through a strict precedence: built-in defaults -> config file -> environment variables -> CLI flags.
+
+TASKS
+- Every configurable setting must have a sensible built-in default, used only if nothing overrides it at a higher level.
+- Implement all four levels for at least 4 distinct settings, with each higher level correctly overriding the one below it.
+- Provide a way to display the final resolved value of every setting along with which level it came from.
+- A value set at a lower level must never leak through if a higher level also sets it, even partially.
+
+VALIDATION
+- Test all 4 settings with various override combinations across levels and confirm the resolved value always matches the highest level that set it, with correct source attribution.
+
+FAILURE SCENARIOS
+- The config file sets a value to empty string deliberately -- does that override the default, or fall through to it? Decide and enforce consistently.
+
+COMMON MISTAKES
+- Implementing precedence inconsistently across different settings.
+- Confusing "unset" with "set to empty/false" when resolving overrides.
+
+REVIEW QUESTIONS
+- Why is a clear precedence order more valuable than flexibility without rules?
+- What ambiguity does an explicitly empty value introduce, and how should a config system resolve it?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 2/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Config Validation Gate
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Validate a configuration file's contents before the script acts on any of it.
+
+TASKS
+- Define at least 5 required config keys with expected types/formats.
+- Detect and report, in a single pass, every problem found at once: a missing required key, a wrong-typed value, and an unrecognized key -- not just the first.
+- The script must refuse to proceed with any operation if validation fails, exiting with a dedicated config-error exit code.
+- Validation must run completely before any business logic begins.
+
+VALIDATION
+- Test a fully valid config, a config missing one required key, a config with a wrong-typed value, and a config with an extra unknown key; confirm each produces an accurate, complete error report.
+
+FAILURE SCENARIOS
+- The config file is syntactically unparseable at all -- how does this differ from a semantic validation failure?
+
+COMMON MISTAKES
+- Stopping validation at the first error found instead of reporting all problems at once.
+- Conflating "file doesn't exist" with "file exists but is invalid" in error messaging.
+
+REVIEW QUESTIONS
+- Why does reporting all validation errors at once matter for someone fixing a broken config?
+- What's the operational risk of partially validating, then partially acting on, a config file?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 3/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Same Script, Different Environments
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Support safe, explicit per-environment behavior (dev/staging/prod) from a single script without code duplication.
+
+TASKS
+- The script must accept an explicit environment selector -- no silent defaulting to production-equivalent behavior.
+- Environment-specific settings must be cleanly separated from environment-agnostic logic.
+- Build in at least one safety rail that behaves differently by environment on purpose, and make that difference impossible to bypass accidentally.
+- Running without specifying an environment must fail safely rather than silently assuming one.
+
+VALIDATION
+- Run the same script against simulated dev, staging, and prod configurations and confirm both the data/target differences and the safety-rail differences are correct.
+
+FAILURE SCENARIOS
+- Someone copy-pastes a command intended for dev but it's run against a prod-configured environment -- what in the design catches or prevents this?
+
+COMMON MISTAKES
+- Defaulting silently to one environment "for convenience," creating a dangerous trap.
+- Duplicating the entire script per environment instead of parameterizing one script.
+
+REVIEW QUESTIONS
+- Why is "must explicitly specify environment, no default" almost always the safer design choice for destructive operations?
+- What's a realistic incident caused by an unclear or defaulted environment selector?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 4/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Secrets Without Exposure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Load and use a sensitive config value without it ever appearing in process listings, logs, or shell history.
+
+TASKS
+- The credential must never be passed as a plain CLI argument or stored directly in shell history.
+- The credential must never appear in any log output, even at verbose/debug level.
+- Loading the secret should support a mechanism better than plaintext in a world-readable config file -- choose and justify one.
+- If the secret fails to load or is empty, the script must fail clearly rather than proceeding with an invalid credential silently.
+
+VALIDATION
+- Run the script and, during execution, inspect process listing output and all produced logs to confirm the secret value never appears anywhere in either.
+
+FAILURE SCENARIOS
+- A debug/verbose mode is enabled by someone troubleshooting an issue -- confirm the secret still never leaks even under maximum verbosity.
+
+COMMON MISTAKES
+- Logging the connection details including an embedded password, even unintentionally.
+- Passing a secret as a command-line argument to a subprocess, exposing it in process listings.
+
+REVIEW QUESTIONS
+- Why is process-listing visibility of CLI arguments a meaningful security exposure on a shared system?
+- What's the danger of a logging system that's "usually" careful about secrets versus one that's structurally guaranteed to never log them?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 5/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Live Config Reload
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Allow a long-running script to reload its configuration without a full restart, triggered by a signal.
+
+TASKS
+- The script must run as a long-lived process and respond to a specific signal by reloading its config file.
+- Reload must re-validate the config before applying it -- an invalid new config must be rejected, leaving the old config in effect.
+- In-flight work at the moment of reload must not be corrupted or interrupted by the reload itself.
+- The script must log clearly when a reload happened, whether it succeeded, and what changed.
+
+VALIDATION
+- While the script is running, modify the config to a valid new value and send the reload signal; confirm the change takes effect without restart. Then modify it to an invalid value and reload again; confirm the old config remains in effect and the failure is logged clearly.
+
+FAILURE SCENARIOS
+- The reload signal arrives in the middle of an in-progress unit of work.
+
+COMMON MISTAKES
+- Reloading config without re-validating it, allowing a bad edit to silently break a running process.
+- Applying new config values one at a time instead of atomically.
+
+REVIEW QUESTIONS
+- Why must a config reload be validated just as strictly as a fresh startup load?
+- What does "atomic" mean in the context of applying a new config, and why does it matter here?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Config
+LEVEL  : L5
+TASK   : 6/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Self-Validating Schema
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script that can check its own config file against a declared schema and report drift, independent of actually running.
+
+TASKS
+- Define a schema describing every expected config key, its type, and whether it's required or optional, as data rather than scattered if-statements.
+- Provide a dedicated mode (e.g. --check-config) that validates the current config against the schema and reports results without performing any real operation.
+- This mode must detect both missing required keys and unexpected/unknown keys not in the schema at all.
+- The same schema must be the one actually used during normal startup validation -- no second, divergent definition.
+
+VALIDATION
+- Run --check-config against a fully valid config, then against configs with a missing key and an unknown key, and confirm normal script startup uses identical validation logic/results.
+
+FAILURE SCENARIOS
+- The schema itself changes over time -- how does an operator detect that their existing config is now out of date?
+
+COMMON MISTAKES
+- Defining the schema as scattered checks rather than a single declarative structure.
+- Letting --check-config mode accidentally perform real side effects.
+
+REVIEW QUESTIONS
+- Why does separating "schema as data" from "validation as logic" make a script easier to maintain as it grows?
+- How would an operator know their config has drifted from what a new script version expects, before running it for real?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 1/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Reusable Toolbox
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a sourced utility library usable, unmodified, by at least two unrelated scripts.
+
+TASKS
+- Implement at least 3 genuinely general-purpose functions (e.g. logging, a retry wrapper, a lock acquire/release pair) in a single library file meant to be sourced, not executed.
+- Write two small, unrelated consumer scripts that each source the library and use at least two of its functions for entirely different purposes.
+- The library must impose no assumptions about the consumer's own variable names, structure, or working directory.
+- Changing something inside the library must require zero changes to either consumer script.
+
+VALIDATION
+- Run both consumer scripts independently and confirm correct behavior. Modify one internal detail of a library function without changing its interface and confirm both consumers still work without any edits.
+
+FAILURE SCENARIOS
+- One consumer script happens to use a variable name that collides with something inside the library.
+
+COMMON MISTAKES
+- Writing "reusable" functions that secretly assume a specific variable or file exists in the calling script.
+- Putting consumer-specific logic inside the library "just this once."
+
+REVIEW QUESTIONS
+- What's the practical test for whether a function is "actually" reusable versus just copy-pasted with extra steps?
+- Why does an implicit dependency on a caller's specific variable defeat the purpose of a shared library?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 2/6
+TIME   : 1.5-2 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: No Name Collisions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a library so its internal names cannot clash with whatever a calling script happens to use.
+
+TASKS
+- Adopt and consistently apply a naming convention (e.g. a prefix) for every function and any necessarily-global variable the library defines.
+- Demonstrate that a consumer script using a common, generic variable/function name does not break when it sources the library.
+- All library-internal working variables must be properly scoped so they don't leak into the calling script's namespace.
+- Document, structurally, exactly what minimal public surface the library exposes versus what's purely internal.
+
+VALIDATION
+- Write a consumer script that deliberately reuses generic names the library might plausibly also use internally, source the library, and confirm no incorrect behavior or value corruption occurs.
+
+FAILURE SCENARIOS
+- Two different libraries with different prefixes are both sourced into the same script -- confirm they don't collide with each other either.
+
+COMMON MISTAKES
+- Using totally generic internal variable names without any library-specific prefix.
+- Forgetting local inside library functions, leaking internals into every caller's scope.
+
+REVIEW QUESTIONS
+- Why does a naming convention matter more in Bash than in languages with real module/namespace systems?
+- What's the actual mechanism by which an un-scoped library variable could silently corrupt a caller's logic?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 3/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Stable Interface, Changeable Internals
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a library exposing a stable public function interface while internal implementation is free to change.
+
+TASKS
+- Define a small set of public functions with a clearly stable calling convention that consumers are meant to rely on.
+- Implement the public functions by delegating to internal helper functions NOT meant to be called directly by consumers, and make that distinction structurally clear.
+- Demonstrate a meaningful internal implementation change that requires editing zero consumer scripts because the public interface didn't change.
+- Decide and enforce what happens if a consumer mistakenly calls an internal helper directly.
+
+VALIDATION
+- Run a consumer against version 1 of the library's internals, then swap in a version 2 with materially different internal logic but the same public interface, and confirm the consumer behaves identically without modification.
+
+FAILURE SCENARIOS
+- A "public" function's behavior needs to fundamentally change in a way that breaks existing consumers -- how should that be handled rather than silently changing behavior under the same name?
+
+COMMON MISTAKES
+- Exposing internal helpers as if they were public, so consumers start depending on things never meant to be stable.
+- Changing a public function's parameter order or meaning "for convenience" without considering existing consumers.
+
+REVIEW QUESTIONS
+- Why is the distinction between "public interface" and "internal implementation" valuable even in a small, internal-only library?
+- What would constitute a "breaking change" to this library's interface, and how would you signal one had occurred?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 4/6
+TIME   : 1-1.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Fail Fast on Missing Dependencies
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script/library that declares its external command dependencies and fails immediately and clearly if any are missing.
+
+TASKS
+- Define an explicit list of required external binaries/utilities the script depends on.
+- At startup, before any real work begins, check that every required dependency is available and report ALL missing dependencies at once, not just the first.
+- The failure message must say exactly what's missing and hint at how to obtain it, without needing the user to dig through script internals.
+- Decide and justify a sensible approach so this check doesn't run wastefully if it's known to be expensive.
+
+VALIDATION
+- Temporarily make 2 of the script's dependencies unavailable and confirm the script reports both missing dependencies clearly in one run, before attempting any real operation.
+
+FAILURE SCENARIOS
+- A dependency exists but is the wrong version, lacking a feature the script needs.
+
+COMMON MISTAKES
+- Discovering a missing dependency only when the script tries to use it deep into execution, after other side effects have already occurred.
+- Checking for dependencies but only reporting the first missing one, hiding others.
+
+REVIEW QUESTIONS
+- Why is failing at startup, before any side effects occur, better than failing mid-operation?
+- How would you handle the harder case of "dependency exists but wrong version"?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 5/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Testable in Isolation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a utility library so that any individual function can be tested by itself, without needing a full script run.
+
+TASKS
+- Every function must be callable and verifiable independently -- given known inputs, its output/behavior must be checkable without invoking any other part of a larger script.
+- Functions must not depend on hidden global state only set up by some other part of a full script run.
+- Build a small test harness sourcing the library and exercising at least 3 functions individually with both valid and deliberately invalid inputs, reporting pass/fail for each.
+- A function with legitimate side effects must make that side effect observable/checkable by the test harness, not just trust-it-worked.
+
+VALIDATION
+- Run the test harness and confirm it can detect both a correctly-behaving function and a deliberately broken one (temporarily break one function and confirm the harness catches it).
+
+FAILURE SCENARIOS
+- A function's correctness depends on some environment assumption that isn't obvious or controlled by the test harness.
+
+COMMON MISTAKES
+- Writing functions that only "make sense" in the context of the full script's flow, with hidden dependencies on prior steps having run.
+- Building a test harness that only checks "did it not crash" rather than "did it produce the correct result."
+
+REVIEW QUESTIONS
+- Why does designing for testability tend to also produce better-decomposed, more reusable code?
+- What hidden environmental assumption is most likely to make a function "work on my machine" but fail elsewhere?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Libraries
+LEVEL  : L6
+TASK   : 6/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Drop-In Extension Points
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a script whose behavior can be extended by adding new files to a directory, without modifying the core script.
+
+TASKS
+- The core script must, at a defined point in execution, discover and execute any number of "plugin" fragments found in a designated directory, in a predictable order.
+- Adding a new plugin fragment following a documented convention must extend behavior without any edit to the core script.
+- The core script must handle zero plugins present, gracefully continuing with just its built-in behavior.
+- A plugin fragment failing must not silently take down the entire core script's run unless explicitly configured to be fatal -- define and enforce this clearly.
+
+VALIDATION
+- Run the core script with zero plugins, then add one well-behaved plugin and confirm its effect is correctly incorporated, then add one deliberately broken plugin and confirm the failure is handled per the defined policy without modifying the core script.
+
+FAILURE SCENARIOS
+- Two plugins conflict with each other.
+
+COMMON MISTAKES
+- Hardcoding a fixed, small number of plugin "slots" instead of truly discovering whatever is present in the directory.
+- Letting one plugin's failure or bad behavior silently corrupt the state used by other plugins or the core script.
+
+REVIEW QUESTIONS
+- What's the architectural benefit of a plugin/extension-point design over repeatedly editing the core script for every new need?
+- How would you decide whether a single plugin's failure should be fatal to the whole run or just skipped?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 1/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Aggregated Health Check
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a health-check script reporting multiple independent subsystem checks as one aggregated result, with full detail available.
+
+TASKS
+- Implement at least 4 independent checks (e.g. disk space threshold, a critical process running, basic connectivity, a writable critical path) each returning its own pass/fail and detail message.
+- Produce one overall pass/fail verdict that is fail if ANY individual check fails, alongside a per-check breakdown.
+- A single failing check must not prevent the other checks from running and reporting -- all checks must always execute, regardless of earlier failures.
+- Support a machine-friendly output mode and a human-friendly mode from the same checks.
+
+VALIDATION
+- Force exactly one of the four checks to fail and confirm the overall verdict is fail, the specific failing check is clearly identified, and the other three still report correctly as healthy.
+
+FAILURE SCENARIOS
+- Two checks fail simultaneously for unrelated reasons -- confirm both are independently and clearly reported.
+
+COMMON MISTAKES
+- Short-circuiting on the first failed check instead of running and reporting all of them.
+- Conflating "could not determine status" with "status is healthy" -- these must be distinguishable.
+
+REVIEW QUESTIONS
+- Why is it important that a health check itself failing to run is reported distinctly from the thing it checks being unhealthy?
+- What design prevents one failing check from masking visibility into the others?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 2/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Backup as Discrete Stages
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a backup orchestration script with clearly separated pre-check, execution, verification, and retention stages.
+
+TASKS
+- Pre-check stage: confirm preconditions before attempting the actual backup; abort cleanly if preconditions fail, before anything destructive/expensive happens.
+- Execution stage: perform the actual backup operation, producing an artifact whose success is independently verifiable afterward.
+- Verification stage: independently confirm the backup artifact is valid/complete -- define a concrete verification check, not just "the command exited 0."
+- Retention stage: remove backups older than a configured retention policy, but only after the new backup has been verified successful.
+
+VALIDATION
+- Run a full successful cycle and confirm all 4 stages execute in order with correct outcomes. Simulate a verification failure and confirm retention cleanup is correctly skipped in that case.
+
+FAILURE SCENARIOS
+- The backup operation reports success (exit 0) but the resulting artifact is actually incomplete or corrupt -- does verification catch what exit code alone would miss?
+
+COMMON MISTAKES
+- Trusting the backup command's exit code as sufficient proof of a valid backup, without independent verification.
+- Running retention cleanup unconditionally regardless of whether the new backup was actually good.
+
+REVIEW QUESTIONS
+- Why is "exit code 0" insufficient proof that a backup is actually restorable?
+- What's the real-world risk of deleting old backups before confirming the new one is genuinely valid?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 3/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Trend Report From Snapshots
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a script generating a trend report by comparing today's metric snapshot against historical snapshots.
+
+TASKS
+- Each run must capture a snapshot of at least 2 simulated metrics along with a timestamp, and persist it for future comparisons.
+- Each run must compare today's snapshot against the most recent prior snapshot(s) and report the direction and magnitude of change for each metric.
+- The report must flag any metric whose change exceeds a configured threshold as notable, distinct from normal day-to-day fluctuation.
+- Define a sensible retention approach for historical snapshots so history doesn't grow unbounded forever.
+
+VALIDATION
+- Simulate a sequence of snapshots across several "days" with one metric trending steadily upward past a threshold; confirm the report correctly identifies and flags the trend, while a stable metric is correctly reported as unremarkable.
+
+FAILURE SCENARIOS
+- The very first run has no prior snapshot to compare against.
+
+COMMON MISTAKES
+- Comparing only against the immediately previous snapshot when a longer trend would tell a more accurate story.
+- Letting snapshot history grow forever without any retention strategy.
+
+REVIEW QUESTIONS
+- Why might comparing against just the previous single data point be misleading versus a longer trend window?
+- How would you distinguish meaningful drift from normal day-to-day noise in a metric?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 4/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Alert-Worthy, Not Just True
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build an alerting decision layer that distinguishes a genuinely alert-worthy condition from noise.
+
+TASKS
+- Implement threshold-based detection for a simulated condition, but require the condition to persist across multiple consecutive checks before it's alert-worthy (debounce), rather than alerting on a single sample.
+- Implement flap suppression: if a condition flickers between healthy and unhealthy repeatedly in a short window, avoid firing a new alert for every flicker.
+- Once an alert has fired, define and implement how/when it can fire again for the same ongoing condition versus staying silent while already-known-bad.
+- Clearly log every decision point, not just the final alert/no-alert outcome.
+
+VALIDATION
+- Simulate a single brief spike, a sustained breach, and a flickering condition; verify each produces the correct alerting decision and that the reasoning is visible in logs.
+
+FAILURE SCENARIOS
+- The condition is sustained and bad for a very long time -- confirm the design doesn't either spam continuously or go permanently silent after the first alert.
+
+COMMON MISTAKES
+- Alerting on every single sample that crosses a threshold, regardless of how brief or flickery.
+- Building suppression logic so aggressive it could hide a real, ongoing problem entirely.
+
+REVIEW QUESTIONS
+- What's the operational cost of alert fatigue caused by firing on every brief threshold crossing?
+- How do you balance suppressing flapping noise against the risk of going silent on a real sustained problem?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 5/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Time-to-Threshold Projection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a capacity-reporting script that projects, from historical data points, when a resource will cross a critical threshold.
+
+TASKS
+- Using a series of historical data points, compute a simple trend/growth rate.
+- From the trend, project an estimated date/time at which the metric will cross a defined critical threshold, assuming current trend continues.
+- Clearly label the result as a projection/estimate, with the underlying assumption stated, not presented as certain fact.
+- Handle the case where the trend is flat or decreasing without producing a nonsensical or misleading projection.
+
+VALIDATION
+- Feed in a clearly linear growth dataset approaching a threshold and confirm the projected crossing time is reasonable; feed in a flat/declining dataset and confirm the script correctly reports "no foreseeable crossing."
+
+FAILURE SCENARIOS
+- The historical data is noisy/non-linear -- how does the projection method handle or at least flag this?
+
+COMMON MISTAKES
+- Presenting a projection as a guaranteed fact rather than an estimate with stated assumptions.
+- Extrapolating confidently from too few data points to be meaningful.
+
+REVIEW QUESTIONS
+- Why does stating the underlying assumption matter when presenting a capacity projection to someone who'll make a decision based on it?
+- What would make a projection low-confidence rather than presented normally?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Ops
+LEVEL  : L7
+TASK   : 6/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Reporting for Non-Technical Stakeholders
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build a report-generation script that translates raw technical metrics into a stakeholder-readable summary.
+
+TASKS
+- Take the same kind of raw technical data used in earlier ops tasks and produce a separate, distinct output meant for a non-technical leadership audience.
+- The stakeholder report must lead with overall status/risk in plain language, not raw numbers or jargon, with supporting detail available but secondary.
+- Technical severity must be translated into a business-relevant framing rather than presented as a raw metric.
+- The same underlying data must produce both the raw technical report and the translated stakeholder report without maintaining two separate data-collection paths.
+
+VALIDATION
+- Feed identical underlying data through both report paths and confirm they tell a consistent story, with the stakeholder version being genuinely readable by someone without ops background.
+
+FAILURE SCENARIOS
+- A genuinely severe technical issue is at risk of being "translated" into something that sounds too mild for leadership to understand the real urgency -- how does the design avoid under-communicating real risk?
+
+COMMON MISTAKES
+- Simply reformatting the same jargon-heavy content with a nicer header, rather than actually translating it.
+- Maintaining two separate, divergent data-collection logics for the two report types.
+
+REVIEW QUESTIONS
+- Why is "translate severity to business risk" harder than it sounds, and what's the danger of getting it wrong in either direction?
+- How would you keep a technical report and its stakeholder-facing counterpart from silently drifting apart in accuracy over time?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 1/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Intermittent Concurrency Failure
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given only a symptom description, build a script from scratch that is structurally immune to the described concurrency failure.
+
+TASKS
+- Scenario: a script that updates a shared resource "sometimes" produces corrupted or inconsistent results, but only when run by more than one instance around the same time; running it alone always works fine.
+- Without being shown any existing code, design and build a comparable script performing a shared-resource update that is provably safe under concurrent execution.
+- Reason about how the race in an unsafe approach would occur, then prove your built version closes that gap.
+- Document the diagnostic checklist you'd use to recognize this failure class in an unfamiliar script you didn't write.
+
+VALIDATION
+- Launch multiple concurrent instances of your script against the same shared resource repeatedly and confirm the resource never ends up in a corrupted/inconsistent state across many runs.
+
+FAILURE SCENARIOS
+- The locking mechanism itself fails to release (e.g. the lock-holder process crashes) -- does a subsequent run get stuck forever, or does the design account for stale locks?
+
+COMMON MISTAKES
+- "Fixing" a race condition with a sleep/delay instead of actual mutual exclusion.
+- Implementing a lock that isn't safe against the lock-holder crashing without releasing it.
+
+REVIEW QUESTIONS
+- Why does intermittent, load-dependent failure point strongly toward a concurrency issue rather than a logic bug?
+- What's the danger of "fixing" a race by adding a delay rather than real exclusion?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 2/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Works Interactively, Fails Under Cron
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a symptom description, build a script that behaves identically whether run interactively or under cron/non-interactively.
+
+TASKS
+- Scenario: a script runs perfectly from a human's terminal but silently fails or behaves differently under cron, with no obvious error in the cron log.
+- Without seeing the broken script, build a comparable script using an external command and environment-dependent behavior, reasoning from first principles about every way an interactive shell's environment differs from a non-interactive one (PATH, working directory, environment variables, TTY availability).
+- Your script must explicitly account for at least 3 of those differences so it behaves identically in both contexts.
+- Build in explicit, robust error capturing so that if it DOES fail, the failure is never silent.
+
+VALIDATION
+- Run your script normally from an interactive shell, then run it via a minimal/cron-like environment (stripped PATH and env, no TTY) and confirm identical correct behavior or an explicit clear error rather than silent difference.
+
+FAILURE SCENARIOS
+- A dependency relies on a PATH entry that only exists in interactive shells.
+
+COMMON MISTAKES
+- Assuming PATH and environment variables available interactively are also available under cron.
+- Assuming output not appearing means "nothing happened" instead of suspecting it happened but wasn't visible/logged.
+
+REVIEW QUESTIONS
+- What are the main environmental differences between an interactive shell and a cron job, and which ones most commonly cause silent failures?
+- Why might a script "fail silently" specifically under cron rather than producing a visible error?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 3/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Cleanup That Only Sometimes Happens
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a symptom description, build a script guaranteeing resource cleanup happens on every exit path, including failure paths.
+
+TASKS
+- Scenario: a script creates temporary resources, and after failures leftover files accumulate -- but after successful runs cleanup works fine.
+- Without seeing the broken script, build a comparable script that creates a temp resource and guarantees its removal on success, on a handled error, on an unhandled error, and on receiving an interrupt signal, using trap-based cleanup.
+- Reason about why a cleanup step placed only at the "normal end" of a script's logic would produce exactly this reported symptom.
+- Document the specific diagnostic question you'd ask when told "cleanup only happens on success" that immediately points toward where the bug likely lives.
+
+VALIDATION
+- Force your script to fail at 3 different points (and via an interrupt signal) and confirm cleanup occurs every time, with no leftover resources in any case.
+
+FAILURE SCENARIOS
+- A second unrelated cleanup task is added later by someone else, also only at the "normal end" -- does your structure make this same mistake hard to repeat?
+
+COMMON MISTAKES
+- Treating this as "needs more cleanup code" rather than "needs cleanup in a structurally different place."
+- Forgetting that an unhandled error path is exactly where ad-hoc end-of-script cleanup gets skipped.
+
+REVIEW QUESTIONS
+- What single structural detail, once you know to look for it, immediately explains "cleanup works on success but not on failure"?
+- Why is this bug class essentially guaranteed to recur unless the structural fix is applied?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 4/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Order-Dependent Behavior
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a symptom description, build a script whose correctness doesn't depend on the order its functions are defined or sourced.
+
+TASKS
+- Scenario: a script behaves correctly sometimes and incorrectly other times, eventually traced to the order two files are sourced, or the order two functions are defined.
+- Without seeing the original code, build a comparable two-file setup (a script plus a sourced library) where it would be easy to accidentally introduce this bug class, then make your build immune to it by design.
+- Your design must work correctly regardless of definition/sourcing order, via explicit initialization rather than implicit reliance on load order.
+- Document the diagnostic test you'd run against an unfamiliar script to check whether it secretly depends on load/definition order.
+
+VALIDATION
+- Deliberately reverse the order of sourcing/definition in your setup and confirm behavior is identical either way.
+
+FAILURE SCENARIOS
+- A function is conditionally redefined later in execution -- does your design avoid relying on "which definition wins"?
+
+COMMON MISTAKES
+- Relying on a variable being already set by virtue of "the other file is always sourced first" without enforcing or checking that assumption.
+- Defining the same function name in two different sourced files without realizing the later one silently wins.
+
+REVIEW QUESTIONS
+- Why are load-order bugs especially dangerous, able to pass testing for a long time before order changes for an unrelated reason?
+- What test would you run to deliberately surface a hidden load-order dependency before it surfaces in production?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 5/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: The Hang With No Timeout
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a symptom description, build a script with defensive guards against indefinite hangs.
+
+TASKS
+- Scenario: an ops script that, under certain rare conditions, never returns -- it just hangs forever with no error, no log line, nothing.
+- Without seeing the original code, build a comparable script performing an operation that could plausibly hang under some condition, and add an explicit, enforced timeout so it can never hang indefinitely.
+- On timeout, the script must exit with a distinct, dedicated exit code/log message clearly different from a normal failure.
+- Identify, by reasoning, what category of operations in a typical ops script are most at risk of unbounded hangs.
+
+VALIDATION
+- Simulate the slow/non-responding condition deliberately and confirm the script reliably times out at the expected point rather than hanging, with the distinct timeout signal visible.
+
+FAILURE SCENARIOS
+- The timeout mechanism itself could leave a resource in a half-finished state -- does the design account for cleanup even on a timeout-triggered exit?
+
+COMMON MISTAKES
+- Adding a timeout to the obvious slow operation but missing a less obvious one that can also hang.
+- Letting a timeout abort the operation without cleaning up correctly, trading one bug for another.
+
+REVIEW QUESTIONS
+- Why is "no error, no log, just hangs" one of the hardest failure modes to diagnose, and how does proactive timeout design sidestep needing to diagnose it at all?
+- What operations in a typical ops script are inherently at risk of unbounded waits, and how would you find all of them in an unfamiliar script?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Debug
+LEVEL  : L8
+TASK   : 6/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Command Not Found, Only Sometimes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a symptom description, build a script robust to minimal/non-interactive execution environments.
+
+TASKS
+- Scenario: a script works for everyone running it manually, but under a systemd timer or cron job it intermittently fails with "command not found" for a tool that is clearly installed.
+- Without seeing the broken script, build a comparable script calling at least one non-builtin external command, reasoning about why an interactive shell's PATH might differ from a minimal service/cron environment's PATH.
+- Make your script robust by resolving and validating the full path to required commands at startup, or otherwise guaranteeing it doesn't silently depend on an interactive-only PATH.
+- Document the specific diagnostic step you'd take first when told "works manually, fails under cron, command not found."
+
+VALIDATION
+- Run your script under a deliberately minimal PATH/environment and confirm it either still works correctly or fails with an explicit, clear "dependency not found" error rather than a confusing low-level shell error.
+
+FAILURE SCENARIOS
+- The tool is installed in a non-standard location only added to PATH via a user's shell profile, which never runs under cron/systemd.
+
+COMMON MISTAKES
+- Assuming "it's installed" is the same as "it's on PATH in every execution context."
+- Patching around one specific missing command instead of building a general dependency-check approach.
+
+REVIEW QUESTIONS
+- Why does "works manually, fails under automation" point so reliably at an environment/PATH difference rather than a logic bug?
+- How would building this defensively from the start have prevented this entire incident category?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 1/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Duplication Without Mercy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of duplicated logic spread across a legacy script, design a refactored architecture eliminating it entirely.
+
+TASKS
+- Scenario: a 500-line single-function legacy script validates similar kinds of input independently in 5 different places, each with slightly inconsistent error messages and edge-case handling.
+- Without porting any legacy code, design and build a replacement architecture where each kind of validation exists in exactly one place, called everywhere it's needed.
+- Demonstrate that adding a 6th place needing one of these validations requires zero new validation logic -- only a call to the existing shared function.
+- Establish and apply a single consistent error-message format across every validation.
+
+VALIDATION
+- Build at least 3 distinct call sites that each need one of the validation types, and confirm all 3 produce identical, consistent behavior and messaging by construction.
+
+FAILURE SCENARIOS
+- Two of the five duplicated checks turn out to have subtly different requirements upon closer look -- how does your design handle near-duplicate-but-not-quite logic without forcing a false unification?
+
+COMMON MISTAKES
+- Unifying logic that only looks similar on the surface but actually has different correctness requirements.
+- Centralizing validation but leaving the inconsistent error-message problem unsolved.
+
+REVIEW QUESTIONS
+- What's the risk of over-eagerly unifying logic that's similar but not actually identical?
+- How would you decide where the line is between "this is genuinely the same check" and "this only looks the same"?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 2/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Flattening Deep Nesting
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of deeply nested conditional control flow, design a flattened, readable replacement.
+
+TASKS
+- Scenario: a legacy script with 5+ levels of nested if/else controlling which operation runs, such that understanding any branch requires mentally tracking all outer conditions.
+- Without porting legacy code, design a comparable scenario (at least 4 distinct conditions) and implement it using guard clauses, early returns, and/or a dispatch-table approach instead of nesting.
+- No single function may exceed 2 levels of nested conditionals.
+- Demonstrate that adding a 5th condition/case is a small, local, low-risk change, not a re-indentation of the whole structure.
+
+VALIDATION
+- Walk through your flattened design and confirm any single branch can be understood in isolation. Add a new condition/case and confirm it required minimal, localized changes.
+
+FAILURE SCENARIOS
+- Two conditions are not mutually exclusive and could both apply -- does your flattened design correctly handle (or explicitly reject) that overlap?
+
+COMMON MISTAKES
+- Flattening the visual indentation while keeping the same tangled logical structure underneath.
+- Using a dispatch table inappropriately for conditions that aren't actually mutually exclusive categories.
+
+REVIEW QUESTIONS
+- Why does deep nesting make a script riskier to modify over time even if it's logically correct as written?
+- What's the difference between cosmetically flattening nested code versus actually restructuring its logic?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 3/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Separating Decisions From Actions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of logic and side effects hopelessly intermixed, design a refactor separating "what to do" from "doing it."
+
+TASKS
+- Scenario: a legacy script interleaves decision logic line-by-line with actual side effects, making it impossible to test the decision logic without performing real operations.
+- Without porting legacy code, design a comparable scenario and build it so decision logic is fully expressed and testable as pure logic, with zero side effects, separate from an "executor" that performs the actual actions.
+- Demonstrate the decision logic can be exercised and verified completely without ever triggering a real side effect (e.g. a dry-run showing what WOULD happen).
+- The executor must be simple and dumb -- no meaningful decision logic of its own, only execution of what it's told.
+
+VALIDATION
+- Run your decision logic alone (dry-run/plan-only mode) against several inputs and confirm correct plans with zero side effects. Run the full pipeline and confirm actual side effects match exactly what the plan predicted.
+
+FAILURE SCENARIOS
+- A "decision" turns out to actually require a side effect to even know what to decide (e.g. checking current state) -- how does your design draw the line without breaking the separation?
+
+COMMON MISTAKES
+- Calling this "separated" while the decision logic still secretly reads live state via the same side-effecting code path.
+- Letting the executor make its own judgment calls instead of strictly following the plan it's given.
+
+REVIEW QUESTIONS
+- Why is "can I test this without touching anything real" a good practical test for whether decision logic is genuinely separated from action?
+- Where's the legitimate boundary case where checking state blurs the line between pure decision-making and a side effect?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 4/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Taming Fifty Globals
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of a script relying on dozens of global variables, design a refactor introducing proper scoping and encapsulation.
+
+TASKS
+- Scenario: a legacy script with 50+ global variables used inconsistently, where it's unclear which functions read or modify which, leading to unpredictable bugs when functions are reordered or modified.
+- Without porting legacy code, design a comparable scenario and refactor into explicit parameter passing, local everywhere appropriate, and a deliberately minimal, justified set of any necessary shared state.
+- For any state you DO keep shared/global by deliberate choice, justify why it's a legitimate exception rather than laziness.
+- Demonstrate that a function's behavior in your refactored design can be fully understood from its own definition and parameters, with no hidden global-state scavenger hunt required.
+
+VALIDATION
+- Pick any function in your refactored design at random and confirm you (or a peer) can determine everything it reads and modifies just by looking at the function itself.
+
+FAILURE SCENARIOS
+- Eliminating one specific global turns out to require threading a value through 4 layers of function calls -- is that actually worse, and how do you judge when a "necessary" global is genuinely justified versus just convenient?
+
+COMMON MISTAKES
+- Treating "fewer globals" as an absolute rule rather than weighing it against genuinely excessive parameter-threading in some cases.
+- Renaming globals to look more organized without actually reducing how many functions implicitly depend on them.
+
+REVIEW QUESTIONS
+- How do you decide when keeping a small number of globals is a legitimate, justified design choice rather than scope laziness?
+- What specific kind of bug does scattered, undisciplined global state tend to produce when a script is later modified by someone other than its original author?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 5/6
+TIME   : 2-2.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Centralizing Scattered Hardcoding
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of hardcoded values scattered throughout a legacy script, design a refactor centralizing them per proper config principles.
+
+TASKS
+- Scenario: a legacy script with hardcoded paths, thresholds, and other values scattered across roughly 30 lines, making it risky and tedious to change any one of them.
+- Without porting legacy code, design a comparable scenario and refactor so every such value is defined in exactly one place, with the rest of the script referencing that single source.
+- Demonstrate that changing one such value for a new requirement now requires editing exactly one line, not hunting through the whole script.
+- Identify which values are genuinely configuration (subject to change across environments/runs) versus legitimately fixed constants, and treat each category appropriately.
+
+VALIDATION
+- Change one centralized value in your design and confirm its effect propagates correctly everywhere it's used, with no remaining scattered hardcoded occurrence of the old value anywhere.
+
+FAILURE SCENARIOS
+- Two of the "30 scattered values" turn out to actually need to be different from each other in some specific case, not truly identical -- how does premature centralization risk masking that real distinction?
+
+COMMON MISTAKES
+- Centralizing values that look identical numerically but actually represent conceptually different things that happen to coincide right now.
+- Treating every literal value as something that must become configurable, even genuinely fixed constants.
+
+REVIEW QUESTIONS
+- How do you distinguish a value that's genuinely "configuration" from one that's just a constant that happens to be written as a literal?
+- What's the risk of over-centralizing values that look the same today but aren't conceptually the same thing?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Refactor
+LEVEL  : L9
+TASK   : 6/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Adding Error Handling Without Changing Behavior
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Given a description of a legacy script with no error handling that "mostly works," design a refactor introducing proper error handling without altering its established behavior contract.
+
+TASKS
+- Scenario: a legacy script with zero error handling that has been "mostly working" in production for years, so its existing observable behavior (output, side effects, exit code always 0) may be something downstream automation has come to unknowingly rely on.
+- Without porting legacy code, design a comparable scenario and refactor it to introduce real error detection, classification, and meaningful non-zero exit codes on failure, while preserving the existing successful-path behavior exactly as-is.
+- Explicitly identify the risk that introducing previously-absent failure exit codes could itself "break" downstream automation that has only ever seen exit code 0 -- decide how you'd roll this out responsibly.
+- Demonstrate, for at least one realistic injected failure, that the new error handling correctly catches and reports it where the original design would have silently continued.
+
+VALIDATION
+- Run your refactored version through its normal successful path and confirm output/behavior is identical to before. Inject a realistic failure and confirm it's now caught, classified, and reported correctly where it previously would have been silently ignored.
+
+FAILURE SCENARIOS
+- A downstream consumer has, for years, silently relied on this script "never failing" -- what real operational risk does introducing real failure exit codes now create, and how do you mitigate the rollout?
+
+COMMON MISTAKES
+- Adding strict blanket error handling without considering whether some existing "successful" runs actually depended on a command that technically returns non-zero in a benign way.
+- Treating "add error handling" as a purely technical change without considering the operational/rollout risk to existing downstream dependents.
+
+REVIEW QUESTIONS
+- Why can adding error handling to a previously error-handling-free script be operationally risky in its own right, even though it's clearly a code-quality improvement?
+- How would you responsibly roll out newly-introduced failure exit codes to a script with unknown downstream dependents?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 1/6
+TIME   : 3-4 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: A Framework, Not Just a Script
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a base framework intended to underpin 20+ future ops scripts written by team members of varying skill levels.
+
+TASKS
+- Define a common skeleton/contract that any new script built on this framework must follow -- covering at minimum: structure, logging, error/exit-code conventions, and config loading.
+- The framework must enforce consistency without requiring every author to be an expert in all of those areas themselves.
+- Build at least 2 example scripts on top of your framework, written from the perspective of "different team members," demonstrating the framework accommodates different specific tasks without modification to the framework itself.
+- Identify and justify exactly what the framework should enforce strictly versus leave flexible.
+- Document the minimum a new author needs to learn to safely build on this framework.
+
+VALIDATION
+- Confirm two clearly distinct example scripts both demonstrate consistent logging/error/config behavior automatically, with the framework-specific code each had to write being minimal and task-focused.
+
+FAILURE SCENARIOS
+- A future script built on the framework needs a capability the framework didn't anticipate -- does the design make extending it for that case reasonable, or does it require fighting the framework?
+
+COMMON MISTAKES
+- Building a framework so opinionated/rigid that any real task requires working around it.
+- Building a framework so loose it provides no actual consistency benefit over scripts written independently.
+
+REVIEW QUESTIONS
+- How do you decide what a shared framework should enforce strictly versus leave to each script's discretion?
+- What's the long-term cost of a framework that's either too rigid or too permissive, and how would each failure mode show up a year later across 20+ scripts?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 2/6
+TIME   : 3-3.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Designed for 10x Scale
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a script meant to keep working correctly at 10x its current expected scale without redesign.
+
+TASKS
+- Build a script that processes a list of "targets," correct at a small scale (e.g. 10 items).
+- Identify, by reasoning rather than by waiting for it to break, what specific aspects of your initial design would NOT hold up at 10x scale -- memory/state accumulation, sequential-only processing time, single points of contention, output readability at volume.
+- Redesign to address the specific bottlenecks you identified, building in the necessary abstraction now rather than deferring it.
+- Demonstrate, even at small scale, that your design's approach would visibly still make sense and remain usable if the count were 10x larger.
+
+VALIDATION
+- Run your design against both a small (10-item) and a meaningfully larger (e.g. 100-item) simulated target list and confirm correctness, reasonable behavior, and continued usability at both scales.
+
+FAILURE SCENARIOS
+- One specific target in the larger list is permanently broken/unreachable -- does your design's larger-scale behavior still produce a clear, actionable report, or does volume drown out the one real signal?
+
+COMMON MISTAKES
+- Designing only for the scale you're handed today and assuming "we'll deal with scale later" without identifying the specific bottlenecks now.
+- Scaling up raw processing without scaling up reporting/summarization, producing an unreadable result at volume even if processing itself works.
+
+REVIEW QUESTIONS
+- What's the difference between "this script will technically still run at 10x scale" and "this script will still be genuinely usable and trustworthy at 10x scale"?
+- Which specific design decisions made early are the hardest to retrofit later once a script is depended on in production at real scale?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 3/6
+TIME   : 3-3.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Runbook-Grade, Incident-Ready
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a script meant to be safely operated, under pressure, by someone who didn't write it.
+
+TASKS
+- Build a script intended to be run during an incident by an on-call engineer who is not its author and is operating under time pressure.
+- Build in an explicit, low-risk dry-run/preview mode showing exactly what the script WOULD do, without it actually doing it -- make this the natural, low-friction first step rather than an easily-skipped afterthought.
+- Build in guardrails appropriate for a high-stakes context (explicit confirmation for destructive steps, clear pre-conditions checked and reported before acting) that protect a stressed/unfamiliar operator from common mistakes.
+- The script's output, when run, must be self-explanatory enough that the operator doesn't need to read source code mid-incident to understand what's happening or what to do next.
+
+VALIDATION
+- Have someone unfamiliar with your script's internals run it in dry-run mode first and confirm they can correctly predict, from the output alone, exactly what the real run would do -- then run it for real and confirm it matches.
+
+FAILURE SCENARIOS
+- The operator is in a genuine hurry and tempted to skip the dry-run/guardrails entirely -- does your design make the safe path also the fast, obvious path?
+
+COMMON MISTAKES
+- Building a dry-run mode that's technically available but more effort to use than just running for real, so it gets skipped exactly when it matters most.
+- Writing output meant for the script's author to debug later, rather than for an unfamiliar operator to act on right now.
+
+REVIEW QUESTIONS
+- Why does a safety feature that's "available but inconvenient" often fail precisely in the high-pressure moments it was built for?
+- What's the difference between output designed for debugging after the fact versus output designed for real-time operator decision-making during an incident?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 4/6
+TIME   : 3-3.5 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Handoff-Ready Architecture
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a script so a teammate can safely modify or extend one specific part without needing to understand the whole thing.
+
+TASKS
+- Build a script with at least 3 clearly distinct, loosely-coupled areas of responsibility (e.g. input handling, core operation logic, reporting/output), deliberately decomposed for handoff purposes.
+- Demonstrate that a meaningful, realistic change to just one area can be made by touching only that area's code, with no required understanding of the other areas' internals.
+- Document exactly what a new contributor needs to know about the OTHER areas (the stable interfaces/contracts between them) without needing their internal implementation.
+- Build in something that would make it structurally obvious, not just by convention/trust, if a future change accidentally violated the separation between areas.
+
+VALIDATION
+- Have a peer make the realistic single-area change you specified, using only the documented interface knowledge, and confirm they could do it correctly without reading the other areas' implementation in depth.
+
+FAILURE SCENARIOS
+- The "isolated" change to one area turns out to actually require a behavior change in another area too -- was the boundary drawn in the wrong place, or is this an inherent limit of any decomposition?
+
+COMMON MISTAKES
+- Decomposing into areas that look separate on paper but are secretly tightly coupled through shared mutable state.
+- Documenting internals exhaustively instead of just the stable interface a contributor actually needs.
+
+REVIEW QUESTIONS
+- What's the practical test for whether two areas of a script are genuinely decoupled versus just visually separated into different functions/files?
+- How do you decide what belongs in "interface documentation a contributor needs" versus "internal detail they don't"?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 5/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: One Script, Two Audiences
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Design a script supporting both interactive human use and automated/orchestrated invocation from a single codebase, each with appropriate UX.
+
+TASKS
+- Build a script performing one core operation that can be run interactively (prompts/confirmations, readable progress, colorized output where appropriate) and non-interactively (no prompts, machine-parseable output, deterministic exit codes) -- same underlying logic, different presentation layer.
+- The script must correctly auto-detect or be explicitly told which mode applies, and behave appropriately without two separate maintained codebases.
+- Confirmation prompts appropriate for interactive use must have a sane, explicit, pre-decided default/behavior for non-interactive mode -- never silently hang waiting for input that will never come.
+- Core operation logic must live in exactly one place, with the two "audiences" being a thin presentation layer around shared logic.
+
+VALIDATION
+- Run the script interactively and confirm a sensible human experience. Run it non-interactively (e.g. with stdin redirected from /dev/null) and confirm it never hangs and produces appropriately machine-friendly output, with both modes producing the same underlying correct result.
+
+FAILURE SCENARIOS
+- The script is run non-interactively but a flag necessary to specify the otherwise-interactive default wasn't provided -- does it fail clearly, or silently guess?
+
+COMMON MISTAKES
+- Building two semi-duplicated implementations that inevitably drift apart in behavior over time.
+- Leaving a confirmation prompt that can hang forever if stdin isn't a terminal and no non-interactive default/flag was provided.
+
+REVIEW QUESTIONS
+- Why is "two parallel implementations for two audiences" a maintenance trap, and how does a shared-core design avoid it?
+- What must always be true about a confirmation prompt's behavior when input can't actually be provided?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AREA   : Senior
+LEVEL  : L10
+TASK   : 6/6
+TIME   : 2.5-3 hrs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK TITLE: Traceable Behavior Changes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OBJECTIVE
+Build versioning and changelog discipline into a script itself, so behavior changes are traceable across its operational lifetime.
+
+TASKS
+- The script must report its own version (e.g. via --version), incremented whenever observable behavior changes -- not for cosmetic edits.
+- Build an internal changelog, embedded in or shipped alongside the script, documenting what changed in each version specifically in terms of observable behavior, not implementation detail.
+- Evolve your script through at least 2 versions with one genuine observable behavior change between them, demonstrating that the version number and changelog entry correctly reflect that the change occurred.
+- Identify a way an operator running this script in production, months from now, could determine "did this script's behavior change recently, and if so, how" without digging through commit history or source diffs.
+
+VALIDATION
+- Produce version 1 and document its behavior. Make one real, observable behavior change for version 2 and confirm the version flag, changelog, and actual behavior all consistently reflect exactly what changed and nothing else silently did.
+
+FAILURE SCENARIOS
+- A "minor" internal refactor unintentionally changes an observable edge-case behavior, but the version/changelog isn't updated because the author didn't think of it as a "real" change -- how does discipline around this get enforced rather than relying on memory?
+
+COMMON MISTAKES
+- Bumping version numbers for purely cosmetic changes while failing to bump them for subtle-but-real behavior changes.
+- Writing changelog entries in terms of internal implementation rather than observable behavior an operator would actually notice or care about.
+
+REVIEW QUESTIONS
+- Why does "observable behavior change" matter more than "code changed" as the trigger for a version bump in an operational script?
+- How would an operator, months later, use a well-maintained version/changelog discipline to quickly determine whether a recent issue correlates with a recent script change?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

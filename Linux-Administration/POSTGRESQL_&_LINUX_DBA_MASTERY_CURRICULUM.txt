@@ -1,0 +1,3583 @@
+================================================================================
+POSTGRESQL & LINUX DBA MASTERY CURRICULUM
+20 Years of Operational Experience, Compressed into Structured Practice
+================================================================================
+No solutions are provided anywhere in this document, by design. Every item is
+a problem, a drill, or a scenario for YOU to solve, instrument, break, and
+fix. That repetition is the point.
+
+--------------------------------------------------------------------------------
+HOW THIS DOCUMENT IS BUILT
+--------------------------------------------------------------------------------
+The original spec calls for 900+ assignments, 100+ incident simulations, and
+30+ end-to-end projects across 6 career phases. Generating all of that in one
+pass would force a choice between truncating it or padding it with repetitive
+filler — neither serves you. So this is being built phase-by-phase, in full
+depth, starting now with PHASE 1: FOUNDATION.
+
+This file currently contains:
+  - The full 6-phase roadmap and target/delivered tracker (below)
+  - The assignment structure template
+  - PHASE 1 — FOUNDATION: 63 full assignments (3 per domain x 21 domains)
+  - A daily/weekly/monthly drill bank (muscle-memory layer)
+  - 15 foundation-level incident simulations
+  - 2 foundation-tier end-to-end projects
+
+To get PHASE 2 (Professional DBA) appended to this same file in the same
+format, just say so. Each phase will be appended in turn — 2, 3, 4, 5, 6 —
+until the full target counts in the tracker below are met.
+
+--------------------------------------------------------------------------------
+LEARNING ROADMAP — 6 PHASES
+--------------------------------------------------------------------------------
+PHASE 1 — FOUNDATION          Correct usage of fundamentals under no pressure.
+PHASE 2 — PROFESSIONAL DBA    Independent ownership of routine production work.
+PHASE 3 — SENIOR DBA          Designs solutions; handles ambiguous incidents.
+PHASE 4 — LEAD DBA            Owns architecture decisions across a fleet.
+PHASE 5 — PRINCIPAL DBA       Sets standards; handles novel, cross-system failure.
+PHASE 6 — ENTERPRISE ARCHITECT  Designs platforms; plans multi-year strategy.
+
+Difficulty and ambiguity increase every phase. Time pressure increases every
+phase. Solution scaffolding (hints, given configs, known-good baselines)
+decreases every phase. By Phase 5-6, assignments stop telling you what's
+broken — only what was observed.
+
+--------------------------------------------------------------------------------
+ENTERPRISE-GRADE COVERAGE TARGET / DELIVERED TRACKER
+--------------------------------------------------------------------------------
+Bucket                                   Target      Delivered (Phase 1)   Remaining
+PostgreSQL assignments (12 domains)      300+        36                    264+
+Linux scripting assignments (3 domains)  150+        9                     141+
+Troubleshooting assignments              100+        18 (3 IT + 15 incident) 82+
+Performance tuning assignments           50+         3                     47+
+High availability assignments            50+         3                     47+
+Backup and recovery assignments          50+         3                     47+
+Security assignments                     50+         3                     47+
+Automation assignments                   50+         3                     47+
+Real-world incident simulations          100+        15                    85+
+End-to-end projects                      30+         2                     28+
+
+"PostgreSQL assignments" = PGA + PGP + PGI + QO + REP + HA + BR + DR + SEC +
+MON + CAP + MIG (12 domains). "Linux scripting" = LA + LS + AUTO.
+"Troubleshooting" = IT domain + the incident simulation bank.
+
+--------------------------------------------------------------------------------
+DOMAIN CODE INDEX
+--------------------------------------------------------------------------------
+PGA  PostgreSQL Administration          LA   Linux Administration
+PGP  PostgreSQL Performance Tuning      LS   Linux Shell Scripting
+PGI  PostgreSQL Internals               AUTO Automation
+QO   Query Optimization                 PS   Production Support
+REP  Replication                        IM   Incident Management
+HA   High Availability                  DO   DevOps Integration
+BR   Backup and Recovery                CLD  Cloud Deployments
+DR   Disaster Recovery                  CTR  Containerization
+SEC  Database Security                  IT   Infrastructure Troubleshooting
+MON  Monitoring and Alerting
+CAP  Capacity Planning
+MIG  Database Migration
+
+ID format: [Phase]-[Domain]-[Number], e.g. F1-PGA-01 = Phase 1, PostgreSQL
+Administration, assignment 1.
+
+--------------------------------------------------------------------------------
+ASSIGNMENT STRUCTURE TEMPLATE (every assignment below follows this)
+--------------------------------------------------------------------------------
+Difficulty Level            | Estimated Completion Time
+Objective                   | One or two sentences: what skill this builds.
+Business Scenario           | Why a real org would need this done.
+Technical Requirements      | What must be true of the environment/result.
+Environment Setup           | What you need to stand up before starting.
+Tasks                       | Numbered, ordered steps to attempt (not solve-for-you).
+Deliverables                | What you produce as evidence of completion.
+Validation Criteria         | How you (or a reviewer) verify it actually works.
+Success Metrics             | Quantifiable bar for "done well" vs "done."
+Expected Learning Outcomes  | What instinct/knowledge this should leave behind.
+
+================================================================================
+PHASE 1 — FOUNDATION
+================================================================================
+
+================================================================================
+DOMAIN: POSTGRESQL ADMINISTRATION (PGA)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-PGA-01] Cluster Initialization and Directory Layout Audit
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Build correct, repeatable instincts for what a healthy PostgreSQL
+data directory looks like and why each piece exists.
+
+Business Scenario: You've inherited a server with PostgreSQL already running
+and no documentation. Before you touch anything, you need to know what you're
+looking at.
+
+Technical Requirements:
+- A running PostgreSQL instance (any supported version 13+)
+- Shell access with permission to read PGDATA
+
+Environment Setup:
+- Install PostgreSQL on a throwaway VM or container
+- Initialize a cluster with initdb using non-default data and WAL locations
+
+Tasks:
+1. Produce a written map of every top-level item in PGDATA and its purpose
+2. Identify where WAL currently lives and confirm it is (or isn't) on a
+   separate filesystem/mount
+3. Locate and read postgresql.conf, postgresql.auto.conf, and pg_hba.conf;
+   note which settings are active and from which file they're sourced
+4. Determine the PostgreSQL version, cluster encoding, and locale without
+   connecting to the database (filesystem/binary inspection only)
+5. Identify the current WAL mode and checkpoint configuration
+
+Deliverables:
+- A one-page "cluster fact sheet" documenting findings from tasks 1-5
+
+Validation Criteria:
+- Every claim in the fact sheet is independently verifiable by another
+  engineer using only the commands you documented
+
+Success Metrics:
+- Fact sheet completed with zero reliance on guesswork or assumption
+
+Expected Learning Outcomes:
+- Instant orientation on any unfamiliar PostgreSQL host within minutes
+
+--------------------------------------------------------------------------------
+[F1-PGA-02] Role and Privilege Baseline Setup
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Establish a correct least-privilege role hierarchy from scratch.
+
+Business Scenario: A new application is being onboarded. Security review
+requires that the app cannot use superuser or owner-level access, and that
+read-only reporting users cannot write.
+
+Technical Requirements:
+- A database with at least 3 schemas and 5 tables of sample data
+- No existing roles besides the default superuser
+
+Environment Setup:
+- Create a fresh database; populate with sample schema/tables
+
+Tasks:
+1. Design a role hierarchy: an owner role, an app read-write role, a
+   reporting read-only role, and a migrations role
+2. Implement the hierarchy using GRANT/REVOKE and role membership (not
+   superuser shortcuts)
+3. Set default privileges so future tables automatically inherit the
+   intended grants
+4. Verify each role can only do what it should by attempting prohibited
+   actions and confirming they fail
+5. Document the hierarchy as a diagram or table
+
+Deliverables:
+- SQL script implementing the roles
+- A test log showing each prohibited action failing as expected
+
+Validation Criteria:
+- Reporting role cannot INSERT/UPDATE/DELETE on any table
+- App role cannot ALTER schema objects or grant privileges to others
+- New tables created later automatically pick up correct default grants
+
+Success Metrics:
+- Zero successful privilege escalations during adversarial testing
+
+Expected Learning Outcomes:
+- Fluency in PostgreSQL's privilege model without reaching for superuser
+
+--------------------------------------------------------------------------------
+[F1-PGA-03] Routine Maintenance Schedule Implementation
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-4 hours
+
+Objective: Build a defensible, observable autovacuum/maintenance baseline.
+
+Business Scenario: An inherited database has autovacuum left at out-of-the-box
+defaults on tables receiving heavy churn. You're asked to propose and
+implement a maintenance baseline before bloat becomes a problem.
+
+Technical Requirements:
+- A database with at least one high-churn table (simulate with a script
+  that does continuous INSERT/UPDATE/DELETE)
+- Ability to query pg_stat_user_tables and pg_stat_activity
+
+Environment Setup:
+- Write a small load generator that updates/deletes rows continuously
+  against one table for the duration of the exercise
+
+Tasks:
+1. Observe default autovacuum behavior on the churning table over time
+2. Identify whether autovacuum is keeping pace using dead tuple counts
+   and last_autovacuum timestamps
+3. Tune per-table autovacuum settings (thresholds/scale factors, cost
+   limits) for this specific table's workload
+4. Validate the new settings produce measurably tighter dead-tuple control
+5. Document the reasoning for each parameter change
+
+Deliverables:
+- Before/after dead-tuple and vacuum-frequency measurements
+- A written rationale for each setting changed
+
+Validation Criteria:
+- Dead tuple ratio on the target table stabilizes rather than growing
+  unbounded over a sustained test run
+
+Success Metrics:
+- Measurable reduction in table/index bloat growth rate vs. the
+  default-configuration baseline
+
+Expected Learning Outcomes:
+- Ability to read vacuum health from stats views and tune with intent
+  rather than copy-pasted values
+
+================================================================================
+DOMAIN: POSTGRESQL PERFORMANCE TUNING (PGP)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-PGP-01] Baseline Configuration Tuning From Defaults
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Move a default-configured instance to a sane baseline for its
+hardware, with documented reasoning per parameter.
+
+Business Scenario: A new database server was provisioned by infrastructure
+and handed to you with stock postgresql.conf. It needs a real baseline
+before any application traffic hits it.
+
+Technical Requirements:
+- A PostgreSQL instance with default/out-of-the-box configuration
+- Known hardware specs (CPU cores, RAM, storage type)
+
+Environment Setup:
+- Provision or simulate a VM with specific, known CPU/RAM/disk specs
+
+Tasks:
+1. Calculate appropriate shared_buffers, effective_cache_size, work_mem,
+   and maintenance_work_mem for the given hardware
+2. Set max_connections based on expected workload, not arbitrary defaults
+3. Configure WAL-related settings (wal_buffers, min/max_wal_size,
+   checkpoint_completion_target) appropriately for the storage type
+4. Apply changes and restart/reload as appropriate per parameter
+5. Document why each value was chosen, tied to the actual hardware specs
+
+Deliverables:
+- Annotated postgresql.conf diff with rationale comments
+
+Validation Criteria:
+- Every changed value is traceable to a specific hardware constraint or
+  workload assumption, not a generic "best practice number"
+
+Success Metrics:
+- Configuration survives a peer review challenge of "why this number?"
+  for every changed parameter
+
+Expected Learning Outcomes:
+- Tuning from first principles instead of memorized magic numbers
+
+--------------------------------------------------------------------------------
+[F1-PGP-02] shared_buffers / work_mem Sizing Exercise
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Directly observe the performance impact of memory parameter
+sizing instead of trusting rules of thumb blindly.
+
+Business Scenario: A report query is slow and someone on the team suggests
+"just increase work_mem." You're asked to prove or disprove that this is
+the right lever before changing production.
+
+Technical Requirements:
+- A dataset large enough to force sorts/hashes to spill to disk at low
+  work_mem settings
+- A reproducible query that sorts or hash-joins a large result set
+
+Environment Setup:
+- Load a table with several million rows of synthetic data
+
+Tasks:
+1. Run the target query with EXPLAIN (ANALYZE, BUFFERS) at a low work_mem
+   and capture the plan, noting any disk-based sort/hash operations
+2. Incrementally raise work_mem and re-run, recording plan and timing
+   changes at each step
+3. Identify the point of diminishing returns
+4. Separately test shared_buffers changes in isolation to distinguish its
+   effect from work_mem's effect
+5. Summarize which parameter actually mattered for this workload and why
+
+Deliverables:
+- A table of work_mem values vs. query time and disk-spill behavior
+
+Validation Criteria:
+- Conclusions are backed by EXPLAIN ANALYZE evidence, not assumption
+
+Success Metrics:
+- Correctly identifies the point past which raising work_mem stops helping
+
+Expected Learning Outcomes:
+- Evidence-based tuning habit; resistance to cargo-cult configuration advice
+
+--------------------------------------------------------------------------------
+[F1-PGP-03] pg_stat_statements-Based Hotspot Identification
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Use pg_stat_statements to find the actual top resource
+consumers on an instance, not the ones that "feel" slow.
+
+Business Scenario: The application team insists "everything is slow," which
+isn't actionable. You're asked to produce a ranked, evidence-backed list of
+what to actually fix first.
+
+Technical Requirements:
+- pg_stat_statements extension enabled
+- A workload generator running a mix of queries with varying cost
+
+Environment Setup:
+- Enable pg_stat_statements; run a mixed synthetic workload for 15+ minutes
+
+Tasks:
+1. Query pg_stat_statements ranked by total_exec_time and separately by
+   calls, and explain why these rankings differ
+2. Identify the single query contributing the most cumulative load
+3. Identify a query that is individually slow but called rarely, and
+   explain why it may not be a priority despite its per-call cost
+4. Reset pg_stat_statements and confirm counters return to a clean state
+5. Produce a prioritized remediation list with reasoning per item
+
+Deliverables:
+- Ranked hotspot report with both per-call and cumulative-cost views
+
+Validation Criteria:
+- Prioritization correctly distinguishes "high total cost" from
+  "high per-call cost" and justifies the ranking
+
+Success Metrics:
+- Report would change at least one wrong assumption a non-data-driven
+  reviewer might make about "what's slow"
+
+Expected Learning Outcomes:
+- Default instinct to measure before optimizing
+
+================================================================================
+DOMAIN: POSTGRESQL INTERNALS (PGI)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-PGI-01] MVCC and Tuple Visibility Exploration
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2 hours
+
+Objective: Build a concrete, observable mental model of how MVCC actually
+stores and hides row versions, rather than a textbook abstraction of it.
+
+Business Scenario: A developer asks "why does my UPDATE make the table
+bigger instead of changing the row in place?" You need an answer backed by
+direct observation, not a copied explanation.
+
+Technical Requirements:
+- A test table with a handful of rows
+- Ability to inspect system columns (xmin, xmax, ctid)
+
+Environment Setup:
+- Create a small table; enable viewing of hidden system columns
+
+Tasks:
+1. Insert a row and record its xmin, xmax, and ctid
+2. Update the row in one session while observing pg_stat_activity and
+   the row's old and new ctid/xmin/xmax from another session
+3. Open a transaction in one session, update a row, and from a second
+   session observe what that transaction sees vs. what a committed
+   reader sees
+4. Run VACUUM and observe what happens to the old tuple version
+5. Summarize, in your own words, what "row versioning" actually means at
+   the storage level
+
+Deliverables:
+- A timeline diagram or table showing tuple states across the transaction
+
+Validation Criteria:
+- Explanation correctly accounts for visibility differences between
+  concurrent sessions
+
+Success Metrics:
+- Can correctly predict tuple visibility outcomes for a new scenario not
+  in this assignment
+
+Expected Learning Outcomes:
+- Intuition for why bloat, vacuum, and long transactions are all the same
+  underlying phenomenon
+
+--------------------------------------------------------------------------------
+[F1-PGI-02] WAL Record Walkthrough with pg_waldump
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Connect SQL-level actions to the physical WAL records they
+generate.
+
+Business Scenario: You need to explain to a junior engineer, with evidence,
+why "just turning off WAL" is not an option, and what's actually inside it.
+
+Technical Requirements:
+- pg_waldump (ships with PostgreSQL)
+- A test cluster where you can identify current WAL position
+
+Environment Setup:
+- Fresh test database; note the current WAL LSN before each task
+
+Tasks:
+1. Perform a single INSERT, note the LSN before and after, and use
+   pg_waldump to inspect the generated WAL record(s)
+2. Repeat for an UPDATE and a DELETE, comparing record types/sizes
+3. Perform a transaction with multiple statements and identify the
+   commit record in the WAL stream
+4. Force a checkpoint and locate the checkpoint record
+5. Summarize the relationship between WAL volume and write-heavy workloads
+
+Deliverables:
+- Annotated pg_waldump output for each operation type
+
+Validation Criteria:
+- Correctly identifies record types (heap insert/update/delete, commit,
+  checkpoint) without relying on guesswork
+
+Success Metrics:
+- Can predict, before running it, roughly what record types a given SQL
+  statement will produce
+
+Expected Learning Outcomes:
+- WAL stops being a black box; replication and PITR become mechanically
+  obvious rather than memorized
+
+--------------------------------------------------------------------------------
+[F1-PGI-03] Catalog Tables Deep Dive (pg_class, pg_stat_*, pg_locks)
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Build fluency querying the system catalogs directly instead of
+relying on third-party GUIs or memorized one-liners.
+
+Business Scenario: Monitoring tooling is down during an incident. You need
+to answer "what is running, what is it blocking, and how big is it" using
+nothing but psql and catalog knowledge.
+
+Technical Requirements:
+- A workload generating some lock contention (simulate with overlapping
+  transactions)
+
+Environment Setup:
+- Two or more sessions intentionally contending for the same rows
+
+Tasks:
+1. From pg_class and pg_stat_user_tables, determine table and index sizes
+   without using a third-party tool
+2. From pg_stat_activity, identify currently running queries and their
+   wait states
+3. From pg_locks, identify which session is blocking which, joining
+   against pg_stat_activity for readable output
+4. Write a single query that surfaces "who is blocking whom" in
+   human-readable form
+5. Document the catalog relationships you relied on
+
+Deliverables:
+- A working "blocking sessions" query you wrote yourself
+- A short catalog relationship diagram
+
+Validation Criteria:
+- The blocking-sessions query correctly identifies blocker/blocked pairs
+  in a live contention scenario
+
+Success Metrics:
+- Can answer "what's blocking what" in under 2 minutes using only psql
+
+Expected Learning Outcomes:
+- Tool-independence during incidents when dashboards aren't available
+
+================================================================================
+DOMAIN: QUERY OPTIMIZATION (QO)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-QO-01] EXPLAIN / EXPLAIN ANALYZE Fundamentals
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Read a query plan accurately, including the difference between
+estimated and actual costs.
+
+Business Scenario: A teammate pastes you a query plan and asks "is this
+fine?" You need to be able to answer correctly from the plan alone.
+
+Technical Requirements:
+- A moderately sized table (100k+ rows) with at least one index
+
+Environment Setup:
+- Load sample data; ensure statistics are up to date (ANALYZE)
+
+Tasks:
+1. Run EXPLAIN (without ANALYZE) on a simple filtered query and explain
+   each line of the plan in your own words
+2. Run EXPLAIN ANALYZE on the same query and identify where estimated
+   rows diverge from actual rows
+3. Deliberately cause a sequential scan (disable an index or query a
+   non-indexed column) and compare the plan
+4. Identify which plan node is the most expensive by execution time, not
+   by visual position in the plan
+5. Explain what "Buffers" output adds that timing alone does not
+
+Deliverables:
+- Three annotated query plans with your own line-by-line explanation
+
+Validation Criteria:
+- Annotations correctly distinguish planning estimates from runtime
+  reality
+
+Success Metrics:
+- Can identify the most expensive node in an unfamiliar plan within 60
+  seconds
+
+Expected Learning Outcomes:
+- Reading plans becomes routine, not intimidating
+
+--------------------------------------------------------------------------------
+[F1-QO-02] Index Selection Exercise (B-tree vs. Others)
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Choose an index type based on the query pattern, not habit.
+
+Business Scenario: A table needs indexing but the access patterns vary —
+equality lookups, range queries, and a full-text-ish search are all in play.
+You're asked to justify, not just pick, the index types.
+
+Technical Requirements:
+- A table supporting at least 3 different query patterns (equality, range,
+  pattern-match)
+
+Environment Setup:
+- Create a table with a numeric range column, a low-cardinality column,
+  and a text column
+
+Tasks:
+1. Benchmark each query pattern with no index, recording plan and timing
+2. Add a B-tree index where appropriate and re-benchmark
+3. For the low-cardinality column, evaluate whether a B-tree index is
+   actually helpful, and test an alternative if not
+4. For the text-search-like pattern, evaluate a GIN/trigram approach and
+   compare against the unindexed and B-tree-indexed cases
+5. Summarize which index type fit which access pattern and why
+
+Deliverables:
+- A before/after benchmark table per query pattern and index type tested
+
+Validation Criteria:
+- Each index choice is justified by the access pattern, with benchmark
+  evidence, not by default habit
+
+Success Metrics:
+- At least one case in the exercise correctly identifies that an index
+  would NOT help, with evidence
+
+Expected Learning Outcomes:
+- Index selection becomes pattern-driven rather than reflexive
+
+--------------------------------------------------------------------------------
+[F1-QO-03] Join Strategy and Statistics Investigation
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Understand why the planner picks nested loop vs. hash vs. merge
+join, and how statistics drive that choice.
+
+Business Scenario: A join that was fast last month is now slow, and nobody
+changed the query. You're asked to investigate whether the data, not the
+query, is the actual cause.
+
+Technical Requirements:
+- Two tables with a foreign-key-like relationship and at least 500k rows
+  combined
+
+Environment Setup:
+- Load both tables; intentionally let statistics go stale on one of them
+  (skip ANALYZE after a bulk load)
+
+Tasks:
+1. Run the join with stale statistics and capture the plan and estimated
+   vs. actual row counts
+2. Run ANALYZE on the affected table and re-run the join, comparing plans
+3. Identify which join strategy the planner chose in each case and why,
+   referencing estimated row counts and cost parameters
+4. Force a different join strategy using planner settings and compare
+   actual performance against the planner's own choice
+5. Summarize how stale statistics caused (or didn't cause) a suboptimal
+   plan
+
+Deliverables:
+- Before/after plans with row-count estimate deltas clearly highlighted
+
+Validation Criteria:
+- Correctly attributes any plan change to the statistics update, with
+  evidence from estimated-vs-actual row counts
+
+Success Metrics:
+- Forced alternate plan is correctly shown to be equal to or worse than
+  the planner's own choice (validating planner trust) or better (justifying
+  an override) — either conclusion is acceptable if backed by evidence
+
+Expected Learning Outcomes:
+- Statistics-first instinct before blaming the query or the planner
+
+================================================================================
+DOMAIN: REPLICATION (REP)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-REP-01] Build a Streaming Replica From Scratch
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2-3 hours
+
+Objective: Stand up physical streaming replication manually, end to end,
+without relying on a tool that hides the steps.
+
+Business Scenario: A read replica is needed for reporting load offload, and
+you've been asked to build it yourself rather than wait on a platform team.
+
+Technical Requirements:
+- Two hosts (or VMs/containers) that can reach each other on the network
+- A primary with WAL archiving or replication-ready settings
+
+Environment Setup:
+- Provision a primary instance with sample data and a dedicated
+  replication role
+
+Tasks:
+1. Configure the primary for replication (wal_level, max_wal_senders,
+   a replication role with appropriate privileges)
+2. Take a base backup of the primary onto the replica host
+3. Configure the replica for standby mode and start it
+4. Confirm streaming is active and measure initial replication lag
+5. Write data on the primary and confirm it appears on the replica,
+   noting the lag observed
+
+Deliverables:
+- Step-by-step log of commands used and their output
+- Lag measurement before and after a write burst
+
+Validation Criteria:
+- Replica correctly reflects primary state with measurable, bounded lag
+
+Success Metrics:
+- Replica built without consulting a copy-paste tutorial mid-task
+
+Expected Learning Outcomes:
+- Replication stops being "a thing Patroni does" and becomes a mechanism
+  you understand directly
+
+--------------------------------------------------------------------------------
+[F1-REP-02] Replication Slot Management
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 1-2 hours
+
+Objective: Understand what replication slots actually guarantee, and what
+they cost if mismanaged.
+
+Business Scenario: A replica was decommissioned without dropping its slot.
+Three weeks later, the primary's disk is filling up and nobody knows why.
+
+Technical Requirements:
+- A primary with replication slots enabled
+- A replica that can be stopped and started on demand
+
+Environment Setup:
+- Create a physical replication slot tied to a live replica
+
+Tasks:
+1. Confirm the slot is active and note its WAL retention behavior while
+   the replica is connected
+2. Stop the replica without dropping the slot and generate write traffic
+   on the primary
+3. Observe and measure WAL accumulation on the primary caused by the
+   inactive slot
+4. Decide and justify a remediation: restart the replica vs. drop the
+   slot, considering data loss implications
+5. Implement the remediation and confirm disk pressure resolves
+
+Deliverables:
+- Disk usage measurements before, during, and after the orphaned-slot
+  condition
+
+Validation Criteria:
+- Correctly identifies the orphaned slot as the root cause using pg_stat
+  views, not guesswork
+
+Success Metrics:
+- Time from "disk is filling up" to "identified orphaned slot as cause"
+  under 15 minutes
+
+Expected Learning Outcomes:
+- Recognizing this specific failure signature instantly in production
+
+--------------------------------------------------------------------------------
+[F1-REP-03] Monitor and Measure Replication Lag
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2 hours
+
+Objective: Distinguish between the different ways "lag" can be measured and
+why they sometimes disagree.
+
+Business Scenario: A dashboard shows replication lag in bytes, another shows
+it in seconds, and they disagree about whether there's a problem. You need
+to explain which one is right and why.
+
+Technical Requirements:
+- A working streaming replication setup
+- Ability to throttle network or simulate slow disk on the replica
+
+Environment Setup:
+- Use the replica from F1-REP-01, or build a new primary/replica pair
+
+Tasks:
+1. Measure lag using byte-based LSN difference between primary and replica
+2. Measure lag using time-based metrics (replay lag)
+3. Artificially slow down WAL replay on the replica (e.g. via disk I/O
+   throttling) and observe how byte-lag and time-lag diverge
+4. Explain, with your measurements as evidence, a scenario where byte-lag
+   is low but time-lag is high (or vice versa)
+5. Propose which metric should drive alerting and justify the choice
+
+Deliverables:
+- Lag measurements under normal and degraded conditions, both metrics
+
+Validation Criteria:
+- Correctly explains the divergence using actual measured data, not
+  theory alone
+
+Success Metrics:
+- Alerting recommendation is defensible against a "why not just use
+  bytes" challenge
+
+Expected Learning Outcomes:
+- Refusal to trust a single lag number without knowing what it measures
+
+================================================================================
+DOMAIN: HIGH AVAILABILITY (HA)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-HA-01] Manual Failover Walkthrough
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2-3 hours
+
+Objective: Perform a clean, manual failover without automation, to
+understand exactly what automation tools are doing on your behalf later.
+
+Business Scenario: Patroni/automation isn't deployed yet, but you've been
+told a manual failover runbook is needed as a stopgap.
+
+Technical Requirements:
+- A working primary/replica streaming setup
+
+Environment Setup:
+- Use or rebuild the F1-REP-01 primary/replica pair
+
+Tasks:
+1. Confirm the replica is caught up before proceeding
+2. Stop the primary cleanly
+3. Promote the replica using the appropriate promotion mechanism for your
+   PostgreSQL version
+4. Verify the promoted node now accepts writes
+5. Document every step as a runbook a teammate could follow without you
+
+Deliverables:
+- A written failover runbook produced from your own hands-on steps
+
+Validation Criteria:
+- Promoted node correctly accepts both reads and writes post-promotion
+- Runbook is followable by someone who didn't do the exercise
+
+Success Metrics:
+- Total failover time measured and recorded
+
+Expected Learning Outcomes:
+- Concrete understanding of what "promotion" actually changes
+
+--------------------------------------------------------------------------------
+[F1-HA-02] Patroni Single-Cluster Bring-Up
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 3-4 hours
+
+Objective: Stand up a minimal Patroni-managed cluster and understand its
+moving parts (DCS, REST API, bootstrap config).
+
+Business Scenario: Leadership wants automated failover. Before rolling it
+out broadly, you need a working proof of concept you can explain
+component-by-component.
+
+Technical Requirements:
+- A distributed configuration store (etcd, Consul, or equivalent)
+- 2+ nodes for PostgreSQL, managed by Patroni
+
+Environment Setup:
+- Install Patroni and a DCS on a small set of VMs/containers
+
+Tasks:
+1. Configure and bootstrap a Patroni-managed primary
+2. Add a second node as a Patroni-managed replica
+3. Confirm cluster state via the Patroni REST API and DCS directly (not
+   just the patronictl CLI)
+4. Trigger a manual switchover via patronictl and observe the sequence
+   of events in the logs
+5. Document what Patroni does differently from your manual failover in
+   F1-HA-01
+
+Deliverables:
+- Working 2-node Patroni cluster
+- A comparison write-up: manual failover vs. Patroni switchover
+
+Validation Criteria:
+- Switchover completes with the new primary accepting writes and the DCS
+  reflecting correct cluster state
+
+Success Metrics:
+- Can explain every Patroni log line during switchover, not just that it
+  worked
+
+Expected Learning Outcomes:
+- Patroni stops being a black box; you can debug it because you understand
+  what it's automating
+
+--------------------------------------------------------------------------------
+[F1-HA-03] PgBouncer Connection Routing for HA
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Understand how a connection pooler interacts with failover, and
+where it can silently mask or worsen an outage.
+
+Business Scenario: After adding Patroni, the app team reports brief
+connection errors during failover even though Patroni completed the
+switchover quickly. You're asked to find out why.
+
+Technical Requirements:
+- The Patroni cluster from F1-HA-02
+- PgBouncer configured to point at the cluster
+
+Environment Setup:
+- Install PgBouncer; configure it to route to the current primary
+
+Tasks:
+1. Configure PgBouncer with a connection string targeting the cluster
+2. Run a continuous connection test against PgBouncer while triggering a
+   Patroni switchover
+3. Measure the gap between "Patroni reports new primary" and "PgBouncer
+   successfully routes new connections to it"
+4. Identify the specific mechanism causing any delay (stale config, pool
+   reuse, health check interval, etc.)
+5. Propose and test a configuration change that reduces the gap
+
+Deliverables:
+- Timing measurements before and after your configuration change
+
+Validation Criteria:
+- Identified cause is confirmed by the timing data, not assumed
+
+Success Metrics:
+- Measurable reduction in connection-routing gap after remediation
+
+Expected Learning Outcomes:
+- Recognizing that "HA" is a chain of components, each with its own
+  failure/recovery latency
+
+================================================================================
+DOMAIN: BACKUP AND RECOVERY (BR)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-BR-01] pg_basebackup Full Backup and Restore
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Perform and validate a full physical backup and restore using
+only pg_basebackup, with no third-party tooling.
+
+Business Scenario: A new instance needs a backup strategy today, and the
+chosen enterprise backup tool isn't licensed yet. You need a working
+stopgap that's actually restorable.
+
+Technical Requirements:
+- A running PostgreSQL instance with sample data
+- Sufficient disk space for a second copy of the data directory
+
+Environment Setup:
+- Load sample data; note row counts/checksums for later verification
+
+Tasks:
+1. Take a full backup using pg_basebackup
+2. Stand up a second instance from the backup
+3. Confirm the restored instance starts cleanly and serves the expected
+   data
+4. Verify data integrity against your pre-backup checksums/row counts
+5. Time the full backup-to-restore-to-verified cycle
+
+Deliverables:
+- Backup and restore logs
+- Verification output proving data integrity
+
+Validation Criteria:
+- Restored instance's data exactly matches pre-backup state
+
+Success Metrics:
+- Full cycle completes and is independently reproducible from your notes
+
+Expected Learning Outcomes:
+- Confidence that "we have a backup" actually means "we have a tested
+  restore"
+
+--------------------------------------------------------------------------------
+[F1-BR-02] pg_dump/pg_restore Logical Backup Strategy
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Understand when logical backups are the right tool vs. physical
+ones, and execute one correctly.
+
+Business Scenario: You need to move a single schema's data into a separate
+database for a new microservice, without copying the entire cluster.
+
+Technical Requirements:
+- A multi-schema database with at least one schema isolable for this
+  purpose
+
+Environment Setup:
+- Database with 2+ schemas, sample data in each
+
+Tasks:
+1. Take a schema-scoped logical backup using pg_dump with an appropriate
+   format (custom or directory, not plain SQL only)
+2. Restore it into a fresh, separate database using pg_restore
+3. Compare object counts and row counts between source schema and
+   restored target
+4. Test restoring with parallel jobs and measure the time difference
+   versus single-threaded restore
+5. Document a scenario where pg_dump would be the wrong tool and a
+   physical backup would be required instead
+
+Deliverables:
+- Backup and restore command log with timing for single vs. parallel
+  restore
+
+Validation Criteria:
+- Restored schema is structurally and data-complete versus source
+
+Success Metrics:
+- Correctly articulates at least one valid case where logical backup is
+  the wrong choice
+
+Expected Learning Outcomes:
+- Tool selection based on actual constraints, not habit
+
+--------------------------------------------------------------------------------
+[F1-BR-03] Point-in-Time Recovery (PITR) Drill
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 3-4 hours
+
+Objective: Execute a PITR to a specific point before a simulated mistake,
+and confirm the recovered state is correct.
+
+Business Scenario: Someone ran an UPDATE without a WHERE clause on a
+production-like table 10 minutes ago. You need to recover the data to just
+before that statement.
+
+Technical Requirements:
+- WAL archiving configured
+- A base backup taken before the simulated mistake
+
+Environment Setup:
+- Configure WAL archiving; take a base backup; load sample data; note the
+  exact time before the "mistake"
+
+Tasks:
+1. Simulate the damaging statement and note the timestamp it occurred
+2. Restore the base backup to a new location
+3. Configure recovery target settings to stop just before the damaging
+   statement
+4. Bring the recovered instance up and confirm it stopped at the correct
+   point (damaging statement absent, all prior data intact)
+5. Document the exact recovery target mechanism used and why
+
+Deliverables:
+- Recovery configuration used
+- Verification proving the damaging statement's effects are absent while
+  all earlier data is present
+
+Validation Criteria:
+- Recovered state contains zero trace of the damaging statement and 100%
+  of legitimate prior data
+
+Success Metrics:
+- Recovery target precision: did not overshoot or undershoot the intended
+  point
+
+Expected Learning Outcomes:
+- PITR confidence under pressure; recognizing this as a mechanical
+  procedure rather than a high-risk unknown
+
+================================================================================
+DOMAIN: DISASTER RECOVERY (DR)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-DR-01] DR Runbook Authoring for Single-Region Outage
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2-3 hours
+
+Objective: Produce a runbook precise enough that someone other than you
+could execute a regional failover under stress.
+
+Business Scenario: Compliance requires a documented DR plan for a
+single-region outage scenario before the system goes live.
+
+Technical Requirements:
+- A primary/replica setup, conceptually treated as cross-region (can be
+  simulated on separate hosts/containers)
+
+Environment Setup:
+- Use an existing primary/replica pair; conceptually label them
+  "Region A" and "Region B"
+
+Tasks:
+1. Document pre-conditions that must be true for DR failover to be safe
+   (replica health, lag thresholds, etc.)
+2. Write the exact, ordered steps to execute the failover
+3. Write the exact, ordered steps to fail back once Region A recovers
+4. Include explicit go/no-go decision criteria at each major step
+5. Have a peer (or yourself, cold, a day later) attempt to follow it
+   exactly as written
+
+Deliverables:
+- Completed DR runbook document
+
+Validation Criteria:
+- A reader unfamiliar with the system can follow the runbook without
+  needing to ask you a clarifying question
+
+Success Metrics:
+- Zero ambiguous steps identified during the cold read-through
+
+Expected Learning Outcomes:
+- The discipline of writing for someone who isn't you and is panicking
+
+--------------------------------------------------------------------------------
+[F1-DR-02] Cross-Host Restore Validation Drill
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Prove that a backup taken on one host is actually restorable on
+a completely different host, not just the original.
+
+Business Scenario: An audit asks "have you ever actually tested restoring
+this backup somewhere other than where it was taken?" The honest answer is
+no, and you're asked to fix that today.
+
+Technical Requirements:
+- A backup taken on Host A
+- A separate, independent Host B with no shared state
+
+Environment Setup:
+- Take a fresh backup on one host; provision a second, unrelated host
+
+Tasks:
+1. Transfer the backup to Host B using a realistic method (not a shared
+   filesystem shortcut)
+2. Restore it on Host B from a cold start
+3. Validate data integrity against the source
+4. Time the full transfer-plus-restore process
+5. Identify and document any host-specific assumptions the original
+   backup process had baked in (paths, versions, extensions)
+
+Deliverables:
+- Restore validation report including timing and any portability issues
+  found
+
+Validation Criteria:
+- Restore succeeds on Host B with no manual workarounds invented on the
+  spot
+
+Success Metrics:
+- At least one portability assumption is identified and documented, even
+  if it didn't cause a failure this time
+
+Expected Learning Outcomes:
+- Distrust of untested backups, regardless of how routine the backup job
+  looks
+
+--------------------------------------------------------------------------------
+[F1-DR-03] RTO/RPO Calculation Exercise
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 1-2 hours
+
+Objective: Calculate real RTO/RPO numbers from your own measured systems
+rather than quoting industry-standard guesses.
+
+Business Scenario: Leadership asks "what's our RPO?" and the honest current
+answer is nobody has measured it.
+
+Technical Requirements:
+- Your backup/restore timing data from F1-BR-01 through F1-BR-03
+- Your failover timing data from F1-HA-01
+
+Environment Setup:
+- No new environment; this is an analysis exercise using prior results
+
+Tasks:
+1. Define RTO and RPO in your own words, specific to this system
+2. Using your PITR drill data, calculate the actual achievable RPO given
+   current WAL archiving frequency
+3. Using your failover/restore timing data, calculate the actual
+   achievable RTO for both a replica failover and a full backup restore
+4. Identify the gap between these measured numbers and any
+   stated/assumed target
+5. Propose one concrete change that would improve the worse of the two
+   metrics
+
+Deliverables:
+- A short RTO/RPO report with numbers tied directly to your own
+  measurements
+
+Validation Criteria:
+- Every number in the report traces back to a measurement you actually
+  took, not an estimate
+
+Success Metrics:
+- Report identifies a real, actionable gap rather than restating generic
+  targets
+
+Expected Learning Outcomes:
+- RTO/RPO stop being slide-deck terms and become operational facts you
+  can defend
+
+================================================================================
+DOMAIN: DATABASE SECURITY (SEC)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-SEC-01] pg_hba.conf Hardening
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Move from an overly permissive default pg_hba.conf to a
+least-access configuration, and prove the restriction actually works.
+
+Business Scenario: A security review flags that the database accepts
+trust/md5 connections from any host on the network.
+
+Technical Requirements:
+- A PostgreSQL instance with a permissive default pg_hba.conf
+- Access to at least 2 different source hosts/IPs to test from
+
+Environment Setup:
+- Configure pg_hba.conf with an intentionally broad rule (e.g. 0.0.0.0/0)
+
+Tasks:
+1. Identify every legitimate connection source that currently needs access
+2. Rewrite pg_hba.conf to scope rules to specific hosts/subnets and
+   appropriate auth methods (avoid trust entirely)
+3. Reload configuration and confirm legitimate connections still succeed
+4. Attempt a connection from a non-whitelisted source and confirm it is
+   rejected
+5. Document the final rule set with a one-line justification per rule
+
+Deliverables:
+- Before/after pg_hba.conf
+- Connection test log showing both allowed and denied attempts
+
+Validation Criteria:
+- All legitimate access paths still work; all non-whitelisted attempts
+  are rejected
+
+Success Metrics:
+- Zero legitimate connections broken during hardening
+
+Expected Learning Outcomes:
+- Comfort tightening access controls without fear of breaking production
+
+--------------------------------------------------------------------------------
+[F1-SEC-02] Role-Based Access Control Design
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Design RBAC that maps to actual job functions rather than ad-hoc
+per-person grants.
+
+Business Scenario: Currently every engineer has their own superuser-like
+account. You're asked to redesign this around functional roles before the
+next audit.
+
+Technical Requirements:
+- A database with multiple schemas representing different functional
+  areas
+
+Environment Setup:
+- Create sample schemas representing app data, reporting views, and an
+  audit/log area
+
+Tasks:
+1. Define functional roles (e.g. analyst, app_service, on_call_dba,
+   auditor) based on what each function actually needs to do
+2. Implement roles using GRANT and role membership, with no direct
+   per-person object grants
+3. Map at least 3 hypothetical individuals to the appropriate functional
+   roles
+4. Test that an analyst-mapped user cannot perform on_call_dba actions
+   and vice versa
+5. Document the mapping and the reasoning for each role's permission set
+
+Deliverables:
+- RBAC implementation script
+- Role-to-function mapping document
+
+Validation Criteria:
+- Each tested user can only perform actions appropriate to their mapped
+  function
+
+Success Metrics:
+- Adding a new person to a role requires zero new GRANT statements
+
+Expected Learning Outcomes:
+- RBAC design that scales with headcount instead of growing linearly with
+  individual exceptions
+
+--------------------------------------------------------------------------------
+[F1-SEC-03] SSL/TLS Enablement for Client Connections
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Enable and enforce encrypted client connections, and prove
+unencrypted attempts are actually rejected.
+
+Business Scenario: A compliance requirement mandates encryption in transit
+for all database connections, and someone needs to verify it's not just
+"available" but actually enforced.
+
+Technical Requirements:
+- A PostgreSQL instance currently accepting unencrypted connections
+- Ability to generate or obtain a test certificate/key pair
+
+Environment Setup:
+- Generate a self-signed certificate and key for the test instance
+
+Tasks:
+1. Configure the server for SSL with the generated certificate/key
+2. Update pg_hba.conf to require SSL (hostssl) for relevant connection
+   rules, removing the equivalent hostnossl/host fallback
+3. Confirm an SSL-enabled client can connect successfully
+4. Attempt a connection while explicitly disabling SSL on the client and
+   confirm it is rejected
+5. Document the certificate renewal/expiry consideration for production
+   use
+
+Deliverables:
+- SSL configuration files
+- Connection test log proving enforcement, not just availability
+
+Validation Criteria:
+- Non-SSL connection attempts are actively rejected, not merely
+  unencrypted-but-allowed
+
+Success Metrics:
+- 100% of test connection attempts behave as configured (allowed only
+  when SSL is used)
+
+Expected Learning Outcomes:
+- Understanding the difference between "SSL supported" and "SSL enforced"
+
+================================================================================
+DOMAIN: MONITORING AND ALERTING (MON)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-MON-01] Core Metrics Inventory
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Build a baseline inventory of the metrics that actually matter
+for day-to-day PostgreSQL health, sourced directly from the database.
+
+Business Scenario: A new instance is going live and there's no monitoring
+yet. You're asked to specify, at minimum, what must be tracked from day one.
+
+Technical Requirements:
+- A running PostgreSQL instance
+- No monitoring agent required; this is a query-level exercise
+
+Environment Setup:
+- Use any running instance with some sample activity
+
+Tasks:
+1. Write queries to retrieve current connection count vs. max_connections
+2. Write queries to retrieve current lock waits and longest-running
+   queries
+3. Write queries to retrieve replication lag (if applicable) and WAL
+   generation rate
+4. Write queries to retrieve table/index bloat indicators and disk usage
+5. Compile these into a single "morning check" reference sheet
+
+Deliverables:
+- A reference sheet of working queries covering tasks 1-4
+
+Validation Criteria:
+- Every query runs successfully and returns sensible, interpretable
+  output on a live instance
+
+Success Metrics:
+- The reference sheet alone would be sufficient to answer "is the
+  database healthy right now?"
+
+Expected Learning Outcomes:
+- A self-built mental checklist that doesn't depend on a specific
+  monitoring vendor
+
+--------------------------------------------------------------------------------
+[F1-MON-02] Basic Alert Threshold Matrix
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Define alert thresholds backed by observed normal behavior,
+not arbitrary round numbers.
+
+Business Scenario: Alerts currently fire constantly on connection count
+because the threshold was set to a guessed number. You're asked to set
+real thresholds.
+
+Technical Requirements:
+- The metrics inventory from F1-MON-01
+- A period of normal-load observation (can be simulated)
+
+Environment Setup:
+- Run a representative workload for at least 30 minutes while sampling
+  the metrics from F1-MON-01
+
+Tasks:
+1. Record the normal range (min/avg/max) for each core metric during the
+   observation period
+2. Propose a warning and critical threshold for each metric, justified by
+   the observed normal range plus margin
+3. Define what action each alert should trigger (who's paged, what
+   runbook applies)
+4. Identify at least one metric where a static threshold is the wrong
+   approach and propose an alternative (rate-of-change, trend-based, etc.)
+5. Document the full matrix
+
+Deliverables:
+- Alert threshold matrix with justification per threshold
+
+Validation Criteria:
+- Every threshold is traceable to an observed value, not a round-number
+  guess
+
+Success Metrics:
+- Matrix would not have falsely paged during the observed normal period
+
+Expected Learning Outcomes:
+- Alert design discipline that prevents alert fatigue from day one
+
+--------------------------------------------------------------------------------
+[F1-MON-03] Long-Running Query / Blocking Session Detection Script
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Build a reusable script that surfaces long-running and blocking
+sessions in a single, readable output.
+
+Business Scenario: During incidents, engineers waste time hand-writing the
+same diagnostic queries. You're asked to build the tool that should already
+exist.
+
+Technical Requirements:
+- Shell scripting environment with psql access
+- A workload that can produce both long-running and blocking queries on
+  demand
+
+Environment Setup:
+- Set up two overlapping transactions to simulate blocking, plus one
+  intentionally slow query
+
+Tasks:
+1. Write a script that lists queries running longer than a configurable
+   threshold
+2. Extend it to identify blocking/blocked session pairs in readable form
+3. Add safe, clearly-labeled output for "kill candidate" sessions without
+   automatically killing anything
+4. Add basic input validation and error handling (no hardcoded
+   credentials, handle connection failures gracefully)
+5. Test the script against the simulated workload and confirm correct
+   output
+
+Deliverables:
+- The completed script
+- A test run log demonstrating correct detection of both scenarios
+
+Validation Criteria:
+- Script correctly identifies the simulated long-running and blocking
+  sessions with no false positives
+
+Success Metrics:
+- Script runs safely against production-like data with zero unintended
+  side effects (read-only diagnostics)
+
+Expected Learning Outcomes:
+- A first reusable incident-response tool, built and understood end to
+  end rather than copied
+
+================================================================================
+DOMAIN: CAPACITY PLANNING (CAP)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-CAP-01] Storage Growth Trend Analysis
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Project storage exhaustion timelines from actual growth data
+rather than guessing "we'll add disk when it's full."
+
+Business Scenario: Finance wants a 6-month storage budget forecast for the
+database tier, due this week.
+
+Technical Requirements:
+- A database with some sample growth pattern (can be simulated with a
+  scripted insert load over time, or sampled measurements taken at
+  intervals)
+
+Environment Setup:
+- Take database size measurements at multiple points over a simulated
+  time series (or accelerate with a load generator and frequent sampling)
+
+Tasks:
+1. Collect database/table size measurements at consistent intervals
+2. Calculate the observed growth rate (absolute and percentage)
+3. Project forward to estimate when current allocated storage will be
+   exhausted
+4. Identify which tables are driving the majority of growth
+5. Produce a recommendation: add storage now, or address growth at the
+   source (e.g. retention policy)
+
+Deliverables:
+- Growth trend report with projection and recommendation
+
+Validation Criteria:
+- Projection methodology is sound and clearly explained (not just a
+  single-point extrapolation with no stated assumptions)
+
+Success Metrics:
+- Report correctly identifies the top contributing table(s) to growth
+
+Expected Learning Outcomes:
+- Capacity planning as a measured discipline, not a reactive scramble
+
+--------------------------------------------------------------------------------
+[F1-CAP-02] Connection Capacity vs. max_connections Sizing
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Determine an appropriate max_connections value and pooling
+strategy based on actual concurrency needs, not a high arbitrary number.
+
+Business Scenario: max_connections was set to 1000 "to be safe," and now
+the server is running out of memory under load. You're asked to right-size
+it.
+
+Technical Requirements:
+- A PostgreSQL instance with a high max_connections setting
+- A load generator capable of varying concurrent connection counts
+
+Environment Setup:
+- Configure max_connections high; prepare a load test tool capable of
+  ramping concurrent connections
+
+Tasks:
+1. Measure per-connection memory overhead at idle and under typical query
+   load
+2. Determine actual peak concurrent connection need from the application's
+   real usage pattern (or a stated realistic assumption)
+3. Calculate a safe max_connections ceiling based on available memory and
+   per-connection overhead
+4. Evaluate whether a connection pooler would allow a lower
+   max_connections while still serving the same client-side concurrency
+5. Propose a final configuration with both the database setting and
+   pooling recommendation
+
+Deliverables:
+- Memory-per-connection measurement
+- Final sizing recommendation with supporting math
+
+Validation Criteria:
+- Recommended max_connections value would not risk out-of-memory
+  conditions under the measured peak load
+
+Success Metrics:
+- Recommendation reduces a clearly oversized starting value with
+  quantified justification
+
+Expected Learning Outcomes:
+- Sizing decisions grounded in memory math instead of round numbers
+
+--------------------------------------------------------------------------------
+[F1-CAP-03] IOPS and Throughput Baseline Measurement
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Establish a storage performance baseline so future "is the disk
+the bottleneck?" questions have a reference point.
+
+Business Scenario: A performance complaint comes in and "is it the disk?"
+is unanswerable because no baseline was ever recorded.
+
+Technical Requirements:
+- Access to the underlying storage of a test instance
+- A storage benchmarking tool (e.g. fio) or pgbench as a proxy workload
+
+Environment Setup:
+- Identify the storage backing the test instance's data and WAL
+  directories
+
+Tasks:
+1. Run a storage-level benchmark measuring sequential and random IOPS and
+   throughput on the relevant volumes
+2. Run a database-level benchmark (pgbench or equivalent) and record TPS
+   and latency
+3. Correlate database-level results with the underlying storage
+   benchmark's known limits
+4. Document the baseline in a form future incidents can reference
+5. Identify, from the data, whether this storage tier is appropriate for
+   a write-heavy or read-heavy workload
+
+Deliverables:
+- Baseline benchmark report with both storage- and database-level results
+
+Validation Criteria:
+- Report would let a future engineer determine, without re-benchmarking,
+  whether observed performance is within or below expected baseline
+
+Success Metrics:
+- Baseline numbers are specific and reproducible, not vague qualitative
+  statements
+
+Expected Learning Outcomes:
+- "Is it the disk?" becomes answerable in minutes, not a multi-day
+  investigation
+
+================================================================================
+DOMAIN: DATABASE MIGRATION (MIG)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-MIG-01] pg_dump/Restore Migration Between Two Instances
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2 hours
+
+Objective: Execute and validate a full database migration using logical
+backup/restore between two independent instances.
+
+Business Scenario: An application database needs to move to new hardware,
+and the simplest correct tool for the size of this dataset is pg_dump/
+pg_restore.
+
+Technical Requirements:
+- Two independent PostgreSQL instances (source and target)
+
+Environment Setup:
+- Source instance with sample data; empty target instance
+
+Tasks:
+1. Take a full dump of the source database in custom format
+2. Restore it into the target instance
+3. Validate row counts, schema objects, and at least one application-level
+   query produce identical results on both instances
+4. Identify and migrate any non-table dependencies (sequences, extensions,
+   roles) that a naive dump might miss
+5. Document the migration runbook including a rollback plan
+
+Deliverables:
+- Migration runbook
+- Validation report comparing source and target
+
+Validation Criteria:
+- Target instance is functionally identical to source for tested queries
+  and objects
+
+Success Metrics:
+- Zero data discrepancies found during validation
+
+Expected Learning Outcomes:
+- A repeatable, low-risk migration pattern for small-to-medium databases
+
+--------------------------------------------------------------------------------
+[F1-MIG-02] Minor Version Upgrade (In-Place)
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 1-2 hours
+
+Objective: Perform a minor version upgrade correctly, understanding why
+minor upgrades don't require a dump/restore or pg_upgrade.
+
+Business Scenario: A security patch requires moving from one minor version
+to a newer minor version within the same major release line.
+
+Technical Requirements:
+- A PostgreSQL instance on an older minor version within a major release
+  line where a newer minor version is available
+
+Environment Setup:
+- Install the older minor version with sample data
+
+Tasks:
+1. Take a backup before proceeding (non-negotiable, regardless of minor
+   upgrade simplicity)
+2. Document the current version and confirm binary compatibility
+   assumptions for a minor upgrade
+3. Perform the binary upgrade (package update) and restart the service
+4. Confirm the instance starts cleanly and data is intact post-upgrade
+5. Document any release notes items relevant to this specific version
+   jump
+
+Deliverables:
+- Pre-upgrade backup confirmation
+- Upgrade log and post-upgrade validation
+
+Validation Criteria:
+- Instance starts cleanly post-upgrade with zero data loss
+
+Success Metrics:
+- Total downtime measured and recorded
+
+Expected Learning Outcomes:
+- Comfort with routine patching as a low-drama, well-prepared procedure
+
+--------------------------------------------------------------------------------
+[F1-MIG-03] Schema-Only Migration with Data Sync Plan
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Separate schema migration from data migration, and design a
+plan for keeping a new environment in sync until cutover.
+
+Business Scenario: A new environment needs the schema deployed ahead of
+time for testing, with real data synced closer to go-live.
+
+Technical Requirements:
+- Source instance with schema and data
+- Target instance, initially empty
+
+Environment Setup:
+- Source instance with at least 2 schemas of sample data
+
+Tasks:
+1. Extract and apply a schema-only dump to the target
+2. Confirm the target has correct structure with zero data
+3. Design a plan for syncing data closer to cutover (full reload vs.
+   incremental) and justify the choice for this scenario
+4. Execute a data load against the pre-built schema and validate
+   consistency
+5. Document the cutover sequence, including how to handle schema drift if
+   the source changes before cutover
+
+Deliverables:
+- Schema-only dump and load logs
+- Written sync/cutover plan
+
+Validation Criteria:
+- Final data-loaded target matches source for all tested objects
+
+Success Metrics:
+- Cutover plan explicitly addresses the schema-drift risk, not just the
+  happy path
+
+Expected Learning Outcomes:
+- Migration planning that accounts for the gap between "schema ready" and
+  "data ready"
+
+================================================================================
+DOMAIN: LINUX ADMINISTRATION (LA)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-LA-01] User/Group and Sudo Policy Setup for DB Hosts
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Implement a least-privilege user/group and sudo policy on a
+database host, distinguishing DBA actions from full root access.
+
+Business Scenario: Every engineer currently has full root via a shared
+password. You're asked to implement individual accounts with scoped sudo
+rights before the next access audit.
+
+Technical Requirements:
+- A Linux host with root access for setup
+
+Environment Setup:
+- Fresh VM/container with only a root or initial admin account
+
+Tasks:
+1. Create individual user accounts and an appropriate group structure
+   (e.g. a dba group, an app group)
+2. Configure sudo rules granting only the specific commands a DBA role
+   needs (service restarts, log access, specific scripts), not blanket
+   root
+3. Test that a DBA-group user can perform allowed actions and is denied
+   disallowed ones
+4. Configure SSH key-based access and disable password authentication
+5. Document the final policy and the reasoning behind each scoped rule
+
+Deliverables:
+- sudoers configuration (via visudo-safe method) and SSH config changes
+- Test log proving scoped access works as intended
+
+Validation Criteria:
+- Allowed actions succeed; disallowed actions are correctly denied
+- No password-based SSH access remains
+
+Success Metrics:
+- Zero blanket root grants remain for non-emergency accounts
+
+Expected Learning Outcomes:
+- Comfort designing access policy instead of defaulting to "just give
+  them sudo"
+
+--------------------------------------------------------------------------------
+[F1-LA-02] systemd Service Management for PostgreSQL
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 1-2 hours
+
+Objective: Understand and correctly manage PostgreSQL as a systemd service,
+including failure behavior and dependency ordering.
+
+Business Scenario: PostgreSQL is currently started manually by whoever's
+on shift. You're asked to make it a properly managed, boot-resilient
+service.
+
+Technical Requirements:
+- A Linux host with PostgreSQL installed but not yet under systemd
+  management (or with a default unit you'll review/improve)
+
+Environment Setup:
+- Install PostgreSQL; review or create its systemd unit file
+
+Tasks:
+1. Review the existing systemd unit file and identify what each directive
+   does
+2. Configure restart behavior (Restart=, RestartSec=) appropriate for a
+   database service, considering the risk of restart loops
+3. Test service start, stop, restart, and reload behavior, confirming
+   reload doesn't drop connections unnecessarily
+4. Simulate a crash (kill -9 the postmaster) and observe systemd's
+   response
+5. Document the chosen restart policy and the reasoning, including any
+   risk of automatic restart masking a deeper problem
+
+Deliverables:
+- Final systemd unit configuration
+- Crash-simulation test log
+
+Validation Criteria:
+- Service correctly restarts (or doesn't) per the documented policy
+  after the simulated crash
+
+Success Metrics:
+- Reasoning explicitly addresses the restart-loop risk, not just "it
+  restarts automatically = good"
+
+Expected Learning Outcomes:
+- Treating automatic restart as a deliberate policy choice, not a default
+  to accept blindly
+
+--------------------------------------------------------------------------------
+[F1-LA-03] Kernel Parameter Tuning for Database Hosts
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2 hours
+
+Objective: Tune OS-level kernel parameters relevant to database workloads
+with justification per parameter.
+
+Business Scenario: A new database host was provisioned with default OS
+settings, and you've been asked to apply the standard kernel tuning before
+go-live.
+
+Technical Requirements:
+- A Linux host with root/sudo access
+- Known available RAM and intended PostgreSQL shared_buffers setting
+
+Environment Setup:
+- Note current values of vm.swappiness, vm.overcommit_memory,
+  kernel.shmmax/shmall (if relevant to the PostgreSQL version), and
+  relevant ulimits
+
+Tasks:
+1. Determine appropriate vm.swappiness for a database host and justify
+   the value
+2. Evaluate vm.overcommit_memory settings and their interaction with
+   database memory usage
+3. Set appropriate ulimits for the postgres user (open files, processes)
+   and confirm they apply to the running service, not just the shell
+4. Apply changes persistently (not just for the current session) and
+   verify they survive a reboot
+5. Document each change with a one-line justification
+
+Deliverables:
+- Before/after kernel parameter and ulimit values
+- Verification that settings persist post-reboot
+
+Validation Criteria:
+- All changes are confirmed active for the actual PostgreSQL service
+  process, not just an interactive shell
+
+Success Metrics:
+- Every changed parameter has a specific, non-generic justification
+
+Expected Learning Outcomes:
+- Recognizing that OS-level tuning is part of database performance work,
+  not a separate team's problem
+
+================================================================================
+DOMAIN: LINUX SHELL SCRIPTING (LS)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-LS-01] Idempotent Backup Wrapper Script
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2-3 hours
+
+Objective: Write a backup wrapper script that is safe to re-run and fails
+loudly rather than silently.
+
+Business Scenario: The current backup "script" is a single pg_dump command
+in a cron entry with no error handling. You're asked to replace it with
+something production-worthy.
+
+Technical Requirements:
+- Shell scripting environment with access to pg_dump/pg_basebackup
+
+Environment Setup:
+- A test instance with sample data to back up
+
+Tasks:
+1. Write a script that performs a backup to a timestamped destination
+2. Add a lock mechanism (PID-aware) so a second invocation while one is
+   running exits safely instead of corrupting output
+3. Add validation that the backup actually succeeded (non-zero exit code
+   handling, sanity-check the output file/size)
+4. Add structured logging (timestamps, success/failure status) suitable
+   for later review
+5. Test re-running the script while a previous run is artificially held
+   open, confirming the lock behaves correctly
+
+Deliverables:
+- The completed script
+- Test log showing both a normal run and a blocked concurrent run
+
+Validation Criteria:
+- Script never produces a silently incomplete or corrupted backup
+- Concurrent invocation is correctly prevented, not just slowed
+
+Success Metrics:
+- Script exits non-zero on every failure path tested, with a clear log
+  message
+
+Expected Learning Outcomes:
+- Default habit of building safety into scripts from the first draft
+
+--------------------------------------------------------------------------------
+[F1-LS-02] Log Rotation and Cleanup Script with Safety Checks
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Write a cleanup script that removes old files safely, with
+strong guardrails against catastrophic deletion.
+
+Business Scenario: A previous cleanup script once deleted an entire active
+log directory because of an unquoted variable. You're asked to write a
+safer replacement.
+
+Technical Requirements:
+- Shell scripting environment
+- A test directory structure with files of varying ages
+
+Environment Setup:
+- Create a directory with files dated across a range, including some
+  that should be kept and some that should be removed
+
+Tasks:
+1. Write a script that removes files older than a configurable retention
+   period from a configurable, explicitly-validated directory
+2. Add a dry-run mode that reports what would be deleted without deleting
+   anything
+3. Add a safeguard against operating on an empty, root, or
+   unexpected path variable
+4. Add a minimum-files-remaining safeguard so the script refuses to
+   delete everything in a directory even if all files match the age
+   criteria
+5. Test dry-run mode, a normal run, and at least one deliberate
+   misconfiguration attempt to confirm the safeguards trigger
+
+Deliverables:
+- The completed script
+- Test log demonstrating dry-run, normal run, and a blocked
+  misconfiguration
+
+Validation Criteria:
+- Script never deletes outside its validated target directory
+- Misconfiguration attempts are caught before any deletion occurs
+
+Success Metrics:
+- Zero successful deletions during the deliberate misconfiguration test
+
+Expected Learning Outcomes:
+- Defensive scripting reflexes around any destructive operation
+
+--------------------------------------------------------------------------------
+[F1-LS-03] Health-Check Script with Exit Codes for Monitoring Integration
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Write a health-check script that communicates state correctly
+via exit codes and output, suitable for plugging into a monitoring system.
+
+Business Scenario: Monitoring currently just checks "is the process
+running," which misses cases where PostgreSQL is up but not actually
+accepting queries.
+
+Technical Requirements:
+- Shell scripting environment with psql access
+- A way to simulate both healthy and degraded states
+
+Environment Setup:
+- A running instance you can put into a degraded state on demand (e.g.
+  exhaust max_connections, or stop accepting writes via a held lock)
+
+Tasks:
+1. Write a script that checks process liveness, connection acceptance,
+   and basic query responsiveness (e.g. SELECT 1 within a timeout)
+2. Define and implement distinct exit codes for healthy, warning, and
+   critical states (not just 0/1)
+3. Add a timeout so a hung check doesn't hang the monitoring system
+4. Test the script against a healthy instance, then against a
+   deliberately degraded instance, confirming correct exit codes
+5. Document the exit code contract for whoever wires this into
+   monitoring
+
+Deliverables:
+- The completed script
+- Test log covering healthy and degraded states
+
+Validation Criteria:
+- Exit codes correctly and consistently reflect actual instance state
+  across repeated runs
+
+Success Metrics:
+- Script correctly distinguishes "process up, not accepting queries" from
+  both fully healthy and fully down states
+
+Expected Learning Outcomes:
+- Writing tooling for monitoring systems to consume, not just for humans
+  to read
+
+================================================================================
+DOMAIN: AUTOMATION (AUTO)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-AUTO-01] Cron-Based Automation of Vacuum/Analyze with Locking
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2 hours
+
+Objective: Automate a routine maintenance task safely, including
+overlap protection and failure visibility.
+
+Business Scenario: Manual VACUUM/ANALYZE runs are inconsistent because they
+depend on someone remembering to run them.
+
+Technical Requirements:
+- A test instance with at least one table needing periodic maintenance
+- Cron access
+
+Environment Setup:
+- A table simulating churn, similar to F1-PGA-03
+
+Tasks:
+1. Write a script that runs targeted VACUUM/ANALYZE against specified
+   tables
+2. Add PID-aware locking so an overlapping cron invocation cannot run
+   concurrently with one still in progress
+3. Schedule it via cron with an appropriate, justified frequency
+4. Add logging sufficient to confirm, after the fact, whether a given run
+   succeeded
+5. Deliberately trigger an overlapping invocation and confirm the lock
+   prevents double-execution
+
+Deliverables:
+- The script, its cron entry, and a log excerpt showing a blocked overlap
+
+Validation Criteria:
+- No overlapping execution occurs even when triggered deliberately
+
+Success Metrics:
+- Logging alone is sufficient to confirm job health without manually
+  checking the database
+
+Expected Learning Outcomes:
+- Automating maintenance without introducing a new class of failure
+  (overlapping runs)
+
+--------------------------------------------------------------------------------
+[F1-AUTO-02] Configuration Drift Detection
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Detect when a live configuration has drifted from its intended,
+version-controlled baseline.
+
+Business Scenario: Someone manually changed a setting directly on
+production during an incident and never documented it. You're asked to
+build a way to catch this going forward.
+
+Technical Requirements:
+- A defined "intended" configuration baseline (a file you control)
+- A live instance whose actual configuration may differ
+
+Environment Setup:
+- Define a baseline config file; deliberately introduce a manual drift
+  on the live instance (change one setting outside the baseline file)
+
+Tasks:
+1. Write a script or simple tool that compares live configuration
+   (via SHOW ALL or pg_settings) against the baseline file
+2. Output a clear diff of any drifted parameters
+3. Distinguish between settings that require a restart vs. reload to
+   reconcile, and note this in the output
+4. Test detection against the deliberately introduced drift
+5. Document how this would be scheduled/run in practice (not required to
+   implement full CI here, just specify it)
+
+Deliverables:
+- The drift-detection tool
+- Test output correctly identifying the introduced drift
+
+Validation Criteria:
+- Tool correctly flags the drifted parameter and correctly reports
+  parameters that match baseline as non-drifted
+
+Success Metrics:
+- Zero false positives on matching parameters
+
+Expected Learning Outcomes:
+- Configuration-as-code mindset, even before adopting a full
+  infrastructure-as-code tool
+
+--------------------------------------------------------------------------------
+[F1-AUTO-03] Automated Failover Test Harness (Non-Prod)
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 3 hours
+
+Objective: Build a script that exercises failover repeatedly in a non-prod
+environment to build confidence before relying on it in production.
+
+Business Scenario: The team wants confidence that failover actually works
+before trusting it during a real incident, and manual testing doesn't
+scale to "test it regularly."
+
+Technical Requirements:
+- The HA setup from F1-HA-01 or F1-HA-02 in a non-production environment
+
+Environment Setup:
+- A disposable/non-prod primary/replica or Patroni cluster
+
+Tasks:
+1. Write a script that triggers a failover/switchover programmatically
+2. Add automated post-failover validation (new primary accepts writes,
+   old primary correctly demoted or stopped)
+3. Add timing measurement for each failover run
+4. Run the harness multiple times in succession and record consistency of
+   results
+5. Document any run that behaved inconsistently and investigate the cause
+
+Deliverables:
+- The test harness script
+- A log of multiple consecutive runs with timing and outcome per run
+
+Validation Criteria:
+- Harness correctly detects both successful and any unsuccessful failover
+  attempts, not just assuming success
+
+Success Metrics:
+- Consistency of failover timing across repeated runs is measured and
+  reported, not assumed
+
+Expected Learning Outcomes:
+- Confidence in HA mechanisms built from repeated evidence, not a single
+  successful demo
+
+================================================================================
+DOMAIN: PRODUCTION SUPPORT (PS)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-PS-01] On-Call Shadow Shift Simulation Log
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: Ongoing across 1 week (log-based)
+
+Objective: Build the habit of structured observation during normal
+operations, which is the raw material good incident response is built on.
+
+Business Scenario: You're about to start taking on-call rotation and need
+to build situational awareness of what "normal" looks like first.
+
+Technical Requirements:
+- Access to existing monitoring/dashboards or the queries from F1-MON-01
+- A notebook or log file for daily entries
+
+Environment Setup:
+- None beyond access to observe a real or realistic test environment
+  daily
+
+Tasks:
+1. Each day, record a snapshot of the core metrics from F1-MON-01
+2. Note anything that deviates from the previous day, however small
+3. For any deviation, write a one-line hypothesis of the likely cause
+   (even if you don't investigate further)
+4. At week's end, review all entries and identify any pattern that would
+   have been missed by looking at a single day in isolation
+5. Summarize what "normal" now means to you in concrete, specific terms
+
+Deliverables:
+- Daily log entries for the observation period
+- End-of-week pattern summary
+
+Validation Criteria:
+- Log entries are specific (actual values/observations), not vague
+  ("seemed fine")
+
+Success Metrics:
+- At least one genuine pattern or trend identified that a single
+  snapshot would have missed
+
+Expected Learning Outcomes:
+- Baseline situational awareness that makes anomalies visible later
+
+--------------------------------------------------------------------------------
+[F1-PS-02] Ticket Triage and Prioritization Exercise
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 1-2 hours
+
+Objective: Practice rapidly and correctly prioritizing a queue of
+simultaneous requests under realistic ambiguity.
+
+Business Scenario: You return from lunch to 6 open tickets, all marked
+"urgent" by the requesters, and you have to decide what to work first.
+
+Technical Requirements:
+- None beyond this exercise; written scenario-based
+
+Environment Setup:
+- Write out (or have a peer write) 6 short ticket descriptions covering a
+  mix of: a slow query complaint, a disk-space warning, a access-request,
+  a "report looks wrong" complaint, a replication lag alert, and a
+  scheduled maintenance reminder
+
+Tasks:
+1. Re-rank all 6 tickets by actual priority, independent of the
+   requester's stated urgency
+2. Write a one-line justification for each ranking decision
+3. Identify which tickets, if any, should be delegated, deferred, or
+   escalated rather than worked personally
+4. Identify which ticket, if ignored for 2 more hours, carries the
+   highest risk
+5. Re-do the exercise a second time with one new piece of information
+   added to one ticket, and explain how (or whether) it changes your
+   ranking
+
+Deliverables:
+- Ranked ticket list with justifications, both rounds
+
+Validation Criteria:
+- Ranking correctly identifies actual operational risk over stated
+  urgency language
+
+Success Metrics:
+- Correctly identifies the disk-space and replication-lag items as
+  higher priority than the cosmetic report complaint, with reasoning
+
+Expected Learning Outcomes:
+- Triage instinct that isn't swayed by how loudly something is labeled
+
+--------------------------------------------------------------------------------
+[F1-PS-03] Change Request Review and Risk Assessment
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 1-2 hours
+
+Objective: Review a proposed production change and assess its risk before
+approving it, rather than rubber-stamping.
+
+Business Scenario: A developer submits a change request to add an index
+to a large, frequently-written production table during business hours.
+
+Technical Requirements:
+- None beyond this exercise; written scenario-based, optionally tested
+  against a real large table if available
+
+Environment Setup:
+- If available, a large table (1M+ rows) under simulated write load
+
+Tasks:
+1. Identify what could go wrong with the proposed change as described
+   (locking behavior, duration, resource contention)
+2. Determine whether the index can be built without blocking writes, and
+   what mechanism would allow that
+3. Propose a safer execution plan (timing, method, rollback plan) than
+   "just run it"
+4. If a test table is available, actually run both the naive and the
+   safer approach and compare locking/duration behavior
+5. Write the review decision: approve as-is, approve with changes, or
+   reject, with reasoning
+
+Deliverables:
+- Written risk assessment and review decision
+
+Validation Criteria:
+- Assessment correctly identifies the locking risk of the naive approach
+  and proposes a concrete, valid mitigation
+
+Success Metrics:
+- If tested, the safer approach measurably avoids the blocking behavior
+  of the naive one
+
+Expected Learning Outcomes:
+- Reviewing changes for what could go wrong, not just whether the SQL is
+  syntactically correct
+
+================================================================================
+DOMAIN: INCIDENT MANAGEMENT (IM)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-IM-01] Incident Command Drill — Declare, Communicate, Resolve
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Practice the structure of incident response independent of the
+specific technical fix — declaring, communicating status, and closing out.
+
+Business Scenario: A (simulated) production database becomes unreachable.
+You are the first responder.
+
+Technical Requirements:
+- A test instance you can take down and bring back up on command
+
+Environment Setup:
+- Stop the test instance's service to simulate the outage at a
+  pre-agreed time
+
+Tasks:
+1. Upon discovering the outage, write a first status update as if posting
+   to a real incident channel (what's known, what's not, next update
+   time)
+2. Diagnose and resolve the simulated outage
+3. Write a second status update once resolved
+4. Note the total time from detection to resolution
+5. Identify what information your first update was missing that the
+   second update revealed
+
+Deliverables:
+- Both status updates as actually written
+- Timeline of detection-to-resolution
+
+Validation Criteria:
+- First update is sent before the root cause is known, not delayed until
+  a full explanation is ready
+
+Success Metrics:
+- First update sent within 5 minutes of detection in this drill
+
+Expected Learning Outcomes:
+- Communicating early and often during incidents, even with incomplete
+  information
+
+--------------------------------------------------------------------------------
+[F1-IM-02] Postmortem Writing Exercise
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 1-2 hours
+
+Objective: Write a blameless postmortem that identifies real contributing
+factors and produces actionable follow-ups.
+
+Business Scenario: Following the incident from F1-IM-01 (or any prior
+incident drill in this curriculum), leadership requires a written
+postmortem within 48 hours.
+
+Technical Requirements:
+- A completed incident drill to write about (use F1-IM-01's outcome)
+
+Environment Setup:
+- None beyond the prior drill's notes
+
+Tasks:
+1. Write a factual timeline of the incident, sourced only from your
+   actual notes/logs, not from memory or assumption
+2. Identify the immediate trigger and distinguish it from deeper
+   contributing factors
+3. Write the postmortem in blameless language, focused on systems and
+   process rather than individual fault
+4. Produce at least 2 concrete, assignable follow-up action items with
+   no vague "improve monitoring" entries
+5. Have a peer (or yourself, later) review it for blame-language and
+   vagueness
+
+Deliverables:
+- Completed postmortem document
+
+Validation Criteria:
+- Zero blame-attributing language toward individuals
+- Each follow-up action is specific enough to be assigned and tracked
+
+Success Metrics:
+- Timeline is fully traceable to actual logged evidence
+
+Expected Learning Outcomes:
+- Postmortems as a process-improvement tool, not a blame exercise or a
+  formality
+
+--------------------------------------------------------------------------------
+[F1-IM-03] Severity Classification Calibration Exercise
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 1 hour
+
+Objective: Calibrate consistent severity judgment across a range of
+incident descriptions.
+
+Business Scenario: Severity levels are currently assigned inconsistently —
+some engineers call everything Sev1, others under-call genuine outages.
+
+Technical Requirements:
+- None beyond this exercise; written scenario-based
+
+Environment Setup:
+- Write out (or obtain) 8-10 short incident descriptions spanning a
+  realistic range: full outage, partial degradation, single-customer
+  impact, performance complaint, security-relevant anomaly, near-miss with
+  no customer impact
+
+Tasks:
+1. Define your own severity scale with clear, observable criteria per
+   level (not "use your judgment")
+2. Classify each scenario using only the defined criteria
+3. Identify any scenario that's genuinely ambiguous between two levels
+   and explain which way you'd resolve the ambiguity and why
+4. Compare your classifications against a peer's (or redo them yourself a
+   day later) and reconcile any disagreements
+5. Refine your severity criteria based on what the disagreements revealed
+
+Deliverables:
+- Defined severity scale
+- Classified scenario list with reasoning
+
+Validation Criteria:
+- Criteria are observable and specific enough that two people using them
+  would mostly agree
+
+Success Metrics:
+- Re-classification a day later matches the original at least 80% of the
+  time
+
+Expected Learning Outcomes:
+- Consistent severity judgment that doesn't depend on who's on call
+
+================================================================================
+DOMAIN: DEVOPS INTEGRATION (DO)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-DO-01] CI Pipeline Step for Schema Migration Validation
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2-3 hours
+
+Objective: Add an automated check that catches a bad schema migration
+before it reaches production, not after.
+
+Business Scenario: A migration with a syntax error once made it past
+review and broke a deploy. You're asked to add an automated gate.
+
+Technical Requirements:
+- A CI environment (or a local script simulating CI steps)
+- A sample set of schema migration files, including at least one
+  intentionally broken one
+
+Environment Setup:
+- A repo (or local directory) with migration files; a disposable test
+  database to apply them against
+
+Tasks:
+1. Write a CI step (or equivalent script) that applies pending migrations
+   to a disposable test database
+2. Confirm it correctly fails the pipeline when the intentionally broken
+   migration is included
+3. Confirm it correctly passes when only valid migrations are included
+4. Add a check that migrations are applied in the correct, deterministic
+   order
+5. Document how this integrates into a real CI pipeline (trigger
+   conditions, where it runs)
+
+Deliverables:
+- The CI step/script
+- Test runs showing both pass and fail cases
+
+Validation Criteria:
+- Broken migration is correctly caught before any production-bound step
+
+Success Metrics:
+- Zero false passes on the intentionally broken migration across
+  repeated test runs
+
+Expected Learning Outcomes:
+- Treating schema changes as code that needs the same gates as
+  application code
+
+--------------------------------------------------------------------------------
+[F1-DO-02] GitOps-Style Config Management for DB Parameters
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2-3 hours
+
+Objective: Manage database configuration as version-controlled code rather
+than manual edits on the server.
+
+Business Scenario: Configuration changes are currently made by editing
+postgresql.conf directly on the server with no history of who changed
+what or why.
+
+Technical Requirements:
+- A version control system (git) available locally or remotely
+- A test database instance
+
+Environment Setup:
+- A git repo to hold configuration; a test instance to apply it to
+
+Tasks:
+1. Move the instance's configuration into a version-controlled file
+   structure
+2. Write a simple apply mechanism that deploys the version-controlled
+   config to the instance and reloads/restarts as needed
+3. Make a configuration change via a commit, with a commit message
+   explaining why
+4. Apply it and confirm the live instance matches the committed version
+5. Connect this back to F1-AUTO-02's drift detection: confirm the drift
+   tool now reports zero drift against this new baseline source
+
+Deliverables:
+- The config repo structure and apply mechanism
+- Commit history showing at least one real, documented change
+
+Validation Criteria:
+- Live configuration matches the git-committed source of truth at all
+  times after using the apply mechanism
+
+Success Metrics:
+- Every config change has a corresponding commit with rationale
+
+Expected Learning Outcomes:
+- Configuration changes that are reviewable, revertible, and attributable
+
+--------------------------------------------------------------------------------
+[F1-DO-03] Database Change Review Gate in a PR Workflow
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2 hours
+
+Objective: Design and implement a lightweight review checklist/gate
+specifically for database-impacting pull requests.
+
+Business Scenario: Database-impacting changes currently go through the
+same generic PR review as everything else, and risky changes (locking
+migrations, large backfills) have slipped through.
+
+Technical Requirements:
+- A git repository with a pull-request workflow (can be simulated locally
+  if no remote PR tooling is available)
+
+Environment Setup:
+- A repo with sample migration/config changes, including at least one
+  that should trigger extra scrutiny (e.g. a non-concurrent index build)
+
+Tasks:
+1. Define a checklist specific to database-impacting changes (locking
+   risk, rollback plan, estimated duration, backward compatibility)
+2. Implement it as a PR template section or an automated check where
+   feasible
+3. Run a sample "risky" change through the gate and confirm it gets
+   flagged for the right reasons
+4. Run a sample "safe" change through and confirm it isn't burdened with
+   unnecessary friction
+5. Document how this gate complements, rather than duplicates, the CI
+   validation from F1-DO-01
+
+Deliverables:
+- The checklist/template
+- Two example PRs (risky and safe) run through it
+
+Validation Criteria:
+- Risky change is correctly flagged; safe change passes without
+  unnecessary friction
+
+Success Metrics:
+- Checklist items are specific enough to be answered factually, not
+  rhetorically
+
+Expected Learning Outcomes:
+- Process design that targets actual risk rather than adding uniform
+  bureaucracy
+
+================================================================================
+DOMAIN: CLOUD DEPLOYMENTS (CLD)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-CLD-01] Managed PostgreSQL Service Comparison and Feature Mapping
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 2 hours
+
+Objective: Build an accurate, current understanding of what a managed
+PostgreSQL service does and doesn't give you, versus self-managed.
+
+Business Scenario: Leadership is considering a move to a managed cloud
+PostgreSQL offering and wants to know what operational responsibilities
+would actually transfer versus remain yours.
+
+Technical Requirements:
+- Access to current documentation for at least one major managed
+  PostgreSQL offering (research-based task)
+
+Environment Setup:
+- None; this is a research and analysis task. Use web search for current
+  feature details since managed offerings change frequently.
+
+Tasks:
+1. For a chosen managed PostgreSQL offering, list what is and is not
+   under your control (extensions, superuser access, config parameters,
+   patching schedule)
+2. Map each of your current self-managed responsibilities (backup, HA,
+   monitoring, patching) to "transfers to provider," "remains yours," or
+   "shared"
+3. Identify at least one capability you currently rely on that may not be
+   available or may work differently in the managed offering
+4. Identify the actual mechanism for point-in-time recovery in the
+   managed offering and compare it to your self-managed PITR process
+5. Summarize the genuine trade-offs, not just a marketing-style "pros and
+   cons" list
+
+Deliverables:
+- Responsibility mapping table
+- Written trade-off summary
+
+Validation Criteria:
+- Claims about the managed offering's current capabilities are sourced
+  from current documentation, not assumption
+
+Success Metrics:
+- Identifies at least one non-obvious limitation that would surprise
+  someone reading only marketing material
+
+Expected Learning Outcomes:
+- Informed, current judgment about managed vs. self-managed trade-offs
+
+--------------------------------------------------------------------------------
+[F1-CLD-02] Cloud Backup/Snapshot Lifecycle Policy Design
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Design a backup/snapshot retention policy that balances
+recovery needs against storage cost, for a cloud-hosted database.
+
+Business Scenario: Snapshots have been accumulating indefinitely because
+no retention policy was ever defined, and storage cost is now a line item
+someone is asking about.
+
+Technical Requirements:
+- None beyond this design exercise (cloud account not required; design
+  and document the policy)
+
+Environment Setup:
+- None; written design exercise grounded in your RTO/RPO work from
+  F1-DR-03
+
+Tasks:
+1. Define a tiered retention policy (e.g. daily snapshots kept N days,
+   weekly kept N weeks, monthly kept N months) and justify each tier
+   against actual recovery scenarios, not arbitrary numbers
+2. Estimate the storage cost implication of the policy versus the current
+   "keep everything" state
+3. Identify which recovery scenarios from F1-DR-03 this policy would and
+   would not satisfy
+4. Propose a process for periodically reviewing and adjusting the policy
+5. Document the final policy
+
+Deliverables:
+- Written retention policy with cost and recovery-scenario justification
+
+Validation Criteria:
+- Policy is explicitly checked against the RTO/RPO targets rather than
+  designed independently of them
+
+Success Metrics:
+- Policy reduces estimated storage cost while still satisfying the
+  stated recovery scenarios
+
+Expected Learning Outcomes:
+- Backup retention as a deliberate cost/risk trade-off, not a default
+  "keep forever" or "keep 7 days" setting
+
+--------------------------------------------------------------------------------
+[F1-CLD-03] VPC/Network Security Group Baseline for DB Tier
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Design network-level access controls for a database tier that
+complement, not duplicate, pg_hba.conf-level controls.
+
+Business Scenario: The database is currently reachable from the entire
+VPC because the security group was never scoped down after initial setup.
+
+Technical Requirements:
+- Conceptual/design exercise; can be implemented hands-on if a cloud
+  account/sandbox is available, otherwise documented as a design
+
+Environment Setup:
+- Document the current (overly broad) network topology as a starting
+  point
+
+Tasks:
+1. Identify the actual set of sources that need network-level access to
+   the database tier (app servers, bastion/jump host, specific
+   admin subnets)
+2. Design a security group/firewall rule set scoped to exactly those
+   sources and the PostgreSQL port
+3. If hands-on, implement and test that legitimate access still works and
+   non-whitelisted access is blocked at the network layer
+4. Explicitly document the division of responsibility between this
+   network-layer control and the pg_hba.conf control from F1-SEC-01 —
+   what each one protects against that the other doesn't
+5. Identify what would still go wrong if only one of the two layers
+   existed
+
+Deliverables:
+- Security group / firewall rule design (and test log if implemented)
+- Written explanation of the two-layer defense rationale
+
+Validation Criteria:
+- Explanation correctly identifies a failure mode each layer alone would
+  miss
+
+Success Metrics:
+- Final design eliminates the original "reachable from entire VPC"
+  exposure
+
+Expected Learning Outcomes:
+- Defense-in-depth instinct instead of relying on a single control layer
+
+================================================================================
+DOMAIN: CONTAINERIZATION (CTR)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-CTR-01] PostgreSQL in Docker with Persistent Volume
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Run PostgreSQL in a container with data that genuinely persists
+across container recreation, not just restarts.
+
+Business Scenario: A developer's "containerized database" setup loses all
+data every time the container is recreated, because no one configured
+persistence correctly.
+
+Technical Requirements:
+- Docker (or equivalent) installed
+
+Environment Setup:
+- None beyond Docker availability
+
+Tasks:
+1. Run a PostgreSQL container with an explicitly mounted, named volume
+   for the data directory
+2. Load sample data and confirm it's present
+3. Stop and remove the container entirely (not just stop) and start a new
+   one pointed at the same volume
+4. Confirm the data is still present after full container removal and
+   recreation
+5. Document the difference between what happens to data with an
+   anonymous volume vs. a named/bind-mounted volume
+
+Deliverables:
+- Commands used and verification output proving persistence across full
+  removal
+
+Validation Criteria:
+- Data survives complete container removal and recreation, not just a
+  restart
+
+Success Metrics:
+- Correctly explains why an anonymous volume would have failed this test
+
+Expected Learning Outcomes:
+- Container data persistence as a deliberate design choice, not an
+  assumption
+
+--------------------------------------------------------------------------------
+[F1-CTR-02] docker-compose Multi-Service App + DB Stack
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Define a multi-service stack (app + database) with correct
+startup ordering and network configuration.
+
+Business Scenario: An application container keeps crashing on startup
+because it tries to connect to the database before it's ready.
+
+Technical Requirements:
+- Docker and docker-compose (or equivalent)
+
+Environment Setup:
+- A simple app container (can be a minimal script that connects to
+  PostgreSQL) plus a PostgreSQL service definition
+
+Tasks:
+1. Define both services in a single compose file with a dedicated network
+2. Configure the database service with a persistent volume per F1-CTR-01
+3. Add a proper health check on the database service rather than a fixed
+   sleep/delay
+4. Configure the app service to wait for the database to be genuinely
+   healthy (not just "container started") before connecting
+5. Tear down and bring the stack up repeatedly to confirm the app never
+   fails due to startup ordering
+
+Deliverables:
+- The compose file
+- Multiple successful bring-up logs with no ordering-related failures
+
+Validation Criteria:
+- App service never fails its first connection attempt due to database
+  readiness across repeated bring-ups
+
+Success Metrics:
+- Zero startup-ordering failures across at least 5 consecutive
+  bring-up/tear-down cycles
+
+Expected Learning Outcomes:
+- Correct handling of service dependencies instead of relying on fixed
+  delays
+
+--------------------------------------------------------------------------------
+[F1-CTR-03] Container Resource Limits and OOM Behavior Exploration
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2 hours
+
+Objective: Observe directly what happens when a containerized PostgreSQL
+instance hits configured memory limits, and how that differs from an
+unconstrained host.
+
+Business Scenario: A containerized database was OOM-killed in a shared
+environment, and you're asked to understand and prevent recurrence.
+
+Technical Requirements:
+- Docker with the ability to set memory limits on a container
+
+Environment Setup:
+- A PostgreSQL container, plus a way to generate memory pressure
+  (e.g. a workload with high work_mem and many concurrent sorts)
+
+Tasks:
+1. Run the container with no memory limit and observe baseline memory
+   usage under a moderate workload
+2. Apply a deliberately tight memory limit and re-run the same workload
+3. Observe and document what happens when the limit is hit (OOM kill,
+   degraded performance, etc.)
+4. Adjust PostgreSQL-internal memory settings (shared_buffers, work_mem,
+   max_connections) to fit safely within the container limit, accounting
+   for per-connection overhead
+5. Re-test and confirm the workload now completes without hitting the
+   limit
+
+Deliverables:
+- Before/after behavior under the same workload at the same container
+  memory limit
+
+Validation Criteria:
+- Tuned configuration completes the workload without triggering an OOM
+  event at the same memory limit that previously caused one
+
+Success Metrics:
+- Final configuration leaves a documented, deliberate safety margin, not
+  a value tuned to the exact edge of failure
+
+Expected Learning Outcomes:
+- Treating container memory limits as a hard constraint that database
+  configuration must respect, not an afterthought
+
+================================================================================
+DOMAIN: INFRASTRUCTURE TROUBLESHOOTING (IT)
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-IT-01] Disk Space Emergency Triage Drill
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Entry
+Estimated Completion Time: 1-2 hours
+
+Objective: Practice the specific triage sequence for an out-of-disk-space
+emergency on a database host.
+
+Business Scenario: An alert fires: the volume hosting PGDATA is at 97%
+and climbing.
+
+Technical Requirements:
+- A test host/container where you can simulate disk pressure (e.g. write
+  large files, or use a small loopback filesystem)
+
+Environment Setup:
+- Create a constrained filesystem or simulate near-full disk conditions
+  for a test PostgreSQL instance
+
+Tasks:
+1. Identify what's actually consuming space (data files, WAL, logs, an
+   unrelated process) before taking any destructive action
+2. Distinguish between space consumed by live data/WAL (cannot just be
+   deleted) and space consumed by safely removable items (old logs,
+   orphaned temp files)
+3. Take a safe remediation action and confirm space is reclaimed
+4. If the underlying cause is WAL accumulation, trace it back to a root
+   cause (e.g. using lessons from F1-REP-02) rather than just deleting
+   WAL files
+5. Document the full triage sequence as a quick-reference runbook entry
+
+Deliverables:
+- Triage runbook entry
+- Before/after disk usage with remediation steps taken
+
+Validation Criteria:
+- No data-loss-causing deletion occurs during remediation
+- Root cause (not just symptom) is correctly identified when applicable
+
+Success Metrics:
+- Time from alert to space reclaimed, measured
+
+Expected Learning Outcomes:
+- A safe, fast, repeatable response to one of the most common production
+  emergencies
+
+--------------------------------------------------------------------------------
+[F1-IT-02] Network Connectivity-to-DB Troubleshooting Tree
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Core
+Estimated Completion Time: 2 hours
+
+Objective: Build a systematic troubleshooting tree for "the app can't
+connect to the database," covering each layer in order.
+
+Business Scenario: An application team reports connection failures and
+immediately assumes the database is down, when the database is, in fact,
+healthy.
+
+Technical Requirements:
+- A test instance and app-like client on separate hosts/containers
+- Ability to introduce connectivity faults (firewall rule, wrong
+  pg_hba.conf entry, DNS issue, etc.)
+
+Environment Setup:
+- Working app-to-database connectivity as a baseline
+
+Tasks:
+1. Document a layered troubleshooting order: DNS/hostname resolution,
+   network reachability (port-level), TLS/auth negotiation, pg_hba.conf
+   matching, then application-level connection string correctness
+2. Introduce one fault at a time (e.g. block the port, then fix it and
+   misconfigure pg_hba.conf instead) and confirm your tree correctly
+   isolates each one
+3. For each fault, record the specific symptom/error message it produces
+4. Build a lookup table mapping common error messages to likely layer
+5. Test the tree against a fault you did not pre-plan, to confirm it
+   generalizes
+
+Deliverables:
+- The troubleshooting tree document
+- Symptom-to-cause lookup table built from actual reproduced faults
+
+Validation Criteria:
+- Tree correctly isolates the injected fault's actual layer in each test,
+  including the unplanned one
+
+Success Metrics:
+- Time to correctly isolate the fault layer decreases across successive
+  tests
+
+Expected Learning Outcomes:
+- A reusable mental model that prevents wrongly blaming the database for
+  network or client-side issues
+
+--------------------------------------------------------------------------------
+[F1-IT-03] CPU/Memory Saturation Diagnosis Walkthrough
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 hours
+
+Objective: Correctly diagnose whether a performance problem is CPU-bound,
+memory-bound, or something else entirely, using OS and database evidence
+together.
+
+Business Scenario: The host is reported as "at 100% CPU" and everyone
+assumes a runaway query, but the actual cause turns out to be something
+else.
+
+Technical Requirements:
+- A test instance and OS-level tools (top/htop, vmstat, or equivalent)
+- A way to generate both a genuinely CPU-bound query load and a
+  misleading non-database CPU consumer
+
+Environment Setup:
+- Prepare two separate load scenarios: one with a deliberately expensive
+  query running heavily, and one with an unrelated OS process consuming
+  CPU while the database is actually idle
+
+Tasks:
+1. Using OS tools, determine actual per-process CPU/memory consumption
+   during each scenario, not just the aggregate host-level number
+2. For the database-load scenario, correlate the OS-level finding with
+   pg_stat_activity to identify the specific responsible query
+3. For the misleading scenario, correctly conclude the database is not
+   the cause, with OS-level evidence to back the conclusion
+4. Document the specific commands and the exact signal that
+   distinguished the two cases
+5. Write a short decision guide for the next person who gets a "CPU is
+   high" alert
+
+Deliverables:
+- Decision guide
+- Evidence captured for both scenarios proving the correct diagnosis in
+  each
+
+Validation Criteria:
+- Misleading scenario is correctly NOT attributed to the database, using
+  specific evidence
+
+Success Metrics:
+- Decision guide would prevent a wrong first assumption in both tested
+  scenarios
+
+Expected Learning Outcomes:
+- Diagnosing from process-level evidence instead of host-level
+  aggregates, and resisting the obvious-but-wrong first guess
+
+================================================================================
+PHASE 1 — MUSCLE MEMORY DRILL BANK
+================================================================================
+Drills are short, repeatable, and meant to be run many times until they
+stop requiring conscious thought. Unlike the assignments above, they are
+not one-time projects — log your time on each rep and watch it drop.
+
+--------------------------------------------------------------------------------
+DAILY DRILLS (5-15 minutes each, run every working day for at least 2 weeks)
+--------------------------------------------------------------------------------
+D-01  From a cold terminal, connect to a test instance and produce: current
+      connection count, longest-running query, and any blocked sessions —
+      using only psql, no saved scripts. Time yourself.
+D-02  Given a table name, produce its size, index sizes, and last
+      vacuum/analyze timestamps from the catalogs, from memory of the
+      relevant views (no lookup).
+D-03  Write, from memory, the EXPLAIN ANALYZE incantation that also shows
+      buffer usage. Run it against any query.
+D-04  Tail and correctly interpret the last 50 lines of the PostgreSQL log
+      on a test instance; identify any WARNING/ERROR and explain it.
+D-05  Write a one-line psql command to list all roles and their key
+      attributes (superuser, login, replication) from memory.
+D-06  Check current replication lag (if a replica is available) using both
+      a byte-based and a time-based method, from memory.
+D-07  Identify the current top 3 queries by total execution time from
+      pg_stat_statements, from memory of the column names.
+
+--------------------------------------------------------------------------------
+WEEKLY DRILLS (30-60 minutes each, run once per week for at least 6 weeks)
+--------------------------------------------------------------------------------
+W-01  Take a full backup and restore it to a scratch instance, start to
+      finish, without referring to notes. Time the full cycle.
+W-02  Trigger a manual failover on a non-prod HA pair and document the
+      timeline as if writing a real incident update.
+W-03  Pick one table and fully diagnose its bloat level, vacuum health, and
+      index efficiency; decide and justify whether action is needed.
+W-04  Write a new, small shell script solving a task you haven't scripted
+      before, applying the lock/validation/logging conventions from the
+      LS domain assignments.
+W-05  Review the past week's slow-query or error log entries (real or
+      simulated) and produce a one-paragraph summary of any pattern.
+W-06  Re-run the F1-IT-02 troubleshooting tree against a fault you didn't
+      use last time, and time how long isolation takes.
+
+--------------------------------------------------------------------------------
+MONTHLY DRILLS (Half-day, run once per month)
+--------------------------------------------------------------------------------
+M-01  Full DR drill: simulate a primary loss and execute the F1-DR-01
+      runbook exactly as written, timing every step and noting any
+      ambiguity discovered under simulated pressure.
+M-02  Capacity review: re-run the growth trend analysis (F1-CAP-01) with a
+      fresh month of data and compare the new projection against the
+      previous month's.
+M-03  Security review: re-audit pg_hba.conf, role grants, and network rules
+      against the baselines from the SEC/CLD domains; document any drift.
+M-04  Cold-start incident simulation: have someone else (or a delayed
+      version of yourself) inject an unannounced fault into a test
+      environment and respond to it with no prior knowledge of what it is.
+
+--------------------------------------------------------------------------------
+SPEED-BUILDING DRILLS (repeat until time targets are consistently met)
+--------------------------------------------------------------------------------
+SB-01  Identify the single blocking session in a contended test scenario:
+       target under 90 seconds from a cold terminal.
+SB-02  Restore a known-good backup to a fresh instance and confirm it's
+       serving correct data: target under 15 minutes for a small dataset.
+SB-03  Diagnose "disk is almost full" down to root cause (not just
+       symptom): target under 10 minutes.
+SB-04  Write a correct, safe one-off diagnostic query against
+       pg_stat_activity joined to pg_locks, from a blank editor: target
+       under 3 minutes.
+
+================================================================================
+PHASE 1 — REAL-WORLD INCIDENT SIMULATIONS (Foundation Tier)
+================================================================================
+Each simulation below should be run against a real or realistic test
+environment, not solved on paper. Inject the fault, then respond to it as
+if it were live. No solutions are given — only the symptom set.
+
+--------------------------------------------------------------------------------
+[F1-SIM-01] The Mysterious Connection Exhaustion
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: Application logs show "too many connections" errors. The
+database itself appears otherwise healthy.
+Symptoms: max_connections nearly saturated; many connections idle in
+transaction.
+Constraints: You cannot simply restart the application (assume it would
+cause customer-visible disruption).
+Tasks: Identify the source of the idle-in-transaction connections; decide
+whether to terminate sessions and which ones; determine the underlying
+application behavior pattern causing it; propose a longer-term fix.
+Deliverables: Incident timeline; list of terminated sessions (if any) with
+justification; root-cause hypothesis.
+Validation Criteria: Connection count returns to a healthy range without
+terminating any session still doing legitimate work.
+Success Metrics: Correct sessions identified before any termination
+action taken.
+Expected Learning Outcomes: Distinguishing "idle in transaction" from
+healthy connection pooling behavior.
+
+--------------------------------------------------------------------------------
+[F1-SIM-02] The Replica That Silently Stopped Catching Up
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A dashboard shows the replica "connected" but reports from it
+are increasingly stale.
+Symptoms: Replication connection state shows streaming; lag metric
+climbing steadily.
+Constraints: The replica must not be taken offline during business hours
+without justification.
+Tasks: Confirm whether this is a network, disk I/O, or replay-conflict
+issue on the replica; quantify the actual lag in both bytes and time;
+decide whether the replica is safe to use for reads right now.
+Deliverables: Root-cause finding; current safe-use recommendation.
+Validation Criteria: Correct identification of the bottleneck layer
+(network/disk/replay), backed by evidence.
+Success Metrics: Recommendation correctly reflects actual data freshness
+risk to anyone querying the replica.
+Expected Learning Outcomes: Treating "connected" as necessary but not
+sufficient evidence of replica health.
+
+--------------------------------------------------------------------------------
+[F1-SIM-03] The Backup Job That's Been "Succeeding" for Months
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: The nightly backup cron job has reported success every night for
+months. You're asked to actually verify a backup can be restored.
+Symptoms: None visible from logs alone — that's the point.
+Constraints: You may not assume the backup is good just because the exit
+code was 0.
+Tasks: Attempt a full restore of the most recent backup to a clean
+instance; verify data integrity and completeness; identify any gap between
+"the job exited 0" and "the backup is actually restorable."
+Deliverables: Restore validation report.
+Validation Criteria: Restore is attempted, not just inspected; integrity
+is checked against real expectations (row counts, specific known records).
+Success Metrics: Either a confirmed-good restore with evidence, or a
+genuine gap identified and documented.
+Expected Learning Outcomes: Zero trust in unverified "successful" backup
+jobs.
+
+--------------------------------------------------------------------------------
+[F1-SIM-04] The Index That Made Things Worse
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: An index was added to "speed up" a query last week. Since then,
+write latency on that table has increased and a different read query has
+slowed down.
+Symptoms: Higher write latency; an unrelated query plan changed
+unexpectedly.
+Constraints: The original index cannot simply be dropped without
+confirming it isn't load-bearing for something else first.
+Tasks: Quantify the write-latency impact of the new index; determine why
+an unrelated query's plan changed; decide whether to keep, modify, or drop
+the index, with evidence.
+Deliverables: Before/after performance comparison; final recommendation.
+Validation Criteria: Recommendation backed by EXPLAIN ANALYZE and write
+latency measurements, not intuition.
+Success Metrics: Correctly explains the mechanism behind the unrelated
+query's plan change.
+Expected Learning Outcomes: Every index is a trade-off, not a free win.
+
+--------------------------------------------------------------------------------
+[F1-SIM-05] The Failover That Didn't Fail Over
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: The primary in your HA pair went down. Automated failover was
+supposed to promote the replica, but the application is still failing to
+connect 5 minutes later.
+Symptoms: Replica is healthy and could serve writes; something in the
+automation or routing layer didn't complete the handoff.
+Constraints: You need to restore service quickly, but also need to know
+why automation didn't work before fully trusting it again.
+Tasks: Manually complete the failover if automation hasn't; investigate
+why the automated path stalled; distinguish between an HA-tool failure and
+a connection-routing (pooler/DNS) failure.
+Deliverables: Incident timeline; root-cause finding distinguishing HA-tool
+vs. routing-layer failure.
+Validation Criteria: Service is restored, and the actual failed component
+is correctly identified, not just "failover didn't work."
+Success Metrics: Time to manual restoration of service.
+Expected Learning Outcomes: HA automation has multiple components, any of
+which can be the actual point of failure.
+
+--------------------------------------------------------------------------------
+[F1-SIM-06] The Slow Query That Only Happens at 9 AM
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A specific report query is reported as "randomly slow," but
+closer inspection shows it correlates with a specific time window.
+Symptoms: Query performs fine in isolation; degrades specifically during a
+known concurrent batch process.
+Constraints: You cannot just move the report off-hours without
+understanding the actual contention first (it may recur elsewhere).
+Tasks: Reproduce the slowdown by running the query concurrently with the
+suspected batch process; identify the specific resource contention (lock,
+I/O, CPU, cache eviction); confirm the correlation isn't coincidental.
+Deliverables: Reproduction evidence; identified contention mechanism.
+Validation Criteria: Slowdown is actually reproduced under controlled
+conditions, not inferred from timing alone.
+Success Metrics: Correctly identifies the specific shared resource causing
+contention.
+Expected Learning Outcomes: "Random" performance issues are usually
+periodic once you find the right correlated variable.
+
+--------------------------------------------------------------------------------
+[F1-SIM-07] The Permission Change That Broke One Thing
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1 hour
+Scenario: Following a security hardening pass (similar to F1-SEC-02), one
+specific scheduled job starts failing with a permissions error.
+Symptoms: Most application functionality works; one specific job/role
+fails.
+Constraints: You should fix the actual missing grant, not revert the
+entire hardening change.
+Tasks: Identify exactly which permission is missing for the failing job;
+grant only what's needed; confirm no other functionality was broken by the
+original hardening pass.
+Deliverables: Identified missing grant; minimal-scope fix applied.
+Validation Criteria: Fix resolves the specific job without re-opening
+unrelated access that was correctly removed.
+Success Metrics: Grant added is the minimum necessary, verified by testing
+the job afterward.
+Expected Learning Outcomes: Security fixes should be surgical, not a
+rollback of the whole change.
+
+--------------------------------------------------------------------------------
+[F1-SIM-08] The Vacuum That Never Finishes
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A manual VACUUM on a large table has been running far longer than
+expected, and a teammate wants to know if it's stuck or just slow.
+Symptoms: Vacuum process visible in pg_stat_activity; unclear if making
+progress.
+Constraints: Killing it prematurely wastes the progress already made;
+letting a genuinely stuck process run wastes time and may be blocking
+other operations.
+Tasks: Use progress-reporting views to determine if the vacuum is actually
+progressing; identify if it's blocked waiting on a lock held by another
+session; decide whether to let it continue or intervene.
+Deliverables: Progress evidence; decision with justification.
+Validation Criteria: Decision is based on actual progress data, not
+elapsed time alone.
+Success Metrics: Correctly distinguishes "slow but progressing" from
+"blocked and stalled."
+Expected Learning Outcomes: Long-running maintenance operations are
+diagnosable, not just something to wait out blindly.
+
+--------------------------------------------------------------------------------
+[F1-SIM-09] The Container That Keeps Restarting
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A containerized PostgreSQL instance is stuck in a restart loop
+after a deployment.
+Symptoms: Container starts, runs briefly, then exits; systemd/orchestrator
+restarts it; repeat.
+Constraints: Each restart attempt briefly drops connections, so rapid
+trial-and-error against production-like traffic isn't acceptable.
+Tasks: Capture logs from the briefly-running container before it exits;
+identify the actual startup failure (config error, permission issue,
+corrupted state); fix the root cause rather than just increasing the
+restart delay.
+Deliverables: Identified root cause; applied fix; confirmation of stable
+startup.
+Validation Criteria: Container runs stably for a sustained period after
+the fix, not just one successful start.
+Success Metrics: Root cause identified from logs without needing to guess
+and check multiple unrelated changes.
+Expected Learning Outcomes: Restart loops are a symptom, not a problem;
+the logs from the brief "up" window are the real evidence.
+
+--------------------------------------------------------------------------------
+[F1-SIM-10] The Migration That Locked Everything
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A schema migration deployed during a maintenance window is taking
+far longer than estimated, and application errors are starting to appear.
+Symptoms: Migration statement still running; growing queue of blocked
+queries behind it.
+Constraints: The maintenance window is closing and customer impact is
+starting.
+Tasks: Determine what lock the migration is holding and what it's blocking
+behind it; decide whether to let it finish, cancel it, or take another
+action; estimate remaining time if letting it finish is viable.
+Deliverables: Lock/blocking analysis; decision and outcome.
+Validation Criteria: Decision is based on actual lock mode and blocking
+evidence, not panic.
+Success Metrics: Service impact duration from the moment you started
+investigating to resolution.
+Expected Learning Outcomes: Locking risk should be assessed before
+deployment (per F1-PS-03), but also diagnosable live when it wasn't.
+
+--------------------------------------------------------------------------------
+[F1-SIM-11] The Monitoring Gap That Hid a Real Problem
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: A genuine problem (e.g. a slowly growing table due to a missing
+cleanup job) existed for weeks before anyone noticed, because nothing was
+watching for it.
+Symptoms: Discovered only incidentally; no alert ever fired.
+Constraints: You need to fix the immediate issue and prevent this class of
+gap from recurring, not just patch this one instance.
+Tasks: Diagnose and remediate the immediate issue; identify why existing
+monitoring (from F1-MON-01/02) didn't catch it; add the missing
+check/alert.
+Deliverables: Remediation summary; new monitoring check added with
+threshold justification.
+Validation Criteria: New check would have caught this specific issue
+earlier, demonstrated by backtesting against historical data if available.
+Success Metrics: Time-to-detection for this class of issue is
+meaningfully reduced going forward.
+Expected Learning Outcomes: Every undetected incident is also a
+monitoring-coverage bug.
+
+--------------------------------------------------------------------------------
+[F1-SIM-12] The Credential That Was Still in the Script
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1 hour
+Scenario: A routine review of a maintenance script (similar to one built in
+the AUTO domain) reveals a hardcoded password.
+Symptoms: Script works fine; the problem is entirely latent risk.
+Constraints: The fix must not break the automation that currently depends
+on this script.
+Tasks: Identify every place the credential is exposed (script, logs,
+version control history if applicable); remove it in favor of a proper
+secrets-handling approach (environment variable, .pgpass, secrets
+manager); rotate the exposed credential.
+Deliverables: Remediated script; confirmation the old credential no longer
+works.
+Validation Criteria: No plaintext credential remains in the script, its
+logs, or its history going forward; automation continues to function.
+Success Metrics: Credential rotation completed with zero automation
+downtime.
+Expected Learning Outcomes: Treating a credential leak as needing
+rotation, not just deletion of the visible copy.
+
+--------------------------------------------------------------------------------
+[F1-SIM-13] The "Fixed" Bug That Came Back
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1 hour
+Scenario: An issue resolved two weeks ago (e.g. connection exhaustion from
+F1-SIM-01) has recurred, identically.
+Symptoms: Same symptom signature as a previously closed incident.
+Constraints: You must determine whether the original fix was incomplete,
+not re-apply the same fix blindly.
+Tasks: Review the previous postmortem/fix; determine whether this
+recurrence has the same root cause or a different one producing the same
+symptom; apply a fix that addresses whichever is actually true.
+Deliverables: Comparison between original and current incident; updated
+remediation.
+Validation Criteria: Conclusion about same-vs-different root cause is
+evidence-based, not assumed from symptom match alone.
+Success Metrics: If the original fix was incomplete, the gap is
+specifically identified.
+Expected Learning Outcomes: Recurrence is information, not just
+annoyance — it tells you something about the original postmortem's
+accuracy.
+
+--------------------------------------------------------------------------------
+[F1-SIM-14] The Report That Disagreed With Itself
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1-2 hours
+Scenario: Two reports that should show the same underlying number (e.g.
+total active users) disagree, and both teams insist their number is right.
+Symptoms: No error, no crash — just disagreeing, plausible-looking
+numbers.
+Constraints: You must determine the actual ground truth, not just defer to
+whichever team is more senior or insistent.
+Tasks: Trace both reports back to their underlying queries; identify
+exactly where the logic, timing, or filtering diverges (e.g. different
+point-in-time snapshots, different definition of "active," replica lag
+causing one to read stale data); determine which (if either) is correct.
+Deliverables: Root-cause explanation of the divergence; recommendation for
+which number to trust going forward, or how to reconcile both.
+Validation Criteria: Explanation is traced to actual query logic or data
+timing, not guessed.
+Success Metrics: Both teams' stakeholders would accept the explanation as
+sufficient once shown the evidence.
+Expected Learning Outcomes: Data disagreements are usually definitional or
+timing issues, not corruption — but you have to prove which.
+
+--------------------------------------------------------------------------------
+[F1-SIM-15] The Health Check That Lied
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation | Estimated Time: 1 hour
+Scenario: The health-check script from F1-LS-03 reported "healthy"
+throughout an incident where the database was, in practice, unusable for
+the application.
+Symptoms: Health check green; real users experiencing failures.
+Constraints: You need to fix the gap in the check without making it
+unreliable or excessively heavy for frequent polling.
+Tasks: Reproduce the application's actual failure condition; identify
+which specific real-world symptom the current health check fails to
+detect; extend the check to cover it without significantly increasing its
+runtime or risk of false negatives elsewhere.
+Deliverables: Updated health-check script; reproduction evidence of the
+original gap and the fix closing it.
+Validation Criteria: Updated check correctly reports unhealthy under the
+reproduced failure condition.
+Success Metrics: Check runtime remains within its original performance
+budget after the fix.
+Expected Learning Outcomes: A health check is only as good as the failure
+modes it was actually tested against.
+
+================================================================================
+PHASE 1 — END-TO-END FOUNDATION PROJECTS
+================================================================================
+
+--------------------------------------------------------------------------------
+[F1-PROJ-01] Single-Node Production-Pattern PostgreSQL Build
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 2-3 days
+
+Objective: Stand up a single PostgreSQL node that reflects real production
+hygiene end to end — not a quick-start install, but something you'd be
+comfortable handing to an auditor.
+
+Business Scenario: You're building the reference "golden" single-node
+setup that every future foundation-phase exercise in this curriculum will
+assume as a starting point.
+
+Technical Requirements:
+- A Linux host (VM or container) you control fully
+- All findings/conventions from the PGA, SEC, LA, LS, MON, and BR domains
+  above, applied together rather than in isolation
+
+Environment Setup:
+- A bare Linux host with no PostgreSQL installed yet
+
+Tasks:
+1. Install PostgreSQL with a deliberate, documented directory layout
+   (data, WAL, logs on appropriately chosen mounts/paths)
+2. Apply OS-level tuning (F1-LA-03) and a hardened systemd unit
+   (F1-LA-02)
+3. Apply a least-privilege role hierarchy (F1-PGA-02) and hardened
+   pg_hba.conf (F1-SEC-01)
+4. Wire up the core monitoring queries (F1-MON-01) and a working
+   long-running/blocking-session script (F1-MON-03)
+5. Implement an automated, locked, validated backup (F1-LS-01) on a
+   schedule (F1-AUTO-01), and prove it restores (F1-BR-01)
+6. Write the single "new engineer onboarding" document explaining this
+   host end to end
+
+Deliverables:
+- Fully configured host
+- Onboarding document
+- Proof-of-restore evidence
+
+Validation Criteria:
+- A peer unfamiliar with the build can operate the host correctly using
+  only the onboarding document
+- A real restore succeeds from the automated backup with no manual
+  intervention beyond what's documented
+
+Success Metrics:
+- Zero undocumented manual steps required to reproduce this build from
+  scratch
+
+Expected Learning Outcomes:
+- Integration of many individually-learned pieces into one coherent,
+  defensible system — the actual job, not just its parts
+
+--------------------------------------------------------------------------------
+[F1-PROJ-02] Two-Node HA Pair with Backup, Monitoring, and a Tested Runbook
+--------------------------------------------------------------------------------
+Difficulty Level: Foundation - Capstone
+Estimated Completion Time: 3-4 days
+
+Objective: Extend the single-node build into a real two-node HA pair, with
+a tested, documented failover and DR process — the smallest system that
+resembles an actual production topology.
+
+Business Scenario: The single-node build from F1-PROJ-01 is being promoted
+to handle real traffic, and a single point of failure is no longer
+acceptable.
+
+Technical Requirements:
+- Two hosts, each built per the F1-PROJ-01 pattern
+- Network connectivity between them
+
+Environment Setup:
+- Two hosts built using the F1-PROJ-01 process
+
+Tasks:
+1. Configure streaming replication between the two nodes (F1-REP-01),
+   including slot management awareness (F1-REP-02)
+2. Add replication lag to the monitoring set (F1-REP-03, F1-MON-02)
+3. Write and test a manual failover runbook (F1-HA-01) specific to this
+   pair
+4. Write and test a DR runbook (F1-DR-01) covering loss of the current
+   primary host entirely
+5. Run the monthly DR drill (M-01) against this pair at least once and
+   incorporate findings back into the runbooks
+6. Calculate this pair's actual RTO/RPO (F1-DR-03) from your own measured
+   drill timings
+
+Deliverables:
+- Working two-node HA pair
+- Tested, revised failover and DR runbooks
+- Measured RTO/RPO figures
+
+Validation Criteria:
+- A live failover, executed using only the written runbook, succeeds with
+  the application able to reconnect and write successfully afterward
+- RTO/RPO figures are derived from actual drill timing, not estimated
+
+Success Metrics:
+- Runbook required zero corrections during its second test run (first
+  run's corrections already folded in)
+
+Expected Learning Outcomes:
+- The gap between "we have HA" and "we have a tested, working HA process"
+  closes completely
+
+================================================================================
+WHAT'S NEXT — CONTINUING TO PHASE 2 AND BEYOND
+================================================================================
+Phase 1 (Foundation) is complete: 63 domain assignments, 19 drills across
+3 cadences, 15 incident simulations, and 2 end-to-end projects.
+
+To keep building toward the full target counts in the tracker near the top
+of this file, say "continue with Phase 2" (or just "continue"). Phase 2 —
+Professional DBA — will be appended to this same file in the same format,
+and will raise the bar in specific, deliberate ways:
+
+  - Less environment scaffolding given; more "figure out the setup
+    yourself from the business scenario"
+  - Assignments that combine 2-3 domains at once (e.g. a performance
+    problem that's actually a replication problem)
+  - Incident simulations with incomplete/misleading initial symptom
+    reports, the way real pages actually read
+  - Introduction of concurrency/scale realism: multi-table schemas,
+    larger datasets, simulated concurrent users
+  - First assignments touching pgBackRest/WAL-G, PgBouncer pooling modes
+    in depth, and basic Ansible-driven configuration management, building
+    toward the near-term skills in your broader responsibility framework
+
+After Phase 2, the same escalation pattern continues through Senior (3),
+Lead (4), Principal (5), and Enterprise Architect (6) — each phase adding
+ambiguity, scale, and cross-domain failure modes while removing scaffolding,
+until the assignments read the way a real 2 AM page reads: a symptom, a
+business stake, and silence on what's actually wrong.
